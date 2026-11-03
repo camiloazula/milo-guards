@@ -14,6 +14,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 
+use crate::launch::FIND_VALUED;
 use crate::path::{self, Access, Place, Resolver};
 
 mod git;
@@ -132,14 +133,22 @@ struct Read {
 fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool) -> Read {
     let mut seen = Seen::default();
     for finding in findings {
-        seen.add(rule_effect(finding.rule));
+        // A finding only an option the line does not show turns on is not
+        // known to change anything: the line is not understood.
+        if finding.reason.ends_with(crate::detect::UNREAD_OPTION) {
+            seen.add(Kind::Unknown);
+        } else {
+            seen.add(rule_effect(finding.rule));
+        }
     }
     // What is read but not a unit.
     seen.unknown |= split.kept.opaque;
     seen.changes |= split.kept.changes;
     seen.unknown |= split.kept.sets.iter().any(|name| !harmless(name));
     seen.unknown |= split.kept.loops.iter().any(|name| !plain_loop(name));
-    for write in &split.writes {
+    // A redirect is written from each folder the line may be in: once one
+    // changes a file, the rest add nothing.
+    seen.changes |= split.writes.iter().any(|write| {
         let place = resolver.place(
             write.dir.as_ref(),
             &write.target,
@@ -147,8 +156,8 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
             write.hidden,
             Access::Content,
         );
-        seen.changes |= !matches!(place, Place::Null);
-    }
+        !matches!(place, Place::Null)
+    });
     // The first unit at each pipeline stage, for what a stage is handed.
     let mut producers = HashMap::new();
     for unit in &split.units {
@@ -168,6 +177,8 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
         physical: split.physical(),
         dir: RefCell::new(None),
         cd_target: Cell::new(false),
+        placed: RefCell::default(),
+        entered: RefCell::default(),
     };
     for read in &split.reads {
         context
@@ -181,17 +192,7 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
             Manner::default(),
         ));
     }
-    for (at, unit) in split.units.iter().enumerate() {
-        context.stage.set(unit.stage);
-        context
-            .dir
-            .replace(unit.dir.as_ref().and_then(Arg::known).map(str::to_string));
-        // The shell applies the `..` of a `cd` target itself (`cd link/..` is
-        // the folder `link` is in), unless that `cd` keeps the physical path
-        // (which `cd` is not told, so a line with a `-P` lists both); bash
-        // and zsh fall back to the physical path when a folder is missing
-        // before a `..`, so a part after a `..` is listed both ways.
-        context.cd_target.set(moves_to(unit).is_some());
+    for (at, first) in split.units.iter().enumerate() {
         // A `for` loop over words written out is read with each word in place
         // of its variable, as if the body were written out.
         let enclosing: Vec<_> = split
@@ -199,13 +200,33 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
             .iter()
             .filter(|binding| binding.units.contains(&at))
             .collect();
-        match substituted(unit, &enclosing) {
-            Some(copies) => {
-                for copy in &copies {
-                    seen.add(unit_effect(copy, &context));
+        // Read from each other folder a `cd` before it may have left the
+        // line in too, as `classify` judges it (see [`Unit::others`]).
+        let moved: Vec<Unit> = first
+            .others()
+            .into_iter()
+            .map(|dir| first.in_folder(dir))
+            .collect();
+        for unit in std::iter::once(first).chain(&moved) {
+            context.stage.set(unit.stage);
+            context
+                .dir
+                .replace(unit.dir.as_ref().and_then(Arg::known).map(str::to_string));
+            // The shell applies the `..` of a `cd` target itself (`cd
+            // link/..` is the folder `link` is in), unless that `cd` keeps
+            // the physical path (which `cd` is not told, so a line with a
+            // `-P` lists both); bash and zsh fall back to the physical path
+            // when a folder is missing before a `..`, so a part after a `..`
+            // is listed both ways.
+            context.cd_target.set(moves_to(unit).is_some());
+            match substituted(unit, &enclosing) {
+                Some(copies) => {
+                    for copy in &copies {
+                        seen.add(unit_effect(copy, &context));
+                    }
                 }
+                None => seen.add(unit_effect(unit, &context)),
             }
-            None => seen.add(unit_effect(unit, &context)),
         }
     }
     let effect = seen.effect(context.beyond.get());
@@ -381,7 +402,6 @@ pub(crate) fn received(unit: &Unit) -> Cow<'_, Unit> {
 
 /// What one unit does, its arguments as the program receives them.
 fn judge_unit(unit: &Unit, context: &Context<'_>) -> Kind {
-    let resolver = context.resolver;
     let Some(key) = program(unit) else {
         return Kind::Unknown;
     };
@@ -390,13 +410,7 @@ fn judge_unit(unit: &Unit, context: &Context<'_>) -> Kind {
         // Going into a folder is a read of it: `cd ~` leaves the workspace
         // for whatever follows, a line of its own or the caller's next one.
         let at = path::within(unit.dir.as_ref(), &target, unit.shell);
-        let place = resolver.place(
-            unit.dir.as_ref(),
-            &target,
-            unit.shell,
-            unit.hidden,
-            Access::Item,
-        );
+        let place = operands::entered(context, unit.shell, unit.dir.as_ref(), &target, unit.hidden);
         context.land(unit.shell, None, &at, place, Manner::default());
         if matches!(place, Place::Unknown) {
             Kind::Unknown
@@ -827,37 +841,6 @@ fn posix(key: &str, unit: &Unit) -> Kind {
 /// it is the value of a test that takes one (`-name "$p"`) and is quoted.
 fn find(args: &[Arg]) -> Kind {
     const WRITES: [&str; 5] = ["-delete", "-fprint", "-fprint0", "-fprintf", "-fls"];
-    /// The tests whose next argument is a pattern, a number or a type.
-    const VALUED: [&str; 28] = [
-        "-name",
-        "-iname",
-        "-path",
-        "-ipath",
-        "-wholename",
-        "-iwholename",
-        "-lname",
-        "-ilname",
-        "-regex",
-        "-iregex",
-        "-type",
-        "-xtype",
-        "-newer",
-        "-mtime",
-        "-mmin",
-        "-atime",
-        "-amin",
-        "-ctime",
-        "-cmin",
-        "-size",
-        "-perm",
-        "-user",
-        "-group",
-        "-maxdepth",
-        "-mindepth",
-        "-links",
-        "-samefile",
-        "-regextype",
-    ];
     if args
         .iter()
         .filter_map(Arg::known)
@@ -872,7 +855,7 @@ fn find(args: &[Arg]) -> Kind {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.known() {
-            Some(text) if VALUED.contains(&text) => {
+            Some(text) if FIND_VALUED.contains(&text) => {
                 if iter
                     .next()
                     .is_some_and(|value| dashed(value) || !inert(value))

@@ -680,7 +680,9 @@ posix safe | gcloud projects add-iam-policy-binding $P --member $M --role r
 posix safe | gcloud compute instances add-metadata $VM
 posix safe | gcloud storage cp $F gs://b/
 posix safe | gcloud storage cp "$F" gs://b/
-posix safe | gcloud storage rsync $SRC gs://b
+posix safe | gcloud storage rsync "$SRC" gs://b
+# Outside quotes it may split into words, an option that deletes among them.
+posix finds=destroy_resources reason="may delete the objects the source does not have with an option only known when it runs" | gcloud storage rsync $SRC gs://b
 posix safe | gcloud storage mv $A gs://b/
 posix safe | gcloud pubsub topics publish $T --message x
 posix safe | gcloud container images list-tags $IMG
@@ -943,6 +945,97 @@ powershell finds=destroy_resources | aws.exe ec2 terminate-instances --instance-
 powershell finds=destroy_resources | gcloud projects delete prod
 powershell finds=destroy_resources | az group delete --name rg --yes
 powershell finds=destroy_resources | docker ps -aq | ForEach-Object { docker rm -f $_ }
+# The cloud modules' own cmdlets: a `Remove-` cmdlet whose noun starts with a
+# cloud module's prefix (`Az`, `AzureRM`, AWS's service prefixes, `Gc`, `Gke`,
+# `Bq`, `Mg`, `Entra`, `Msol`) is a delete in that cloud, inside a block too.
+# Listing and creating stay safe, as do the cmdlets that only change the
+# module's sign-in on this machine, and cmdlets of other modules whose noun
+# only looks like a prefix.
+powershell safe | Get-AzVM
+powershell safe | Get-AzResourceGroup
+powershell safe | Get-S3Bucket
+powershell safe | New-AzResourceGroup -Name rg -Location westeurope
+powershell safe | Stop-AzVM -Name vm -ResourceGroupName rg
+powershell safe | Remove-AzContext -Name dev
+powershell safe | Remove-AzAccount
+powershell safe | Remove-AzureRmAccount
+powershell safe | Remove-SmbShare -Name x -Force
+powershell safe | Remove-DscConfigurationDocument -Stage Pending
+powershell safe | Remove-RDSessionCollection -CollectionName c
+powershell safe | Remove-OrganizationRelationship -Identity x
+powershell safe | Remove-AWSCredentialProfile -ProfileName dev
+powershell safe | Remove-EcpVirtualDirectory -Identity x
+powershell safe | Remove-CDDrive -CD $cd -Confirm:$false
+powershell safe | Remove-OSCustomizationSpec -OSCustomizationSpec s
+powershell safe | Remove-EsxSoftwareDepot -SoftwareDepot d
+powershell safe | Remove-RsCatalogItem -RsFolder /x
+powershell safe | Remove-Computer -WorkgroupName w
+powershell rules=system_settings | Remove-LocalUser -Name u
+powershell safe | Remove-LocalGroup -Name g
+powershell safe | Remove-WmiObject -Class Win32_Share -Filter x
+powershell safe | Remove-ADComputer -Identity pc
+powershell safe | Remove-ADServiceAccount -Identity sa
+powershell safe | Remove-CertificateEnrollmentPolicyServer -Url x
+powershell safe | Remove-OdbcDsn -Name d -DsnType User
+powershell safe | Remove-MaskingSet -FriendlyName m
+powershell safe | Remove-Secret -Name s -Vault v
+powershell finds=destroy_resources | Remove-AzResourceGroup -Name rg -Force
+powershell finds=destroy_resources | Remove-AzVM -Name vm -Force
+powershell finds=destroy_resources | Remove-AzStorageAccount -Name s -ResourceGroupName rg -Force
+powershell finds=destroy_resources | Get-AzResourceGroup | Remove-AzResourceGroup -Force
+powershell finds=destroy_resources | Get-AzResourceGroup | ForEach-Object { Remove-AzResourceGroup -Name $_.ResourceGroupName -Force }
+powershell finds=destroy_resources | Get-AzVM | % { Remove-AzVM -Name $_.Name -ResourceGroupName $_.ResourceGroupName -Force }
+powershell finds=destroy_resources | foreach ($g in Get-AzResourceGroup) { Remove-AzResourceGroup -Name $g.ResourceGroupName -Force }
+powershell finds=destroy_resources | Remove-EC2Instance -InstanceId i-1 -Force
+powershell finds=destroy_resources | Remove-S3Bucket -BucketName b -DeleteBucketContent -Force
+powershell finds=destroy_resources | Remove-S3Object -BucketName b -Key x
+powershell finds=destroy_resources | Remove-RDSDBInstance -DBInstanceIdentifier db -SkipFinalSnapshot $true -Force
+powershell finds=destroy_resources | Remove-IAMUser -UserName u -Force
+powershell finds=destroy_resources | Remove-CFNStack -StackName s -Force
+powershell finds=destroy_resources | Remove-ECSCluster -Cluster c
+powershell finds=destroy_resources | Remove-EKSCluster -Name c
+powershell finds=destroy_resources | Remove-LMFunction -FunctionName f -Force
+powershell finds=destroy_resources | Remove-DDBTable -TableName t -Force
+powershell finds=destroy_resources | Remove-DSConditionalForwarder -DirectoryId d -RemoteDomainName x
+powershell finds=destroy_resources | Remove-AzureRmResourceGroup -Name rg -Force
+powershell finds=destroy_resources | Remove-AzureADUser -ObjectId x
+powershell finds=destroy_resources | REMOVE-AZVM -Name vm -Force
+powershell finds=destroy_resources | Az.Resources\\Remove-AzResourceGroup -Name rg -Force
+powershell finds=destroy_resources | Remove-GcsBucket -Name b -Force
+powershell finds=destroy_resources | Remove-GceInstance -Name vm
+powershell finds=destroy_resources | Remove-GcSqlInstance -Instance db
+powershell finds=destroy_resources | Remove-GkeCluster -ClusterName c
+powershell finds=destroy_resources | Remove-GkeNodePool -ClusterName c -NodePoolName p
+powershell finds=destroy_resources | Remove-BqDataset -DatasetId d -Force
+powershell finds=destroy_resources | Remove-BqTable -Table t
+powershell finds=destroy_resources | Remove-KSTable -KeyspaceName k -TableName t
+powershell finds=destroy_resources | Remove-QLDBLedger -Name l
+powershell finds=destroy_resources | Remove-TSWDatabase -DatabaseName d
+powershell finds=destroy_resources | Remove-SDBDomain -DomainName d
+powershell finds=destroy_resources | Remove-LKFResource -ResourceArn a
+powershell finds=destroy_resources | Remove-KVStream -StreamARN a
+powershell finds=destroy_resources | Remove-BDRCustomModel -ModelIdentifier m
+powershell finds=destroy_resources | Remove-GDDetector -DetectorId d
+powershell finds=destroy_resources | Remove-SHUBHub -Force
+powershell finds=destroy_resources | Remove-QSDashboard -AwsAccountId 1 -DashboardId d
+powershell finds=destroy_resources | Remove-NWFWFirewall -FirewallName f
+powershell finds=destroy_resources | Remove-DCConnection -ConnectionId c
+powershell finds=destroy_resources | Remove-GACLAccelerator -AcceleratorArn a
+powershell finds=destroy_resources | Remove-APSFleet -Name f
+powershell finds=destroy_resources | Remove-CONNInstance -InstanceId i
+powershell finds=destroy_resources | Remove-PINApp -ApplicationId a
+powershell finds=destroy_resources | Remove-REKCollection -CollectionId c
+powershell finds=destroy_resources | Remove-SCProduct -Id p
+powershell finds=destroy_resources | Remove-CARepository -Domain d -Repository r
+powershell finds=destroy_resources | Remove-CSDomain -DomainName d
+powershell finds=destroy_resources | Remove-SECSecret -SecretId s
+powershell finds=destroy_resources | Remove-SecurityIRResourceTag -ResourceArn a -TagKey k
+powershell finds=destroy_resources | Remove-MgUser -UserId u
+powershell finds=destroy_resources | Remove-EntraUser -UserId u
+powershell finds=destroy_resources | Remove-MsolUser -UserPrincipalName u
+powershell finds=destroy_resources | Invoke-Command -ScriptBlock { Remove-AzVM -Name vm -Force }
+posix finds=destroy_resources | pwsh -c 'Remove-AzResourceGroup -Name rg -Force'
+cmd finds=destroy_resources | powershell -Command Remove-AzResourceGroup -Name rg -Force
 cmd safe | docker ps
 cmd safe | docker rm web
 cmd safe | kubectl get pods
@@ -986,6 +1079,12 @@ posix rules=destroy_resources first=destroy_resources reason="uninstalls a Helm 
 posix rules=destroy_resources first=destroy_resources reason="destroys the infrastructure a configuration manages" | terraform apply -destroy
 posix rules=destroy_resources first=destroy_resources reason="terminates EC2 instances" | aws ec2 terminate-instances --instance-ids i-1
 posix rules=destroy_resources first=destroy_resources reason="deletes AWS resources" | aws rds delete-db-instance --db-instance-identifier x
+powershell rules=destroy_resources first=destroy_resources reason="deletes Azure resources" | Remove-AzResourceGroup -Name rg -Force
+powershell rules=destroy_resources first=destroy_resources reason="deletes AWS resources" | Remove-EC2Instance -InstanceId i-1 -Force
+powershell rules=destroy_resources first=destroy_resources reason="deletes Google Cloud resources" | Remove-GcsBucket -Name b -Force
+powershell rules=destroy_resources first=destroy_resources reason="deletes Google Cloud resources" | Remove-GkeCluster -ClusterName c
+powershell rules=destroy_resources first=destroy_resources reason="deletes AWS resources" | Remove-SecurityIRResourceTag -ResourceArn a -TagKey k
+powershell rules=destroy_resources first=destroy_resources reason="deletes Microsoft Entra or Microsoft 365 objects" | Remove-MgUser -UserId u
 posix rules=destroy_resources first=destroy_resources reason="deletes every object under a prefix" | aws s3 rm s3://b --recursive
 posix rules=unknown first=unknown reason="runs a docker command only known when it runs" | docker $cmd ps
 posix rules=unknown first=unknown reason="runs an aws command only known when it runs" | aws $service
@@ -1010,3 +1109,27 @@ posix rules=destroy_resources first=destroy_resources reason="deletes what a Git
 posix rules=unknown first=unknown reason="calls the GitHub API with a method only known when it runs" | gh api -X "$METHOD" repos/me/x
 posix rules=unknown first=unknown reason="runs a kubecolor command only known when it runs" | kubecolor $x
 posix rules=unknown first=unknown reason="runs an s3cmd command only known when it runs" | s3cmd $x
+
+# An option that destroys may be held in a value only known when it runs:
+# one outside quotes may split into words, and a quoted one that starts
+# with `-` is an option. The finding says what the program may do.
+posix finds=destroy_resources reason="may delete every unused image with an option only known when it runs" | docker image prune $FLAGS
+posix finds=destroy_resources | docker image prune "-$F"
+posix finds=destroy_resources reason="removes unused containers, networks and images" | docker system prune $FLAGS
+posix finds=destroy_resources reason="may delete a compose project's volumes with an option only known when it runs" | docker compose down $FLAGS
+posix finds=destroy_resources reason="may destroy the infrastructure a configuration manages with an option only known when it runs" | terraform apply $TF_ARGS
+posix finds=destroy_resources | terraform apply "-$F"
+posix finds=destroy_resources | terraform apply "-${X:-destroy}"
+posix finds=destroy_resources | aws s3 sync . s3://b $FLAGS
+posix finds=destroy_resources reason="may delete cluster objects the files do not list with an option only known when it runs" | kubectl apply -f $FILE
+posix finds=destroy_resources | kubectl apply -f x.yaml $FLAGS
+posix finds=destroy_resources | kubectl replace -f x.yaml $FLAGS
+posix finds=destroy_resources | oc adm prune images $FLAGS
+posix finds=destroy_resources reason="may leave a swarm, even as its last manager, with an option only known when it runs" | docker swarm leave $FLAGS
+posix finds=destroy_resources | podman kube play x.yaml $FLAGS
+posix finds=destroy_resources | gsutil rsync $FLAGS a gs://b
+posix finds=destroy_resources | nomad job stop $FLAGS web
+posix finds=destroy_resources | terragrunt apply $FLAGS
+posix safe | terraform apply "$PLAN"
+posix safe | docker image prune "$F"
+posix safe | kubectl apply -f "$FILE"

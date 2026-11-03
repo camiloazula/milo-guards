@@ -1,6 +1,7 @@
 //! The line as the rules saw it: [`explain`](crate::explain) and the types it
 //! returns.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::detect::Judged;
@@ -44,7 +45,8 @@ pub struct ArgExplanation {
     /// program takes it as a path (`reset` in `git reset` lands inside the
     /// workspace); the rules decide which are paths. `None` for an option
     /// (`-rf`, `/s`), a value only known when it runs, and what a pipeline
-    /// hands on.
+    /// hands on. In a POSIX shell nothing after the first `--` is an option:
+    /// in `rm -- -rf`, `--` is not placed and `-rf` is.
     pub resolved: Option<String>,
 }
 
@@ -180,6 +182,11 @@ pub(crate) fn explanation(command: &str, shell: Shell, reading: &Reading) -> Exp
         units,
         writes,
     } = judged;
+    // Arguments run from the same folder land in the same place: each word
+    // is placed once for each folder (a runner read many ways hands
+    // thousands of copies of a few words on, a loop runs one word in
+    // thousands of units).
+    let mut placed = Placed::new();
     Explanation {
         command: command.to_string(),
         shell,
@@ -187,7 +194,7 @@ pub(crate) fn explanation(command: &str, shell: Shell, reading: &Reading) -> Exp
             .units
             .iter()
             .zip(units)
-            .map(|(unit, findings)| of_unit(unit, findings, resolver))
+            .map(|(unit, findings)| of_unit(unit, findings, resolver, &mut placed))
             .collect(),
         redirects: redirects(split, writes, resolver),
         line: line.clone(),
@@ -214,7 +221,8 @@ fn redirects(
                 write.hidden,
                 resolver,
                 true,
-            ),
+            )
+            .map(str::to_string),
             dir: write.dir.as_ref().map(|dir| dir.text().to_string()),
             findings: findings.clone(),
         })
@@ -230,17 +238,32 @@ fn resolved(
     hidden: bool,
     resolver: &Resolver,
     into: bool,
-) -> Option<String> {
+) -> Option<&'static str> {
     arg.known()?;
     let place = if into {
         resolver.place_into(dir, arg, shell, hidden, Access::Item)
     } else {
         resolver.place(dir, arg, shell, hidden, Access::Item)
     };
-    Some(place.words().to_string())
+    Some(place.words())
 }
 
-fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplanation {
+/// Where each word lands, by the folder it runs from, its shell, whether its
+/// wildcards match hidden names, and its text. The folder is the whole
+/// [`Arg`], not its text: `cd '$Y'` and `cd $Y` spell the same text, but one
+/// is a folder the text names and the other one only known when it runs.
+type Placed<'a> = HashMap<(Option<&'a Arg>, &'static str, bool, &'a str), Option<&'static str>>;
+
+fn of_unit<'a>(
+    unit: &'a Unit,
+    findings: &[Finding],
+    resolver: &Resolver,
+    placed: &mut Placed<'a>,
+) -> UnitExplanation {
+    // In a POSIX shell the first `--` ends the options: what follows it is an
+    // operand, whatever it starts with (`rm -- -rf` deletes a file `-rf`).
+    let mut ended = false;
+    let dir = unit.dir.as_ref();
     UnitExplanation {
         shell: unit.shell,
         depth: unit.depth,
@@ -249,7 +272,12 @@ fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplan
         args: unit
             .args
             .iter()
-            .map(|arg| ArgExplanation {
+            .map(|arg| {
+                let option = !ended && arg.known().is_some_and(|text| is_option(text, unit.shell));
+                ended |= unit.shell == Shell::Posix && arg.known() == Some("--");
+                (arg, option)
+            })
+            .map(|(arg, option)| ArgExplanation {
                 written: arg.text().to_string(),
                 kind: match arg {
                     Arg::Known(_) => ArgKind::Known,
@@ -260,17 +288,22 @@ fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplan
                 },
                 resolved: arg
                     .known()
-                    .filter(|text| !is_option(text, unit.shell))
-                    .and_then(|_| {
-                        resolved(
-                            arg,
-                            unit.dir.as_ref(),
-                            unit.shell,
-                            unit.hidden,
-                            resolver,
-                            false,
-                        )
-                    }),
+                    .filter(|_| !option)
+                    .and_then(|text| {
+                        *placed
+                            .entry((dir, shell_name(unit.shell), unit.hidden, text))
+                            .or_insert_with(|| {
+                                resolved(
+                                    arg,
+                                    unit.dir.as_ref(),
+                                    unit.shell,
+                                    unit.hidden,
+                                    resolver,
+                                    false,
+                                )
+                            })
+                    })
+                    .map(str::to_string),
             })
             .collect(),
         wrappers: unit.wrappers.clone(),
@@ -291,21 +324,66 @@ fn is_option(text: &str, shell: Shell) -> bool {
 }
 
 /// A text as the tree prints it: a control character (a newline, a tab, an
-/// ESC) is written as an escape (`\n`, `\u{1b}`), so what the line holds can
-/// neither pose as a line of the tree nor reach a terminal as a sequence.
-/// The fields stay raw; only the tree escapes.
+/// ESC), a line or paragraph separator and a format character (a
+/// right-to-left override, a bidi isolate, a zero-width space) are written as
+/// escapes (`\n`, `\u{1b}`, `\u{202e}`), so what the line holds can neither
+/// pose as a line of the tree, nor reach a terminal as a sequence, nor show
+/// its text in another order than it is read. The fields stay raw; only the
+/// tree escapes.
 struct Escaped<'a>(&'a str);
 
+/// The format characters of Unicode 17.0 (general category `Cf`, from its
+/// `DerivedGeneralCategory.txt`): they draw nothing, and the bidi controls
+/// among them (U+202A to U+202E, U+2066 to U+2069) reorder the text around
+/// them.
+const FORMAT: [(char, char); 21] = [
+    ('\u{00ad}', '\u{00ad}'),
+    ('\u{0600}', '\u{0605}'),
+    ('\u{061c}', '\u{061c}'),
+    ('\u{06dd}', '\u{06dd}'),
+    ('\u{070f}', '\u{070f}'),
+    ('\u{0890}', '\u{0891}'),
+    ('\u{08e2}', '\u{08e2}'),
+    ('\u{180e}', '\u{180e}'),
+    ('\u{200b}', '\u{200f}'),
+    ('\u{202a}', '\u{202e}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206f}'),
+    ('\u{feff}', '\u{feff}'),
+    ('\u{fff9}', '\u{fffb}'),
+    ('\u{110bd}', '\u{110bd}'),
+    ('\u{110cd}', '\u{110cd}'),
+    ('\u{13430}', '\u{1343f}'),
+    ('\u{1bca0}', '\u{1bca3}'),
+    ('\u{1d173}', '\u{1d17a}'),
+    ('\u{e0001}', '\u{e0001}'),
+    ('\u{e0020}', '\u{e007f}'),
+];
+
+/// Whether the tree writes `c` as an escape.
+fn escaped(c: char) -> bool {
+    if c.is_ascii() {
+        return c.is_ascii_control();
+    }
+    c.is_control()
+        || matches!(c, '\u{2028}' | '\u{2029}')
+        || FORMAT.iter().any(|&(from, to)| (from..=to).contains(&c))
+}
+
 impl fmt::Display for Escaped<'_> {
+    /// Printable ASCII is written as it is, and other text a run at a time
+    /// between escapes: a tree can hold megabytes of nested script.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for c in self.0.chars() {
-            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-                write!(f, "{}", c.escape_debug())?;
-            } else {
-                write!(f, "{c}")?;
-            }
+        if self.0.bytes().all(|byte| matches!(byte, b' '..=b'~')) {
+            return f.write_str(self.0);
         }
-        Ok(())
+        let mut from = 0;
+        for (at, c) in self.0.char_indices().filter(|&(_, c)| escaped(c)) {
+            f.write_str(self.0.get(from..at).unwrap_or_default())?;
+            write!(f, "{}", c.escape_debug())?;
+            from = at + c.len_utf8();
+        }
+        f.write_str(self.0.get(from..).unwrap_or_default())
     }
 }
 
@@ -373,18 +451,25 @@ impl UnitExplanation {
         }
         if !self.args.is_empty() {
             writeln!(f, "  args")?;
+            // A unit may hold thousands of arguments: each line is written
+            // in pieces, with no formatting to parse.
             for arg in &self.args {
-                write!(f, "    {}", Escaped(&arg.written))?;
+                f.write_str("    ")?;
+                fmt::Display::fmt(&Escaped(&arg.written), f)?;
                 match (&arg.resolved, arg.kind) {
-                    (Some(place), _) => write!(f, " (as a path: {})", Escaped(place))?,
-                    (None, ArgKind::Unknown) => write!(f, " (known only when it runs)")?,
-                    (None, ArgKind::Template) => {
-                        write!(f, " (partly known only when it runs)")?;
+                    (Some(place), _) => {
+                        f.write_str(" (as a path: ")?;
+                        fmt::Display::fmt(&Escaped(place), f)?;
+                        f.write_str(")")?;
                     }
-                    (None, ArgKind::Input) => write!(f, " (from the previous stage)")?,
+                    (None, ArgKind::Unknown) => f.write_str(" (known only when it runs)")?,
+                    (None, ArgKind::Template) => {
+                        f.write_str(" (partly known only when it runs)")?;
+                    }
+                    (None, ArgKind::Input) => f.write_str(" (from the previous stage)")?,
                     (None, _) => {}
                 }
-                writeln!(f)?;
+                f.write_str("\n")?;
             }
         }
         write_findings(f, &self.findings)
@@ -429,4 +514,58 @@ fn write_finding(f: &mut fmt::Formatter<'_>, indent: &str, finding: &Finding) ->
         write!(f, " ({})", Escaped(target))?;
     }
     writeln!(f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escaped, Escaped, FORMAT};
+
+    #[test]
+    fn every_format_character_is_written_as_an_escape() {
+        for &(from, to) in &FORMAT {
+            for c in from..=to {
+                assert!(escaped(c));
+                let printed = Escaped(&c.to_string()).to_string();
+                assert_eq!(printed, format!("\\u{{{:x}}}", u32::from(c)));
+            }
+        }
+    }
+
+    /// Written out here, not read from `FORMAT`, so a character the table
+    /// lost is caught: every bidi control, and the format characters that
+    /// most often hide in text.
+    #[test]
+    fn the_bidi_controls_and_common_invisible_characters_are_escapes() {
+        let required = [
+            '\u{202a}',
+            '\u{202b}',
+            '\u{202c}',
+            '\u{202d}',
+            '\u{202e}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{00ad}',
+            '\u{061c}',
+            '\u{200b}',
+            '\u{200c}',
+            '\u{200d}',
+            '\u{200e}',
+            '\u{200f}',
+            '\u{2060}',
+            '\u{feff}',
+            '\u{e0001}',
+        ];
+        for c in required {
+            assert!(escaped(c), "{:x}", u32::from(c));
+        }
+    }
+
+    #[test]
+    fn other_text_is_written_as_it_is() {
+        for text in ["rm -rf ~/x", "é", "日本", "a\u{301}", "\\", "'\""] {
+            assert_eq!(Escaped(text).to_string(), text);
+        }
+    }
 }

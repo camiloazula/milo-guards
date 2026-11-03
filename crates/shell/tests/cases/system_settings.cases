@@ -84,7 +84,9 @@ posix safe | iptables -S
 posix safe | iptables -C INPUT -j DROP
 posix safe | iptables -Z
 posix safe | iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-posix safe | iptables -A INPUT -s $ip -j DROP
+posix safe | iptables -A INPUT -s "$ip" -j DROP
+# Outside quotes a value may split into words, an option among them.
+posix finds=system_settings | iptables -A INPUT -s $ip -j DROP
 posix safe | iptables -I INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT
 posix safe | iptables -D INPUT 1
 posix safe | iptables -P INPUT DROP
@@ -98,7 +100,8 @@ posix safe | iptables -nPINPUT DROP
 posix safe | iptables --policy=INPUT DROP
 posix safe | iptables -POUTPUT ACCEPT
 posix safe | iptables --policy=OUTPUT ACCEPT
-posix safe | iptables -P OUTPUT $policy
+posix safe | iptables -P OUTPUT "$policy"
+posix finds=system_settings | iptables -P OUTPUT $policy
 posix safe | iptables -PINPUT
 posix safe | iptables -A INPUT -m policy --dir in --pol ipsec -j ACCEPT
 posix finds=system_settings | iptables -F
@@ -149,8 +152,8 @@ posix safe | nft 'delete rule inet filter input handle 5'
 posix safe | nft delete element inet filter blocked '{ 1.2.3.4 }'
 posix safe | nft delete set inet filter blocked
 posix safe | nft flush map inet filter m
-posix safe | nft add rule inet filter input $rule
 posix safe | nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'
+posix finds=system_settings | nft add rule inet filter input $rule
 posix safe | nft -d netlink list ruleset
 posix safe | nft --debug all list ruleset
 posix safe | nft
@@ -552,7 +555,8 @@ posix safe | systemctl edit 'docker*'
 posix safe | systemctl stop 'docker*.service'
 posix safe | systemctl stop 'dock[e]r*'
 posix safe | systemctl --user stop "app-$name.service"
-posix safe | systemctl --user stop app-$name
+posix safe | systemctl --user stop "app-$name"
+posix finds=system_settings | systemctl --user stop app-$name
 posix finds=system_settings | systemctl mask systemd-resolved
 posix finds=system_settings | systemctl disable nginx
 posix finds=system_settings | systemctl disable --now nginx
@@ -1170,7 +1174,8 @@ posix safe | bootctl status
 posix safe | bootctl list
 posix safe | bootctl
 posix safe | bootctl --esp-path /efi status
-posix safe | auditctl -k $key -w /etc/passwd
+posix safe | auditctl -k "$key" -w /etc/passwd
+posix finds=system_settings | auditctl -k $key -w /etc/passwd
 posix safe | getsebool -a
 posix safe | getsebool httpd_can_network_connect
 posix safe | setsebool
@@ -1185,7 +1190,7 @@ posix safe | sysctl -n kern.boottime
 posix safe | sysctl -ar kernel
 posix safe | grubby --info=ALL
 posix safe | grubby --info ALL
-posix safe | grubby --info $kernel
+posix safe | grubby --info "$kernel"
 posix safe | grubby --default-kernel
 posix safe | grubby --default-index
 posix safe | grubby
@@ -1291,23 +1296,27 @@ posix finds=system_settings | spctl developer-mode $verb
 
 # An option or a command word only known when it runs may be one that turns
 # a protection off, so it is risky; the value of an option before it is not
-# an option.
-posix safe | iptables -A INPUT -p tcp --dport $port -j DROP
-posix safe | iptables -t nat -A POSTROUTING -o $iface -j MASQUERADE
-posix safe | iptables -A INPUT $x -j DROP
-posix safe | iptables -L $chain
-posix safe | iptables -nL $chain
-posix safe | iptables --list $chain
-posix safe | pfctl -s $what
-posix safe | firewall-cmd --get-zone-of-interface $iface
-posix safe | networksetup -getinfo $service
-posix safe | scutil --get $name
-posix safe | socketfilterfw --getappblocked $app
-posix safe | firewall-cmd --add-service $service
+# an option. Outside quotes a value may split into words, any of which may
+# be an option, so only a quoted one is a value for sure.
+posix safe | iptables -A INPUT -p tcp --dport "$port" -j DROP
+posix safe | iptables -t nat -A POSTROUTING -o "$iface" -j MASQUERADE
+posix safe | iptables -A INPUT "$x" -j DROP
+posix safe | iptables -L "$chain"
+posix safe | iptables -nL "$chain"
+posix safe | iptables --list "$chain"
+posix safe | pfctl -s "$what"
+posix safe | firewall-cmd --get-zone-of-interface "$iface"
+posix safe | networksetup -getinfo "$service"
+posix safe | scutil --get "$name"
+posix safe | socketfilterfw --getappblocked "$app"
+posix safe | firewall-cmd --add-service "$service"
 posix safe | firewall-cmd --zone public --list-all
-posix safe | scutil --nc status $service
-posix safe | iptables -A INPUT -s 10.0.0.1 $x
-posix safe | iptables -A OUTPUT $x
+posix safe | scutil --nc status "$service"
+posix safe | iptables -A INPUT -s 10.0.0.1 "$x"
+posix safe | iptables -A OUTPUT "$x"
+posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | iptables -L $chain
+posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | networksetup -getinfo $service
+posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | firewall-cmd --add-service $service
 posix finds=system_settings | spctl $x
 posix finds=system_settings | spctl --assess $flag
 posix finds=system_settings | iptables $flag
@@ -1331,6 +1340,10 @@ posix finds=system_settings | socketfilterfw --getglobalstate $x
 posix finds=system_settings | networksetup -listallnetworkservices $x
 posix finds=system_settings | systemsetup -getremotelogin $x
 posix finds=system_settings | scutil --dns $x
+posix finds=system_settings | firewall-cmd --permanent "$x"
+posix finds=system_settings | firewall-cmd --zone=public "$x"
+posix finds=system_settings | systemsetup -getremotelogin "$x"
+posix finds=system_settings | scutil --dns "$x"
 posix finds=system_settings | iptables -I INPUT $x
 posix finds=system_settings | iptables -I INPUT 1 $x
 posix finds=system_settings | iptables -A INPUT $x
@@ -1429,8 +1442,15 @@ posix rules=system_settings first=system_settings reason="changes how the comput
 posix rules=system_settings first=system_settings reason="changes SELinux settings" | semodule -r x
 posix rules=system_settings first=system_settings reason="lets everything through the firewall" | iptables -I INPUT $x
 posix rules=system_settings first=system_settings reason="stops every system service" | systemctl stop system.slice
-posix rules=system_settings first=system_settings reason="changes Gatekeeper in a way only known when it runs" | spctl $x
-posix rules=system_settings first=system_settings reason="changes the firewall in a way only known when it runs" | iptables $flag
+posix rules=system_settings first=system_settings reason="may change Gatekeeper with an option only known when it runs" | spctl $x
+posix rules=system_settings first=system_settings reason="may change the firewall with an option only known when it runs" | iptables $flag
 posix rules=system_settings first=system_settings reason="changes the quarantine of downloaded files" | defaults write com.apple.LaunchServices LSQuarantine -bool false
 posix rules=system_settings first=system_settings reason="changes how the system starts services" | launchctl config system path /x
 posix finds=system_settings reason="changes SELinux settings" | cp config /etc/selinux/
+
+# A machine-setting program given an option only known when it runs: one
+# outside quotes may split into words, and a quoted one that starts with
+# `-` is an option.
+posix finds=system_settings | ufw $c
+posix finds=system_settings | csrutil $x
+posix finds=system_settings reason="may change the firewall with an option only known when it runs" | iptables "-$F"

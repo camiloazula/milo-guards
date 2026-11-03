@@ -10,7 +10,9 @@ use tree_sitter::Node;
 mod aliases;
 mod blocks;
 pub(crate) mod native;
+mod numbers;
 mod spelling;
+mod variables;
 
 pub(crate) use aliases::Aliases;
 use aliases::{Set, Stands};
@@ -25,7 +27,10 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     // A space, quote or dash PowerShell reads as an ASCII one is written as
     // that one, which is all the grammar knows.
     let ascii = spelling::ascii(text);
-    let text = ascii.as_ref();
+    // A number's letters in any case (`1MB`), which the grammar reads only
+    // in lower case.
+    let lowered = numbers::lower(ascii.as_ref());
+    let text = lowered.as_ref();
     let Some(first) = unit::parse(split, text, &language) else {
         return;
     };
@@ -91,6 +96,8 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split,
         item: None,
         holds: HashSet::new(),
+        variables: variables::Variables::read(tree.root_node(), text),
+        streams: HashSet::new(),
     };
     walker.mark_listings(tree.root_node());
     walker.define(tree.root_node());
@@ -141,6 +148,141 @@ fn names_block(node: Node<'_>) -> bool {
             None => return false,
         }
     }
+}
+
+/// The variables read under `node`, by name (see [`variable_name`]): each of
+/// the grammar's variable nodes, a splat (`@p`) and one in a string among
+/// them. A command under it is a unit of its own, which reads its own
+/// variables and hands on what it prints, and an assignment nested in it
+/// holds its own value: the walk goes into neither, and reads a nested
+/// assignment as the variables it sets (`$a = $b = $k` reads `b`, which holds
+/// what `k` does).
+pub(crate) fn variables(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    unit::for_each_node_until(node, |inner| {
+        let nested = inner.id() != node.id();
+        match inner.kind() {
+            "variable" => {
+                names.extend(variable_name(unit::text(&inner, source)));
+                false
+            }
+            "command" if nested => false,
+            "assignment_expression" if nested => {
+                if let Some(left) = inner.named_child(0) {
+                    names.extend(variables(left, source));
+                }
+                false
+            }
+            _ => true,
+        }
+    });
+    names
+}
+
+/// The variable a variable node's text names, in lower case as PowerShell
+/// matches names, and without a scope: `$k`, `${K}`, `$script:k` and the
+/// splat `@k` all name `k`; `$env:k` names the environment drive, `env`.
+pub(crate) fn variable_name(text: &str) -> Option<String> {
+    const SCOPES: [&str; 5] = ["script", "global", "local", "private", "using"];
+    let name = text.strip_prefix(['$', '@'])?;
+    let name = name
+        .strip_prefix('{')
+        .and_then(|name| name.strip_suffix('}'))
+        .unwrap_or(name)
+        .to_ascii_lowercase();
+    let name = match name.split_once(':') {
+        Some((scope, rest)) if SCOPES.contains(&scope) => rest.to_string(),
+        Some((drive, _)) => drive.to_string(),
+        None => name,
+    };
+    (!name.is_empty()).then_some(name)
+}
+
+/// The parameters of `Set-Variable` and `New-Variable` that take a value,
+/// other than `-Name`.
+const SET_VARIABLE_VALUES: &[&str] = &[
+    "value",
+    "include",
+    "exclude",
+    "description",
+    "option",
+    "visibility",
+    "scope",
+];
+
+/// The parameters of `Get-Variable` that take a value, other than `-Name`.
+const GET_VARIABLE_VALUES: &[&str] = &["include", "exclude", "scope"];
+
+/// Whether `key` sets the variable it is given the name of: `Set-Variable`
+/// and `New-Variable`, by name or alias.
+fn sets_by_name(key: &str) -> bool {
+    matches!(key, "set-variable" | "sv" | "set" | "new-variable" | "nv")
+}
+
+/// The variables, in lower case, a cmdlet's arguments name as `names` (a
+/// parameter or a prefix of one) or by position: any word that is not a
+/// parameter or the value of one of `values`. A word the guard cannot take
+/// for a value is a name, so a name is not missed.
+fn named_variables(args: &[Arg], names: &[&str], values: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    // What the word after a parameter is: `Some(true)` a name, `Some(false)`
+    // another value, `None` a word by position.
+    let mut next = None;
+    for arg in args {
+        let param = arg
+            .known()
+            .and_then(|text| text.strip_prefix('-'))
+            .map(|param| param.trim_end_matches(':').to_ascii_lowercase());
+        match param.filter(|param| !param.is_empty()) {
+            Some(param) => {
+                next = if names.iter().any(|name| name.starts_with(&param)) {
+                    Some(true)
+                } else if values.iter().any(|value| value.starts_with(&param)) {
+                    Some(false)
+                } else {
+                    None
+                };
+            }
+            None => {
+                if next.take() != Some(false) {
+                    found.extend(arg.known().and_then(bare_variable));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// A variable's name as a cmdlet is given it (`k`, `+k` to add to it,
+/// `script:k`), in lower case and without its scope.
+fn bare_variable(text: &str) -> Option<String> {
+    variable_name(&format!("${}", text.trim_start_matches('+')))
+}
+
+/// The variables a PowerShell command whose key is `key` sets, in lower
+/// case: the name `Set-Variable` or `New-Variable` is given, by `-Name` or
+/// by position, and the one any cmdlet's `-OutVariable` (`-ov`, `-ov +k`,
+/// which adds to it) or `-PipelineVariable` (`-pv`) names, which holds what
+/// the command prints.
+pub(crate) fn variables_set(key: &str, args: &[Arg]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(param) = arg.known().and_then(|text| text.strip_prefix('-')) else {
+            continue;
+        };
+        let param = param.trim_end_matches(':').to_ascii_lowercase();
+        let output = matches!(param.as_str(), "ov" | "pv")
+            || (param.len() >= 4 && "outvariable".starts_with(&param))
+            || (param.len() >= 2 && "pipelinevariable".starts_with(&param));
+        if output {
+            names.extend(iter.next().and_then(Arg::known).and_then(bare_variable));
+        }
+    }
+    if sets_by_name(key) {
+        names.extend(named_variables(args, &["name"], SET_VARIABLE_VALUES));
+    }
+    names
 }
 
 /// Whether `node` is a splat (`@args`), however the grammar wraps it.
@@ -327,6 +469,11 @@ struct Walker<'a> {
     /// for the whole tree so that each `Stop-Process` reads only the nodes
     /// that lead to a listing.
     holds: HashSet<usize>,
+    /// What the line sets its variables to, where it shows it for certain.
+    variables: variables::Variables,
+    /// The variables set from a network stream (`$s = $tcp.GetStream()`),
+    /// whose `Write` sends what it is given.
+    streams: HashSet<String>,
 }
 
 impl Walker<'_> {
@@ -341,6 +488,7 @@ impl Walker<'_> {
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
             "pipeline" => {
+                self.split.statement();
                 let list = self.split.list_start();
                 let mut cursor = node.walk();
                 let mut at = 0;
@@ -366,9 +514,14 @@ impl Walker<'_> {
                 self.split.list_end(list);
             }
             "pipeline_chain" => {
+                self.split.statement();
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
                 let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                // The right side of an `&&` after a chain that is not one
+                // command runs when the chain succeeded, not when a `cd` in
+                // it did (`-not (Set-Location s) && …`).
+                let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
                 for (index, child) in stages.iter().enumerate() {
                     // A value that is piped on (`'DROP TABLE t' | psql`) is
                     // a stage that says it, as `Write-Output` would.
@@ -382,6 +535,9 @@ impl Walker<'_> {
                         _ => Stage { pipeline, index },
                     };
                     self.walk(*child, Some(stage), level + 1);
+                }
+                if !command {
+                    self.split.statement();
                 }
             }
             "command" => {
@@ -428,6 +584,14 @@ impl Walker<'_> {
                 // What a sub-expression in its arguments runs is handed to it.
                 self.split
                     .nest(own.clone(), own.end..self.split.units.len());
+                // What each reading sets: the name's own, and each
+                // command an alias may make it run.
+                for at in own.clone() {
+                    let key = self.split.units.get(at).and_then(Unit::key);
+                    if at == own.start || key.as_ref().is_some_and(|key| keys.contains(key)) {
+                        self.sets_variables(key.as_deref(), at);
+                    }
+                }
             }
             // `trap { … }`: its block runs on a terminating error, later.
             "trap_statement" => {
@@ -435,10 +599,12 @@ impl Walker<'_> {
                 self.children(node, stage, level);
                 self.split.end_later(began, false);
             }
+            // `foreach ($l in …) { … }`: the variable holds each item of what
+            // the collection runs prints, and the body runs once for each.
+            "foreach_statement" => self.foreach(node, stage, level),
             // A loop, or a function that is called more than once, runs
             // what it holds again with other values.
-            "foreach_statement" | "for_statement" | "while_statement" | "do_statement"
-            | "function_statement" => {
+            "for_statement" | "while_statement" | "do_statement" | "function_statement" => {
                 // A function named as a location cmdlet stands in for it.
                 if node.kind() == "function_statement" && self.names_location(node) {
                     self.split.lose_locations();
@@ -449,7 +615,11 @@ impl Walker<'_> {
             }
             // What a condition guards, or a `try` may stop short of, may not
             // run.
-            "if_statement" | "switch_statement" | "try_statement" => {
+            // `switch (…) { … }` runs a clause for each item of what its
+            // condition runs prints, or of the lines of the file `-File`
+            // names, which a clause reads as `$_` (or `$PSItem`).
+            "switch_statement" => self.switch(node, stage, level),
+            "if_statement" | "try_statement" => {
                 self.split.branches += 1;
                 self.children(node, stage, level);
                 self.split.branches -= 1;
@@ -458,20 +628,36 @@ impl Walker<'_> {
                 self.redirect(node);
                 self.children(node, None, level);
             }
+            "comparison_expression" | "comparison_argument_expression" => {
+                self.replace(node);
+                self.children(node, stage, level);
+            }
             "invokation_expression" => {
                 // A method call is no unit, and the rules know only some of
                 // them: `effect` cannot say what it does.
                 self.split.opaque();
-                self.dotnet(node);
-                // A hook's block, set by its method, runs later.
-                let later = blocks::sets_hook(node, self.source).then(|| self.split.begin_later());
+                let first = self.split.units.len();
+                let sends = self.dotnet(node, stage);
+                let own = first..self.split.units.len();
+                // A hook's block, set by its method, runs later, and so does
+                // a default parameter value.
+                let defaults = self.adds_default(node);
+                let later = (blocks::sets_hook(node, self.source) || defaults)
+                    .then(|| self.split.begin_later());
                 self.children(node, stage, level);
                 if let Some(began) = later {
                     self.split.end_later(began, false);
                 }
+                // What the call's object and arguments run is handed to the
+                // sender it stands for.
+                if sends {
+                    self.split
+                        .nest(own.clone(), own.end..self.split.units.len());
+                }
             }
             "assignment_expression" => {
                 blocks::hook(self.split, node, self.source);
+                let named_hook = self.session_member(node);
                 self.env_assignment(node);
                 // `[Environment]::CurrentDirectory = …` moves the process,
                 // whose folder a .NET call and a program the session starts
@@ -480,23 +666,109 @@ impl Walker<'_> {
                 {
                     self.moves_unknown(node);
                 }
-                // A hook's block runs later, when a command is looked up.
-                let later = blocks::assigned_member(node, self.source)
+                // A hook's block runs later, when a command is looked up; a
+                // default parameter value when its command runs; and a block
+                // held in a variable where the line uses the variable.
+                let defaults = self.sets_defaults(node);
+                let later = (blocks::assigned_member(node, self.source)
                     .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
-                    .then(|| self.split.begin_later());
+                    || named_hook
+                    || defaults
+                    || self.variables.runs_later(node))
+                .then(|| self.split.begin_later());
+                let first = self.split.units.len();
                 self.children(node, stage, level);
                 if let Some(began) = later {
                     self.split.end_later(began, false);
                 }
+                // `$k = Get-Content .env`: what the variables the left side
+                // names hold.
+                self.assigned(node, first);
             }
             _ => self.children(node, stage, level),
         }
     }
 
+    /// `foreach ($l in …) { … }`: the variable holds each item of what the
+    /// collection runs prints, and the body runs once for each. (Each of
+    /// these arms is a method of its own, so that the frame of
+    /// [`Self::walk`], which nests as deep as the tree, stays small.)
+    fn foreach(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.repeats += 1;
+        let mut names = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let first = self.split.units.len();
+            self.walk(child, stage, level + 1);
+            match child.kind() {
+                "variable" => {
+                    names = variable_name(unit::text(&child, self.source))
+                        .into_iter()
+                        .collect();
+                }
+                "statement_block" => {}
+                _ => {
+                    let uses = variables(child, self.source);
+                    self.hold(&names, first, uses);
+                }
+            }
+        }
+        self.split.repeats -= 1;
+    }
+
+    /// `switch (…) { … }`: a clause runs for each item of what the condition
+    /// runs prints, or of the lines of the file `-File` names (see
+    /// [`Self::switch_file`]), and reads it as `$_` (or `$PSItem`). What a
+    /// condition guards may not run.
+    fn switch(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.branches += 1;
+        self.split.repeats += 1;
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let first = self.split.units.len();
+            let condition = child.kind() == "switch_condition";
+            if condition {
+                self.switch_file(child);
+            }
+            self.walk(child, stage, level + 1);
+            if condition {
+                let uses = variables(child, self.source);
+                self.hold(&["_".to_string(), "psitem".to_string()], first, uses);
+            }
+        }
+        self.split.repeats -= 1;
+        self.split.branches -= 1;
+    }
+
+    /// An assignment whose value ran the units from `first` on: the
+    /// variables its left side names hold what they print, and what the
+    /// variables the value reads hold. Those are taken from the value's own
+    /// nodes: an assignment nested in it holds its own value, and is read as
+    /// its variable, so a chain (`$a = $b = …`) is read once and not again at
+    /// each level. A variable set from a value that opens a network stream
+    /// (`$s = $tcp.GetStream()`) is one.
+    fn assigned(&mut self, node: Node<'_>, first: usize) {
+        let Some(left) = node.named_child(0) else {
+            return;
+        };
+        let names = variables(left, self.source);
+        let mut cursor = node.walk();
+        let values: Vec<Node<'_>> = node.children_by_field_name("value", &mut cursor).collect();
+        let uses = values
+            .iter()
+            .flat_map(|value| variables(*value, self.source))
+            .collect();
+        self.hold(&names, first, uses);
+        if values.iter().any(|value| self.opens_stream(*value)) {
+            self.streams.extend(names);
+        }
+    }
+
     /// `$env:TF_CLI_ARGS = '-destroy'`: terraform reads the value as
-    /// arguments of its command, in any later line that runs it. A value
-    /// that is not a plain `=` of a string written out (`+=`, a variable) is
-    /// only known when it runs.
+    /// arguments of its command, in any later line that runs it, as `zip`
+    /// reads `$env:ZIPOPT` (and `$env:ZIP`) as options. A value that is not
+    /// a plain `=` of a string written out (`+=`, a variable) is only known
+    /// when it runs.
     fn env_assignment(&mut self, node: Node<'_>) {
         let Some(left) = node.named_child(0) else {
             return;
@@ -511,10 +783,15 @@ impl Walker<'_> {
             .get(..4)
             .filter(|head| head.eq_ignore_ascii_case("env:"))
             .and_then(|_| name.get(4..))
-            .and_then(unit::tf_cli_args_folded)
         else {
             return;
         };
+        let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
+        let terraform = unit::argument_variable(name);
+        if !zip && terraform.is_none() {
+            return;
+        }
+        let name = name.to_string();
         let right = node.child_by_field_name("value");
         let plain = right.is_some_and(|right| {
             self.source
@@ -536,13 +813,19 @@ impl Walker<'_> {
             }
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
-        self.split.tf_cli_args.push((name, value));
+        match terraform {
+            Some(name) => self.split.note_argument_variable(name, value),
+            None => {
+                self.split.zip_env.set(&name, &value, true);
+            }
+        }
     }
 
     /// `Set-Item env:TF_CLI_ARGS …`, `New-Item -Path Env:\TF_CLI_ARGS_apply
     /// …`: a variable terraform reads as arguments, set to a value the guard
     /// does not read, so a later `terraform apply` is only known when it
-    /// runs. A wildcard in the name may match one.
+    /// runs (also `env:ZIPOPT` and `env:ZIP` for `zip`). A wildcard in the
+    /// name may match one.
     fn env_item(&mut self, key: &str, args: &[Arg]) {
         if !matches!(key, "set-item" | "new-item" | "set-content" | "add-content") {
             return;
@@ -557,15 +840,17 @@ impl Walker<'_> {
                 continue;
             };
             let rest = rest.trim_start_matches(['\\', '/']);
-            let name = unit::tf_cli_args_folded(rest).or_else(|| {
+            let name = unit::argument_variable(rest).or_else(|| {
                 rest.contains(['*', '?', '['])
                     .then(|| "TF_CLI_ARGS".to_string())
             });
             if let Some(name) = name {
                 self.split
-                    .tf_cli_args
-                    .push((name, Arg::Unknown(text.to_string())));
+                    .note_argument_variable(name, Arg::Unknown(text.to_string()));
             }
+            self.split
+                .zip_env
+                .set(rest, &Arg::Unknown(text.to_string()), true);
         }
     }
 
@@ -595,12 +880,9 @@ impl Walker<'_> {
         }
         let value = self.expr(node);
         let program = Arg::Known("Write-Output".to_string());
-        self.split.push(Unit::new(
-            Shell::PowerShell,
-            program,
-            vec![value],
-            Some(stage),
-        ));
+        let mut unit = Unit::new(Shell::PowerShell, program, vec![value], Some(stage));
+        unit.names = Some(variables(node, self.source));
+        self.split.push(unit);
     }
 
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
@@ -995,6 +1277,11 @@ impl Walker<'_> {
             .map(|program| unit::key(program, Shell::PowerShell));
         // Whether the last word was a redirect operator alone (`1>`).
         let mut file_next = false;
+        // A parameter that ends in a `$`, as its start, its end and the index
+        // of its argument: what comes right after it is the rest of its word.
+        let mut dangling: Option<(usize, usize, usize)> = None;
+        // Where the element before ends, when no separator follows it.
+        let mut last_end: Option<usize> = None;
         let native = !program_key.as_deref().is_some_and(is_cmdlet);
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
@@ -1054,6 +1341,31 @@ impl Walker<'_> {
                     }
                 }
                 downloads |= self.downloads(element);
+                // `--execute=$(…)` and `--execute=${q}`: the grammar ends the
+                // parameter at its `$`, and the rest of the word is the next
+                // element. They are one word, which is only known when it
+                // runs.
+                if let Some((start, end, index)) = dangling.take() {
+                    if end == element.start_byte()
+                        && matches!(
+                            element.kind(),
+                            "parenthesized_expression" | "script_block_expression"
+                        )
+                    {
+                        let whole = self.source.get(start..element.end_byte());
+                        if let (Some(slot), Some(whole)) = (args.get_mut(index), whole) {
+                            *slot = joined_dollar(
+                                whole,
+                                end - start,
+                                element.kind() == "parenthesized_expression",
+                            );
+                        }
+                        continue;
+                    }
+                }
+                if element.kind() == "command_parameter" && ends_in_dollar(source) {
+                    dangling = Some((element.start_byte(), element.end_byte(), args.len()));
+                }
                 match element.kind() {
                     "command_argument_sep" => {
                         if unit::text(&element, self.source).contains(':') {
@@ -1073,14 +1385,23 @@ impl Walker<'_> {
                             );
                         }
                     }
-                    _ => self.push_element(
-                        &mut args,
-                        &mut shapes,
-                        element,
-                        program_key.as_deref(),
-                        false,
-                    ),
+                    _ => {
+                        // `Name, @{e=$b}`: the grammar reads a word with the
+                        // comma after it, and what follows is the next item
+                        // of the same list.
+                        let joined = last_end
+                            .and_then(|end| self.source.get(end..element.start_byte()))
+                            .is_some_and(|between| between.trim() == ",");
+                        self.push_element(
+                            &mut args,
+                            &mut shapes,
+                            element,
+                            program_key.as_deref(),
+                            joined,
+                        );
+                    }
                 }
+                last_end = (element.kind() != "command_argument_sep").then(|| element.end_byte());
             }
         }
         // Whether a `ForEach-Object` calls a method that stops a process on
@@ -1102,6 +1423,7 @@ impl Walker<'_> {
         let stage = stage.or(self.item);
         let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
+        unit.names = Some(self.command_variables(node, key.as_deref(), &unit.args));
         if let Some(key) = key.as_deref() {
             self.env_item(key, &unit.args);
         }
@@ -1754,7 +2076,8 @@ impl Walker<'_> {
         };
         let mut found = Vec::new();
         for (at, target) in targets.iter().enumerate() {
-            let Some(name) = target.and_then(|target| variable_name(target, self.source)) else {
+            let Some(name) = target.and_then(|target| scoped_variable_name(target, self.source))
+            else {
                 continue;
             };
             let value = values.get(at).copied();
@@ -1779,7 +2102,7 @@ impl Walker<'_> {
             if targets.contains(&Some(variable)) {
                 continue;
             }
-            let Some(name) = variable_name(variable, self.source) else {
+            let Some(name) = scoped_variable_name(variable, self.source) else {
                 continue;
             };
             if let Some(alias) = name.strip_prefix("alias:") {
@@ -2072,9 +2395,9 @@ impl Walker<'_> {
                 return true;
             }
             match takes.take() {
-                Some(true) => named_action = Some(is_script_block(element)),
+                Some(true) => named_action = Some(self.block(element)),
                 Some(false) => {}
-                None => positional.push(is_script_block(element)),
+                None => positional.push(self.block(element)),
             }
         }
         if let Some(block) = named_action {
@@ -2088,11 +2411,20 @@ impl Walker<'_> {
     /// and whether it follows a comma.
     fn shape(&self, node: Node<'_>, joined: bool) -> blocks::Shape {
         blocks::Shape {
-            block: is_script_block(node),
+            block: self.block(node),
             splat: is_splat(node, self.source),
             joined,
             listing: self.holds.contains(&node.id()),
+            plain: self.variables.inert(node, self.source),
         }
+    }
+
+    /// Whether `node` is a script block written out, or a variable the line
+    /// sets to one before it (`$sb = { … }; Invoke-Command $sb`): the block is
+    /// read where it is written.
+    fn block(&self, node: Node<'_>) -> bool {
+        is_script_block(node)
+            || self.variables.held(node, self.source) == Some(variables::Held::Block)
     }
 
     fn name(&self, node: Node<'_>) -> Arg {
@@ -2117,7 +2449,34 @@ impl Walker<'_> {
     fn expr(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         match node.kind() {
-            "generic_token" | "command_parameter" => Arg::Known(unescape(source)),
+            "generic_token" => match bare_expansion(source) {
+                None => Arg::Known(unescape(source)),
+                Some(runs) => Arg::Template {
+                    text: unescape(source),
+                    source: source.into(),
+                    runs,
+                },
+            },
+            "command_parameter" => match quoted_parameter(source) {
+                Some(Parameter {
+                    text,
+                    made,
+                    expands: None,
+                }) => {
+                    self.split.note_splitting(&made);
+                    Arg::Known(text)
+                }
+                Some(Parameter {
+                    text,
+                    expands: Some(runs),
+                    ..
+                }) => Arg::Template {
+                    text,
+                    source: source.into(),
+                    runs,
+                },
+                None => Arg::Unknown(source.to_string()),
+            },
             "integer_literal"
             | "decimal_integer_literal"
             | "hexadecimal_integer_literal"
@@ -2176,7 +2535,7 @@ impl Walker<'_> {
                     splits.extend(made);
                     value.push_str(&before);
                     if child.kind() != "variable" {
-                        return Arg::Unknown(source.to_string());
+                        return self.unknown_string(literal, source);
                     }
                     match self.variable(unit::text(&child, self.source)) {
                         // Inside a string `$null` is the empty string, so
@@ -2184,7 +2543,7 @@ impl Walker<'_> {
                         Arg::Null => nulls = true,
                         Arg::Known(text) => value.push_str(&text),
                         Arg::Unknown(_) | Arg::Template { .. } | Arg::Input => {
-                            return Arg::Unknown(source.to_string())
+                            return self.unknown_string(literal, source);
                         }
                     }
                     at = child.end_byte();
@@ -2216,6 +2575,61 @@ impl Walker<'_> {
             ),
             _ => Arg::Unknown(source.to_string()),
         }
+    }
+
+    /// A double-quoted string or here-string whose value is only known when
+    /// it runs, its text noted as a template (see [`Split::template`]).
+    fn unknown_string(&self, literal: Node<'_>, source: &str) -> Arg {
+        self.split.note_template(source, self.template(literal));
+        Arg::Unknown(source.to_string())
+    }
+
+    /// The text the expandable string or here-string `literal` holds, with
+    /// each variable and subexpression in it standing as `${}`, and whether
+    /// it holds a subexpression, which runs a command: `None` when it holds
+    /// anything else, or a `$` or backtick of its own (an escaped `` `$ ``, a
+    /// lone `$`), which a reader of the text would take for an expansion.
+    fn template(&self, literal: Node<'_>) -> Option<(String, bool)> {
+        let here = literal.kind() == "expandable_here_string_literal";
+        let quotes = if here { 2 } else { 1 };
+        let start = literal.start_byte() + quotes;
+        let end = literal.end_byte().saturating_sub(quotes).max(start);
+        let mut text = String::new();
+        let mut runs = false;
+        let mut at = start;
+        let mut cursor = literal.walk();
+        let plain = |part: &str, text: &mut String| {
+            let (part, _) = unescape_expandable(part);
+            let part = if here {
+                part
+            } else {
+                part.replace("\"\"", "\"")
+            };
+            if part.contains(['$', '`']) {
+                return false;
+            }
+            text.push_str(&part);
+            true
+        };
+        for child in literal.named_children(&mut cursor) {
+            if !matches!(child.kind(), "variable" | "sub_expression")
+                || !plain(self.source.get(at..child.start_byte())?, &mut text)
+            {
+                return None;
+            }
+            runs |= child.kind() == "sub_expression";
+            text.push_str("${}");
+            at = child.end_byte();
+        }
+        if !plain(self.source.get(at..end)?, &mut text) {
+            return None;
+        }
+        let text = if here {
+            text.trim_matches(['\r', '\n']).to_string()
+        } else {
+            text
+        };
+        Some((text, runs))
     }
 
     /// A word after `--%` with each `%NAME%` in it put in: a variable that
@@ -2328,15 +2742,249 @@ impl Walker<'_> {
         Arg::Known(value.to_string())
     }
 
+    /// Note that each of `names` holds what the units from `first` on print
+    /// and what the variables `uses` hold, for the rule that follows a
+    /// secret into a variable (`$k = Get-Content .env`).
+    fn hold(&mut self, names: &[String], first: usize, uses: Vec<String>) {
+        let inside = first..self.split.units.len();
+        for name in names {
+            self.split.assign_uses(name, inside.clone(), uses.clone());
+        }
+    }
+
+    /// The variables a command's arguments read (see [`variables`]). `Get-Variable`
+    /// prints what the variables it names hold, so it reads them too; one
+    /// given no name, or a wildcard, prints every variable, which is any the
+    /// line has set so far.
+    fn command_variables(&self, node: Node<'_>, key: Option<&str>, args: &[Arg]) -> Vec<String> {
+        let mut names = node
+            .child_by_field_name("command_elements")
+            .map(|elements| variables(elements, self.source))
+            .unwrap_or_default();
+        if matches!(key, Some("get-variable" | "gv")) {
+            let given = named_variables(args, &["name"], GET_VARIABLE_VALUES);
+            if given.is_empty() || given.iter().any(|name| unit::pattern(name)) {
+                names.extend(self.split.assigned.iter().map(|one| one.name.clone()));
+            }
+            names.extend(given);
+        }
+        names
+    }
+
+    /// Note what the variables a command sets hold, the command being the
+    /// unit at `at`: what it prints for `-OutVariable` and
+    /// `-PipelineVariable`, and what its value runs and reads for
+    /// `Set-Variable` and `New-Variable` (`Set-Variable k (gc .env)`,
+    /// `Set-Variable k $j`). What a pipeline hands them is followed by the
+    /// rule (`sets` in `detect/send.rs`).
+    fn sets_variables(&mut self, key: Option<&str>, at: usize) {
+        let Some(unit) = self.split.units.get(at) else {
+            return;
+        };
+        let names = variables_set(key.unwrap_or_default(), &unit.args);
+        if names.is_empty() {
+            return;
+        }
+        let uses = if key.is_some_and(sets_by_name) {
+            unit.variables()
+        } else {
+            Vec::new()
+        };
+        self.hold(&names, at, uses);
+    }
+
+    /// `switch -File f`: the lines of `f`, read as a `Get-Content` of it. The
+    /// grammar keeps the file as text, so the command is read again from it
+    /// (`"$HOME\.ssh\id_rsa"` is a string the reader resolves), as a script
+    /// one level deeper, which counts against the budget of what is read
+    /// again.
+    fn switch_file(&mut self, condition: Node<'_>) {
+        let Some(file) = condition
+            .named_child(0)
+            .filter(|child| child.kind() == "switch_filename")
+        else {
+            return;
+        };
+        let text = unit::text(&file, self.source).trim();
+        if text.is_empty() {
+            return;
+        }
+        let command = format!("Get-Content {text}");
+        unit::script_in(
+            self.split,
+            &command,
+            Shell::PowerShell,
+            self.depth + 1,
+            true,
+        );
+    }
+
+    /// Whether `node` opens a network stream: it calls `GetStream()`
+    /// somewhere (`$tcp.GetStream()`, `[Net.Security.SslStream]::new(
+    /// $tcp.GetStream())`), short of an assignment nested in it, which is
+    /// read on its own.
+    fn opens_stream(&self, node: Node<'_>) -> bool {
+        let mut found = false;
+        unit::for_each_node_until(node, |inner| {
+            if found || (inner.id() != node.id() && inner.kind() == "assignment_expression") {
+                return false;
+            }
+            if inner.kind() == "member_name" {
+                found = unit::text(&inner, self.source).eq_ignore_ascii_case("getstream");
+            }
+            !found
+        });
+        found
+    }
+
+    /// Whether the object of a method call is a network stream: one opened
+    /// in it, or a variable set from one.
+    fn is_stream(&self, object: Node<'_>) -> bool {
+        if object.kind() == "variable" {
+            return variable_name(unit::text(&object, self.source))
+                .is_some_and(|name| self.streams.contains(&name));
+        }
+        self.opens_stream(object)
+    }
+
+    /// The arguments a method call is given, as the guard reads each;
+    /// `children` are the call's parts.
+    fn call_arguments(&self, children: &[Node<'_>]) -> Vec<Arg> {
+        let Some(list) = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .and_then(|list| list.named_child(0))
+        else {
+            return Vec::new();
+        };
+        let mut cursor = list.walk();
+        list.named_children(&mut cursor)
+            .map(|mut argument| {
+                // The grammar wraps an argument in a chain of one-child nodes.
+                while argument.kind().ends_with("argument_expression")
+                    && argument.named_child_count() == 1
+                {
+                    match argument.named_child(0) {
+                        Some(inner) => argument = inner,
+                        None => break,
+                    }
+                }
+                self.expr(argument)
+            })
+            .collect()
+    }
+
+    /// A .NET call that reads a secret or sends what it is given: it is
+    /// judged as the cmdlet that does the same. A read of a file
+    /// (`[IO.File]::ReadAllText('.env')`, a reader or stream opened on it,
+    /// `[IO.StreamReader]::new('.env')`) is a `Get-Content` of it, a read of
+    /// the environment (`[Environment]::GetEnvironmentVariables()`) a
+    /// `Get-ChildItem env:`, an upload (`$wc.UploadFile(url, f)`,
+    /// `$wc.UploadString(url, $b)`, `$client.PostAsync(url, $content)`, a
+    /// `Write` on a network stream) an `Invoke-RestMethod` that posts each
+    /// argument, a file for `UploadFile` and a body for the others, and a
+    /// request (`$wc.DownloadString(url)`, `$client.GetAsync(url)`,
+    /// `[Net.WebRequest]::Create(url)`) an `Invoke-WebRequest` of its
+    /// arguments, whose address can carry a secret. Whether it sends is
+    /// returned: what its object and arguments run is then handed to it.
+    fn secret_call(&mut self, method: &str, children: &[Node<'_>], stage: Option<Stage>) -> bool {
+        let names = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .map(|list| variables(*list, self.source))
+            .unwrap_or_default();
+        let unit = |program: &str, args: Vec<Arg>| {
+            let mut unit = Unit::new(
+                Shell::PowerShell,
+                Arg::Known(program.to_string()),
+                args,
+                stage,
+            );
+            unit.names = Some(names.clone());
+            unit
+        };
+        let known = |text: &str| Arg::Known(text.to_string());
+        // The type a static method is called on (`[IO.File]`), as written.
+        let type_name = children
+            .first()
+            .filter(|object| object.kind() == "type_literal")
+            .map(|object| {
+                unit::text(object, self.source)
+                    .trim_matches(['[', ']'])
+                    .to_ascii_lowercase()
+            })
+            .unwrap_or_default();
+        let opens_file = method == "new"
+            && ["streamreader", "filestream", "fileinfo"]
+                .iter()
+                .any(|kind| type_name.ends_with(kind));
+        let mut arguments = self.call_arguments(children);
+        let mut sends = false;
+        if READS_FILE.contains(&method) || opens_file {
+            if let Some(path) = arguments.first() {
+                self.split.push(unit("Get-Content", vec![path.clone()]));
+            }
+            // `$wc.OpenRead(url)` is also a request.
+            if !method.starts_with("openread") || type_name.ends_with("file") {
+                return false;
+            }
+        }
+        let requests = !arguments.is_empty()
+            && (REQUESTS.contains(&method)
+                || (matches!(method, "create" | "createhttp" | "createdefault")
+                    && type_name.ends_with("webrequest")));
+        let parameter = if UPLOADS_FILE.contains(&method) {
+            Some("-InFile")
+        } else if UPLOADS_DATA.contains(&method)
+            || (WRITES.contains(&method) && children.first().is_some_and(|o| self.is_stream(*o)))
+        {
+            Some("-Body")
+        } else {
+            None
+        };
+        match method {
+            // One variable is what `Get-ChildItem env:NAME` lists; a name
+            // only known when it runs may be any of them.
+            "getenvironmentvariables" | "getenvironmentvariable" => {
+                let name = arguments
+                    .first()
+                    .and_then(Arg::known)
+                    .filter(|_| method == "getenvironmentvariable");
+                let drive = format!("env:{}", name.unwrap_or_default());
+                self.split
+                    .push(unit("Get-ChildItem", vec![Arg::Known(drive)]));
+            }
+            _ if requests => {
+                self.split
+                    .push(unit("Invoke-WebRequest", std::mem::take(&mut arguments)));
+                sends = true;
+            }
+            _ => {
+                if let Some(parameter) = parameter {
+                    let mut args = vec![known("-Method"), known("Post")];
+                    for argument in arguments {
+                        args.push(known(parameter));
+                        args.push(argument);
+                    }
+                    self.split.push(unit("Invoke-RestMethod", args));
+                    sends = true;
+                }
+            }
+        }
+        sends
+    }
+
     /// A .NET method call that changes files or the system
     /// (`[IO.Directory]::Delete(…)`, `(Get-Item ~).Delete()`): its arguments
     /// are expressions the guard does not resolve, so the call is risky
-    /// wherever it points.
-    fn dotnet(&mut self, node: Node<'_>) {
+    /// wherever it points. A call that reads a secret or sends is judged as
+    /// the cmdlet that does the same (see [`Self::secret_call`]), and whether
+    /// it sends is returned.
+    fn dotnet(&mut self, node: Node<'_>, stage: Option<Stage>) -> bool {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         let Some(member) = children.iter().find(|child| child.kind() == "member_name") else {
-            return;
+            return false;
         };
         // A name only known when it runs (`.$m(…)`, `."Invoke$x"(…)`,
         // `.($m)(…)`) may be any method, `InvokeScript` and `Delete` among
@@ -2347,12 +2995,57 @@ impl Walker<'_> {
                 "calls a method only known when it runs",
                 Some(unit::text(&node, self.source)),
             );
-            return;
+            return false;
         };
+        let sends = self.secret_call(&method, &children, stage);
+        // A member of the session reached by a way the guard cannot name
+        // (`$ExecutionContext.InvokeCommand.psobject.…`) may be a hook or a
+        // method that runs code.
+        if children
+            .first()
+            .is_some_and(|object| self.variables.reaches_session(*object, self.source))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "calls a member of the session only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        // `$x.GetType().GetProperty('CommandNotFoundAction').SetValue($x, $b)`:
+        // a hook named as text, on any object.
+        if children
+            .first()
+            .is_some_and(|object| blocks::names_hook(*object, self.source))
+            && !blocks::any_argument(&children, blocks::written)
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a hook that runs a script block only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        // `.Where($b)` and `.ForEach($b)` run a block on each item.
+        if matches!(method.as_str(), "where" | "foreach")
+            && blocks::first_argument(&children)
+                .is_some_and(|first| !self.variables.inert(first, self.source))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "runs a script block only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
         let object = children
             .first()
             .map(|object| unit::text(object, self.source).to_ascii_lowercase())
             .unwrap_or_default();
+        // `$t::Create(…)`: a type only known when it runs may be
+        // `[scriptblock]`.
+        let mut cursor = node.walk();
+        let unknown_type = node.children(&mut cursor).any(|child| child.kind() == "::")
+            && children
+                .first()
+                .is_some_and(|object| blocks::unwrap(*object).kind() != "type_literal");
         // A type that touches the file system, registry or network: only
         // then is a generic method (`Copy`, `Open`, `Replace`) a file write,
         // not a string or list method.
@@ -2369,52 +3062,251 @@ impl Walker<'_> {
         .any(|kind| object.contains(kind));
         blocks::hook_call(self.split, &method, &children, node, self.source);
         if self.location_call(&method, &object, node, &children) {
-            return;
+            return sends;
         }
         // A method that stops a process, called on it (`.Kill()`). The
         // array's `.ForEach('Kill')` is a line the grammar does not read.
         if blocks::stops_process(&method) {
             self.stop_call(node, &children);
-            return;
+            return sends;
         }
         // Code built from text, or run from it: the guard reads the text
         // when it is written out, and the call is risky wherever it points.
         if matches!(
             method.as_str(),
             "newscriptblock" | "invokescript" | "expandstring"
-        ) || (method == "create" && object.contains("scriptblock"))
+        ) || (method == "create" && (object.contains("scriptblock") || unknown_type))
         {
             self.split.problem(
                 Rule::Unknown,
                 "builds or runs code the guard does not read",
                 Some(unit::text(&node, self.source)),
             );
+            // Code built from a download runs what it downloads.
+            if children
+                .iter()
+                .find(|child| child.kind() == "argument_list")
+                .is_some_and(|list| self.downloads(*list))
+            {
+                self.split.problem(
+                    Rule::RunDownloaded,
+                    "runs a downloaded script",
+                    Some(unit::text(&node, self.source)),
+                );
+            }
             if let Some(Arg::Known(code)) = blocks::first_string(&children).map(|n| self.string(n))
             {
                 unit::script(self.split, &code, Shell::PowerShell, self.depth + 1);
             }
-            return;
+            return sends;
         }
         // `[Environment]::SetEnvironmentVariable('TF_CLI_ARGS', …)`: a name
         // terraform reads as arguments, or one only known when it runs, set
         // to a value the guard does not read.
         if method == "setenvironmentvariable" {
-            let name = match blocks::first_string(&children).map(|name| self.string(name)) {
-                Some(Arg::Known(name)) => unit::tf_cli_args_folded(&name),
+            let named = blocks::first_string(&children).map(|name| self.string(name));
+            if let Some(Arg::Known(name)) = &named {
+                let value = Arg::Unknown(unit::text(&node, self.source).to_string());
+                self.split.zip_env.set(name, &value, true);
+            }
+            let name = match named {
+                Some(Arg::Known(name)) => unit::argument_variable(&name),
                 _ => Some("TF_CLI_ARGS".to_string()),
             };
             if let Some(name) = name {
-                self.split.tf_cli_args.push((
+                self.split.note_argument_variable(
                     name,
                     Arg::Unknown(unit::text(&node, self.source).to_string()),
-                ));
+                );
             }
         }
-        let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) else {
-            return;
+        if let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) {
+            self.split
+                .problem(rule, reason, Some(unit::text(&node, self.source)));
+        }
+        sends
+    }
+
+    /// `$ExecutionContext.InvokeCommand.$h = $b`, `….psobject.Properties[…]
+    /// .Value = $b`: a member of the session set by a way the guard cannot
+    /// name may be a hook, whose block runs for every command. A hook named
+    /// as text (`$x.psobject.Properties['CommandNotFoundAction'].Value =
+    /// $b`) is the hook on any object. True when the assignment sets such a
+    /// hook, whose block runs later.
+    fn session_member(&mut self, node: Node<'_>) -> bool {
+        let Some(target) = blocks::assigned_target(node) else {
+            return false;
         };
-        self.split
-            .problem(rule, reason, Some(unit::text(&node, self.source)));
+        if self.variables.reaches_session(target, self.source) {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a member of the session only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        if !blocks::names_hook(target, self.source) {
+            return false;
+        }
+        if !node
+            .child_by_field_name("value")
+            .is_some_and(blocks::written)
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a hook that runs a script block only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        true
+    }
+
+    /// Whether an assignment sets `$PSDefaultParameterValues` or one of its
+    /// entries, which give a command a parameter it runs with: a block for
+    /// `Invoke-Command:ScriptBlock` runs where the command does. A value that
+    /// may be a block only known when it runs is unknown, unless its key is
+    /// written out and names a parameter that never takes one (see
+    /// [`blocks::plain_default`]).
+    fn sets_defaults(&mut self, node: Node<'_>) -> bool {
+        let Some(left) = node.named_child(0) else {
+            return false;
+        };
+        let defaults = variables::root_is(left, self.source, "psdefaultparametervalues");
+        let unread = || {
+            let Some(value) = node.child_by_field_name("value") else {
+                return true;
+            };
+            // `$PSDefaultParameterValues['*:Encoding'] = $enc`
+            if let Some(key) = blocks::assigned_key(left) {
+                return !blocks::plain_default(key, self.source)
+                    && !self.variables.inert(value, self.source);
+            }
+            // `$PSDefaultParameterValues = @{ '*:Encoding' = $enc }`
+            let table = blocks::unwrap(value);
+            if table.kind() == "hash_literal_expression" {
+                let Some(body) = table.named_child(0) else {
+                    return false;
+                };
+                let mut cursor = body.walk();
+                let unread = body.named_children(&mut cursor).any(|entry| {
+                    let mut cursor = entry.walk();
+                    let parts: Vec<Node<'_>> = entry.named_children(&mut cursor).collect();
+                    let key = parts.first().and_then(|key| key.named_child(0));
+                    let value = parts
+                        .last()
+                        .filter(|value| value.kind() != "key_expression");
+                    entry.kind() != "hash_entry"
+                        || !value.is_some_and(|value| {
+                            key.is_some_and(|key| blocks::plain_default(key, self.source))
+                                || self.variables.inert(*value, self.source)
+                        })
+                });
+                return unread;
+            }
+            !self.variables.inert(value, self.source)
+        };
+        if defaults && unread() {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a default parameter value only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        defaults
+    }
+
+    /// Whether a method call adds an entry to `$PSDefaultParameterValues`
+    /// (`.Add(key, value)`, `.set_Item(key, value)`); as for an assignment
+    /// (see [`Self::sets_defaults`]), a value that may be a block only known
+    /// when it runs is unknown.
+    fn adds_default(&mut self, node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        let Some(object) = children.first() else {
+            return false;
+        };
+        if !variables::root_is(*object, self.source, "psdefaultparametervalues") {
+            return false;
+        }
+        let method = children
+            .iter()
+            .find(|child| child.kind() == "member_name")
+            .and_then(|member| blocks::called(*member, self.source));
+        if !matches!(method.as_deref(), Some("add" | "set_item")) {
+            return false;
+        }
+        let values = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .and_then(|list| list.named_child(0));
+        let unread = values.is_some_and(|values| {
+            let mut cursor = values.walk();
+            let mut values = values.named_children(&mut cursor);
+            // `.Add('*:Encoding', $enc)`
+            if values
+                .next()
+                .is_some_and(|key| blocks::plain_default(key, self.source))
+            {
+                return false;
+            }
+            values.any(|value| !self.variables.inert(value, self.source))
+        });
+        if unread {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a default parameter value only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        true
+    }
+
+    /// `'a' -replace 'a', $b`: since PowerShell 6 a replacement may be a
+    /// script block, which runs for each match. One that is not text, a
+    /// number or a block written out may be a block only known when it runs,
+    /// and so may a right side that is not a list written out (`-replace
+    /// $pair`, which may hold a pattern and a block). `-split` takes a block
+    /// as its delimiter, first in its list (`'a,b' -split $b, 2`), and runs
+    /// it for each character.
+    fn replace(&mut self, node: Node<'_>) {
+        let mut cursor = node.walk();
+        let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in children.iter().enumerate() {
+            if child.kind() != "comparison_operator" {
+                continue;
+            }
+            let operator = unit::text(child, self.source).to_ascii_lowercase();
+            let split = matches!(operator.as_str(), "-split" | "-isplit" | "-csplit");
+            if !split && !matches!(operator.as_str(), "-replace" | "-ireplace" | "-creplace") {
+                continue;
+            }
+            let Some(right) = children.iter().skip(at + 1).find(|next| next.is_named()) else {
+                continue;
+            };
+            let right = blocks::unwrap(*right);
+            let unread = if right.kind() == "array_literal_expression" {
+                // The pattern of `-replace` is never run; every other value
+                // may be the block.
+                let mut cursor = right.walk();
+                let unread = right
+                    .named_children(&mut cursor)
+                    .skip(usize::from(!split))
+                    .any(|value| !self.variables.inert(value, self.source));
+                unread
+            } else {
+                !self.variables.inert(right, self.source)
+            };
+            if unread {
+                self.split.problem(
+                    Rule::Unknown,
+                    if split {
+                        "splits text with a script block only known when it runs"
+                    } else {
+                        "replaces text with a script block only known when it runs"
+                    },
+                    Some(unit::text(&node, self.source)),
+                );
+            }
+        }
     }
 
     /// A redirect to a file: `>`, `>>`, `2>`, `*>`. A merge (`2>&1`) writes
@@ -2446,6 +3338,84 @@ impl Walker<'_> {
     }
 }
 
+/// The .NET methods that read a file they are given by name: `[IO.File]`'s
+/// reads and opens.
+const READS_FILE: [&str; 11] = [
+    "readalltext",
+    "readalllines",
+    "readallbytes",
+    "readlines",
+    "openread",
+    "opentext",
+    "readalltextasync",
+    "readalllinesasync",
+    "readallbytesasync",
+    "readlinesasync",
+    "openreadasync",
+];
+
+/// The .NET methods that make a request of an address they are given:
+/// `Net.WebClient`'s downloads and opens, and `HttpClient`'s gets and
+/// deletes. The address can carry a secret (`https://x/?k=$k`).
+const REQUESTS: [&str; 22] = [
+    "downloadstring",
+    "downloadstringasync",
+    "downloadstringtaskasync",
+    "downloaddata",
+    "downloaddataasync",
+    "downloaddatataskasync",
+    "downloadfile",
+    "downloadfileasync",
+    "downloadfiletaskasync",
+    "openread",
+    "openreadasync",
+    "openreadtaskasync",
+    "openwrite",
+    "openwriteasync",
+    "openwritetaskasync",
+    "getasync",
+    "getstringasync",
+    "getbytearrayasync",
+    "getstreamasync",
+    "getfromjsonasync",
+    "deleteasync",
+    "deletefromjsonasync",
+];
+
+/// The methods that write what they are given to a stream: on a network
+/// stream (see [`Walker::is_stream`]), they send it.
+const WRITES: [&str; 5] = [
+    "write",
+    "writeasync",
+    "writebyte",
+    "writeline",
+    "writelineasync",
+];
+
+/// The .NET methods that upload a file they are given by name:
+/// `Net.WebClient`'s `UploadFile`.
+const UPLOADS_FILE: [&str; 3] = ["uploadfile", "uploadfileasync", "uploadfiletaskasync"];
+
+/// The .NET methods that send data they are given: `Net.WebClient`'s
+/// uploads, `HttpClient`'s posts, a socket's or a mail client's sends.
+const UPLOADS_DATA: [&str; 15] = [
+    "uploaddata",
+    "uploaddataasync",
+    "uploaddatataskasync",
+    "uploadstring",
+    "uploadstringasync",
+    "uploadstringtaskasync",
+    "uploadvalues",
+    "uploadvaluesasync",
+    "uploadvaluestaskasync",
+    "postasync",
+    "putasync",
+    "patchasync",
+    "sendasync",
+    "send",
+    "sendmailasync",
+];
+
 /// The id in `[System.Diagnostics.Process]::GetProcessById(1234)`, when the
 /// text is exactly that call (or the same with the namespace left out) and
 /// the id is written out in digits.
@@ -2468,7 +3438,7 @@ fn process_by_id(text: &str) -> Option<String> {
 /// `ForEach-Object` calls when it is given the method's name.
 fn dotnet_rule(method: &str, object: &str, file_like: bool) -> Option<(Rule, &'static str)> {
     Some(match method {
-        "invoke" | "invokereturnasis" | "invokewithcontext" => {
+        "invoke" | "invokereturnasis" | "invokewithcontext" | "begininvoke" | "invokeasync" => {
             (Rule::Unknown, "invokes code the guard does not read")
         }
         "delete" | "moveto" | "deletesubkey" | "deletesubkeytree" | "deletevalue" => {
@@ -2625,6 +3595,36 @@ fn attach_colon(args: &mut [Arg]) {
 }
 
 /// PowerShell's escape character is the backtick: `` `$ `` is `$`.
+/// Whether a bare word holds an expansion PowerShell puts its value in, in
+/// argument mode as in a double-quoted string (`of=$d`, `x${d}`,
+/// `x$($d)`): `Some(true)` when one runs a command, `None` when there is
+/// none. A `$` after a backtick or inside single quotes is text, and so is
+/// one that starts no name (`a$`, `$:`).
+fn bare_expansion(source: &str) -> Option<bool> {
+    let mut found = None;
+    let mut single = false;
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => single = !single,
+            '`' if !single => {
+                chars.next();
+            }
+            '$' if !single => match chars.peek() {
+                Some('(') => return Some(true),
+                Some(&next)
+                    if next.is_alphanumeric() || matches!(next, '_' | '{' | '?' | '^' | '$') =>
+                {
+                    found = Some(false);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    found
+}
+
 fn unescape(text: &str) -> String {
     let mut value = String::with_capacity(text.len());
     let mut chars = text.chars();
@@ -2638,6 +3638,207 @@ fn unescape(text: &str) -> String {
         }
     }
     value
+}
+
+/// What a parameter word is (`--execute='DROP TABLE t'`,
+/// `--command="… $t"`, `--command=$q`): PowerShell hands a native program the
+/// word with its quotes taken off, `--execute=DROP TABLE t`, a single-quoted
+/// part as it is written, and a double-quoted part and the rest as
+/// expandable text, whose variables and subexpressions it puts in. The
+/// grammar keeps the word whole, so it is read here.
+struct Parameter {
+    /// The text, each expansion in it standing as `${}`.
+    text: String,
+    /// What a `` `u{…} `` made, as for [`unescape_expandable`].
+    made: Vec<char>,
+    /// Whether it holds an expansion, and then whether one of them runs a
+    /// command (`$(…)`).
+    expands: Option<bool>,
+}
+
+/// The parameter word `source` read (see [`Parameter`]). `None` when a quote
+/// or an expansion is never closed, or when it holds an expansion and a `$`
+/// or backtick of its own, which a reader of its text would take for one.
+fn quoted_parameter(source: &str) -> Option<Parameter> {
+    if !source.contains(['\'', '"', '$']) {
+        return Some(Parameter {
+            text: unescape(source),
+            made: Vec::new(),
+            expands: None,
+        });
+    }
+    let mut text = String::new();
+    let mut made = Vec::new();
+    let mut expands: Option<bool> = None;
+    // Whether the text holds a `$` or a backtick that is no expansion.
+    let mut odd = false;
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '`' => {
+                let next = chars.next();
+                odd |= matches!(next, Some('$' | '`'));
+                text.extend(next);
+            }
+            '$' => match expansion(&mut chars)? {
+                Dollar::Itself => {
+                    odd = true;
+                    text.push('$');
+                }
+                Dollar::Variable => {
+                    text.push_str("${}");
+                    expands = expands.or(Some(false));
+                }
+                Dollar::Runs => {
+                    text.push_str("${}");
+                    expands = Some(true);
+                }
+            },
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' if chars.peek() == Some(&'\'') => {
+                        chars.next();
+                        text.push('\'');
+                    }
+                    '\'' => break,
+                    c => {
+                        odd |= matches!(c, '$' | '`');
+                        text.push(c);
+                    }
+                }
+            },
+            '"' => {
+                // The plain text since the last expansion, read with its
+                // backticks when the expansion or the closing quote ends it.
+                let mut inner = String::new();
+                let mut plain = |inner: &mut String, text: &mut String, odd: &mut bool| {
+                    let (part, splits) = unescape_expandable(inner);
+                    *odd |= part.contains(['$', '`']);
+                    text.push_str(&part);
+                    made.extend(splits);
+                    inner.clear();
+                };
+                loop {
+                    match chars.next()? {
+                        '`' => {
+                            inner.push('`');
+                            inner.push(chars.next()?);
+                        }
+                        '"' if chars.peek() == Some(&'"') => {
+                            chars.next();
+                            inner.push('"');
+                        }
+                        '"' => break,
+                        '$' => match expansion(&mut chars)? {
+                            Dollar::Itself => inner.push('$'),
+                            Dollar::Variable => {
+                                plain(&mut inner, &mut text, &mut odd);
+                                text.push_str("${}");
+                                expands = expands.or(Some(false));
+                            }
+                            Dollar::Runs => {
+                                plain(&mut inner, &mut text, &mut odd);
+                                text.push_str("${}");
+                                expands = Some(true);
+                            }
+                        },
+                        c => inner.push(c),
+                    }
+                }
+                plain(&mut inner, &mut text, &mut odd);
+            }
+            c => text.push(c),
+        }
+    }
+    if expands.is_some() && odd {
+        return None;
+    }
+    Some(Parameter {
+        text,
+        made,
+        expands,
+    })
+}
+
+/// Whether the parameter word `source` ends in a `$` that is not escaped,
+/// where the grammar ends it before a `(` or `{`.
+fn ends_in_dollar(source: &str) -> bool {
+    let Some(head) = source.strip_suffix('$') else {
+        return false;
+    };
+    head.chars().rev().take_while(|c| *c == '`').count() % 2 == 0
+}
+
+/// The parameter word `whole` that the grammar split after its `$`, at
+/// `split` (`--execute=$(gc x.sql)`, `--execute=${q}`): a template whose
+/// last expansion runs a command when `runs`, or only known when it runs.
+fn joined_dollar(whole: &str, split: usize, runs: bool) -> Arg {
+    let head = whole.get(..split.saturating_sub(1)).unwrap_or_default();
+    match quoted_parameter(head) {
+        Some(Parameter {
+            mut text, expands, ..
+        }) if expands.is_some() || !text.contains(['$', '`']) => {
+            text.push_str("${}");
+            Arg::Template {
+                text,
+                source: whole.into(),
+                runs: runs || expands == Some(true),
+            }
+        }
+        _ => Arg::Unknown(whole.to_string()),
+    }
+}
+
+/// What a `$` starts in a parameter word.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dollar {
+    /// A subexpression (`$(…)`), which runs a command.
+    Runs,
+    /// A variable: `$q`, `${q}`, `$env:Q`.
+    Variable,
+    /// Nothing: the `$` is itself.
+    Itself,
+}
+
+/// What the `$` just read starts in a parameter word, read past it. `None`
+/// when a subexpression or `${` is never closed.
+fn expansion(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<Dollar> {
+    match chars.peek() {
+        Some('(') => {
+            let mut depth = 0usize;
+            loop {
+                match chars.next()? {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            return Some(Dollar::Runs);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some('{') => loop {
+            if chars.next()? == '}' {
+                return Some(Dollar::Variable);
+            }
+        },
+        Some(c) if c.is_alphanumeric() || matches!(c, '_' | '?' | '^' | '$') => {
+            let special = matches!(c, '?' | '^' | '$');
+            chars.next();
+            if !special {
+                while chars
+                    .peek()
+                    .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | ':'))
+                {
+                    chars.next();
+                }
+            }
+            Some(Dollar::Variable)
+        }
+        _ => Some(Dollar::Itself),
+    }
 }
 
 /// What a backtick makes of the text in an expandable string or here-string:
@@ -3161,9 +4362,10 @@ fn left_variables(left: Node<'_>) -> Vec<Node<'_>> {
     }
 }
 
-/// A variable's name, in lower case, without its `$` or braces
-/// (`${function:x}` is `function:x`).
-fn variable_name(node: Node<'_>, source: &str) -> Option<String> {
+/// A variable's name, in lower case, without its `$` or braces but with
+/// its scope or drive (`${function:x}` is `function:x`); [`variable_name`]
+/// drops them.
+fn scoped_variable_name(node: Node<'_>, source: &str) -> Option<String> {
     let name = unit::text(&node, source).trim().to_ascii_lowercase();
     name.strip_prefix("${")
         .and_then(|rest| rest.strip_suffix('}'))

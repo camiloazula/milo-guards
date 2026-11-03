@@ -8,6 +8,11 @@
 //! show (a file, `psql -f`, `< seed.sql`, a stage the rule does not read) may
 //! drop anything, and are risky. A client in a container or on another
 //! machine (`docker exec`, `kubectl exec`, `ssh`) is read as the client.
+//!
+//! A client also writes the files its commands name (`\o FILE`, `.output
+//! FILE`, `COPY … TO 'FILE'`), judged as any write, and runs programs (`\!
+//! ls`, `.shell ls`): a command line the text shows is read as a line of its
+//! own and judged by every rule, and one it does not show is `unknown`.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -19,7 +24,7 @@ use crate::{Rule, Shell};
 
 mod reader;
 
-use reader::{Dialect, Reading};
+use reader::{Acts, Dialect, Program, Reading};
 
 /// How a client takes its statements on the command line.
 struct Client {
@@ -46,9 +51,17 @@ struct Client {
     short_file: &'static str,
     /// Long options whose value is a file of statements (`--file`).
     long_file: &'static [&'static str],
-    /// Whether an operand that ends in `.js` is a script the client runs
-    /// (`mongosh db drop.js`).
-    scripts: bool,
+    /// Short options whose value is a file the client writes its output to
+    /// (`psql -o`).
+    short_output: &'static str,
+    /// Long options whose value is a file the client writes (`--output`).
+    long_output: &'static [&'static str],
+    /// Long options whose value, attached with `=`, is a command line the
+    /// client runs (`mysql --pager=less`); with none, it runs the one the
+    /// environment names.
+    long_program: &'static [&'static str],
+    /// What a word that is no option and no option's value is.
+    operands: Operands,
     /// The options whose value is never a word that starts with `-`: without
     /// a value they stand alone, as `mongosh -p` does (it prompts for the
     /// password), and the word is an option of its own.
@@ -59,6 +72,18 @@ struct Client {
     slash: bool,
     /// What the statement is written in.
     language: Language,
+}
+
+/// What a client makes of a word that is no option and no option's value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operands {
+    /// Nothing it runs: a database, a user.
+    Other,
+    /// One that ends in `.js` is a script it runs (`mongosh db drop.js`).
+    Scripts,
+    /// Each is a statement (`clickhouse-client 'SELECT 1'`, and after `-n`,
+    /// which takes no value).
+    Statements,
 }
 
 /// Which options of a client take no value from a word that starts with `-`.
@@ -131,10 +156,13 @@ const PSQL: Client = Client {
     long_exits: &["command"],
     short_file: "f",
     long_file: &["file"],
-    scripts: false,
+    short_output: "oL",
+    long_output: &["output", "log-file"],
+    long_program: &[],
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::Postgres),
 };
 
@@ -163,6 +191,7 @@ const MYSQL: Client = Client {
         "ssl-key",
         "plugin-dir",
         "login-path",
+        "tee",
     ],
     long_flags: &[
         "auto-rehash",
@@ -202,8 +231,8 @@ const MYSQL: Client = Client {
         "sigint-ignore",
         "silent",
         "ssl",
-        "tee",
         "unbuffered",
+        "pager",
         "verbose",
         "version",
         "vertical",
@@ -215,10 +244,13 @@ const MYSQL: Client = Client {
     long_exits: &["execute"],
     short_file: "",
     long_file: &[],
-    scripts: false,
+    short_output: "",
+    long_output: &["tee"],
+    long_program: &["pager"],
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::MySql),
 };
 
@@ -261,10 +293,13 @@ const CLICKHOUSE: Client = Client {
     long_exits: &["query"],
     short_file: "",
     long_file: &["queries-file"],
-    scripts: false,
+    short_output: "",
+    long_output: &[],
+    long_program: &[],
     loose: Loose::Only(&["password"]),
     bundles: true,
     slash: false,
+    operands: Operands::Statements,
     language: Language::Sql(Dialect::ClickHouse),
 };
 
@@ -286,10 +321,13 @@ const SQLCMD: Client = Client {
     long_exits: &["query"],
     short_file: "i",
     long_file: &["input-file"],
-    scripts: false,
+    short_output: "o",
+    long_output: &[],
+    long_program: &[],
     loose: Loose::No,
     bundles: false,
     slash: true,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::SqlServer),
 };
 
@@ -327,10 +365,13 @@ const CQLSH: Client = Client {
     long_exits: &["execute"],
     short_file: "f",
     long_file: &["file"],
-    scripts: false,
+    short_output: "",
+    long_output: &[],
+    long_program: &[],
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::Cql),
 };
 
@@ -383,10 +424,13 @@ const MONGO: Client = Client {
     long_exits: &[],
     short_file: "f",
     long_file: &["file"],
-    scripts: true,
+    short_output: "",
+    long_output: &[],
+    long_program: &[],
     loose: Loose::Every,
     bundles: true,
     slash: false,
+    operands: Operands::Scripts,
     language: Language::Mongo,
 };
 
@@ -417,6 +461,17 @@ fn view(arg: &Arg) -> Option<(&str, bool)> {
         Arg::Unknown(text) => Some((text, true)),
         Arg::Input | Arg::Null => None,
     }
+}
+
+/// Whether `text`, the source of a word only known when it runs, is a quoted
+/// option (`"-c…"`, `"--execute=…"`, and `"/Q…"` for a client whose options
+/// may start with `/`), which the client reads as one whatever it holds.
+fn quoted_option(text: &str, slash: bool) -> bool {
+    let inner = text
+        .strip_prefix("@\"")
+        .or_else(|| text.strip_prefix(['"', '\'']))
+        .map(|inner| inner.trim_start_matches(['\r', '\n']));
+    inner.is_some_and(|inner| inner.starts_with('-') || (slash && inner.starts_with('/')))
 }
 
 /// Whether an expansion in `arg` runs a command, as the parse found it.
@@ -458,6 +513,11 @@ struct Given {
     /// Whether it is given a statement that it runs and then exits, without
     /// reading its input.
     exits: bool,
+    /// The files its options tell it to write its output to (`psql -o`).
+    outputs: Vec<Arg>,
+    /// The command lines its options tell it to run (`mysql --pager=less`),
+    /// or `None` for one the environment names (`mysql --pager`).
+    programs: Vec<Option<Arg>>,
 }
 
 /// What a long option of a client does with what follows it.
@@ -467,6 +527,10 @@ enum Long {
     Statement,
     /// Its value is a file of statements.
     File,
+    /// Its value is a file it writes.
+    Output,
+    /// Its value, attached with `=`, is a command line it runs.
+    Program,
     /// It takes a value.
     Value,
     /// It takes a value, but not from a word that starts with `-`.
@@ -514,6 +578,10 @@ impl Client {
             Long::Statement
         } else if self.long_file.contains(&option) {
             Long::File
+        } else if self.long_output.contains(&option) {
+            Long::Output
+        } else if self.long_program.contains(&option) {
+            Long::Program
         } else if self.long_values.contains(&option) {
             match self.loose {
                 Loose::Every => Long::Loose,
@@ -556,18 +624,31 @@ impl Client {
         let mut ended = false;
         while let Some(arg) = iter.next() {
             let Some((text, holes)) = view(arg) else {
+                // What `xargs` hands on is an operand only known when it runs.
+                if self.operands == Operands::Statements && matches!(arg, Arg::Input) {
+                    found.push(arg.clone());
+                }
                 continue;
             };
+            // A quoted word only known when it runs that is an option (a
+            // PowerShell `"--execute=… `$x $t"` that is no template) may
+            // carry any statement.
+            if matches!(arg, Arg::Unknown(_)) && !ended && quoted_option(text, self.slash) {
+                found.push(arg.clone());
+                continue;
+            }
             // An operand that is a script the client runs.
             let script = |text: &str| {
                 let lower = text.to_ascii_lowercase();
-                self.scripts
+                self.operands == Operands::Scripts
                     && [".js", ".mjs", ".cjs"]
                         .iter()
                         .any(|end| lower.ends_with(end))
             };
             if ended || text == "--" {
-                if ended && script(text) {
+                if ended && self.operands == Operands::Statements {
+                    found.push(arg.clone());
+                } else if ended && script(text) {
                     files.push(arg.clone());
                 }
                 ended = true;
@@ -587,15 +668,26 @@ impl Client {
                     match long {
                         Long::Statement => found.push(carry(value, holes, arg)),
                         Long::File => files.push(carry(value, holes, arg)),
+                        Long::Output => given.outputs.push(carry(value, holes, arg)),
+                        Long::Program => given.programs.push(Some(carry(value, holes, arg))),
                         Long::Value | Long::Loose | Long::Flag => {}
                     }
+                } else if long == Long::Program {
+                    given.programs.push(None);
                 } else if long == Long::Statement {
                     self.statement_value(&mut iter, found);
                 } else if long == Long::File {
                     files.extend(Self::value(&mut iter, loose).cloned());
-                } else if long != Long::Flag {
+                } else if long == Long::Output {
+                    given.outputs.extend(Self::value(&mut iter, loose).cloned());
+                } else if long == Long::Value
+                    || (long == Long::Loose && self.operands != Operands::Statements)
+                {
                     Self::value(&mut iter, long == Long::Loose);
                 }
+                // An optional value is left where it is read as an operand
+                // too: `clickhouse-client --password 'DROP TABLE t'` may run
+                // the statement.
                 continue;
             }
             let rest = match text.strip_prefix('-') {
@@ -609,6 +701,10 @@ impl Client {
                         continue;
                     }
                 },
+                None if self.operands == Operands::Statements => {
+                    found.push(arg.clone());
+                    continue;
+                }
                 None => {
                     if script(text) {
                         files.push(arg.clone());
@@ -626,6 +722,14 @@ impl Client {
                         files.extend(Self::value(&mut iter, loose).cloned());
                     } else {
                         files.push(carry(after, holes, arg));
+                    }
+                    break;
+                }
+                if self.short_output.contains(letter) {
+                    if after.is_empty() {
+                        given.outputs.extend(Self::value(&mut iter, loose).cloned());
+                    } else {
+                        given.outputs.push(carry(after, holes, arg));
                     }
                     break;
                 }
@@ -649,11 +753,6 @@ impl Client {
         }
         given
     }
-
-    /// What the statement `arg` does.
-    fn read(&self, arg: &Arg) -> Reading {
-        read_text(self.language, arg)
-    }
 }
 
 /// What the text `arg`, written in `language`, does.
@@ -674,12 +773,14 @@ fn read_text(language: Language, arg: &Arg) -> Reading {
     reading
 }
 
-/// The files that the `.backup` and `.save` commands in the statement `arg`
-/// write.
-fn replaced_files(arg: &Arg, dialect: Dialect) -> Vec<String> {
-    statement_text(arg)
-        .map(|(text, holes)| reader::replaced_files(text, dialect, holes))
-        .unwrap_or_default()
+/// Note the command line `value` a client runs: the line when it is
+/// written out, and a program the line does not show when it is not, or is
+/// `None` (the one the environment names).
+fn run_value(acts: &mut Reading, value: Option<&Arg>) {
+    match value.and_then(Arg::known) {
+        Some(line) if !line.trim().is_empty() => acts.run(Program::Line(line.to_string())),
+        _ => acts.program = true,
+    }
 }
 
 /// What the file a `SQLite`-style client opens is: the agent's own, or not.
@@ -928,6 +1029,128 @@ fn redis_operands(args: &[Arg]) -> Vec<&Arg> {
         operands.drain(..operands.len().min(2));
     }
     operands
+}
+
+/// Whether the line asks a tool for its help, and runs nothing else.
+fn asks_help(args: &[Arg]) -> bool {
+    args.iter()
+        .filter_map(Arg::known)
+        .any(|text| matches!(text, "--help" | "-h"))
+}
+
+/// The parameters of `Invoke-Sqlcmd` (the `SqlServer` module's), with
+/// whether each takes a value, and the common parameters: a switch read as
+/// taking one would hide the query after it.
+const INVOKE_SQLCMD: &[(&str, bool)] = &[
+    ("query", true),
+    ("inputfile", true),
+    ("serverinstance", true),
+    ("database", true),
+    ("username", true),
+    ("password", true),
+    ("credential", true),
+    ("accesstoken", true),
+    ("connectionstring", true),
+    ("connectiontimeout", true),
+    ("querytimeout", true),
+    ("variable", true),
+    ("applicationintent", true),
+    ("applicationname", true),
+    ("encrypt", true),
+    ("errorlevel", true),
+    ("severitylevel", true),
+    ("failoverpartner", true),
+    ("hostnameincertificate", true),
+    ("maxbinarylength", true),
+    ("maxcharlength", true),
+    ("newpassword", true),
+    ("outputas", true),
+    ("as", true),
+    ("outputsqlerrors", true),
+    ("statisticsvariable", true),
+    ("abortonerror", false),
+    ("dedicatedadministratorconnection", false),
+    ("disablecommands", false),
+    ("disablevariables", false),
+    ("encryptconnection", false),
+    ("ignoreprovidercontext", false),
+    ("includesqlusererrors", false),
+    ("keepnullcharsinresults", false),
+    ("multisubnetfailover", false),
+    ("suppressprovidercontextwarning", false),
+    ("trustservercertificate", false),
+    ("verbose", false),
+    ("vb", false),
+    ("debug", false),
+    ("db", false),
+    ("erroraction", true),
+    ("ea", true),
+    ("warningaction", true),
+    ("wa", true),
+    ("informationaction", true),
+    ("infa", true),
+    ("ia", true),
+    ("progressaction", true),
+    ("proga", true),
+    ("errorvariable", true),
+    ("ev", true),
+    ("warningvariable", true),
+    ("wv", true),
+    ("informationvariable", true),
+    ("iv", true),
+    ("outvariable", true),
+    ("ov", true),
+    ("outbuffer", true),
+    ("ob", true),
+    ("pipelinevariable", true),
+    ("pv", true),
+];
+
+/// The queries an `Invoke-Sqlcmd` line gives: the value of `-Query`, and
+/// every argument no parameter takes, since the query is its first
+/// positional parameter; and the file of `-InputFile`. A parameter is any
+/// start of one name, in any case; one that starts several names is refused
+/// by PowerShell, and one that names none takes no value, so the argument
+/// after either is read as a query too.
+fn invoke_sqlcmd_queries(args: &[Arg]) -> Given {
+    let mut given = Given::default();
+    let found = &mut given.statements;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let name = arg
+            .known()
+            .and_then(|text| text.strip_prefix('-'))
+            .filter(|name| name.starts_with(|c: char| c.is_ascii_alphabetic()));
+        let Some(name) = name else {
+            if !matches!(arg, Arg::Null) {
+                found.push(arg.clone());
+            }
+            continue;
+        };
+        let colon = name.ends_with(':');
+        let typed = name.trim_end_matches(':').to_ascii_lowercase();
+        let exact = INVOKE_SQLCMD.iter().find(|(full, _)| *full == typed);
+        let mut starts = INVOKE_SQLCMD
+            .iter()
+            .filter(|(full, _)| full.starts_with(&typed));
+        let named = exact.or_else(|| match (starts.next(), starts.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        });
+        match named {
+            Some(("query", _)) => found.extend(iter.next().cloned()),
+            Some(("inputfile", _)) => given.files.extend(iter.next().cloned()),
+            Some((_, true)) => {
+                iter.next();
+            }
+            // `-Name:value` takes the value whatever the name is.
+            _ if colon => {
+                iter.next();
+            }
+            _ => {}
+        }
+    }
+    given
 }
 
 /// How many readings of what a program says are kept: as written, and as
@@ -1372,10 +1595,6 @@ fn unique<'a>(texts: impl Iterator<Item = &'a Arg>) -> Vec<&'a Arg> {
 /// A stage of a pipeline: the pipeline and the stage's index in it.
 type StageKey = (usize, usize);
 
-/// Where a unit runs: the folder a `cd` moved it to, and whether its
-/// wildcards match hidden names.
-type RunsIn = (Option<Arg>, bool);
-
 /// What the line says to its clients, worked out once for each stage and
 /// reused for every client of the stage after it: a line may hold thousands
 /// of clients, and each one reading again what every program of the stage
@@ -1389,12 +1608,6 @@ pub(super) struct Cache {
     /// The stages and languages whose findings a client has already given;
     /// another client of the same language says the same.
     judged: HashSet<(StageKey, Language)>,
-    /// The files that `.backup` and `.save` in what each stage says write,
-    /// for each dialect.
-    files: HashMap<(StageKey, Language), Rc<Vec<String>>>,
-    /// The places (the folder a `cd` moved to, and whether wildcards match
-    /// hidden names) whose clients have judged those files.
-    backed: HashMap<(StageKey, Language), Vec<RunsIn>>,
     /// The stages that hand on what the line does not show: a file, or the
     /// output of a program the rule does not read.
     unseen: HashSet<StageKey>,
@@ -1420,6 +1633,57 @@ pub(super) struct Cache {
     /// command that runs it is given: what its units read when nothing else
     /// on that line feeds them.
     inherited: Option<Rc<Input>>,
+    /// How deep the line is in the programs database clients run, and what
+    /// reading them has used of the line's budget.
+    pub(super) nest: Nest,
+    /// The programs a client has run from where the line started, each
+    /// judged once.
+    ran: HashSet<Program>,
+}
+
+/// The most programs that database clients run, as their text shows them,
+/// that are read as lines of their own for one line; past it each is
+/// `unknown`. Each is split and judged in full, so this bounds the work.
+const MAX_PROGRAMS: usize = 16;
+
+/// The most text of those programs read for one line, in bytes.
+const MAX_PROGRAM_TEXT: usize = crate::unit::MAX_LEN;
+
+/// How deep a program a client runs may itself start a client that runs a
+/// program, and so on, before the next is `unknown`.
+const MAX_PROGRAM_DEPTH: usize = 4;
+
+/// How deep the line being judged is in the programs that database clients
+/// run, and what the whole line has read of them: one budget for the line,
+/// however deep.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Nest {
+    depth: usize,
+    /// How many programs have been read, and how many bytes of them.
+    used: Rc<std::cell::Cell<(usize, usize)>>,
+}
+
+impl Nest {
+    /// One level deeper, on the same budget.
+    fn deeper(&self) -> Self {
+        Self {
+            depth: self.depth + 1,
+            used: Rc::clone(&self.used),
+        }
+    }
+
+    /// Whether a program of `len` bytes may be read, taking it from the
+    /// budget when it may.
+    fn take(&self, len: usize) -> bool {
+        let (count, bytes) = self.used.get();
+        let fits = self.depth < MAX_PROGRAM_DEPTH
+            && count < MAX_PROGRAMS
+            && bytes.saturating_add(len) <= MAX_PROGRAM_TEXT;
+        if fits {
+            self.used.set((count + 1, bytes + len));
+        }
+        fits
+    }
 }
 
 /// The stage whose output is the input of `unit`.
@@ -1457,6 +1721,9 @@ struct Upstream {
 
 /// The reason for a client that runs statements the line does not show.
 const UNSEEN: &str = "runs statements the line does not show";
+
+/// The reason for a client that runs a program the guard does not read.
+const PROGRAM: &str = "runs a program from a database client";
 
 /// The reason for a command in a container or on another machine run
 /// behind more of them than are read.
@@ -1992,7 +2259,36 @@ impl Checker<'_> {
                 let found = embedded(args, &DUCKDB);
                 self.embedded_client(at, unit, &found, Dialect::DuckDb);
             }
-            "redis-cli" => self.redis(at, unit.shell, args),
+            "redis-cli" | "valkey-cli" | "keydb-cli" => self.redis(at, unit.shell, args),
+            "invoke-sqlcmd" if unit.shell == Shell::PowerShell => {
+                self.invoke_sqlcmd(at, unit, args);
+            }
+            "pg_dropcluster" if !asks_help(args) => {
+                let cluster = resources::words(args, &[]).get(1).copied();
+                self.add(Rule::DropData, "deletes a database cluster", cluster);
+            }
+            "heroku" if !asks_help(args) => {
+                let words = resources::words(args, resources::HEROKU_VALUES);
+                if let Some(reset) = words
+                    .first()
+                    .filter(|word| word.known() == Some("pg:reset"))
+                {
+                    let database = words.get(1).copied().or(Some(*reset));
+                    self.add(Rule::DropData, "deletes data in a database", database);
+                }
+            }
+            "supabase" if !asks_help(args) => {
+                let words = resources::words(args, resources::SUPABASE_VALUES);
+                let command: Vec<Option<&str>> =
+                    words.iter().take(2).map(|word| word.known()).collect();
+                if command == [Some("db"), Some("reset")] {
+                    self.add(
+                        Rule::DropData,
+                        "deletes data in a database",
+                        words.get(1).copied(),
+                    );
+                }
+            }
             "dropdb" | "dropuser" => {
                 let help = args
                     .iter()
@@ -2026,8 +2322,29 @@ impl Checker<'_> {
         }
     }
 
+    /// A statement as a reader of its text takes it: a PowerShell
+    /// double-quoted string whose expansions are only known when it runs is
+    /// read as a template, as a POSIX one is (`psql -c "… WHERE id = $id"`).
+    fn template(&self, unit: &Unit, statement: &Arg) -> Arg {
+        match statement {
+            Arg::Unknown(source) if unit.shell == Shell::PowerShell => self
+                .split
+                .template(source)
+                .unwrap_or_else(|| statement.clone()),
+            _ => statement.clone(),
+        }
+    }
+
+    /// The arguments of a client as [`Checker::template`] reads each: a
+    /// PowerShell double-quoted word is a template, so that an option and
+    /// its value in one (`"--execute=DROP TABLE $t"`, `"-c$q"`) is read as a
+    /// POSIX shell's is.
+    fn templates(&self, unit: &Unit, args: &[Arg]) -> Vec<Arg> {
+        args.iter().map(|arg| self.template(unit, arg)).collect()
+    }
+
     /// Say what a client's statements do.
-    fn judge(&mut self, reading: Reading, target: Option<&Arg>, own: bool) {
+    fn judge(&mut self, reading: &Reading, target: Option<&Arg>, own: bool) {
         if reading.unreadable {
             self.add(
                 Rule::Unknown,
@@ -2036,11 +2353,7 @@ impl Checker<'_> {
             );
         }
         if reading.program {
-            self.add(
-                Rule::Unknown,
-                "runs a program from a database client",
-                target,
-            );
+            self.add(Rule::Unknown, PROGRAM, target);
         }
         if reading.destroys && !own {
             self.add(Rule::DropData, "deletes data in a database", target);
@@ -2053,84 +2366,176 @@ impl Checker<'_> {
     /// A client of a database server: every database on a server is risky,
     /// since the line cannot tell a scratch one from production.
     fn sql_client(&mut self, at: usize, unit: &Unit, client: &Client, args: &[Arg]) {
-        let given = client.statements(args);
-        let mut statements = given.statements;
+        let args = self.templates(unit, args);
+        self.client_given(at, unit, client.statements(&args), client.language);
+    }
+
+    /// What a client of a database server is given, its statements written
+    /// in `language`, and what it reads from its input.
+    fn client_given(&mut self, at: usize, unit: &Unit, given: Given, language: Language) {
+        let mut statements: Vec<Arg> = given
+            .statements
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
         for file in given
             .files
             .iter()
             .filter(|file| runs_file(file, unit.shell))
         {
-            self.judge(Reading::UNSEEN, Some(file), false);
+            self.judge(&Reading::UNSEEN, Some(file), false);
+        }
+        // The files its options tell it to write its output to.
+        if self.data.behind == 0 {
+            for output in &given.outputs {
+                self.write(unit.shell, unit.scope(), output, "writes to");
+            }
+        }
+        // What every statement writes and runs, gathered so that a `\cd` or
+        // a `\setenv` in one counts for the others.
+        let mut acts = Reading::default();
+        // The command lines its options and its environment tell it to run:
+        // `mysql --pager=CMD`, and `PAGER=CMD psql` as `\setenv PAGER CMD`.
+        for program in &given.programs {
+            run_value(&mut acts, program.as_ref());
+        }
+        if language == Language::Sql(Dialect::Postgres) {
+            for (name, value) in unit.argument_variables.iter() {
+                if crate::unit::PSQL_PROGRAMS.contains(&name.as_str()) {
+                    // An empty value turns the pager or editor off.
+                    if value.known() != Some("") {
+                        run_value(&mut acts, Some(value));
+                    }
+                }
+            }
         }
         // A client given a statement that it runs and then exits (`psql -c`,
         // `mysql -e`) does not read its input, unless a file of statements
         // it is given is its input (`-f -`).
         if given.exits && !given.files.iter().any(is_stdin) {
             for statement in &statements {
-                let reading = client.read(statement);
-                self.judge(reading, Some(statement), false);
+                let reading = read_text(language, statement);
+                self.judge(&reading, Some(statement), false);
+                acts.add_acts(reading.acts);
             }
+            self.judge_acts(unit, &acts);
             return;
         }
         statements.extend(self.split.fed_to(at).cloned());
         let up = self.upstream(at);
         statements.extend(up.texts);
         for statement in &statements {
-            let reading = client.read(statement);
-            self.judge(reading, Some(statement), false);
+            let reading = read_text(language, statement);
+            self.judge(&reading, Some(statement), false);
+            acts.add_acts(reading.acts);
         }
         if up.unseen {
-            self.judge(Reading::UNSEEN, Some(&unit.program), false);
+            self.judge(&Reading::UNSEEN, Some(&unit.program), false);
         }
         // What the stage before it says is judged once: every client of the
-        // same language finds the same.
+        // same language finds the same. What it writes and runs is judged
+        // where each client runs.
         for key in up.stages {
-            if !self.data.judged.insert((key, client.language)) {
+            let readings = self.stage_readings(key, language);
+            for reading in readings.iter() {
+                acts.add_acts(reading.acts.clone());
+            }
+            if !self.data.judged.insert((key, language)) {
                 continue;
             }
             let said = self.stage_said(key);
-            let readings = self.stage_readings(key, client.language);
             for (statement, reading) in said.iter().zip(readings.iter()) {
-                self.judge(*reading, Some(statement), false);
+                self.judge(reading, Some(statement), false);
             }
             if self.stage_unseen(key) {
-                self.judge(Reading::UNSEEN, Some(&unit.program), false);
+                self.judge(&Reading::UNSEEN, Some(&unit.program), false);
             }
         }
+        self.judge_acts(unit, &acts);
     }
 
-    /// The files that the `.backup` and `.save` commands in what the stage
-    /// `key` says write, worked out once.
-    fn stage_files(&mut self, key: StageKey, dialect: Dialect) -> Rc<Vec<String>> {
-        let language = Language::Sql(dialect);
-        if let Some(files) = self.data.files.get(&(key, language)) {
-            return Rc::clone(files);
+    /// Judge what a client's statements write and run beside the database,
+    /// gathered in `acts`: each file is a write, judged as any write from
+    /// where the client runs (after a `\cd`, from a folder only known when
+    /// it runs), and each program is read as a line of its own (see
+    /// [`Self::run_program`]). A file a client in a container or on another
+    /// machine writes is not on this machine, but a database it replaces
+    /// there is not the agent's own.
+    fn judge_acts(&mut self, unit: &Unit, acts: &Reading) {
+        if acts.program {
+            self.add(Rule::Unknown, PROGRAM, Some(&unit.program));
         }
-        let mut files: Vec<String> = Vec::new();
-        for text in self.stage_said(key).iter() {
-            for name in replaced_files(text, dialect) {
-                if !files.contains(&name) {
-                    files.push(name);
+        let acts = &acts.acts;
+        if acts.is_empty() {
+            return;
+        }
+        let moved = Arg::Unknown("the folder a database client moves to".to_string());
+        let scope = if acts.moves_folder {
+            crate::unit::Scope {
+                dir: Some(&moved),
+                hidden: unit.hidden,
+            }
+        } else {
+            unit.scope()
+        };
+        for written in &acts.writes {
+            let target = Arg::Known(written.name.clone());
+            if self.data.behind > 0 {
+                if written.database {
+                    self.add(
+                        Rule::DropData,
+                        "replaces a file outside the workspace",
+                        Some(&target),
+                    );
                 }
+            } else if written.folder {
+                self.write_folder(unit.shell, scope, &target, "writes to");
+            } else {
+                self.write(unit.shell, scope, &target, "writes to");
             }
         }
-        let files = Rc::new(files);
-        self.data.files.insert((key, language), Rc::clone(&files));
-        files
+        for program in &acts.programs {
+            self.run_program(unit, program, acts);
+        }
     }
 
-    /// Say that a file a database client replaces is not the agent's own.
-    fn judge_files(&mut self, unit: &Unit, files: &[String]) {
-        for name in files {
-            if !self.is_own_database(unit, name) {
-                let target = Arg::Known(name.clone());
-                self.add(
-                    Rule::DropData,
-                    "replaces a file outside the workspace",
-                    Some(&target),
-                );
-            }
+    /// A program a client runs, as its text shows it: read as a line of its
+    /// own (a command line split by the POSIX grammar, or a program and its
+    /// words), and judged by every rule, as `sh -c` is. It runs where the
+    /// client runs, so only a client on this machine, in a POSIX shell, that
+    /// runs where the line started, has not moved (`\cd`) and has not set the
+    /// environment (`\setenv`) has its program read; any other, and one past
+    /// the line's budget, is `unknown`.
+    fn run_program(&mut self, unit: &Unit, program: &Program, acts: &Acts) {
+        let here = self.data.behind == 0
+            && unit.shell == Shell::Posix
+            && unit.dir.is_none()
+            && unit.elsewhere.is_empty()
+            && !acts.moves_folder
+            && !acts.environment;
+        if here && self.data.ran.contains(program) {
+            return;
         }
+        let text = program.text();
+        if !here || !self.data.nest.take(text.len()) {
+            self.add(Rule::Unknown, PROGRAM, Some(&Arg::Known(text)));
+            return;
+        }
+        self.data.ran.insert(program.clone());
+        let split = match program {
+            Program::Line(line) => crate::unit::split(line, Shell::Posix, (None, None), false),
+            Program::Words(words) => {
+                let mut split = crate::unit::Split::default();
+                if let Some((first, rest)) = words.split_first() {
+                    let args = rest.iter().cloned().map(Arg::Known).collect();
+                    let unit = Unit::new(Shell::Posix, Arg::Known(first.clone()), args, None);
+                    crate::launch::add(&mut split, unit, 0);
+                }
+                split
+            }
+        };
+        let found = super::nested(&split, self.resolver, self.data.nest.deeper());
+        self.found.extend(found);
     }
 
     /// Whether the database `name` (as given to `sqlite3` or `duckdb`) is the
@@ -2150,10 +2555,22 @@ impl Checker<'_> {
         }
     }
 
+    /// `Invoke-Sqlcmd`: SQL Server's cmdlet, which runs its `-Query` and its
+    /// `-InputFile`.
+    fn invoke_sqlcmd(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
+        let args = self.templates(unit, args);
+        let given = invoke_sqlcmd_queries(&args);
+        self.client_given(at, unit, given, Language::Sql(Dialect::SqlServer));
+    }
+
     /// `sqlite3` and `duckdb`: a database in a file is the agent's own when
     /// the file is in the workspace, judged like any file.
     fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>, dialect: Dialect) {
-        let mut statements = found.statements.clone();
+        let mut statements: Vec<Arg> = found
+            .statements
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
         statements.extend(self.split.fed_to(at).cloned());
         let up = self.upstream(at);
         statements.extend(up.texts);
@@ -2184,11 +2601,6 @@ impl Checker<'_> {
             .chain(stages.iter().flat_map(|(_, readings)| readings.iter()))
             .any(|reading| reading.moves);
         let own = !moves && (found.read_only || own_file);
-        // `.backup` and `.save` replace the file they are given, even for a
-        // client opened `-readonly`.
-        for statement in &statements {
-            self.judge_files(unit, &replaced_files(statement, dialect));
-        }
         // Statements from a file, or from what the line does not show.
         let unseen = up.unseen || up.stages.iter().any(|&key| self.stage_unseen(key));
         let target = found.file.unwrap_or(&unit.program);
@@ -2197,30 +2609,24 @@ impl Checker<'_> {
             .iter()
             .filter(|file| runs_file(file, unit.shell))
         {
-            self.judge(Reading::UNSEEN, Some(file), own);
+            self.judge(&Reading::UNSEEN, Some(file), own);
         }
         if unseen {
-            self.judge(Reading::UNSEEN, Some(target), own);
+            self.judge(&Reading::UNSEEN, Some(target), own);
         }
-        for &key in &up.stages {
-            // What the stage says is worked out once, and judged once for
-            // each place its clients run in.
-            let place = (unit.dir.clone(), unit.hidden);
-            let judged = self.data.backed.entry((key, language)).or_default();
-            if !judged.contains(&place) {
-                judged.push(place);
-                let files = self.stage_files(key, dialect);
-                self.judge_files(unit, &files);
-            }
-        }
-        let all = statements.iter().zip(readings).chain(
+        // What the statements write and run (`.backup` and `.save` replace
+        // the file they are given, even for a client opened `-readonly`).
+        let mut acts = Reading::default();
+        let all = statements.iter().zip(readings.iter()).chain(
             stages
                 .iter()
-                .flat_map(|(said, readings)| said.iter().zip(readings.iter().copied())),
+                .flat_map(|(said, readings)| said.iter().zip(readings.iter())),
         );
         for (statement, reading) in all {
             self.judge(reading, found.file.or(Some(statement)), own);
+            acts.add_acts(reading.acts.clone());
         }
+        self.judge_acts(unit, &acts);
     }
 
     /// `redis-cli`: `FLUSHALL`, `FLUSHDB`, and a `DEL` or `UNLINK` of what a
@@ -2265,7 +2671,7 @@ impl Checker<'_> {
         let mut unseen = operands.is_empty() && up.unseen;
         for key in up.stages {
             for said in self.stage_readings(key, Language::Redis).iter() {
-                reading.merge(*said);
+                reading.merge(said.clone());
             }
             unseen |= operands.is_empty() && self.stage_unseen(key);
         }
@@ -2279,7 +2685,7 @@ impl Checker<'_> {
             }
         }
         reading.unseen |= unseen;
-        self.judge(reading, target, false);
+        self.judge(&reading, target, false);
     }
 
     /// Whether the line lists keys in Redis, worked out once for the line.
@@ -2296,7 +2702,10 @@ impl Checker<'_> {
     /// `scan`.
     fn scans_keys(&self) -> bool {
         self.split.units.iter().any(|unit| {
-            unit.key().as_deref() == Some("redis-cli") && {
+            matches!(
+                unit.key().as_deref(),
+                Some("redis-cli" | "valkey-cli" | "keydb-cli")
+            ) && {
                 let operands = redis_operands(&unit.args);
                 unit.args.iter().any(|arg| arg.known() == Some("--scan"))
                     || operands

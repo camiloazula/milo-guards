@@ -3,6 +3,8 @@
 //! literals and splits SQL on `;`. There is no grammar: it finds the few
 //! words that destroy data and says what it could not read.
 
+use std::collections::HashMap;
+
 /// The SQL a client reads, with only the quoting that client has: where the
 /// dialects differ in a way that would hide or show a statement, each one is
 /// read as itself. A construct a dialect is not known to have is not read, so
@@ -126,18 +128,84 @@ impl Dialect {
     }
 }
 
+/// A file a client command or a statement writes: `\o FILE`, `.output FILE`,
+/// `COPY … TO 'FILE'`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Written {
+    /// The name as the client is given it.
+    pub(super) name: String,
+    /// Whether it is a folder written into (`EXPORT DATABASE 'DIR'`).
+    pub(super) folder: bool,
+    /// Whether it is a copy of the database that replaces the file
+    /// (`.backup`, `.save`).
+    pub(super) database: bool,
+}
+
+/// A program a client runs, as the text shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) enum Program {
+    /// A command line the system's shell runs (`\! ls`, `.shell ls`).
+    Line(String),
+    /// A program and its arguments, run with no shell (`runProgram('ls',
+    /// '-l')`).
+    Words(Vec<String>),
+}
+
+impl Program {
+    /// The program as a reason's target shows it.
+    pub(super) fn text(&self) -> String {
+        match self {
+            Self::Line(line) => line.clone(),
+            Self::Words(words) => words.join(" "),
+        }
+    }
+}
+
+/// The most files written, and programs run, that one read keeps: past it
+/// the text is read as running what the line does not show.
+const MAX_ACTS: usize = 32;
+
+/// What client commands and statements do beside the database: the files
+/// they write and the programs they run, as the text shows them.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct Acts {
+    pub(super) writes: Vec<Written>,
+    pub(super) programs: Vec<Program>,
+    /// It moves the client to another folder (`\cd`, `.cd`): a relative file
+    /// it writes, and a program it runs, are somewhere the line does not
+    /// say.
+    pub(super) moves_folder: bool,
+    /// It sets the environment of the programs it runs (`\setenv`).
+    pub(super) environment: bool,
+}
+
+impl Acts {
+    const NONE: Self = Self {
+        writes: Vec::new(),
+        programs: Vec::new(),
+        moves_folder: false,
+        environment: false,
+    };
+
+    /// Whether there is nothing to judge.
+    pub(super) fn is_empty(&self) -> bool {
+        self.writes.is_empty() && self.programs.is_empty()
+    }
+}
+
 /// What a read of some statement text found.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "four independent findings, each read on its own"
+    reason = "five independent findings, each read on its own"
 )]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct Reading {
     /// It drops, truncates or empties something.
     pub(super) destroys: bool,
     /// Part of it is only known when it runs, or cannot be read.
     pub(super) unreadable: bool,
-    /// It runs a program of the machine (`\!`, `COPY … PROGRAM`, `.shell`).
+    /// It runs a program of the machine the text does not show (`\!` alone,
+    /// `COPY … PROGRAM`, `.read |cmd`, `.load`).
     pub(super) program: bool,
     /// It opens or attaches another database (`ATTACH`, `.open`), so the
     /// file the client was given is not the only one it can change.
@@ -145,6 +213,8 @@ pub(super) struct Reading {
     /// It runs the statements of a file (`\i`, `.read`, `source`), which
     /// the line does not show.
     pub(super) unseen: bool,
+    /// The files it writes and the programs it runs that the text shows.
+    pub(super) acts: Acts,
 }
 
 impl Reading {
@@ -154,6 +224,7 @@ impl Reading {
         program: false,
         moves: false,
         unseen: false,
+        acts: Acts::NONE,
     };
 
     /// Statements the line does not show: a file, or what a program the
@@ -164,6 +235,7 @@ impl Reading {
         program: false,
         moves: false,
         unseen: true,
+        acts: Acts::NONE,
     };
 
     pub(super) fn merge(&mut self, other: Self) {
@@ -172,6 +244,44 @@ impl Reading {
         self.program |= other.program;
         self.moves |= other.moves;
         self.unseen |= other.unseen;
+        self.add_acts(other.acts);
+    }
+
+    /// Keep the acts of `other` beside these, each once. Past [`MAX_ACTS`]
+    /// of either, what is left is a program the line does not show.
+    pub(super) fn add_acts(&mut self, other: Acts) {
+        self.acts.moves_folder |= other.moves_folder;
+        self.acts.environment |= other.environment;
+        for write in other.writes {
+            self.write(write);
+        }
+        for program in other.programs {
+            self.run(program);
+        }
+    }
+
+    /// Note a file it writes.
+    fn write(&mut self, write: Written) {
+        if self.acts.writes.contains(&write) {
+            return;
+        }
+        if self.acts.writes.len() < MAX_ACTS {
+            self.acts.writes.push(write);
+        } else {
+            self.program = true;
+        }
+    }
+
+    /// Note a program it runs.
+    pub(super) fn run(&mut self, program: Program) {
+        if self.acts.programs.contains(&program) {
+            return;
+        }
+        if self.acts.programs.len() < MAX_ACTS {
+            self.acts.programs.push(program);
+        } else {
+            self.program = true;
+        }
     }
 }
 
@@ -447,6 +557,57 @@ fn psql_command(chars: &[char], at: usize) -> (String, usize) {
     )
 }
 
+/// Where the tokens go on after a `mysql` command at `at` whose line ends at
+/// `end`: after the first `;`, or the end of the line. The command is read to
+/// the end of its line, and what follows a `;` is read as SQL too, so that
+/// neither reading hides the other.
+fn semicolon_or(chars: &[char], at: usize, end: usize) -> usize {
+    chars
+        .get(at..end)
+        .and_then(|text| text.iter().position(|c| *c == ';'))
+        .map_or(end, |offset| at + offset)
+}
+
+/// Whether the word at `at` is one of the `mysql` commands that run a
+/// program or write a file: `system`, `pager` and `tee`, in any case.
+fn mysql_command(chars: &[char], at: usize) -> bool {
+    let rest = chars.get(at..).unwrap_or_default();
+    let len = rest.iter().take_while(|c| is_word_char(**c)).count();
+    let word: String = rest.iter().take(len).collect();
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "system" | "pager" | "tee"
+    ) && rest.get(len).is_none_or(|c| c.is_whitespace() || *c == ';')
+}
+
+/// Whether only spaces and tabs stand between the start of the line and
+/// `at`.
+fn at_line_start(chars: &[char], at: usize) -> bool {
+    let before = chars.get(..at).unwrap_or_default();
+    let blank = before
+        .iter()
+        .rev()
+        .take_while(|c| matches!(c, ' ' | '\t'))
+        .count();
+    blank == before.len() || before.get(before.len() - blank - 1) == Some(&'\n')
+}
+
+/// The `sqlcmd` command a line is, as the reader names it: `!!` and `:!!`
+/// are `\!`, which runs the rest of the line; `:out`, `:error` and
+/// `:perftrace` are themselves. `None` for any other line.
+fn sqlcmd_command(text: &str) -> Option<String> {
+    if let Some(rest) = text.strip_prefix(":!!").or_else(|| text.strip_prefix("!!")) {
+        return Some(format!("\\!{rest}"));
+    }
+    let name = text
+        .strip_prefix(':')?
+        .split(char::is_whitespace)
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(name.as_str(), "out" | "error" | "perftrace").then(|| text.to_string())
+}
+
 /// Cut `text` into tokens. `None` when a string, a comment or a `$$` string
 /// is never closed: the rest of the text could be anything. `holes` says the
 /// text came from a double-quoted shell word, where `$x` and `` `x` `` are
@@ -620,6 +781,11 @@ fn tokenize_into(
             '\\' if dialect == Dialect::Postgres => {
                 if next == Some('\\') {
                     at += 2;
+                } else if next == Some('!') {
+                    // `\!` hands the whole rest of its line to the shell.
+                    let (meta, end) = line(&chars, at);
+                    tokens.push(Token::Meta(meta));
+                    at = end;
                 } else {
                     let (meta, end) = psql_command(&chars, at);
                     tokens.push(Token::Meta(meta));
@@ -638,6 +804,37 @@ fn tokenize_into(
                 let (meta, end) = line(&chars, at);
                 tokens.push(Token::Meta(meta));
                 at = end;
+            }
+            // `\P` is `pager` and `\T` is `tee`, named so for the reader.
+            '\\' if dialect == Dialect::MySql && matches!(next, Some('P' | 'T')) => {
+                let (text, end) = line(&chars, at);
+                let rest = text.get(2..).unwrap_or_default();
+                let name = if next == Some('P') { "pager" } else { "tee" };
+                tokens.push(Token::Meta(format!("{name}{rest}")));
+                at = semicolon_or(&chars, at, end);
+            }
+            // `mysql`'s `system`, `pager` and `tee` where a statement starts.
+            c if dialect == Dialect::MySql
+                && starts_statement
+                && is_word_char(c)
+                && mysql_command(&chars, at) =>
+            {
+                let (meta, end) = line(&chars, at);
+                tokens.push(Token::Meta(meta));
+                at = semicolon_or(&chars, at, end);
+            }
+            // `sqlcmd`'s commands at the start of a line: `!!` (and `:!!`)
+            // runs the rest of the line in the system's shell, `:out`,
+            // `:error` and `:perftrace` send what follows to a file.
+            '!' | ':' if dialect == Dialect::SqlServer && at_line_start(&chars, at) => {
+                let (text, end) = line(&chars, at);
+                if let Some(meta) = sqlcmd_command(&text) {
+                    tokens.push(Token::Meta(meta));
+                    at = end;
+                } else {
+                    tokens.push(Token::Symbol(c));
+                    at += 1;
+                }
             }
             '.' if dialect.dot_commands()
                 && starts_statement
@@ -903,6 +1100,108 @@ fn literal_args(tokens: &[Token], from: usize, every: bool) -> Option<(Vec<&Quot
     Some((found, i))
 }
 
+/// The words that may stand between `REPLACE` and `TABLE` in a statement
+/// that replaces a table: `CREATE OR REPLACE TEMPORARY TABLE`.
+const TABLE_KINDS: [&str; 7] = [
+    "TEMPORARY",
+    "TEMP",
+    "TRANSIENT",
+    "GLOBAL",
+    "LOCAL",
+    "UNLOGGED",
+    "VOLATILE",
+];
+
+/// Whether the `REPLACE` at `at` replaces a table, and with it the rows the
+/// table held: `CREATE OR REPLACE TABLE` (`MariaDB`, `DuckDB`, `ClickHouse`)
+/// and `ClickHouse`'s `REPLACE TABLE`. `REPLACE INTO` adds rows, and
+/// `replace(…)` is a function.
+fn replaces_table(tokens: &[Token], at: usize) -> bool {
+    tokens
+        .get(at + 1..)
+        .unwrap_or_default()
+        .iter()
+        .find(|token| !matches!(token, Token::Word(w) if TABLE_KINDS.contains(&w.as_str())))
+        .is_some_and(|token| is_word(Some(token), "TABLE"))
+}
+
+/// Whether the `RESTORE` at `at` writes a backup over a database: `RESTORE
+/// DATABASE` or `RESTORE LOG` with a `FROM` after it.
+fn restores_backup(tokens: &[Token], at: usize) -> bool {
+    matches!(tokens.get(at + 1), Some(Token::Word(w)) if matches!(w.as_str(), "DATABASE" | "LOG"))
+        && tokens
+            .get(at + 2..)
+            .unwrap_or_default()
+            .iter()
+            .any(|token| is_word(Some(token), "FROM"))
+}
+
+/// How a string that is the body of a function or procedure is written.
+enum Prefix {
+    /// `AS '…'`, and `AS E'…'`, whose backslashes escape.
+    Plain,
+    /// `AS U&'…'`, whose backslashes spell characters by their code.
+    Unicode,
+}
+
+/// Whether the string at `at` comes right after `AS`, or after `AS` and the
+/// prefix of a string (`E`, `U&`), as the body of a function does.
+fn body_prefix(tokens: &[Token], at: usize) -> Option<Prefix> {
+    let back = |n: usize| at.checked_sub(n).and_then(|i| tokens.get(i));
+    if is_word(back(1), "AS") || (is_word(back(1), "E") && is_word(back(2), "AS")) {
+        Some(Prefix::Plain)
+    } else if back(1) == Some(&Token::Symbol('&'))
+        && is_word(back(2), "U")
+        && is_word(back(3), "AS")
+    {
+        Some(Prefix::Unicode)
+    } else {
+        None
+    }
+}
+
+/// Whether a `CREATE` statement makes a function or a procedure, whose body
+/// runs when it is called: `FUNCTION` or `PROCEDURE` before its first `(`.
+fn creates_routine(tokens: &[Token]) -> bool {
+    tokens
+        .iter()
+        .take_while(|token| **token != Token::Symbol('('))
+        .any(|token| is_word(Some(token), "FUNCTION") || is_word(Some(token), "PROCEDURE"))
+}
+
+/// The arguments of a `dblink` call from `from` (after its `(`): the strings
+/// it is given, which are its connection and its SQL, and the index after
+/// them. A `TRUE` or `FALSE` (whether an error fails the call) is skipped.
+/// `None` when an argument is anything else: SQL only known when it runs.
+fn dblink_args(tokens: &[Token], from: usize) -> Option<(Vec<&Quote>, usize)> {
+    let mut found = Vec::new();
+    let mut i = from;
+    loop {
+        match tokens.get(i)? {
+            Token::Quoted(quote) if quote.string => found.push(quote),
+            Token::Word(word) if matches!(word.as_str(), "TRUE" | "FALSE") => {}
+            _ => return None,
+        }
+        i += 1;
+        match tokens.get(i)? {
+            Token::Symbol(',') => i += 1,
+            Token::Symbol(')') => break,
+            _ => return None,
+        }
+    }
+    // Two strings are a connection and the SQL; the connection is not SQL.
+    if found.len() > 1 {
+        found.remove(0);
+    }
+    Some((found, i))
+}
+
+/// Whether `name`, in upper case, is one of `dblink`'s functions that run
+/// the SQL they are given.
+fn is_dblink(name: &str) -> bool {
+    matches!(name, "DBLINK" | "DBLINK_EXEC" | "DBLINK_SEND_QUERY")
+}
+
 /// The name of the T-SQL procedures that run the text they are given.
 fn runs_text(name: &str) -> Option<bool> {
     match name {
@@ -927,9 +1226,26 @@ fn dynamic_sql(tokens: &[Token], at: usize, scope: Scope) -> Option<Reading> {
         Token::Word(word) if word == "PREPARE" && is_word(tokens.get(at + 2), "FROM") => {
             literal_args(tokens, at + 3, false)
         }
+        // PostgreSQL's `dblink`, which runs the SQL it is given in a
+        // database it connects to: `dblink_exec('dbname=x', 'DROP TABLE t')`,
+        // and as a quoted name, `"dblink_exec"(…)`.
+        Token::Word(word) if is_dblink(word) => {
+            if tokens.get(at + 1) != Some(&Token::Symbol('(')) {
+                return None;
+            }
+            dblink_args(tokens, at + 2)
+        }
         Token::Word(word) => literal_args(tokens, at + 1, runs_text(word)?),
         Token::Quoted(quote) if !quote.string => {
-            literal_args(tokens, at + 1, runs_text(&quote.body.to_uppercase())?)
+            let name = quote.body.to_uppercase();
+            if is_dblink(&name) {
+                if tokens.get(at + 1) != Some(&Token::Symbol('(')) {
+                    return None;
+                }
+                dblink_args(tokens, at + 2)
+            } else {
+                literal_args(tokens, at + 1, runs_text(&name)?)
+            }
         }
         _ => return None,
     };
@@ -986,6 +1302,12 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
                     reading.destroys = true;
                 }
             }
+            "REPLACE" if replaces_table(tokens, at) => reading.destroys = true,
+            // SQL Server's `RESTORE DATABASE` and `RESTORE LOG` write the
+            // backup they read `FROM` over the database they name (`WITH
+            // REPLACE` over any one). Without a `FROM` (`WITH RECOVERY`) they
+            // read no backup.
+            "RESTORE" if restores_backup(tokens, at) => reading.destroys = true,
             "ATTACH" if at == 0 => reading.moves = true,
             "XP_CMDSHELL" => reading.program = true,
             "PROGRAM" if is_word(tokens.first(), "COPY") => reading.program = true,
@@ -1005,6 +1327,38 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
             _ => {}
         }
     }
+    // The body of a function or procedure is run by every call of it:
+    // `CREATE FUNCTION f() … AS $$ DELETE FROM t $$`, and `AS '…'`.
+    if is_word(Some(first), "CREATE") && creates_routine(tokens) {
+        for (at, token) in tokens.iter().enumerate() {
+            match token {
+                Token::Dollar(body) => reading.merge(read_sql(
+                    body,
+                    Scope {
+                        dialect: Dialect::Postgres,
+                        holes: false,
+                        ..scope.within(true)
+                    },
+                )),
+                Token::Quoted(quote) if quote.string => match body_prefix(tokens, at) {
+                    Some(Prefix::Plain) => reading.merge(read_string(quote, scope.within(true))),
+                    // A `U&'…'` string spells a character as `\0065`, or
+                    // with the escape its `UESCAPE` names.
+                    Some(Prefix::Unicode)
+                        if quote.body.contains('\\') || is_word(tokens.get(at + 1), "UESCAPE") =>
+                    {
+                        reading.unreadable = true;
+                    }
+                    Some(Prefix::Unicode) => {
+                        reading.merge(read_string(quote, scope.within(true)));
+                    }
+                    None => {}
+                },
+                _ => {}
+            }
+        }
+    }
+    statement_acts(tokens, scope, &mut reading);
     // `DO $$ … $$` and `DO '…'` run the statements in the string.
     if is_word(Some(first), "DO") {
         for token in tokens {
@@ -1029,14 +1383,213 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
     reading
 }
 
-/// The words of a client command's arguments, as the client reads them:
-/// spaces separate, `'…'`, `"…"` and `` `…` `` hold spaces and a backslash
-/// quotes inside `'…'`. Also whether a backtick runs a program in them.
-fn meta_words(text: &str) -> (Vec<String>, bool) {
-    let mut words = Vec::new();
+/// The token after the first `word` outside parentheses in `tokens`, from
+/// `from` on, and its index.
+fn after_word<'a>(tokens: &'a [Token], from: usize, word: &str) -> Option<(usize, &'a Token)> {
+    let mut depth = 0usize;
+    for (at, token) in tokens.iter().enumerate().skip(from) {
+        match token {
+            Token::Symbol('(') => depth += 1,
+            Token::Symbol(')') => depth = depth.saturating_sub(1),
+            Token::Word(w) if depth == 0 && w == word => {
+                return tokens.get(at + 1).map(|next| (at + 1, next));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The files a statement writes and the programs it runs that it shows:
+/// `COPY … TO 'FILE'`, `INTO OUTFILE` and `INTO DUMPFILE`, `VACUUM INTO`,
+/// `EXPORT DATABASE`, and the functions of the `sqlite3` shell that write a
+/// file (`writefile`), load a library (`load_extension`) or run an editor
+/// (`edit`), and `PostgreSQL`'s `lo_export(OID, 'FILE')`, a function named
+/// by a quoted identifier too (`"writefile"(…)`, `[load_extension](…)`); a
+/// `DuckDB` `INSTALL` or `LOAD` of an extension, native code the client
+/// loads; and `cqlsh`'s `CAPTURE 'FILE'`. A file or a program the statement
+/// does not spell out (`E'…'`, `U&'…'`, an expression) is only known when it
+/// runs.
+fn statement_acts(tokens: &[Token], scope: Scope, reading: &mut Reading) {
+    let write = |reading: &mut Reading, token: Option<&Token>, folder: bool| match token {
+        // A backslash in a string that escapes is not the name it spells.
+        Some(Token::Quoted(quote))
+            if !has_hole(&quote.body, scope.holes)
+                && (!quote.escapes || !quote.body.contains('\\')) =>
+        {
+            reading.write(Written {
+                name: quote.body.clone(),
+                folder,
+                database: false,
+            });
+        }
+        _ => reading.unreadable = true,
+    };
+    let first = tokens.first();
+    // `COPY t TO 'FILE'`; `TO STDOUT` is the client's output, and `TO
+    // PROGRAM` runs a program (see [`statement`]). `DuckDB`'s `COPY FROM
+    // DATABASE a TO b` copies into a database it has attached.
+    let between_databases = is_word(tokens.get(1), "FROM") && is_word(tokens.get(2), "DATABASE");
+    if is_word(first, "COPY") && !between_databases {
+        if let Some((_, target)) = after_word(tokens, 1, "TO") {
+            if !matches!(target, Token::Word(w) if w == "STDOUT" || w == "PROGRAM") {
+                write(reading, Some(target), false);
+            }
+        }
+    }
+    // `DuckDB` loads an extension's native code into the client: `INSTALL
+    // x`, `FORCE INSTALL x`, `LOAD x`, `LOAD 'FILE'`.
+    if scope.dialect == Dialect::DuckDb
+        && (is_word(first, "INSTALL")
+            || is_word(first, "LOAD")
+            || (is_word(first, "FORCE") && is_word(tokens.get(1), "INSTALL")))
+    {
+        reading.program = true;
+    }
+    // `cqlsh`'s `CAPTURE 'FILE'` sends what follows to the file; `CAPTURE
+    // OFF` and a bare `CAPTURE` write none.
+    if scope.dialect == Dialect::Cql && is_word(first, "CAPTURE") {
+        match tokens.get(1) {
+            None | Some(Token::Symbol(';')) => {}
+            Some(Token::Word(w)) if w == "OFF" => {}
+            target => write(reading, target, false),
+        }
+    }
+    // `VACUUM INTO 'FILE'` writes a copy of the database.
+    if is_word(first, "VACUUM") {
+        if let Some((_, target)) = after_word(tokens, 1, "INTO") {
+            write(reading, Some(target), false);
+        }
+    }
+    // `DuckDB`'s `EXPORT DATABASE ['db' TO] 'DIR'` writes a folder.
+    if is_word(first, "EXPORT") && is_word(tokens.get(1), "DATABASE") {
+        let target = match after_word(tokens, 2, "TO") {
+            Some((_, target)) => Some(target),
+            None => tokens.get(2),
+        };
+        write(reading, target, true);
+    }
+    let shell_functions = matches!(scope.dialect, Dialect::Sqlite | Dialect::DuckDb);
+    // Where each `(` closes, worked out once for the first call that needs
+    // it: a statement of many calls is read in linear time.
+    let mut closes: Option<Vec<Option<usize>>> = None;
+    for (at, token) in tokens.iter().enumerate() {
+        let called = tokens.get(at + 1) == Some(&Token::Symbol('('));
+        // A function may be named by a quoted identifier, in any case:
+        // `"writefile"(…)`, `[load_extension](…)`, `` `edit`(…) ``.
+        let upper;
+        let word = match token {
+            Token::Word(word) => word.as_str(),
+            Token::Quoted(quote) if called => {
+                upper = quote.body.to_uppercase();
+                upper.as_str()
+            }
+            _ => continue,
+        };
+        match word {
+            // `SELECT … INTO OUTFILE 'FILE'`, and `INTO DUMPFILE`.
+            "INTO" if matches!(tokens.get(at + 1), Some(Token::Word(w)) if matches!(w.as_str(), "OUTFILE" | "DUMPFILE")) =>
+            {
+                write(reading, tokens.get(at + 2), false);
+            }
+            "WRITEFILE" if shell_functions && called => write(reading, tokens.get(at + 2), false),
+            // The server's `lo_export(OID, 'FILE')` writes the file where the
+            // server runs, as `COPY … TO 'FILE'` does: its last argument.
+            "LO_EXPORT" if scope.dialect == Dialect::Postgres && called => {
+                let closes = closes.get_or_insert_with(|| closing_parens(tokens));
+                let file = closes
+                    .get(at + 1)
+                    .copied()
+                    .flatten()
+                    .filter(|close| {
+                        close
+                            .checked_sub(2)
+                            .is_some_and(|comma| tokens.get(comma) == Some(&Token::Symbol(',')))
+                    })
+                    .and_then(|close| tokens.get(close - 1));
+                write(reading, file, false);
+            }
+            "LOAD_EXTENSION" if shell_functions && called => reading.program = true,
+            // `edit(TEXT, EDITOR)` runs the editor as a command line; with no
+            // editor it runs the one the environment names.
+            "EDIT" if shell_functions && called => {
+                match (tokens.get(at + 3), tokens.get(at + 4), tokens.get(at + 5)) {
+                    (
+                        Some(Token::Symbol(',')),
+                        Some(Token::Quoted(editor)),
+                        Some(Token::Symbol(')')),
+                    ) if editor.string
+                        && !editor.body.trim().is_empty()
+                        && !has_hole(&editor.body, scope.holes) =>
+                    {
+                        reading.run(Program::Line(editor.body.clone()));
+                    }
+                    _ => reading.program = true,
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// For each `(` in `tokens`, the index of the `)` that closes it, in one
+/// pass; `None` for any other token, and for a `(` never closed.
+fn closing_parens(tokens: &[Token]) -> Vec<Option<usize>> {
+    let mut closes = vec![None; tokens.len()];
+    let mut open: Vec<usize> = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Symbol('(') => open.push(at),
+            Token::Symbol(')') => {
+                if let Some(slot) = open.pop().and_then(|start| closes.get_mut(start)) {
+                    *slot = Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    closes
+}
+
+/// The words of a client command's arguments, as the client reads them, and
+/// for each whether the client changes it before it uses it, so that what it
+/// says is not what the client gets: a `psql` variable filled in (`:f`,
+/// `:'f'`, `:"f"`, `:{?f}`) or an escape decoded in `'…'` (`'\176'`), a
+/// `sqlcmd` variable (`$(F)`), or a `sqlite3` escape in `"…"`. Also whether a
+/// backtick runs a program in them.
+struct Words {
+    words: Vec<String>,
+    unsure: Vec<bool>,
+    backtick: bool,
+}
+
+impl Words {
+    /// Whether the word at `at` is not what the client gets.
+    fn unsure(&self, at: usize) -> bool {
+        self.unsure.get(at).copied().unwrap_or(true)
+    }
+
+    fn push(&mut self, word: String, unsure: bool) {
+        self.words.push(word);
+        self.unsure.push(unsure);
+    }
+}
+
+/// The words of a `psql`, `mysql` or `sqlcmd` command's arguments: spaces
+/// separate, `'…'`, `"…"` and `` `…` `` hold spaces and a backslash quotes
+/// inside `'…'`.
+fn meta_words(text: &str, dialect: Dialect) -> Words {
+    let mut found = Words {
+        words: Vec::new(),
+        unsure: Vec::new(),
+        backtick: false,
+    };
+    let psql = dialect == Dialect::Postgres;
+    // `sqlcmd` fills in `$(NAME)` anywhere, in quotes too.
+    let filled = dialect == Dialect::SqlServer && text.contains("$(");
     let mut word = String::new();
     let mut started = false;
-    let mut backtick = false;
+    let mut unsure = filled;
     let mut quote: Option<char> = None;
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -1049,21 +1602,32 @@ fn meta_words(text: &str) -> (Vec<String>, bool) {
                     quote = None;
                 }
             }
-            Some('\'') if c == '\\' => word.extend(chars.next()),
+            Some('\'') if c == '\\' => {
+                // `psql` decodes `\176`, `\x7e`, `\n` and the like.
+                unsure |= psql;
+                word.extend(chars.next());
+            }
             Some(_) => word.push(c),
             None => match c {
                 '\'' | '"' | '`' => {
                     quote = Some(c);
                     started = true;
-                    backtick |= c == '`';
+                    found.backtick |= c == '`';
                 }
                 c if c.is_whitespace() => {
                     if started {
-                        words.push(std::mem::take(&mut word));
+                        found.push(std::mem::take(&mut word), unsure);
                         started = false;
+                        unsure = filled;
                     }
                 }
                 c => {
+                    // A `psql` variable, outside quotes.
+                    unsure |= psql
+                        && c == ':'
+                        && chars.peek().is_some_and(|next| {
+                            is_word_char(*next) || matches!(next, '\'' | '"' | '{')
+                        });
                     word.push(c);
                     started = true;
                 }
@@ -1071,9 +1635,69 @@ fn meta_words(text: &str) -> (Vec<String>, bool) {
         }
     }
     if started {
-        words.push(word);
+        found.push(word, unsure);
     }
-    (words, backtick)
+    found
+}
+
+/// The most words a `sqlite3` dot command is split into, its name among
+/// them; what follows is not read by the shell, and so is not read here.
+const MAX_DOT_WORDS: usize = 50;
+
+/// The words of a `sqlite3` or `duckdb` dot command's arguments, as the shell
+/// splits them: spaces separate, and a word that starts with `'` or `"` runs
+/// to the same quote, with nothing doubled. A backslash in `"…"` is an escape
+/// the shell decodes (`"\176"` is `~`), so such a word is not what it says;
+/// in `'…'` and outside quotes a backslash is itself.
+fn dot_words(text: &str) -> Words {
+    let mut found = Words {
+        words: Vec::new(),
+        unsure: Vec::new(),
+        backtick: false,
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r');
+    let mut at = 0;
+    loop {
+        while chars.get(at).is_some_and(|c| space(*c)) {
+            at += 1;
+        }
+        let Some(&first) = chars.get(at) else {
+            break;
+        };
+        let start;
+        let end;
+        let mut escaped = false;
+        if matches!(first, '\'' | '"') {
+            start = at + 1;
+            at = start;
+            while let Some(&c) = chars.get(at) {
+                if c == first {
+                    break;
+                }
+                if c == '\\' && first == '"' && at + 1 < chars.len() {
+                    escaped = true;
+                    at += 1;
+                }
+                at += 1;
+            }
+            end = at.min(chars.len());
+            at += 1;
+        } else {
+            start = at;
+            while chars.get(at).is_some_and(|c| !space(*c)) {
+                at += 1;
+            }
+            end = at;
+        }
+        let word: String = chars.get(start..end).unwrap_or_default().iter().collect();
+        found.push(word, escaped);
+    }
+    // Past the most the shell keeps, the words it reads are not these.
+    if found.words.len() + 1 > MAX_DOT_WORDS {
+        found.unsure.iter_mut().for_each(|unsure| *unsure = true);
+    }
+    found
 }
 
 /// A client command's name, lower case, and its arguments: `\gexec`, `\!`,
@@ -1101,9 +1725,9 @@ fn meta_name(text: &str) -> (String, &str) {
 /// Both shells take any start of a command's name for the command
 /// (`.sh echo hi` runs `.shell`, `.rea` is `.read`), so a name counts as every
 /// one of these it starts.
-const DOT_COMMANDS: [&str; 11] = [
+const DOT_COMMANDS: [&str; 18] = [
     ".shell", ".system", ".open", ".attach", ".read", ".output", ".once", ".import", ".restore",
-    ".backup", ".save",
+    ".backup", ".save", ".clone", ".cd", ".load", ".excel", ".log", ".trace", ".archive",
 ];
 
 /// Whether the dot command `name` is `.backup` or `.save`, which write the
@@ -1115,67 +1739,100 @@ fn is_backup(name: &str) -> bool {
     starts(".backup", ".bac".len()) || starts(".save", ".sa".len())
 }
 
-/// The files that the `.backup` and `.save` commands of `text` write, as the
-/// last word of each: `.backup ?DB? FILE` and `.save ?OPTIONS? FILE` replace
-/// the file whatever the database they copy from. Only the clients with dot
-/// commands have them.
-pub(super) fn replaced_files(text: &str, dialect: Dialect, holes: bool) -> Vec<String> {
-    if !dialect.dot_commands() {
-        return Vec::new();
-    }
-    let Some(tokens) = tokenize(text, dialect, holes, Backslash::Dialect) else {
-        return Vec::new();
-    };
-    tokens
-        .iter()
-        .filter_map(|token| match token {
-            Token::Meta(text) => {
-                let (name, rest) = meta_name(text);
-                let (words, _) = meta_words(rest);
-                is_backup(&name).then(|| words.last().cloned()).flatten()
-            }
-            _ => None,
-        })
-        .collect()
+/// Whether `text`, from a double-quoted shell word when `holes`, holds an
+/// expansion the shell fills in: what it is is only known when it runs.
+fn has_hole(text: &str, holes: bool) -> bool {
+    holes && text.contains(['$', '`', '%'])
 }
 
-/// What a client command (`\c db`, `\! ls`, `.shell ls`, `\gexec`) does.
-/// `holes` says the text came from a double-quoted shell word.
-fn meta(text: &str, holes: bool) -> Reading {
+/// What a client command (`\c db`, `\! ls`, `.shell ls`, `\gexec`) of a
+/// client of `dialect` does. `holes` says the text came from a double-quoted
+/// shell word.
+fn meta(text: &str, dialect: Dialect, holes: bool) -> Reading {
     let (name, rest) = meta_name(text);
-    let (words, backtick) = meta_words(rest);
-    let mut reading = meta_command(&name, &words, backtick, holes);
+    let words = if name.starts_with('.') {
+        dot_words(rest)
+    } else {
+        meta_words(rest, dialect)
+    };
+    let command = Command {
+        written: &name,
+        rest,
+        words: &words,
+        dialect,
+        holes,
+    };
+    let mut reading = meta_command(&name, &command);
     // A dot command named by the start of its name is each command it starts.
     if name.starts_with('.') {
-        for command in DOT_COMMANDS {
-            if command != name && command.starts_with(name.as_str()) {
-                reading.merge(meta_command(command, &words, backtick, holes));
+        for dot in DOT_COMMANDS {
+            if dot != name && dot.starts_with(name.as_str()) {
+                reading.merge(meta_command(dot, &command));
             }
         }
     }
     reading
 }
 
-/// What the client command `name`, given `words`, does.
-fn meta_command(name: &str, words: &[String], backtick: bool, holes: bool) -> Reading {
+/// A client command as it is written: its name, the text after it, and that
+/// text as the client's words.
+struct Command<'a> {
+    /// The name as written, lower case: `.bac` for `.backup`.
+    written: &'a str,
+    /// The text after the name.
+    rest: &'a str,
+    words: &'a Words,
+    /// The client's: `sqlcmd` fills in its variables in a `!!` line.
+    dialect: Dialect,
+    /// Whether the text came from a double-quoted shell word.
+    holes: bool,
+}
+
+/// What the client command `name`, written as `command`, does.
+fn meta_command(name: &str, command: &Command<'_>) -> Reading {
+    let words = &command.words.words;
+    let holes = command.holes;
     let mut reading = Reading::default();
     // A command that writes to a file or, after a `|`, to a program.
     let pipes = words.iter().any(|word| word.starts_with('|'));
     let writes = matches!(
         name,
-        "\\o" | "\\g" | "\\gx" | "\\w" | ".read" | ".output" | ".once" | ".import"
+        "\\o"
+            | "\\out"
+            | "\\g"
+            | "\\gx"
+            | "\\w"
+            | "\\write"
+            | ".read"
+            | ".output"
+            | ".once"
+            | ".import"
     );
     reading.program = match name {
-        "\\!" | ".shell" | ".system" => true,
         "\\copy" => words
             .iter()
             .any(|word| word.eq_ignore_ascii_case("program")),
+        // A library loaded into the client, and the program that opens a
+        // spreadsheet or the editor (`.once -x`, `.once -e`).
+        ".load" | ".excel" => true,
+        ".output" | ".once" => {
+            pipes
+                || words
+                    .iter()
+                    .any(|word| matches!(word.as_str(), "-e" | "-x"))
+        }
         _ => writes && pipes,
     };
-    // A backtick in a `psql` command runs a program.
-    reading.program |= backtick && name.starts_with('\\');
+    // A backtick in a `psql` command runs a program; `\!` hands its line to
+    // the shell as it is, backticks too.
+    reading.program |= command.words.backtick && name.starts_with('\\') && name != "\\!";
     // What the result of a query runs, or sets for later, is not on the line.
     if matches!(name, "\\gexec" | "\\gset") {
+        reading.unreadable = true;
+    }
+    // `.archive` writes the files an archive holds, by the names in it, or
+    // an archive of them: what it writes is not on the line.
+    if name == ".archive" && !words.is_empty() {
         reading.unreadable = true;
     }
     // A target that only the shell knows may be `|program`.
@@ -1184,6 +1841,9 @@ fn meta_command(name: &str, words: &[String], backtick: bool, holes: bool) -> Re
     }
     if matches!(name, ".open" | ".attach") {
         reading.moves = true;
+    }
+    if matches!(name, "\\cd" | ".cd") {
+        reading.acts.moves_folder = true;
     }
     // A command that runs the statements of a file: `psql`'s `\i` and
     // `\include` (and their `_relative` forms), `mysql`'s `\.`, and `.read`
@@ -1199,16 +1859,181 @@ fn meta_command(name: &str, words: &[String], backtick: bool, holes: bool) -> Re
     if name == ".restore" {
         reading.destroys = true;
     }
-    // `.backup` and `.save` replace a file that only the shell knows.
-    if matches!(name, ".backup" | ".save")
-        && holes
-        && words
-            .last()
-            .is_some_and(|word| word.starts_with(['$', '`', '%']))
-    {
-        reading.unreadable = true;
-    }
+    run_shown(&mut reading, name, command);
+    write_shown(&mut reading, name, command);
     reading
+}
+
+/// The program a client command runs with the command line it shows: `\!`,
+/// `mysql`'s `system` and `pager`, `.shell` and `.system`, and the editor or
+/// pager `\setenv` sets. With no command line it runs one the line does not
+/// show (a bare `\!` starts a shell), and a line with a shell expansion in
+/// it, or one the client fills in (a `sqlcmd` `$(NAME)`, a `psql` variable, a
+/// decoded escape), is only known when it runs.
+fn run_shown(reading: &mut Reading, name: &str, command: &Command<'_>) {
+    let words = command.words;
+    let line = match name {
+        // The line as the shell gets it: what follows the name. `sqlcmd`
+        // fills in its variables first.
+        "\\!" | "system" | "pager" => {
+            let line = command.rest.trim();
+            if command.dialect == Dialect::SqlServer && line.contains("$(") {
+                reading.program = true;
+                return;
+            }
+            line.to_string()
+        }
+        // The words joined, each with a space in it quoted, as the shell of
+        // `sqlite3` makes the command line.
+        ".shell" | ".system" => {
+            if (0..words.words.len()).any(|at| words.unsure(at)) {
+                reading.program = true;
+                return;
+            }
+            words
+                .words
+                .iter()
+                .map(|word| {
+                    if word.contains(' ') {
+                        format!("\"{word}\"")
+                    } else {
+                        word.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+        "\\setenv" => {
+            let Some(variable) = words.words.first() else {
+                return;
+            };
+            // A name the client fills in may be any of them.
+            if words.unsure(0) {
+                reading.acts.environment = true;
+                reading.program = true;
+                return;
+            }
+            // Any other variable is in the environment of what it runs.
+            if !crate::unit::PSQL_PROGRAMS.contains(&variable.as_str()) {
+                reading.acts.environment = true;
+                return;
+            }
+            match words.words.get(1) {
+                // An empty value turns the pager or editor off.
+                Some(value) if value.is_empty() && !words.unsure(1) => return,
+                Some(_) if words.unsure(1) => {
+                    reading.program = true;
+                    return;
+                }
+                Some(value) => value.clone(),
+                None => return,
+            }
+        }
+        _ => return,
+    };
+    if line.is_empty() || has_hole(&line, command.holes) {
+        reading.program = true;
+    } else {
+        reading.run(Program::Line(line));
+    }
+}
+
+/// The file a client command writes, as it names it: `psql`'s `\o`, `\g`,
+/// `\w`, `\s`, `\copy … to` and `\lo_export`; `.output`, `.once`, `.backup`,
+/// `.save`, `.clone`, `.log` and `.trace`; `mysql`'s `tee`; `sqlcmd`'s
+/// `:out`, `:error` and `:perftrace`. A name with a shell expansion in it, or
+/// one the client fills in or decodes, is only known when it runs.
+fn write_shown(reading: &mut Reading, name: &str, command: &Command<'_>) {
+    let words = &command.words.words;
+    let last_file = || words.iter().rposition(|word| !word.starts_with('-'));
+    let mut database = false;
+    let at = match name {
+        "\\o" | "\\out" | "\\w" | "\\write" | "\\s" => (!words.is_empty()).then_some(0),
+        // `\g (format=csv) FILE`: the options in parentheses come first.
+        "\\g" | "\\gx" => {
+            let mut depth = 0usize;
+            words.iter().position(|word| {
+                let outside = depth == 0 && !word.starts_with('(');
+                depth += word.matches('(').count();
+                depth = depth.saturating_sub(word.matches(')').count());
+                outside
+            })
+        }
+        "\\lo_export" => (words.len() > 1).then_some(1),
+        "\\copy" => copy_target(words),
+        ".output" | ".once" => last_file(),
+        // `.log FILE` and `.trace ?OPTIONS? FILE` write their file, but not
+        // the client's own output, or none.
+        ".log" | ".trace" => last_file().filter(|&at| {
+            !["stdout", "stderr", "off", "on"].iter().any(|stream| {
+                words
+                    .get(at)
+                    .is_some_and(|word| word.eq_ignore_ascii_case(stream))
+            })
+        }),
+        ".backup" | ".save" if is_backup(command.written) => {
+            database = true;
+            words.len().checked_sub(1)
+        }
+        ".clone" => words.len().checked_sub(1),
+        "tee" => (!words.is_empty()).then_some(0),
+        ":out" | ":error" | ":perftrace" => (!words.is_empty()).then_some(0).filter(|&at| {
+            !["stdout", "stderr"].iter().any(|stream| {
+                words
+                    .get(at)
+                    .is_some_and(|word| word.eq_ignore_ascii_case(stream))
+            })
+        }),
+        _ => None,
+    };
+    let Some((at, file)) = at.and_then(|at| words.get(at).map(|file| (at, file))) else {
+        return;
+    };
+    // `mysql`'s `tee` is read to the end of its line: a `;` ends it.
+    let file = if name == "tee" {
+        file.trim_end_matches(';')
+    } else {
+        file.as_str()
+    };
+    if file.is_empty() || file.starts_with('|') {
+        return;
+    }
+    if has_hole(file, command.holes) || command.words.unsure(at) {
+        reading.unreadable = true;
+    } else {
+        reading.write(Written {
+            name: file.to_string(),
+            folder: false,
+            database,
+        });
+    }
+}
+
+/// The index of the file `\copy … to FILE` writes: the word after the first
+/// `to` outside parentheses (`\copy (SELECT …) to FILE`), unless it is the
+/// client's own output or a program. `\copy … from` writes nothing.
+fn copy_target(words: &[String]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, word) in words.iter().enumerate() {
+        if depth == 0 {
+            if word.eq_ignore_ascii_case("from") {
+                return None;
+            }
+            if word.eq_ignore_ascii_case("to") {
+                return words
+                    .get(at + 1)
+                    .is_some_and(|target| {
+                        !["stdout", "pstdout", "program"]
+                            .iter()
+                            .any(|name| target.eq_ignore_ascii_case(name))
+                    })
+                    .then_some(at + 1);
+            }
+        }
+        depth += word.matches('(').count();
+        depth = depth.saturating_sub(word.matches(')').count());
+    }
+    None
 }
 
 /// What the SQL in `text` does. `holes` says `text` came from a
@@ -1284,7 +2109,7 @@ fn read_tokens(tokens: &[Token], scope: Scope) -> Reading {
             }
             Some(Token::Meta(text)) => {
                 reading.merge(statement(tokens.get(start..at).unwrap_or_default(), scope));
-                reading.merge(meta(text, scope.holes));
+                reading.merge(meta(text, scope.dialect, scope.holes));
                 start = at + 1;
             }
             Some(_) => {}
@@ -1296,13 +2121,6 @@ fn read_tokens(tokens: &[Token], scope: Scope) -> Reading {
 /// What the `MongoDB` shell script in `text` does: drops a database or a
 /// collection, or deletes every document of one.
 pub(super) fn mongo(text: &str, holes: bool) -> Reading {
-    #[derive(PartialEq)]
-    enum Js {
-        Name(String),
-        Quoted,
-        Hole,
-        Symbol(char),
-    }
     let chars: Vec<char> = text.chars().collect();
     let mut tokens = Vec::new();
     let mut at = 0;
@@ -1332,19 +2150,26 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
             }
             '\'' | '"' | '`' => {
                 let quote = c;
+                let mut body = String::new();
                 at += 1;
                 loop {
                     match chars.get(at) {
                         None => return Reading::UNREADABLE,
-                        Some('\\') => at += 2,
+                        Some('\\') => {
+                            body.extend(chars.get(at + 1));
+                            at += 2;
+                        }
                         Some(c) if *c == quote => {
                             at += 1;
                             break;
                         }
-                        Some(_) => at += 1,
+                        Some(c) => {
+                            body.push(*c);
+                            at += 1;
+                        }
                     }
                 }
-                tokens.push(Js::Quoted);
+                tokens.push(Js::Quoted(body));
             }
             '$' | '%' if holes && hole_end(&chars, at).is_some() => {
                 at = hole_end(&chars, at).unwrap_or(at + 1);
@@ -1378,30 +2203,438 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
     if tokens.first() == Some(&Js::Hole) {
         return Reading::UNREADABLE;
     }
+    let script = Script::new(tokens);
+    let tokens = &script.tokens;
     let mut reading = Reading::default();
+    // What each `delete` command's object deletes, worked out once.
+    let mut commands: HashMap<usize, bool> = HashMap::new();
     for (at, token) in tokens.iter().enumerate() {
-        let Js::Name(name) = token else { continue };
         let after = tokens.get(at + 1);
-        let called = after == Some(&Js::Symbol('('));
-        let key = after == Some(&Js::Symbol(':'));
+        // An operation of a `bulkWrite`, an object in its list.
+        if token == &Js::Symbol('{') && script.in_list(at) {
+            reading.destroys |= script.bulk_deletes_all(at);
+            continue;
+        }
+        // A name is called (`db.dropDatabase()`) or a key (`{drop: 1}`); a
+        // string is a key (`{"drop": 1}`) or a name in brackets that is
+        // called (`db["dropDatabase"]()`). `args` is where what it is called
+        // with starts.
+        let (name, called, key, args) = match token {
+            Js::Name(name) => (
+                name,
+                after == Some(&Js::Symbol('(')),
+                after == Some(&Js::Symbol(':')),
+                at + 2,
+            ),
+            Js::Quoted(name) if after == Some(&Js::Symbol(':')) => (name, false, true, at + 2),
+            Js::Quoted(name)
+                if after == Some(&Js::Symbol(']'))
+                    && at
+                        .checked_sub(1)
+                        .is_some_and(|before| tokens.get(before) == Some(&Js::Symbol('['))) =>
+            {
+                let called = tokens.get(at + 2) == Some(&Js::Symbol('('));
+                (name, called, false, at + 3)
+            }
+            _ => continue,
+        };
+        // A name used as a value, not a key of an object (`{process: 1}`):
+        // `const r = require`, `x ? require : 0`.
+        let before = at.checked_sub(1).and_then(|before| tokens.get(before));
+        let named = !(key && matches!(before, Some(Js::Symbol('{' | ','))));
+        let free = before != Some(&Js::Symbol('.'));
+        // What reaches the files and programs of the machine however it is
+        // used, called or not: a process, code run from text, the global
+        // object a name is looked up in, and the legacy shell's file
+        // functions.
+        if named && reaches_machine(name) {
+            reading.program = true;
+            continue;
+        }
         match name.as_str() {
-            "dropDatabase" | "dropCollection" | "drop" if called || key => {
+            "dropDatabase" | "dropCollection" | "drop" | "dropAllUsers" | "dropAllRoles"
+                if called || key =>
+            {
+                reading.destroys = true;
+            }
+            "dropAllUsersFromDatabase" | "dropAllRolesFromDatabase" if key => {
                 reading.destroys = true;
             }
             "deleteMany" | "remove" if called => {
-                // No filter, or an empty one.
-                let empty = tokens.get(at + 2) == Some(&Js::Symbol(')'))
-                    || (tokens.get(at + 2) == Some(&Js::Symbol('{'))
-                        && tokens.get(at + 3) == Some(&Js::Symbol('}')));
-                reading.destroys |= empty;
+                reading.destroys |= !script.picks(args);
+            }
+            // The `delete` command: `{delete: "users", deletes: [{q: {},
+            // limit: 0}]}`.
+            "delete" if key && script.is_command(at) => {
+                reading.destroys |= match script.parent.get(at).copied().flatten() {
+                    Some(open) => *commands
+                        .entry(open)
+                        .or_insert_with(|| script.deletes_all(open)),
+                    None => true,
+                };
             }
             // `load("drop.js")` runs the script of a file, which the line
-            // does not show.
-            "load" if called => reading.unseen = true,
+            // does not show, and so may `load` named as a value.
+            "load" if called || (named && free) => reading.unseen = true,
+            // A module may write files or run programs from what the script
+            // builds, which is not read (`child_process`, `fs`, `vm`): only
+            // the few that cannot are read past, and a module only known
+            // when it runs may be any. `require` or `import` named but not
+            // called may load any module.
+            "require" | "import" if named => match script.literals(args) {
+                Some(names) if called && names.iter().all(|name| is_harmless_module(name)) => {}
+                _ => reading.program = true,
+            },
+            // The legacy shell's functions that run a program with the
+            // words they are given: `runProgram('sh', '-c', 'ls')`. A free
+            // call: `x.run(…)` is a method of something else.
+            "runProgram"
+            | "runNonMongoProgram"
+            | "runMongoProgram"
+            | "_runMongoProgram"
+            | "startMongoProgram"
+            | "startMongoProgramNoConnect"
+            | "_startMongoProgram"
+                if named =>
+            {
+                if called {
+                    run_words(&mut reading, script.literals(args), holes);
+                } else {
+                    reading.program = true;
+                }
+            }
+            "run" if named && free => {
+                if called {
+                    run_words(&mut reading, script.literals(args), holes);
+                } else {
+                    reading.program = true;
+                }
+            }
             _ => {}
         }
     }
     reading
+}
+
+/// Whether the module `name` is one of Node's that cannot write a file or
+/// run a program, `node:` before it or not.
+fn is_harmless_module(name: &str) -> bool {
+    matches!(
+        name.strip_prefix("node:").unwrap_or(name),
+        "assert"
+            | "buffer"
+            | "crypto"
+            | "events"
+            | "path"
+            | "punycode"
+            | "querystring"
+            | "string_decoder"
+            | "url"
+            | "util"
+    )
+}
+
+/// Whether a script that names `name`, called or not, may reach the files
+/// and programs of the machine in a way the reader does not follow: Node's
+/// `process` (`process.binding`, `process.dlopen`), code run from text
+/// (`eval`, `Function`, a `constructor`), the global object (`globalThis`,
+/// `global`), and the legacy shell's file functions (`removeFile`,
+/// `copyFile`, `writeFile`, `mkdir`, `cd`, `resetDbpath`, `copyDbpath`).
+fn reaches_machine(name: &str) -> bool {
+    matches!(
+        name,
+        "process"
+            | "eval"
+            | "Function"
+            | "constructor"
+            | "globalThis"
+            | "global"
+            | "removeFile"
+            | "copyFile"
+            | "writeFile"
+            | "appendFile"
+            | "mkdir"
+            | "cd"
+            | "resetDbpath"
+            | "copyDbpath"
+    )
+}
+
+/// Note the program a call runs with `words`, its arguments when each is a
+/// string: none, or one not written out, is a program the line does not show.
+/// A word with a shell expansion in it (`holes`), or a template literal's
+/// `${…}`, is only known when it runs.
+fn run_words(reading: &mut Reading, words: Option<Vec<String>>, holes: bool) {
+    match words {
+        Some(words)
+            if !words.is_empty()
+                && words
+                    .iter()
+                    .all(|word| !has_hole(word, holes) && !word.contains("${")) =>
+        {
+            reading.run(Program::Words(words));
+        }
+        _ => reading.program = true,
+    }
+}
+
+/// A token of a `MongoDB` shell script.
+#[derive(PartialEq)]
+enum Js {
+    Name(String),
+    /// A string, with what it holds.
+    Quoted(String),
+    Hole,
+    Symbol(char),
+}
+
+/// The tokens of a `MongoDB` shell script, with where each bracket closes
+/// and which bracket holds each token, found in one pass so that each
+/// question about the script is answered without reading it again.
+struct Script {
+    tokens: Vec<Js>,
+    /// For a `{`, `[` or `(`, the index just past the bracket that closes it
+    /// (or the end); for any other token, the index after it.
+    close: Vec<usize>,
+    /// The bracket each token is directly inside.
+    parent: Vec<Option<usize>>,
+}
+
+impl Script {
+    /// The arguments of the call whose `(` is just before `args`, when each
+    /// is a string, as their text; `None` when any is anything else.
+    fn literals(&self, args: usize) -> Option<Vec<String>> {
+        let open = args.checked_sub(1)?;
+        let end = self.close.get(open)?.checked_sub(1)?;
+        let mut found = Vec::new();
+        let mut at = args;
+        while at < end {
+            match self.tokens.get(at)? {
+                Js::Quoted(text) => found.push(text.clone()),
+                _ => return None,
+            }
+            at += 1;
+            match self.tokens.get(at) {
+                Some(Js::Symbol(',')) => at += 1,
+                Some(Js::Symbol(')')) if at == end => {}
+                _ => return None,
+            }
+        }
+        Some(found)
+    }
+
+    fn new(tokens: Vec<Js>) -> Self {
+        let mut close: Vec<usize> = (1..=tokens.len()).collect();
+        let mut parent = vec![None; tokens.len()];
+        let mut open: Vec<usize> = Vec::new();
+        for (at, token) in tokens.iter().enumerate() {
+            if let Some(slot) = parent.get_mut(at) {
+                *slot = open.last().copied();
+            }
+            match token {
+                Js::Symbol('{' | '[' | '(') => open.push(at),
+                Js::Symbol('}' | ']' | ')') => {
+                    if let Some(start) = open.pop() {
+                        if let Some(slot) = close.get_mut(start) {
+                            *slot = at + 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // A bracket never closed runs to the end.
+        for start in open {
+            if let Some(slot) = close.get_mut(start) {
+                *slot = tokens.len();
+            }
+        }
+        Self {
+            tokens,
+            close,
+            parent,
+        }
+    }
+
+    /// The index just past the token at `at`, or past all the bracket there
+    /// holds.
+    fn past(&self, at: usize) -> usize {
+        self.close
+            .get(at)
+            .copied()
+            .unwrap_or(self.tokens.len())
+            .max(at + 1)
+    }
+
+    /// Whether the filter that starts at `at` picks documents: an object
+    /// written out with a field in it (`{a: 1}`, `{"a.b": 1}`, `{$or: […]}`).
+    /// No filter (`)`), an empty one (`{}`), one with a spread from a value
+    /// (`{...f}`, `{a: 1, ...f}`, where `f` may hold any field) and one only
+    /// known when it runs (`f`, `$F`) pick every document there may be.
+    fn picks(&self, at: usize) -> bool {
+        self.tokens.get(at) == Some(&Js::Symbol('{'))
+            && matches!(self.tokens.get(at + 1), Some(Js::Name(_) | Js::Quoted(_)))
+            && self.tokens.get(at + 2) == Some(&Js::Symbol(':'))
+            && !self.spreads(at)
+    }
+
+    /// The tokens written in the object from `open` (its `{`) at its own
+    /// level, and the bracket that closes it: a bracket in it stands for all
+    /// it holds.
+    fn own(&self, open: usize) -> impl Iterator<Item = usize> + '_ {
+        let end = self.past(open);
+        std::iter::successors(Some(open + 1), move |at| Some(self.past(*at)))
+            .take_while(move |at| *at < end)
+    }
+
+    /// Whether the object from `open` spreads a value at its own level
+    /// (`{a: 1, ...o}`), which may set any key, or replace one written before
+    /// it.
+    fn spreads(&self, open: usize) -> bool {
+        let dot = Some(&Js::Symbol('.'));
+        self.own(open).any(|at| {
+            self.tokens.get(at) == dot
+                && self.tokens.get(at + 1) == dot
+                && self.tokens.get(at + 2) == dot
+        })
+    }
+
+    /// Where the value of the last key `name` written at the own level of
+    /// the object from `open` starts, as JavaScript takes the last of keys of
+    /// the same name. A spread is not looked into.
+    fn key_of(&self, open: usize, name: &str) -> Option<usize> {
+        self.own(open)
+            .filter(|at| {
+                matches!(self.tokens.get(*at), Some(Js::Name(key) | Js::Quoted(key)) if key == name)
+                    && self.tokens.get(at + 1) == Some(&Js::Symbol(':'))
+            })
+            .last()
+            .map(|at| at + 2)
+    }
+
+    /// Where the value of the key `name` of the object from `open` starts,
+    /// when the line shows it: `None` when the object has no such key, or
+    /// spreads a value that may set it.
+    fn value_of(&self, open: usize, name: &str) -> Option<usize> {
+        if self.spreads(open) {
+            return None;
+        }
+        self.key_of(open, name)
+    }
+
+    /// Whether the `{` at `open` is an item of a list (`[{…}, {…}]`), where
+    /// the operations of a `bulkWrite` are.
+    fn in_list(&self, open: usize) -> bool {
+        self.parent
+            .get(open)
+            .copied()
+            .flatten()
+            .is_some_and(|list| self.tokens.get(list) == Some(&Js::Symbol('[')))
+    }
+
+    /// The name of the call whose `(` is at `open`, if a name comes right
+    /// before it.
+    fn call_name(&self, open: usize) -> Option<&str> {
+        if self.tokens.get(open) != Some(&Js::Symbol('(')) {
+            return None;
+        }
+        match self.tokens.get(open.checked_sub(1)?)? {
+            Js::Name(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Whether the operation of a `bulkWrite` written as the object from
+    /// `open` deletes every document there may be: a `deleteMany` whose
+    /// filter picks none (`{deleteMany: {filter: {}}}`, and in the client's
+    /// `bulkWrite` of mongosh 2.3, `{name: "deleteMany", filter: {}}`). An
+    /// operation with a spread that may make it one is read as one.
+    fn bulk_deletes_all(&self, open: usize) -> bool {
+        let named = self.key_of(open, "name");
+        let operation = self.key_of(open, "deleteMany");
+        if self.spreads(open) {
+            return named.is_some() || operation.is_some();
+        }
+        if let Some(operation) = operation {
+            let filter = match self.tokens.get(operation) {
+                Some(Js::Symbol('{')) => self.value_of(operation, "filter"),
+                _ => None,
+            };
+            if !filter.is_some_and(|filter| self.picks(filter)) {
+                return true;
+            }
+        }
+        named.is_some_and(
+            |name| matches!(self.tokens.get(name), Some(Js::Quoted(name)) if name == "deleteMany"),
+        ) && !self
+            .value_of(open, "filter")
+            .is_some_and(|filter| self.picks(filter))
+    }
+
+    /// Whether the key `delete` at `at` names the `delete` command, not a
+    /// field: its object is what `runCommand` or `adminCommand` is given, or,
+    /// in an object no other call is given, it is the first key, as a
+    /// command's name is, and its value can be a collection's name.
+    fn is_command(&self, at: usize) -> bool {
+        let Some(open) = self.parent.get(at).copied().flatten() else {
+            return false;
+        };
+        if self.tokens.get(open) != Some(&Js::Symbol('{')) {
+            return false;
+        }
+        let call = self
+            .parent
+            .get(open)
+            .copied()
+            .flatten()
+            .and_then(|outer| self.call_name(outer));
+        if let Some(call) = call {
+            return matches!(call, "runCommand" | "adminCommand");
+        }
+        let literal = |name: &str| {
+            matches!(name, "true" | "false" | "null" | "undefined")
+                || name.starts_with(|c: char| c.is_ascii_digit())
+        };
+        at == open + 1
+            && match self.tokens.get(at + 2) {
+                Some(Js::Quoted(_) | Js::Hole) => true,
+                Some(Js::Name(name)) => !literal(name),
+                _ => false,
+            }
+    }
+
+    /// Whether the `delete` command written as the object from `open`
+    /// deletes every document there may be: one of its `deletes` has a
+    /// filter that picks none ([`Script::picks`]) and no `limit` of 1, or
+    /// the deletes are not written out.
+    fn deletes_all(&self, open: usize) -> bool {
+        let Some(list) = self.value_of(open, "deletes") else {
+            return true;
+        };
+        if self.tokens.get(list) != Some(&Js::Symbol('[')) {
+            return true;
+        }
+        let end = self.past(list).saturating_sub(1);
+        let mut each = list + 1;
+        while each < end {
+            match self.tokens.get(each) {
+                Some(Js::Symbol(',')) => each += 1,
+                Some(Js::Symbol('{')) => {
+                    let one = self.value_of(each, "limit").is_some_and(
+                        |limit| matches!(self.tokens.get(limit), Some(Js::Name(n)) if n == "1"),
+                    );
+                    let filter = self.value_of(each, "q");
+                    if !one && !filter.is_some_and(|filter| self.picks(filter)) {
+                        return true;
+                    }
+                    each = self.past(each);
+                }
+                // A delete only known when it runs.
+                _ => return true,
+            }
+        }
+        false
+    }
 }
 
 /// Whether the Redis command `command` runs a script: its second word is the
@@ -1483,14 +2716,21 @@ fn lua_strings(script: &str) -> Vec<String> {
     found
 }
 
-/// What one Redis command, as its words, does: empties a database. A script
-/// (`EVAL`) that calls such a command does too.
+/// What one Redis command, as its words, does: empties a database
+/// (`FLUSHALL`, `FLUSHDB`), deletes every function (`FUNCTION FLUSH`), or
+/// stops the server without saving what it holds in memory (`SHUTDOWN
+/// NOSAVE`). A script (`EVAL`) that calls such a command does too.
 pub(super) fn redis(words: &[&str]) -> Reading {
     let Some(command) = words.first() else {
         return Reading::default();
     };
+    let rest = || words.iter().skip(1);
     let destroys = match command.to_ascii_lowercase().as_str() {
         "flushall" | "flushdb" => true,
+        "function" => words
+            .get(1)
+            .is_some_and(|word| word.eq_ignore_ascii_case("flush")),
+        "shutdown" => rest().any(|word| word.eq_ignore_ascii_case("nosave")),
         _ if runs_script(command) => words.iter().any(|word| script_destroys(word)),
         _ => false,
     };
@@ -1597,6 +2837,16 @@ mod tests {
             "DELETE FROM a DELETE FROM b WHERE x = 1",
             "DO $$ BEGIN DROP TABLE t; END $$",
             "DO LANGUAGE plpgsql $body$ BEGIN DELETE FROM t; END $body$",
+            // A body runs wherever the function is called, which the line
+            // need not show.
+            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN DELETE FROM t; END $$ LANGUAGE plpgsql",
+            "CREATE OR REPLACE TABLE t (id int)",
+            "REPLACE TABLE t AS SELECT 1",
+            "RESTORE DATABASE x FROM DISK = 'x.bak' WITH REPLACE",
+            "SELECT dblink_exec('dbname=x', 'DROP TABLE t')",
+            "SELECT \"dblink_exec\"('dbname=x', 'DROP TABLE t')",
+            "CREATE FUNCTION f() RETURNS void AS E'DELETE FROM t' LANGUAGE sql",
+            "CREATE FUNCTION f() RETURNS void AS U&'DELETE FROM t' LANGUAGE sql",
         ] {
             assert!(destroys(text), "{text}");
         }
@@ -1624,7 +2874,13 @@ mod tests {
             "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = 1 WHEN NOT MATCHED BY SOURCE THEN DELETE",
             "SELECT TRUNCATE(1.234, 2)",
             "SELECT \"drop\" FROM t",
-            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN DELETE FROM t; END $$ LANGUAGE plpgsql",
+            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN DELETE FROM t WHERE id = 3; END $$ LANGUAGE plpgsql",
+            "CREATE OR REPLACE VIEW v AS SELECT 1",
+            "REPLACE INTO t VALUES (1)",
+            "RESTORE HEADERONLY FROM DISK = 'x.bak'",
+            "RESTORE DATABASE x WITH RECOVERY",
+            "CREATE FUNCTION f() RETURNS int AS E'SELECT 1' LANGUAGE sql",
+            "SELECT dblink_exec('dbname=x', 'INSERT INTO t VALUES (1)')",
             "",
             "   ",
         ] {
@@ -1698,17 +2954,70 @@ mod tests {
     #[test]
     fn client_commands_that_run_programs() {
         for text in [
-            "\\! rm -rf x",
+            "\\!",
             "COPY t FROM PROGRAM 'rm -rf x'",
             "\\copy t from program 'x'",
-            ".shell rm -rf x",
-            ".system ls",
+            ".system",
             ".read |ls",
+            ".load ./x",
             "EXEC xp_cmdshell 'dir'",
         ] {
             assert!(sql(text, client(text), false).program, "{text}");
         }
-        assert!(sql("system ls", Dialect::MySql, false).program);
+        // A command line the text shows is the program, read on its own.
+        let line = |text: &str, dialect: Dialect| sql(text, dialect, false).acts.programs;
+        let rm = vec![Program::Line("rm -rf x".to_string())];
+        assert_eq!(line("\\! rm -rf x", Dialect::Postgres), rm);
+        assert_eq!(
+            line("\\! rm -rf x \\o y", Dialect::Postgres),
+            vec![Program::Line("rm -rf x \\o y".to_string())]
+        );
+        assert_eq!(line(".shell rm -rf x", Dialect::Sqlite), rm);
+        assert_eq!(
+            line(".sh rm \"a b\"", Dialect::Sqlite),
+            vec![Program::Line("rm \"a b\"".to_string())]
+        );
+        assert_eq!(line("system rm -rf x", Dialect::MySql), rm);
+        assert_eq!(line("\\P rm -rf x", Dialect::MySql), rm);
+        assert_eq!(line("!! rm -rf x", Dialect::SqlServer), rm);
+        assert_eq!(line("SELECT 1\n  :!! rm -rf x", Dialect::SqlServer), rm);
+        assert!(line("SELECT 1 !! rm -rf x", Dialect::SqlServer).is_empty());
+        assert_eq!(line("SELECT edit('x', 'rm -rf x')", Dialect::Sqlite), rm);
+        let files = |text: &str, dialect: Dialect| -> Vec<String> {
+            sql(text, dialect, false)
+                .acts
+                .writes
+                .into_iter()
+                .map(|written| written.name)
+                .collect()
+        };
+        for (text, dialect) in [
+            ("\\o f", Dialect::Postgres),
+            ("SELECT 1 \\g (format=csv) f", Dialect::Postgres),
+            ("\\copy (SELECT 1) to 'f' csv", Dialect::Postgres),
+            ("\\lo_export 1 f", Dialect::Postgres),
+            ("COPY t TO 'f'", Dialect::Postgres),
+            (".once --bom f", Dialect::Sqlite),
+            (".bac main f", Dialect::Sqlite),
+            ("VACUUM INTO 'f'", Dialect::Sqlite),
+            ("EXPORT DATABASE x TO 'f'", Dialect::DuckDb),
+            ("tee f;", Dialect::MySql),
+            ("\\T f", Dialect::MySql),
+            ("SELECT 1 INTO OUTFILE 'f'", Dialect::MySql),
+            (":OUT f", Dialect::SqlServer),
+        ] {
+            assert_eq!(files(text, dialect), ["f"], "{text}");
+        }
+        for (text, dialect) in [
+            ("\\copy t from 'f'", Dialect::Postgres),
+            ("\\copy t to stdout", Dialect::Postgres),
+            ("COPY t TO STDOUT", Dialect::Postgres),
+            (".b f", Dialect::Sqlite),
+            ("SELECT 'tee f'", Dialect::MySql),
+            (":out stderr", Dialect::SqlServer),
+        ] {
+            assert!(files(text, dialect).is_empty(), "{text}");
+        }
         for text in ["\\c prod", ".dump", ".read seed.sql", "COPY t FROM 'f.csv'"] {
             assert!(!sql(text, client(text), false).program, "{text}");
         }
@@ -1737,6 +3046,18 @@ mod tests {
             "db.runCommand({dropDatabase: 1})",
             "db.runCommand({drop: 'users'})",
             "use('x'); db.dropDatabase();",
+            "db.users.deleteMany(f)",
+            "db.dropAllUsers()",
+            "db.users.bulkWrite([{deleteMany: {filter: {}}}])",
+            "db.runCommand({delete: 'users', deletes: [{q: {}, limit: 0}]})",
+            "db.runCommand({delete: 'users', deletes: [{q: {a: 1}}, {q: {}}]})",
+            "db.runCommand({delete: 'users'})",
+            "db.runCommand({delete: 'users', deletes: [{q: {}, limit: 1, limit: 0}]})",
+            "db.runCommand({delete: 'users', deletes: [{q: {a: 1}, ...o}]})",
+            "db.users.bulkWrite([{deleteMany: {filter: {a: 1}, filter: {}}}])",
+            "db.getMongo().bulkWrite([{namespace: 'a.b', name: 'deleteMany', filter: {}}])",
+            "db['dropAllUsers']()",
+            "db.users['deleteMany']({})",
         ] {
             assert!(mongo(text, false).destroys, "{text}");
         }
@@ -1747,6 +3068,12 @@ mod tests {
             "db.users.remove({a: 1})",
             "// db.dropDatabase()\ndb.users.find()",
             "print('db.dropDatabase()')",
+            "db.users.bulkWrite([{deleteMany: {hint: {a: 1}, filter: {a: 1}}}])",
+            "db.runCommand({delete: 'users', deletes: [{q: {}, limit: 1}, {q: {a: 1}}]})",
+            "db.users.find({delete: false})",
+            "db.users.insertOne({deleteMany: 1})",
+            "db.getMongo().bulkWrite([{namespace: 'a.b', name: 'deleteMany', filter: {a: 1}}])",
+            "db.users['deleteMany']({a: 1})",
         ] {
             let reading = mongo(text, false);
             assert!(!reading.destroys && !reading.unreadable, "{text}");
@@ -1763,6 +3090,10 @@ mod tests {
         assert!(redis(&["eval", "redis.call('FLUSHALL')", "0"]).destroys);
         assert!(!redis(&["get", "k"]).destroys);
         assert!(!redis(&["del", "k"]).destroys);
+        assert!(redis(&["FUNCTION", "FLUSH"]).destroys);
+        assert!(redis(&["shutdown", "now", "nosave"]).destroys);
+        assert!(!redis(&["SHUTDOWN", "SAVE"]).destroys);
+        assert!(!redis(&["FUNCTION", "LIST"]).destroys);
         assert!(redis_lines("SET a 1\nFLUSHDB\n", false).destroys);
         assert!(!redis_lines("SET a \"FLUSHALL\"\n", false).destroys);
         assert!(redis_lines("$CMD", true).unreadable);

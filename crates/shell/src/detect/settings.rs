@@ -9,10 +9,10 @@ pub(super) mod firewall;
 use super::processes::{
     is_system_label, is_system_unit, unit_pattern_matches, unit_pattern_stops_system,
 };
-use super::{script_operand, Checker, CONTENTS};
+use super::{hedged, script_operand, Checker, CONTENTS};
 use crate::launch::SHELLS;
 use crate::path::{Access, Place};
-use crate::unit::{has_flag, operands, Arg, Unit};
+use crate::unit::{has_flag, operands, unread_option, Arg, Unit};
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::glob;
 use milo_guards_core::Flavour;
@@ -239,8 +239,9 @@ const SPCTL_LONG: [&str; 4] = ["type", "label", "context", "priority"];
 const PFCTL_VALUED: &str = "aDfFikKopsTtxX";
 
 /// The reason for a firewall program given an option only known when it
-/// runs.
-const FIREWALL_UNKNOWN: &str = "changes the firewall in a way only known when it runs";
+/// runs, said as what may happen (see [`hedged`]): only that option turns
+/// it on.
+const FIREWALL_UNKNOWN: &str = "may change the firewall with an option only known when it runs";
 
 /// Preference keys that keep a protection of the machine on, with their
 /// domain and the reason a change of one gives: `LSQuarantine` marks what is
@@ -773,7 +774,13 @@ fn may_protect(name: &str) -> bool {
 }
 
 impl Checker<'_> {
-    /// Machine settings of macOS and Linux.
+    /// Machine settings of macOS and Linux. An argument of one of these
+    /// programs that may split into words when it runs (`iptables $flag`)
+    /// may be the option that changes a setting, so a line the program's
+    /// own reading finds nothing in is a change all the same. `service`,
+    /// `launchctl` and the other service managers take no option that
+    /// changes what their words do, which their own reading judges one by
+    /// one, an unknown one included.
     pub(super) fn settings(&mut self, at: usize, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
         // pwsh on Linux and macOS runs a path under `/etc/init.d` as the
@@ -782,7 +789,9 @@ impl Checker<'_> {
             self.init_script(unit, &unit.program, args, false);
             self.shell_runs_init_script(unit, key);
         }
-        match base_name(key) {
+        let before = self.found.len();
+        let name = base_name(key);
+        match name {
             "spctl" => self.spctl(args),
             "csrutil" => self.csrutil(args),
             "setenforce" => self.setenforce(args),
@@ -826,12 +835,11 @@ impl Checker<'_> {
                     .iter()
                     .position(|arg| arg.known() == Some("--nc"))
                     .map_or(args, |at| &args[..at]);
-                if has_long(args, "set", 3) || unknown_option(options, scutil_valued) {
-                    self.add(
-                        Rule::SystemSettings,
-                        "changes the computer's name or network settings",
-                        None,
-                    );
+                let reason = "changes the computer's name or network settings";
+                if has_long(args, "set", 3) {
+                    self.add(Rule::SystemSettings, reason, None);
+                } else if unknown_option(options, scutil_valued) {
+                    self.add(Rule::SystemSettings, hedged(reason), None);
                 }
             }
             "hostnamectl" | "timedatectl" => self.set_commands(args, key),
@@ -861,7 +869,27 @@ impl Checker<'_> {
             {
                 self.add(Rule::SystemSettings, BOOT_CHANGES, None);
             }
-            _ => {}
+            _ => return,
+        }
+        if self.found.len() == before
+            && !matches!(
+                name,
+                "service"
+                    | "invoke-rc.d"
+                    | "rc-service"
+                    | "rc-update"
+                    | "update-rc.d"
+                    | "chkconfig"
+                    | "sv"
+                    | "launchctl"
+            )
+            && unread_option(args, unit.shell)
+        {
+            self.add(
+                Rule::SystemSettings,
+                hedged("changes a machine setting"),
+                None,
+            );
         }
     }
 
@@ -936,10 +964,10 @@ impl Checker<'_> {
             || has_long(args, "global-disable", 8)
             || has_long(args, "disable", 1)
         {
-            Some("turns off Gatekeeper")
+            Some("turns off Gatekeeper".to_string())
         } else if has_long(args, "add", 2) {
             // A rule that lets what it names pass Gatekeeper's check.
-            Some("lets programs skip Gatekeeper")
+            Some("lets programs skip Gatekeeper".to_string())
         } else {
             let walk = getopt_walk(args, "t", &SPCTL_LONG);
             // The action after the command word, in lower case, or `None`
@@ -957,10 +985,9 @@ impl Checker<'_> {
                     .then_some("lets programs skip Gatekeeper"),
                 _ => None,
             };
-            named.or_else(|| {
-                walk.unknown
-                    .then_some("changes Gatekeeper in a way only known when it runs")
-            })
+            named
+                .map(str::to_string)
+                .or_else(|| walk.unknown.then(|| hedged("changes Gatekeeper")))
         };
         if let Some(reason) = reason {
             self.add(Rule::SystemSettings, reason, None);
@@ -1786,12 +1813,11 @@ impl Checker<'_> {
             .any(|prefix| lower.starts_with(prefix))
         });
         // Each setting is an option, followed by its values.
-        if sets || unknown_option(args, valued) {
-            self.add(
-                Rule::SystemSettings,
-                "changes system or network settings",
-                None,
-            );
+        let reason = "changes system or network settings";
+        if sets {
+            self.add(Rule::SystemSettings, reason, None);
+        } else if unknown_option(args, valued) {
+            self.add(Rule::SystemSettings, hedged(reason), None);
         }
     }
 
@@ -1854,11 +1880,7 @@ impl Checker<'_> {
         } else if unknown_option(args, |text| {
             takes_value(text, APPARMOR_SHORT, &APPARMOR_LONG)
         }) {
-            self.add(
-                Rule::SystemSettings,
-                "changes AppArmor in a way only known when it runs",
-                None,
-            );
+            self.add(Rule::SystemSettings, hedged("changes AppArmor"), None);
         }
     }
 
@@ -1901,7 +1923,8 @@ impl Checker<'_> {
         } else if deletes {
             "changes the audit rules"
         } else if unknown_option(args, |text| takes_value(text, AUDITCTL_VALUED, &[])) {
-            "changes auditing in a way only known when it runs"
+            self.add(Rule::SystemSettings, hedged("changes auditing"), None);
+            return;
         } else {
             return;
         };
@@ -2062,9 +2085,10 @@ impl Checker<'_> {
                         .any(|letter| "iurde".contains(letter))
                 }),
             });
-        let changes = named || unknown_option(args, |text| takes_value(text, VALUED, &LONGS));
-        if changes {
+        if named {
             self.add(Rule::SystemSettings, SELINUX_CHANGES, None);
+        } else if unknown_option(args, |text| takes_value(text, VALUED, &LONGS)) {
+            self.add(Rule::SystemSettings, hedged(SELINUX_CHANGES), None);
         }
     }
 

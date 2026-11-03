@@ -4,6 +4,8 @@
 //! `Invoke-Expression`) has that script split in its own grammar. A package
 //! runner (`npx`, `uvx`, `bunx`) is a wrapper for the program it names.
 
+use std::rc::Rc;
+
 use crate::dotglob;
 use crate::extended;
 use crate::inline::{self, Code, Language};
@@ -16,12 +18,13 @@ mod find;
 mod git;
 mod interpreters;
 mod npm;
+mod packages;
 mod parallel;
 mod tools;
 mod wrappers;
 
 use find::find_exec;
-pub(crate) use find::find_targets;
+pub(crate) use find::{find_targets, find_unread_primary, FIND_VALUED};
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
 pub(crate) use interpreters::{
     after_run, code_options, perl_edits, valued_options, BUN_VALUES, DENO_VALUES, INTERPRETERS,
@@ -67,6 +70,14 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It is the program the rules judge, and it runs each of these
+    /// commands through `shell` besides (`tar --to-command`, `zip -TT`),
+    /// from a folder only known when it runs when `moves` (`tar -C`).
+    Commands {
+        shell: Shell,
+        commands: Vec<Arg>,
+        moves: bool,
+    },
     /// It runs `code`, given inline, in `language`.
     Inline(Language, Code),
     /// It runs a script it downloads.
@@ -91,16 +102,28 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     // and so is the folder it starts the program in.
     let options = split.node_options.len();
     let paths = split.python_path.len();
-    let terraform = split.tf_cli_args.len();
+    let zip = split.zip_env.clone();
+    let variables = split.argument_variables.len();
     let environment = split.environment;
     let folders = split.folders_mark();
     add_unit(split, unit, depth);
     split.leave_folders(folders);
     split.node_options.truncate(options);
     split.python_path.truncate(paths);
-    split.tf_cli_args.truncate(terraform);
+    split.zip_env = zip;
+    split.truncate_argument_variables(variables);
     split.environment = environment;
     split.unscope_hidden(outer);
+}
+
+/// Whether `script`, which the runner `key` of `unit` runs, is the value of
+/// a variable the line sets (`npm_config_call`), not text of its own.
+fn runs_variable(key: &str, unit: &Unit, script: &Arg) -> bool {
+    matches!(key, "npx" | "npm")
+        && unit
+            .argument_variables
+            .iter()
+            .any(|(name, value)| unit::npm_call(name) && value == script)
 }
 
 /// Add `units`, the readings of one command (cmd's `echo\x.exe` may run
@@ -257,7 +280,25 @@ fn add_launched(
             split.push(unit);
             return;
         };
-        let launched = given.take().unwrap_or_else(|| launch(&key, &unit));
+        // `ZIPOPT=-m zip …`: zip reads its options from there first, on
+        // Windows too (`$env:ZIPOPT`, `set ZIPOPT=`).
+        if key == "zip" && !split.zip_env.is_empty() {
+            zip_options(split, &mut unit);
+        }
+        // What the line sets for the program where it runs, which a runner
+        // reads (`npm_config_call='…' npx`).
+        unit.argument_variables = Rc::clone(&split.argument_variables);
+        let input = fed(&unit) || split.inherits_input > 0;
+        let launched = given.take().unwrap_or_else(|| launch(&key, &unit, input));
+        // The command `npm_config_call` sets runs once for each `npx`: its
+        // readings are bounded as a line's own text is.
+        if let Launch::Script(_, script) = &launched {
+            if runs_variable(&key, &unit, script) && !unit::read_from_variable(split, script.text())
+            {
+                split.push(unit);
+                return;
+            }
+        }
         // `env X=1 cmd` and `env -u X cmd` change the program's environment,
         // as `coproc X=1 cmd` and `time X=1 cmd` do.
         if split.kept.on && unit.shell != Shell::Cmd {
@@ -301,6 +342,15 @@ fn add_launched(
                 return;
             }
             Launch::Itself => {
+                // `coproc NAME {` with the group's commands on the lines
+                // after it runs nothing of its own: what runs is read there,
+                // and the `}` that closes the group is taken off by the walk.
+                if key == "coproc" && unit.shell == Shell::Posix && unit.wrappers.is_empty() {
+                    if let Some(groups) = coproc_opens_only(&unit.args) {
+                        split.coproc_groups += groups;
+                        return;
+                    }
+                }
                 // What `find` picks is handed to the programs its `-exec` runs.
                 let first = split.units.len();
                 if key == "find" && unit.shell == Shell::Posix {
@@ -315,6 +365,9 @@ fn add_launched(
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
                 let own = unit.args.get(..start).unwrap_or_default();
+                if key == "coproc" && unit.shell == Shell::Posix {
+                    split.coproc_groups += coproc_groups(own);
+                }
                 split.environment += usize::from(sets_environment(&key, own));
                 split
                     .node_options
@@ -322,9 +375,12 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
-                split
-                    .tf_cli_args
-                    .extend(wrappers::tf_cli_args(&unit.args, start));
+                for (name, value) in wrappers::zip_env(&unit.args, start) {
+                    split.zip_env.set(name, &value, false);
+                }
+                for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
+                    split.note_argument_variable(name, value);
+                }
                 // `env BASH_ENV=f bash`: the shell it starts runs `f`.
                 let files = if key == "env" && unit.shell == Shell::Posix {
                     startup::env(split, &unit.args[..start], depth)
@@ -362,9 +418,12 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
-                split
-                    .tf_cli_args
-                    .extend(wrappers::tf_cli_args(&unit.args, start));
+                for (name, value) in wrappers::zip_env(&unit.args, start) {
+                    split.zip_env.set(name, &value, false);
+                }
+                for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
+                    split.note_argument_variable(name, value);
+                }
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
@@ -395,6 +454,9 @@ fn add_launched(
                     && shell == Shell::Posix
                     && extended::starts_with(&unit.args);
                 let stage = unit.stage;
+                // A shell handed a file or a pipe on its input hands it on
+                // to what its script runs (`cmd /c python < x.py`).
+                let hands_input = key != "trap" && fed(&unit);
                 let inherited = key == "trap" && trap_inherited(&unit.args);
                 // A script `xargs` or `parallel` hands to a shell runs once
                 // for each item it reads, as a loop body runs: its `$1` and
@@ -459,6 +521,7 @@ fn add_launched(
                         // PowerShell's `Invoke-Expression` runs its string in
                         // the session, which has one location.
                         let here = key == "eval" || key == "invoke-expression";
+                        split.inherits_input += usize::from(hands_input);
                         split.repeats += usize::from(per_item);
                         // `git submodule foreach` runs its command in a folder
                         // the line does not name; the rest of the line is
@@ -491,6 +554,7 @@ fn add_launched(
                             split.restore_dir(place);
                         }
                         split.repeats -= usize::from(per_item);
+                        split.inherits_input -= usize::from(hands_input);
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
@@ -513,6 +577,14 @@ fn add_launched(
                         Some(other.text()),
                     ),
                 }
+                return;
+            }
+            Launch::Commands {
+                shell,
+                commands,
+                moves,
+            } => {
+                run_commands(split, unit, shell, commands, moves, depth);
                 return;
             }
             Launch::Inline(language, code) => {
@@ -583,6 +655,86 @@ fn add_launched(
     split.push(unit);
 }
 
+/// Add `unit`, an archiver, and the `commands` it runs through `shell`
+/// besides, each nested under it, from a folder only known when it runs
+/// when it `moves`. A function of its own, so that its locals are not on
+/// the stack of [`add_launched`] in the deepest walk of a nested line.
+#[inline(never)]
+fn run_commands(
+    split: &mut Split,
+    unit: Unit,
+    shell: Shell,
+    commands: Vec<Arg>,
+    moves: bool,
+    depth: usize,
+) {
+    let at = split.units.len();
+    split.push(unit);
+    for command in commands {
+        let Arg::Known(text) = command else {
+            split.problem(
+                Rule::Unknown,
+                "runs a command only known when it runs",
+                Some(command.text()),
+            );
+            continue;
+        };
+        // Each runs in a shell of its own, which a `GLOBIGNORE` in front of
+        // the program hands the option to.
+        let outer = split.hidden_snapshot();
+        if split.scoped_hidden() {
+            split.hide_for_script();
+        }
+        // `tar -C dir` runs it from `dir`, or from where the line was:
+        // which, only the order of the run shows.
+        let outer_dir = moves.then(|| split.dir_snapshot());
+        if moves {
+            split.move_unknown("the folder it runs in");
+        }
+        let first = split.units.len();
+        unit::script_in(split, &text, shell, depth + 1, false);
+        if let Some(place) = outer_dir {
+            split.restore_dir(place);
+        }
+        split.nest(at..at + 1, first..split.units.len());
+        split.restore_hidden(outer);
+    }
+}
+
+/// What an archiver that may run commands through a shell besides does:
+/// itself alone, or with the commands its arguments give.
+#[inline(never)]
+fn archiver(key: &str, unit: &Unit) -> Launch {
+    let (commands, moves) = crate::detect::archive_commands(key, &unit.args, unit.shell);
+    if commands.is_empty() {
+        Launch::Itself
+    } else {
+        Launch::Commands {
+            shell: if unit.shell == Shell::Posix {
+                Shell::Posix
+            } else {
+                Shell::Cmd
+            },
+            commands,
+            moves,
+        }
+    }
+}
+
+/// Put the options `ZIPOPT` (or `ZIP`) gives in front of `zip`'s own, as it
+/// reads them. A value only known when it runs may hold any option, `-m`
+/// among them.
+#[inline(never)]
+fn zip_options(split: &mut Split, unit: &mut Unit) {
+    let read = split.zip_env.read();
+    for (reason, text) in read.problems {
+        split.problem(Rule::Unknown, reason, text.as_deref());
+    }
+    let mut words = read.words;
+    words.append(&mut unit.args);
+    unit.args = words;
+}
+
 /// The name and value of each alias `alias NAME=VALUE…` defines: every word
 /// that holds one, after a `--` that ends the options.
 fn aliases(args: &[Arg]) -> Vec<(&str, &str)> {
@@ -628,6 +780,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         stdin,
         startup,
         depth,
+        names,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -659,6 +812,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         dir: None,
         elsewhere: Vec::new(),
         stayed: Vec::new(),
+        adrift: false,
         hidden: false,
         startup,
         repeated: false,
@@ -667,12 +821,15 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
-        tf_cli_args: Vec::new(),
+        argument_variables: Rc::default(),
         depth,
+        names,
     }
 }
 
-fn launch(key: &str, unit: &Unit) -> Launch {
+/// `input` is whether the program is handed an input of its own: a pipe, a
+/// file, or what the shell whose script runs it was handed (see [`fed`]).
+fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
     let args = &unit.args;
     let posix = unit.shell != Shell::Cmd;
     match key {
@@ -920,20 +1077,39 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         "npx" | "npm" | "pnpm" | "pnpx" | "pnx" | "yarn" | "bunx" | "uvx" | "uv" | "pipx" => {
             runner(key, unit)
         }
+        // Runners of a project's environment start the command they name,
+        // as `uv run` does.
+        "poetry" | "pdm" | "hatch" | "conda" | "mamba" | "micromamba" | "pixi" | "rye"
+        | "volta" | "mise" | "pipenv" => runner(key, unit),
+        // `corepack pnpm@9 dlx …` starts the package manager it names.
+        "corepack" if packages::corepack_runs(args) => {
+            Launch::Replace(Box::new(wrappers::running(unit, key, 0)))
+        }
+        // Packages that run a command: `shx rm`, `cross-env A=1 cmd`.
+        "shx" | "cross-env" => packages::command_runner(key, args).unwrap_or(Launch::Itself),
+        // Packages that run shell lines: `concurrently 'cmd' 'cmd'`.
+        "cross-env-shell" | "concurrently" | "npm-run-all" | "run-s" | "run-p" => {
+            packages::line_runner(key, unit).unwrap_or(Launch::Itself)
+        }
         "dx" => runner(key, unit),
+        // An archiver that runs commands through a shell besides: `/bin/sh`
+        // on a POSIX system, and `cmd` on Windows.
+        "tar" | "gtar" | "bsdtar" | "zip" => archiver(key, unit),
         "git" => git::launch(args),
-        "bun" => bun(unit),
-        "deno" => deno(unit),
-        key if SHELLS.contains(&key) && posix => shell(args),
+        "bun" => bun(unit, input),
+        "deno" => deno(unit, input),
+        // In every shell: a cmd line starts bash and its kin as the others
+        // do (`bash -c "rm -rf /"`).
+        key if SHELLS.contains(&key) => shell(args),
         // Also under cmd and PowerShell: the code they are given is not
         // read there, which comes back as `unknown`. A line with nothing to
         // run (`python --version`, a bare `python`) reads its input only
         // where it did before: under any but cmd, and anywhere when
-        // something is piped into it.
+        // something is piped into it or a file is redirected onto it.
         key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => {
-            interpreter(key, args, posix || piped(unit))
+            interpreter(key, args, posix || input)
         }
-        "cmd" => cmd(args),
+        "cmd" => cmd(args, unit.shell),
         "powershell" | "pwsh" => powershell(args),
         "invoke-expression" if unit.shell == Shell::PowerShell && unit.downloaded => {
             Launch::Downloaded
@@ -1112,6 +1288,13 @@ fn piped(unit: &Unit) -> bool {
     unit.stage.is_some_and(|stage| stage.index > 0)
 }
 
+/// Whether the unit is handed an input of its own: another program's output
+/// piped into it, or a file, a here-document or a here-string redirected
+/// onto it (`python < x.py`).
+fn fed(unit: &Unit) -> bool {
+    piped(unit) || unit.stdin.is_some()
+}
+
 /// What `coproc` runs: the first word past an optional name, the `{` words
 /// that open a group (`coproc NAME { { cmd; }; }`), and what stands before a
 /// command (`NAME=value` words, `!`). A loop, a conditional or a function
@@ -1119,14 +1302,27 @@ fn piped(unit: &Unit) -> bool {
 /// pieces by the grammar, its body behind the program `do`, so it is not
 /// read.
 pub(super) fn coproc(args: &[Arg]) -> Launch {
+    command_after(args, coproc_name(args), false)
+}
+
+/// How many words name a `coproc` (`coproc NAME { … }`): one or none. A
+/// name stands before a group or a compound command; before a simple
+/// command the first word is the program.
+fn coproc_name(args: &[Arg]) -> usize {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
     let stuck = |at: usize| word(at).is_some_and(stuck_group);
-    // A name stands before a group or a compound command; before a simple
-    // command the first word is the program.
-    let at = usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)));
-    command_after(args, at, false)
+    usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)))
+}
+
+/// How many groups a `coproc` opens when its words past the name are only
+/// `{` words, the group's commands on the lines after it (`coproc NAME {`,
+/// a newline, `ls`): `None` when it has other words, or none.
+fn coproc_opens_only(args: &[Arg]) -> Option<usize> {
+    let rest = args.get(coproc_name(args)..).unwrap_or_default();
+    (!rest.is_empty() && rest.iter().all(|arg| arg.known().is_some_and(opens_group)))
+        .then(|| coproc_groups(rest))
 }
 
 /// What runs after a word that starts a command of its own (`coproc`,
@@ -1151,6 +1347,16 @@ fn command_after(args: &[Arg], mut at: usize, repeat: bool) -> Launch {
     } else {
         runs(args, Some(at))
     }
+}
+
+/// How many groups the words before what a `coproc` runs open: each `{`
+/// of the words [`coproc`] steps over (`{ {` is one word, two groups).
+fn coproc_groups(own: &[Arg]) -> usize {
+    own.iter()
+        .filter_map(Arg::known)
+        .filter(|text| opens_group(text))
+        .map(|text| text.matches('{').count())
+        .sum()
 }
 
 /// Whether `key` is a word that starts a command of its own, which the

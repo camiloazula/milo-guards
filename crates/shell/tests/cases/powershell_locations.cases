@@ -133,11 +133,14 @@ powershell finds=overwrite | cd $key; Move-Item x NUL
 # of the current drive: after a `cd` to the registry, `Function:` or a place
 # only known when it runs, that is not the file system, so `NUL` there is an
 # item.
-powershell safe | cd Function:; cd \\; cd C:\\x; Remove-Item NUL
+powershell safe | cd Function:; cd \\; cd C:\\x && Remove-Item NUL
 powershell safe | cd C:\\x; cd \\; Remove-Item NUL
 powershell safe | cd \\; Remove-Item NUL
 powershell safe | cd C:\\x; cd /; Remove-Item NUL
-powershell safe | cd Function:; cd C:\\x; Remove-Item NUL
+powershell safe | cd Function:; cd C:\\x && Remove-Item NUL
+# A `cd` that may have failed leaves the line in `Function:`, where `NUL` is
+# an item.
+powershell finds=delete | cd Function:; cd C:\\x; Remove-Item NUL
 powershell finds=overwrite | cd Function:; cd \\; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
 powershell finds=system_settings | cd HKCU:\\Software\\Foo; cd \\; Remove-Item NUL -Recurse
 powershell finds=system_settings | cd HKCU:\\Software\\Foo; cd \\Software\\Foo; Set-ItemProperty NUL -Name x -Value 1

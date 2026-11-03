@@ -1,6 +1,7 @@
 //! The rule about resources the guard sees no path for: containers and their
 //! volumes, cluster objects, infrastructure stacks, hosted repositories and
-//! sites, and what a cloud CLI or an object store deletes.
+//! sites, and what a cloud CLI, a cloud's PowerShell cmdlet or an object
+//! store deletes.
 //!
 //! Each program is read like git is: the program, its global options, its
 //! command and sub-command, and the few options that change what a command
@@ -9,9 +10,12 @@
 
 use milo_guards_core::spelling::glob;
 
+use super::hedged;
 use super::Checker;
 use crate::path::brace_list;
-use crate::unit::{has_flag, Arg, Split, Unit};
+use crate::unit::{
+    could_be, flagged, has_flag, may_be_option, may_split, unread_option, Arg, Flagged, Split, Unit,
+};
 use crate::{Rule, Shell};
 
 /// What a program's line says.
@@ -20,12 +24,25 @@ enum Say<'a> {
     Safe,
     /// A reason a prompt can show, and the thing it acts on.
     Destroys(&'static str, Option<&'a Arg>),
+    /// As `Destroys`, when only an argument only known when it runs that
+    /// may be the option that destroys turns it on (see [`hedged`]).
+    May(&'static str, Option<&'a Arg>),
     /// The command is only known when it runs; `None` is the usual reason
     /// ("runs a docker command only known when it runs"), `Some` its own.
     Unread(Option<&'static str>),
 }
 
-use Say::{Destroys, Safe, Unread};
+use Say::{Destroys, May, Safe, Unread};
+
+/// `Destroys` for an option written out, `May` for one an argument only
+/// known when it runs may be, and `Safe` without it.
+fn destroys<'a>(flagged: Flagged, reason: &'static str, target: Option<&'a Arg>) -> Say<'a> {
+    match flagged {
+        Flagged::Written => Destroys(reason, target),
+        Flagged::Unread => May(reason, target),
+        Flagged::Absent => Safe,
+    }
+}
 
 impl Say<'_> {
     /// What `self` says, or what `next` says when that is more: a line
@@ -34,8 +51,12 @@ impl Say<'_> {
     fn or_else(self, next: impl FnOnce() -> Self) -> Self {
         match self {
             Destroys(..) => self,
-            Unread(_) => match next() {
+            May(..) => match next() {
                 said @ Destroys(..) => said,
+                _ => self,
+            },
+            Unread(_) => match next() {
+                said @ (Destroys(..) | May(..)) => said,
                 _ => self,
             },
             Safe => next(),
@@ -46,6 +67,12 @@ impl Say<'_> {
 impl Checker<'_> {
     /// Containers, clusters, infrastructure stacks and cloud resources.
     pub(super) fn resources(&mut self, unit: &Unit, key: &str) {
+        if unit.shell == Shell::PowerShell {
+            if let Some(reason) = cloud_cmdlet(key) {
+                self.add(Rule::DestroyResources, reason, None);
+                return;
+            }
+        }
         let args = unit.args.as_slice();
         let read_as = read_as(key);
         let values = values_of(read_as);
@@ -55,7 +82,7 @@ impl Checker<'_> {
         let said = match read_as {
             // Containers.
             "docker" | "podman" | "nerdctl" => engine(args, unit, self.split),
-            "docker-compose" | "podman-compose" => compose(args),
+            "docker-compose" | "podman-compose" => compose(args, unit.shell),
             "docker-machine" => first_word(
                 args,
                 &values,
@@ -69,12 +96,12 @@ impl Checker<'_> {
                 "deletes a virtual machine and its containers",
             ),
             // Clusters.
-            "kubectl" | "oc" => kubectl(args),
-            "microk8s" => microk8s(args),
-            "k3s" => k3s(args, &[], &["kubectl"]),
+            "kubectl" | "oc" => kubectl(args, unit.shell),
+            "microk8s" => microk8s(args, unit.shell),
+            "k3s" => k3s(args, &[], &["kubectl"], unit.shell),
             // `kc` is k0s's short name for its kubectl.
-            "k0s" => k3s(args, K0S_VALUES, &["kubectl", "kc"]),
-            "minikube" => minikube(args),
+            "k0s" => k3s(args, K0S_VALUES, &["kubectl", "kc"], unit.shell),
+            "minikube" => minikube(args, unit.shell),
             "helm" => helm(args),
             "helmfile" => first_word(
                 args,
@@ -102,7 +129,7 @@ impl Checker<'_> {
                 &[],
                 "deletes Flux objects from a cluster",
             ),
-            "nomad" => nomad(args, &values),
+            "nomad" => nomad(args, &values, unit.shell),
             "skaffold" => first_word(
                 args,
                 &values,
@@ -153,9 +180,9 @@ impl Checker<'_> {
                 "destroys virtual machines",
             ),
             // Cloud.
-            "aws" => aws(args),
-            "gcloud" => gcloud(args, &values),
-            "gsutil" => gsutil(args),
+            "aws" => aws(args, unit.shell),
+            "gcloud" => gcloud(args, &values, unit.shell),
+            "gsutil" => gsutil(args, unit.shell),
             "az" => cloud(
                 args,
                 &values,
@@ -423,6 +450,7 @@ impl Checker<'_> {
         match said {
             Safe => {}
             Destroys(reason, target) => self.add(Rule::DestroyResources, reason, target),
+            May(reason, target) => self.add(Rule::DestroyResources, hedged(reason), target),
             Unread(Some(reason)) => self.add(Rule::Unknown, reason, None),
             Unread(None) => self.add(
                 Rule::Unknown,
@@ -435,6 +463,568 @@ impl Checker<'_> {
         }
     }
 }
+
+/// What a cmdlet of a cloud's PowerShell modules removes, by its name (the
+/// key: lower case, without a module's qualifier): a `Remove-` cmdlet whose
+/// noun starts with one of the cloud's prefixes. `Remove-AzVM`,
+/// `Remove-AzureRmResourceGroup`, `Remove-EC2Instance`, `Remove-S3Bucket`,
+/// `Remove-GcsBucket`, `Remove-GkeCluster` and `Remove-MgUser` delete what
+/// they name in the cloud, and the guard cannot tell a scratch resource from
+/// one that matters, so each is a delete whatever its parameters (`-WhatIf`
+/// among them: a quoted `'-WhatIf'` is a value, and the guard reads both as
+/// the same word).
+///
+/// PowerShell reads a cmdlet's name in any case, so the prefix is read in
+/// lower case too, and a noun of another module that starts like one
+/// (`Remove-SmbShare`, `Remove-LocalUser`) is told apart by
+/// [`NOT_CLOUD_NOUNS`], unless a longer AWS prefix starts it too
+/// (`Remove-SecurityIRResourceTag` against `secur`). The cmdlets that only
+/// change the module's own sign-in on this machine (`Remove-AzContext`)
+/// delete nothing in the cloud.
+fn cloud_cmdlet(key: &str) -> Option<&'static str> {
+    let noun = key.strip_prefix("remove-")?;
+    let after = |prefix: &str| noun.strip_prefix(prefix).filter(|rest| !rest.is_empty());
+    let aws = AWS_PREFIXES
+        .iter()
+        .filter(|prefix| after(prefix).is_some())
+        .map(|prefix| prefix.len())
+        .max();
+    let other = NOT_CLOUD_NOUNS
+        .iter()
+        .filter(|other| noun.starts_with(**other))
+        .map(|other| other.len())
+        .max();
+    if let Some(other) = other {
+        if aws.is_none_or(|aws| aws <= other) {
+            return None;
+        }
+    }
+    if let Some(rest) = after("az") {
+        let rest = ["urerm", "ure"]
+            .iter()
+            .find_map(|family| rest.strip_prefix(family))
+            .unwrap_or(rest);
+        return (!AZURE_SIGN_IN.contains(&rest)).then_some("deletes Azure resources");
+    }
+    if ["gc", "gke", "bq"]
+        .iter()
+        .any(|prefix| after(prefix).is_some())
+    {
+        return Some("deletes Google Cloud resources");
+    }
+    if aws.is_some() {
+        return Some("deletes AWS resources");
+    }
+    ["mg", "entra", "msol"]
+        .iter()
+        .any(|prefix| after(prefix).is_some())
+        .then_some("deletes Microsoft Entra or Microsoft 365 objects")
+}
+
+/// The nouns the Azure modules' sign-in cmdlets take after their prefix
+/// (`Remove-AzContext`, `Remove-AzureRmAccount`, an alias of
+/// `Disconnect-AzureRmAccount`): they change what this machine is signed in
+/// to, not the cloud.
+const AZURE_SIGN_IN: &[&str] = &["context", "account", "environment"];
+
+/// The noun prefixes of the AWS Tools for PowerShell, one to a service, in
+/// lower case and sorted: the `ServiceNounPrefix` of every service in the
+/// generator's configuration of AWS Tools 5.0.327
+/// (`generator/AWSPSGeneratorLib/Config/ServiceConfig`), with those of the
+/// services earlier versions shipped and later ones dropped (`AT`, `CWEVD`,
+/// `ETS`, `FINSP`, `FNSP`, `IOTE`, `IOTED`, `IOTFH`, `LFV`, `LOM`, `PAN`,
+/// `QLDB`, `QLDBS`, `ROBO`, `SSW`, `TNB`) and `SimpleDB`'s `SDB`. A longer
+/// prefix that starts with a shorter one (`EC2` and `ECS` with
+/// `ElastiCache`'s `EC`) is kept, so the list can be checked against AWS's.
+const AWS_PREFIXES: &[&str] = &[
+    "a2ir",
+    "aab",
+    "aar",
+    "aas",
+    "abc",
+    "accac",
+    "acct",
+    "acd",
+    "acm",
+    "acp",
+    "act",
+    "adc",
+    "ads",
+    "af",
+    "afab",
+    "ag",
+    "ag2",
+    "agm",
+    "agrc",
+    "agrg",
+    "ahl",
+    "aiops",
+    "ais",
+    "amm",
+    "amp",
+    "ampb",
+    "ampui",
+    "amsh",
+    "amsp",
+    "appc",
+    "aps",
+    "arc",
+    "arex",
+    "art",
+    "as",
+    "asa",
+    "asp",
+    "asyn",
+    "at",
+    "ath",
+    "audm",
+    "avp",
+    "awsb",
+    "azs",
+    "b2bi",
+    "bac",
+    "bacc",
+    "bak",
+    "baks",
+    "bar",
+    "bat",
+    "bcmd",
+    "bcmde",
+    "bcmpc",
+    "bcmra",
+    "bda",
+    "bdar",
+    "bdr",
+    "bdrr",
+    "bgt",
+    "brkt",
+    "bugw",
+    "c9",
+    "ca",
+    "cb",
+    "cc",
+    "cca",
+    "ccas",
+    "ccat",
+    "ccl",
+    "ccon",
+    "ccs",
+    "ccs2",
+    "cd",
+    "cdir",
+    "ce",
+    "cf",
+    "cfg",
+    "cfkv",
+    "cfn",
+    "cgi",
+    "cgip",
+    "cgis",
+    "cgp",
+    "cgr",
+    "cgs",
+    "chat",
+    "chm",
+    "chmid",
+    "chmmg",
+    "chmmp",
+    "chmtg",
+    "chmvo",
+    "clcat",
+    "cmpm",
+    "cnh",
+    "co",
+    "coa",
+    "coh",
+    "comp",
+    "conn",
+    "connp",
+    "cont",
+    "cp",
+    "cpf",
+    "crml",
+    "crs",
+    "cs",
+    "csd",
+    "cstc",
+    "cstn",
+    "ct",
+    "ctd",
+    "cur",
+    "cw",
+    "cwai",
+    "cwas",
+    "cwe",
+    "cwevd",
+    "cwim",
+    "cwl",
+    "cwnm",
+    "cwoadmn",
+    "cwoam",
+    "cwom",
+    "cwrum",
+    "cwsyn",
+    "dax",
+    "dc",
+    "ddb",
+    "ddbs",
+    "df",
+    "dguru",
+    "dlm",
+    "dms",
+    "doc",
+    "doce",
+    "dops",
+    "dp",
+    "ds",
+    "dsd",
+    "dsql",
+    "dsyn",
+    "dtct",
+    "dtex",
+    "dz",
+    "eb",
+    "ebs",
+    "ec",
+    "ec2",
+    "ec2ib",
+    "ec2ic",
+    "ecr",
+    "ecrp",
+    "ecs",
+    "edrs",
+    "efs",
+    "eks",
+    "eksau",
+    "elb",
+    "elb2",
+    "emc",
+    "emcn",
+    "emi",
+    "eml",
+    "emp",
+    "empv",
+    "emr",
+    "emrc",
+    "emrserverless",
+    "ems",
+    "emsd",
+    "emt",
+    "eres",
+    "es",
+    "ets",
+    "eum",
+    "evb",
+    "evbv2",
+    "evs",
+    "fd",
+    "finsp",
+    "fis",
+    "fms",
+    "fnsp",
+    "frc",
+    "frcq",
+    "fsx",
+    "ft",
+    "gacl",
+    "gd",
+    "gdb",
+    "geom",
+    "geop",
+    "geor",
+    "gg",
+    "ggv2",
+    "glc",
+    "glue",
+    "gml",
+    "gmls",
+    "gs",
+    "hlth",
+    "hsm",
+    "hsm2",
+    "iam",
+    "iamaa",
+    "iamra",
+    "iamtb",
+    "ids",
+    "ie",
+    "ifw",
+    "ins",
+    "ins2",
+    "intc",
+    "inv",
+    "iot",
+    "iotda",
+    "iote",
+    "ioted",
+    "iotfh",
+    "iotj",
+    "iotmi",
+    "iotst",
+    "iotsw",
+    "iottg",
+    "iottm",
+    "iotw",
+    "iscan",
+    "ivs",
+    "ivsc",
+    "ivsrt",
+    "kin",
+    "kina",
+    "kina2",
+    "kinf",
+    "kms",
+    "kndr",
+    "knrk",
+    "ks",
+    "kst",
+    "kv",
+    "kvm",
+    "kvsc",
+    "kvws",
+    "l4e",
+    "lex",
+    "lfv",
+    "licm",
+    "lkf",
+    "llms",
+    "lm",
+    "lmb",
+    "lmbv2",
+    "lmc",
+    "lmus",
+    "lmvm2",
+    "loc",
+    "lom",
+    "lrsv2",
+    "ls",
+    "lweb",
+    "lwiz",
+    "mac2",
+    "mas",
+    "mbc",
+    "mbcq",
+    "mca",
+    "mcat",
+    "md",
+    "mdb",
+    "mes",
+    "mgn",
+    "mgrf",
+    "mh",
+    "mhc",
+    "mho",
+    "mhrs",
+    "mhs",
+    "mis",
+    "mktd",
+    "ml",
+    "mm",
+    "mmgr",
+    "mpa",
+    "mpv2",
+    "mq",
+    "mr",
+    "msk",
+    "mskc",
+    "mtr",
+    "mwaa",
+    "mwaas",
+    "nept",
+    "neptg",
+    "nfm",
+    "nmgr",
+    "nova",
+    "npt",
+    "nsm",
+    "nwfw",
+    "odb",
+    "omics",
+    "org",
+    "os",
+    "osis",
+    "oss",
+    "outp",
+    "pan",
+    "paycc",
+    "paycd",
+    "pc",
+    "pca",
+    "pcaa",
+    "pcaad",
+    "pcascep",
+    "pcb",
+    "pcc",
+    "pcrm",
+    "pcs",
+    "pd",
+    "pers",
+    "perse",
+    "persr",
+    "pi",
+    "pin",
+    "pine",
+    "pipes",
+    "pls",
+    "pol",
+    "ppm",
+    "pro",
+    "prom",
+    "qapps",
+    "qbus",
+    "qc",
+    "qldb",
+    "qldbs",
+    "qs",
+    "r53",
+    "r53d",
+    "r53gr",
+    "r53p",
+    "r53r",
+    "r53rc",
+    "ram",
+    "rbin",
+    "rds",
+    "rdsd",
+    "rek",
+    "resh",
+    "resp",
+    "rg",
+    "rgt",
+    "rh2",
+    "robo",
+    "rrc",
+    "rs",
+    "rsd",
+    "rss",
+    "rtb",
+    "s3",
+    "s3c",
+    "s3f",
+    "s3o",
+    "s3t",
+    "s3v",
+    "sar",
+    "sc",
+    "scar",
+    "sch",
+    "schm",
+    "sd",
+    "sdb",
+    "sdbv2",
+    "sdms",
+    "sec",
+    "secag",
+    "securityir",
+    "ses",
+    "ses2",
+    "sfn",
+    "sg",
+    "sgnd",
+    "shld",
+    "shub",
+    "slk",
+    "sm",
+    "smc",
+    "sme",
+    "smfs",
+    "smgs",
+    "smjr",
+    "smm",
+    "smr",
+    "smsap",
+    "smsv",
+    "smtsr",
+    "snow",
+    "sns",
+    "social",
+    "sp",
+    "sq",
+    "sqs",
+    "ssm",
+    "ssmg",
+    "ssmi",
+    "ssmqs",
+    "sso",
+    "ssoadmn",
+    "ssooidc",
+    "ssw",
+    "sts",
+    "sup",
+    "supaz",
+    "supch",
+    "sust",
+    "swf",
+    "ta",
+    "tfr",
+    "tidb",
+    "tnb",
+    "trn",
+    "trs",
+    "tsa",
+    "tsq",
+    "tsw",
+    "txt",
+    "unc",
+    "uno",
+    "uxc",
+    "vid",
+    "vpcl",
+    "waf",
+    "waf2",
+    "wafr",
+    "wat",
+    "wd",
+    "wic",
+    "wks",
+    "wksi",
+    "wm",
+    "wmmf",
+    "wsdm",
+    "wstc",
+    "wsw",
+    "xr",
+];
+
+/// The nouns of other modules' `Remove-` cmdlets that start like a cloud
+/// prefix: SMB shares, DSC configurations, Remote Desktop collections and
+/// servers, assigned access, OS configuration, Exchange organization
+/// relationships and virtual directories, security and session settings,
+/// this computer and its local users and groups, WMI objects, Active
+/// Directory computers, claims, access policies and service accounts,
+/// certificate enrollment, ODBC data sources, storage masking sets, the
+/// secrets of a local vault, provisioned Appx packages, `VMware`'s CD drives,
+/// customization specs and ESX depots, and Reporting Services' catalog.
+const NOT_CLOUD_NOUNS: &[&str] = &[
+    "smb",
+    "dscconfiguration",
+    "rdsession",
+    "rdserver",
+    "assignedaccess",
+    "osconfig",
+    "organization",
+    "secur",
+    "session",
+    "computer",
+    "localuser",
+    "localgroup",
+    "wmiobject",
+    "adcomputer",
+    "adclaim",
+    "adcentralaccess",
+    "adserviceaccount",
+    "certificate",
+    "odbcdsn",
+    "maskingset",
+    "secret",
+    "provisionedappx",
+    "ecpvirtualdirectory",
+    "cddrive",
+    "oscustomizationspec",
+    "esx",
+    "rscatalogitem",
+    "rsrestcatalogitem",
+];
 
 /// Whether the unit is PowerShell's `sls`, written bare (any case, no
 /// extension, no path): the alias of `Select-String`.
@@ -959,8 +1549,9 @@ const VERCEL_VALUES: &[&str] = &[
     "--project",
 ];
 
-/// Options of heroku that take a value.
-const HEROKU_VALUES: &[&str] = &["-a", "--app", "-r", "--remote", "-t", "--team"];
+/// Options of heroku that take a value, before or after its command.
+pub(super) const HEROKU_VALUES: &[&str] =
+    &["-a", "--app", "-r", "--remote", "-t", "--team", "--confirm"];
 
 /// Options of wrangler that take a value.
 const WRANGLER_VALUES: &[&str] = &[
@@ -1173,7 +1764,7 @@ const GH_API_VALUES: &[&str] = &[
 const NETLIFY_VALUES: &[&str] = &["--auth", "--filter"];
 
 /// Options of supabase that take a value.
-const SUPABASE_VALUES: &[&str] = &[
+pub(super) const SUPABASE_VALUES: &[&str] = &[
     "--workdir",
     "--profile",
     "-o",
@@ -1181,6 +1772,7 @@ const SUPABASE_VALUES: &[&str] = &[
     "--network-id",
     "--dns-resolver",
     "--project-ref",
+    "--db-url",
 ];
 
 /// Options of openstack that take a value.
@@ -1380,7 +1972,7 @@ fn helped(args: &[Arg], values: &[&str]) -> bool {
 }
 
 /// Every word that is not an option, in order, as [`command`] reads them.
-fn words<'a>(args: &'a [Arg], values: &[&str]) -> Vec<&'a Arg> {
+pub(super) fn words<'a>(args: &'a [Arg], values: &[&str]) -> Vec<&'a Arg> {
     let mut found = Vec::new();
     let mut rest = args;
     while let Some((word, after)) = command(rest, values) {
@@ -1425,39 +2017,27 @@ fn computed(arg: &Arg, unit: &Unit, split: &Split) -> bool {
         Arg::Unknown(_) | Arg::Template { .. } if unit.repeated => true,
         Arg::Unknown(_) | Arg::Template { .. } => {
             let text = arg.text();
-            text.contains("$(")
+            // A word splits where an expansion in it is not quoted:
+            // `app-"$ENV"` is one word, `app-$ENV` and `$ids` may be several.
+            may_split(arg, shell)
+                || text.contains("$(")
                 || text.contains('`')
                 || text.contains("<(")
                 || match shell {
-                    // A word splits where an expansion in it is not
-                    // quoted: `app-"$ENV"` is one word, `app-$ENV` and
-                    // `$ids` may be several.
                     Shell::Posix => {
-                        text.contains("$@")
-                            || text.contains("${@")
-                            || text.contains("[@]")
-                            || prefix_names(text)
+                        prefix_names(text)
                             || splits(text)
                             || names_variable(text, |name| split.looped(name))
                     }
                     Shell::PowerShell => {
-                        (text.starts_with('"')
+                        text.starts_with('"')
                             && names_variable(text, |name| {
                                 split.looped(name)
                                     || name == "_"
                                     || name.eq_ignore_ascii_case("psitem")
-                            }))
-                            || text.starts_with('(')
-                            || text.starts_with("@(")
-                            || (text.starts_with('$')
-                                && !text
-                                    .get(..5)
-                                    .is_some_and(|head| head.eq_ignore_ascii_case("$env:")))
-                            || (text.starts_with('@') && text.len() > 1)
+                            })
                     }
-                    Shell::Cmd => {
-                        !text.starts_with('"') && (text.contains('%') || text.contains('!'))
-                    }
+                    Shell::Cmd => false,
                 }
         }
     }
@@ -1904,7 +2484,7 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
     match name {
         "rm" => return remove_containers(rest, unit, split),
         "rmi" => return remove_images(rest, unit, split),
-        "compose" => return compose(rest),
+        "compose" => return compose(rest, unit.shell),
         "system" | "volume" | "container" | "image" | "network" | "stack" | "service" | "pod"
         | "machine" | "kube" | "play" | "secret" | "config" | "node" | "swarm" => {}
         _ => return Safe,
@@ -1927,17 +2507,26 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
         ("container", "rm" | "remove") => remove_containers(after, unit, split),
         ("container", "prune") => Destroys("deletes every stopped container", target),
         ("image", "rm" | "remove") => remove_images(after, unit, split),
-        ("image", "prune") if has_flag(after, Some('a'), Some("all")) => {
-            Destroys("deletes every unused image", target)
-        }
+        ("image", "prune") => destroys(
+            flagged(after, unit.shell, Some('a'), Some("all")),
+            "deletes every unused image",
+            target,
+        ),
         ("network", "prune") => Destroys("deletes unused networks", target),
         ("stack" | "service", "rm" | "remove") => Destroys("removes swarm services", target),
         ("secret", "rm" | "remove") => Destroys("deletes swarm secrets", target),
         ("config", "rm" | "remove") => Destroys("deletes swarm configs", target),
         ("node", "rm" | "remove") => Destroys("removes nodes from a swarm", target),
-        ("swarm", "leave") if has_flag(after, Some('f'), None) || turned_on(after, "force") => {
-            Destroys("leaves a swarm, even as its last manager", target)
-        }
+        ("swarm", "leave") => destroys(
+            Flagged::of(
+                has_flag(after, Some('f'), None) || turned_on(after, "force"),
+                may_be_option(after, unit.shell, |start| {
+                    could_be(start, Some('f'), Some("force"))
+                }),
+            ),
+            "leaves a swarm, even as its last manager",
+            target,
+        ),
         ("pod", "rm") => remove_containers(after, unit, split),
         ("pod", "prune") => Destroys("deletes every stopped pod", target),
         ("machine", "rm") => Destroys("deletes a virtual machine and its containers", target),
@@ -1946,9 +2535,11 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
         }
         ("kube", "down") => Destroys("removes the pods a file created", target),
         // `play kube` is podman's older name for `kube play`.
-        ("kube", "play") | ("play", "kube") if has_flag(after, None, Some("down")) => {
-            Destroys("removes the pods a file created", target)
-        }
+        ("kube", "play") | ("play", "kube") => destroys(
+            flagged(after, unit.shell, None, Some("down")),
+            "removes the pods a file created",
+            target,
+        ),
         _ => Safe,
     }
 }
@@ -2019,7 +2610,7 @@ fn remove_images<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
 
 /// `docker compose`, `docker-compose` and `podman-compose`. `--dry-run`, a
 /// flag of compose itself, runs nothing on either side of the command.
-fn compose(args: &[Arg]) -> Say<'_> {
+fn compose(args: &[Arg], shell: Shell) -> Say<'_> {
     if rehearsal(args, COMPOSE_VALUES, "dry-run") {
         return Safe;
     }
@@ -2029,15 +2620,15 @@ fn compose(args: &[Arg]) -> Say<'_> {
     let Some(name) = cmd.known() else {
         return Unread(None);
     };
-    let volumes = has_flag(rest, Some('v'), Some("volumes"));
+    let volumes = flagged(rest, shell, Some('v'), Some("volumes"));
     match name {
-        "down" if volumes => Destroys("deletes a compose project's volumes", None),
-        "rm" if volumes => Destroys("removes containers and their volumes", None),
+        "down" => destroys(volumes, "deletes a compose project's volumes", None),
+        "rm" => destroys(volumes, "removes containers and their volumes", None),
         _ => Safe,
     }
 }
 
-fn kubectl(args: &[Arg]) -> Say<'_> {
+fn kubectl(args: &[Arg], shell: Shell) -> Say<'_> {
     // `minikube kubectl -- delete …`: the `--` is minikube's, and what
     // follows is kubectl's own line, help flag included.
     let args = match args.first().and_then(Arg::known) {
@@ -2063,8 +2654,12 @@ fn kubectl(args: &[Arg]) -> Say<'_> {
         };
         match sub.known() {
             Some("drain") => {}
-            Some("prune") if turned_on(after, "confirm") => {
-                return Destroys(
+            Some("prune") => {
+                return destroys(
+                    Flagged::of(
+                        turned_on(after, "confirm"),
+                        may_be_option(after, shell, |start| could_be(start, None, Some("confirm"))),
+                    ),
                     "deletes old images, builds or deployments",
                     words(after, KUBECTL_VALUES).first().copied(),
                 )
@@ -2109,9 +2704,11 @@ fn kubectl(args: &[Arg]) -> Say<'_> {
             Replicas::Unread => Unread(Some("scales to a count only known when it runs")),
             Replicas::Other => Safe,
         },
-        "replace" if has_flag(rest, None, Some("force")) => {
-            Destroys("deletes and recreates cluster objects", target)
-        }
+        "replace" => destroys(
+            flagged(rest, shell, None, Some("force")),
+            "deletes and recreates cluster objects",
+            target,
+        ),
         "apply" if has_flag(rest, None, Some("prune")) => {
             Destroys("deletes cluster objects the files do not list", target)
         }
@@ -2125,18 +2722,23 @@ fn kubectl(args: &[Arg]) -> Say<'_> {
         {
             Destroys("deletes and recreates cluster objects", target)
         }
+        "apply" => destroys(
+            flagged(rest, shell, None, Some("prune")),
+            "deletes cluster objects the files do not list",
+            target,
+        ),
         _ => Safe,
     }
 }
 
 /// `microk8s kubectl …`, `microk8s helm …` (and `helm3`), and its own
 /// `reset`.
-fn microk8s(args: &[Arg]) -> Say<'_> {
+fn microk8s(args: &[Arg], shell: Shell) -> Say<'_> {
     let Some((cmd, rest)) = command(args, SMALL_CLUSTER_VALUES) else {
         return Safe;
     };
     match cmd.known() {
-        Some("kubectl") => kubectl(rest),
+        Some("kubectl") => kubectl(rest, shell),
         Some("helm" | "helm3") => helm(rest),
         Some("reset") => Destroys("deletes every workload of a MicroK8s cluster", None),
         Some(_) => Safe,
@@ -2146,19 +2748,19 @@ fn microk8s(args: &[Arg]) -> Say<'_> {
 
 /// `k3s kubectl …` and `k0s kubectl …` (or `k0s kc …`): `names` are the
 /// program's names for its kubectl.
-fn k3s<'a>(args: &'a [Arg], values: &[&str], names: &[&str]) -> Say<'a> {
+fn k3s<'a>(args: &'a [Arg], values: &[&str], names: &[&str], shell: Shell) -> Say<'a> {
     let Some((cmd, rest)) = command(args, values) else {
         return Safe;
     };
     match cmd.known() {
-        Some(name) if names.contains(&name) => kubectl(rest),
+        Some(name) if names.contains(&name) => kubectl(rest, shell),
         Some(_) => Safe,
         None => Unread(None),
     }
 }
 
 /// `minikube delete`, and `minikube kubectl -- …`.
-fn minikube(args: &[Arg]) -> Say<'_> {
+fn minikube(args: &[Arg], shell: Shell) -> Say<'_> {
     let Some((cmd, rest)) = command(args, MINIKUBE_VALUES) else {
         return Safe;
     };
@@ -2170,7 +2772,7 @@ fn minikube(args: &[Arg]) -> Say<'_> {
             &["delete"],
             "deletes a node of a local Kubernetes cluster",
         ),
-        Some("kubectl") => kubectl(rest),
+        Some("kubectl") => kubectl(rest, shell),
         Some(_) => Safe,
         None => Unread(None),
     }
@@ -2272,6 +2874,8 @@ fn apply<'a>(rest: &[Arg], unit: &Unit) -> Say<'a> {
         Destroys(TERRAFORM_DESTROYS, None)
     } else if replaces(&args) {
         Destroys("destroys resources to create them again", None)
+    } else if unread_option(rest, unit.shell) {
+        May(TERRAFORM_DESTROYS, None)
     } else if unread {
         Unread(Some(
             "runs terraform apply with arguments only known when it runs",
@@ -2289,7 +2893,7 @@ fn apply<'a>(rest: &[Arg], unit: &Unit) -> Say<'a> {
 fn tf_cli_args(unit: &Unit, command: &str) -> (Vec<Arg>, bool) {
     let mut found = Vec::new();
     let mut unread = false;
-    for (name, value) in &unit.tf_cli_args {
+    for (name, value) in unit.argument_variables.iter() {
         let applies = name == "TF_CLI_ARGS" || name.strip_prefix("TF_CLI_ARGS_") == Some(command);
         if !applies {
             continue;
@@ -2414,7 +3018,7 @@ fn pulumi(args: &[Arg]) -> Say<'_> {
     }
 }
 
-fn aws(args: &[Arg]) -> Say<'_> {
+fn aws(args: &[Arg], shell: Shell) -> Say<'_> {
     let words = words(args, AWS_VALUES);
     let Some(service) = words.first() else {
         return Safe;
@@ -2438,9 +3042,11 @@ fn aws(args: &[Arg]) -> Say<'_> {
         }
         ("s3", "rm") => Destroys("deletes objects from a bucket", target),
         ("s3", "rb") => Destroys("deletes a bucket", target),
-        ("s3", "sync") if has_flag(args, None, Some("delete")) => {
-            Destroys("deletes the objects the source does not have", target)
-        }
+        ("s3", "sync") => destroys(
+            flagged(args, shell, None, Some("delete")),
+            "deletes the objects the source does not have",
+            target,
+        ),
         (_, "terminate-instances") => Destroys("terminates EC2 instances", target),
         (_, verb)
             if verb.starts_with("delete-")
@@ -2485,7 +3091,7 @@ fn rehearses(args: &[Arg]) -> bool {
 /// `gcloud`: a delete or destroy verb, `storage rm`, and `storage rsync`
 /// with `--delete-unmatched-destination-objects`, which deletes what the
 /// source does not have like `gsutil rsync -d`.
-fn gcloud<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
+fn gcloud<'a>(args: &'a [Arg], values: &[&str], shell: Shell) -> Say<'a> {
     let said = cloud(
         args,
         values,
@@ -2504,11 +3110,20 @@ fn gcloud<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
     let words = words(args, values);
     let storage_rsync = words.first().is_some_and(|w| w.known() == Some("storage"))
         && words.get(1).is_some_and(|w| w.known() == Some("rsync"));
-    if storage_rsync && has_flag(args, None, Some("delete-unmatched-destination-objects")) {
-        return Destroys(
+    if storage_rsync {
+        let said = destroys(
+            flagged(
+                args,
+                shell,
+                None,
+                Some("delete-unmatched-destination-objects"),
+            ),
             "deletes the objects the source does not have",
             words.get(2).copied(),
         );
+        if !matches!(said, Safe) {
+            return said;
+        }
     }
     said
 }
@@ -2548,7 +3163,7 @@ fn firebase<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
 /// `nomad`: a `delete` or `purge` among the first words, and a job stopped
 /// with `-purge` (`nomad job stop -purge web`, or the older `nomad stop`),
 /// which deletes it from the cluster.
-fn nomad<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
+fn nomad<'a>(args: &'a [Arg], values: &[&str], shell: Shell) -> Say<'a> {
     or_else(
         cloud(
             args,
@@ -2562,10 +3177,9 @@ fn nomad<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
         || {
             let words = words(args, values);
             let at = usize::from(words.first().and_then(|word| word.known()) == Some("job"));
-            if words.get(at).and_then(|word| word.known()) == Some("stop")
-                && turned_on(args, "purge")
-            {
-                Destroys(
+            if words.get(at).and_then(|word| word.known()) == Some("stop") {
+                destroys(
+                    Flagged::of(turned_on(args, "purge"), unread_option(args, shell)),
                     "stops a Nomad job and deletes it",
                     words.get(at + 1).copied(),
                 )
@@ -2639,7 +3253,7 @@ fn api<'a>(args: &'a [Arg], deletes: &'static str, unread: &'static str) -> Say<
     }
 }
 
-fn gsutil(args: &[Arg]) -> Say<'_> {
+fn gsutil(args: &[Arg], shell: Shell) -> Say<'_> {
     let Some((cmd, rest)) = command(args, GSUTIL_VALUES) else {
         return Safe;
     };
@@ -2647,9 +3261,11 @@ fn gsutil(args: &[Arg]) -> Say<'_> {
     match cmd.known() {
         Some("rm") => Destroys("deletes Cloud Storage objects", target),
         Some("rb") => Destroys("deletes a Cloud Storage bucket", target),
-        Some("rsync") if has_flag(rest, Some('d'), None) => {
-            Destroys("deletes the objects the source does not have", target)
-        }
+        Some("rsync") => destroys(
+            flagged(rest, shell, Some('d'), None),
+            "deletes the objects the source does not have",
+            target,
+        ),
         Some(_) => Safe,
         None => Unread(None),
     }

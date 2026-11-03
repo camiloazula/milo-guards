@@ -12,11 +12,16 @@ use milo_guards_core::spelling::glob;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-use crate::unit::{operands, plain, Arg, Importing, Reads, Scope, Split, Unit};
+use crate::unit::{
+    may_split, operands, plain, unknown_start, Arg, Flagged, Importing, Reads, Scope, Split, Unit,
+};
 use crate::{Finding, Rule, Shell};
 use milo_guards_core::Flavour;
 
 mod archives;
+
+pub(crate) use archives::commands as archive_commands;
+
 mod code;
 mod data;
 mod files;
@@ -66,6 +71,10 @@ pub(crate) const DOWNLOADERS: [&str; 10] = [
     "start-bitstransfer",
 ];
 
+/// What the reason of a finding judged from another folder a `cd` before it
+/// may have left the line in ends with (see [`Unit::others`]).
+const MOVED_OFF: &str = " if a cd before it failed or did not run";
+
 /// What the rules found in a split line: the findings of the whole line,
 /// and where each came from.
 #[derive(Debug, Default)]
@@ -82,7 +91,20 @@ pub(crate) struct Judged {
 }
 
 pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
+    judge(split, resolver, data::Nest::default())
+}
+
+/// What the rules find in `split`, a program a database client runs, read
+/// as a line of its own `nest` deep in such programs.
+fn nested(split: &Split, resolver: &Resolver, nest: data::Nest) -> Vec<Finding> {
+    judge(split, resolver, nest).found
+}
+
+/// [`findings`], for a line `nest` deep in the programs database clients
+/// run (see [`data::Nest`]).
+fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
     let mut checker = Checker::new(split, resolver);
+    checker.data.nest = nest;
     checker.found.clone_from(&split.findings);
     for unit in &split.units {
         let by_cmdlet = writes_by_cmdlet(unit);
@@ -101,7 +123,9 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
             }
         }
     }
-    for write in &split.writes {
+    // A write placed from another folder the line may be in is read for a
+    // later run from that folder already (see [`Unit::others`]).
+    for write in split.writes.iter().filter(|write| !write.also) {
         checker.written(write.dir.as_ref(), &write.target, write.shell);
     }
     for write in &split.unsure_writes {
@@ -114,7 +138,16 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     let mut units = Vec::with_capacity(split.units.len());
     for (at, unit) in split.units.iter().enumerate() {
         let before = checker.found.len();
-        checker.unit(at, unit);
+        checker.unit(at, unit, true);
+        // A `cd` before it that may not have run, or may have failed, may
+        // have left the line in another folder: its paths are judged from
+        // there too. A run of a file the line wrote is judged from each of
+        // them already.
+        let own = checker.found.len();
+        for dir in unit.others() {
+            checker.unit(at, &unit.in_folder(dir), false);
+        }
+        checker.moved_off(before, own);
         checker.loose(at, before);
         units.push(checker.found[before..].to_vec());
     }
@@ -122,11 +155,47 @@ pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     let before = checker.found.len();
     checker.redirected_reads();
     line.extend_from_slice(&checker.found[before..]);
-    let mut writes = Vec::with_capacity(split.writes.len());
+    let mut writes: Vec<Vec<Finding>> = Vec::with_capacity(split.writes.len());
+    // A redirect is written from each folder the line may be in, and a
+    // folder a `cd` that may have failed left the line in stays one of them
+    // for the units after it: the same file from the same folder is judged
+    // once.
+    type Key<'s> = (Shell, Option<&'s Arg>, bool, &'s Arg, bool);
+    let mut judged: HashMap<Key<'_>, Vec<Finding>> = HashMap::new();
+    // What the redirect being read found from the folders the walk has the
+    // line in (the writes of one redirect come together, those first): from
+    // another folder the line may be in, the same finding is that one.
+    let mut plain: (Option<&Arg>, Vec<Finding>) = (None, Vec::new());
     for write in &split.writes {
-        let before = checker.found.len();
-        checker.write(write.shell, write.scope(), &write.target, "writes to");
-        writes.push(checker.found[before..].to_vec());
+        if !write.also && plain.0 != Some(&write.target) {
+            plain = (Some(&write.target), Vec::new());
+        }
+        let key = (
+            write.shell,
+            write.dir.as_ref(),
+            write.hidden,
+            &write.target,
+            write.also,
+        );
+        let found = if let Some(found) = judged.get(&key) {
+            checker.found.extend_from_slice(found);
+            found.clone()
+        } else {
+            let before = checker.found.len();
+            checker.write(write.shell, write.scope(), &write.target, "writes to");
+            if write.also {
+                let mine = std::mem::take(&mut plain.1);
+                checker.moved_off_from(&mine, before);
+                plain.1 = mine;
+            }
+            let found = checker.found[before..].to_vec();
+            judged.insert(key, found.clone());
+            found
+        };
+        if !write.also {
+            plain.1.extend_from_slice(&found);
+        }
+        writes.push(found);
     }
     // Inline code the guard did not read whole is `unknown`, but only where
     // nothing else was found: a line that already asks, or that the guard is
@@ -418,6 +487,29 @@ impl Checker<'_> {
         });
     }
 
+    /// Say of each finding from `before` on that only an option the line
+    /// does not show makes the program do it (see [`hedged`]).
+    fn hedge(&mut self, before: usize) {
+        for finding in self.found.iter_mut().skip(before) {
+            finding.reason = hedged(&finding.reason);
+        }
+    }
+
+    /// What `act` finds, when an option that turns it on is given: as
+    /// found when it is written out, said as what the program may do when
+    /// only an argument only known when it runs may be it (see [`hedged`]).
+    fn flagged(&mut self, flagged: Flagged, act: impl FnOnce(&mut Self)) {
+        let before = self.found.len();
+        match flagged {
+            Flagged::Absent => {}
+            Flagged::Written => act(self),
+            Flagged::Unread => {
+                act(self);
+                self.hedge(before);
+            }
+        }
+    }
+
     /// The unit at `at` reads a file the code names without the guard
     /// knowing the whole path (see [`Split::loose`]): it is `unknown`, unless
     /// the unit found a key in the part that is known, from `before` on.
@@ -433,19 +525,51 @@ impl Checker<'_> {
         }
     }
 
-    fn unit(&mut self, at: usize, unit: &Unit) {
+    /// The findings from `own` on were judged from another folder a `cd`
+    /// before the unit may have left the line in (see [`Unit::others`]): one
+    /// the unit made from where the walk has the line (from `before`) is
+    /// that one, and any other says where it comes from, so a caller sees
+    /// what to change (`&&` after the `cd`, or `|| exit`).
+    fn moved_off(&mut self, before: usize, own: usize) {
+        let mine = self.found[before..own].to_vec();
+        self.moved_off_from(&mine, own);
+    }
+
+    /// As [`Self::moved_off`], with what was found from where the walk has
+    /// the line given as `mine`.
+    fn moved_off_from(&mut self, mine: &[Finding], own: usize) {
+        let others = self.found.split_off(own);
+        for mut finding in others {
+            if mine.contains(&finding) {
+                continue;
+            }
+            finding.reason.push_str(MOVED_OFF);
+            if !self.found[own..].contains(&finding) {
+                self.found.push(finding);
+            }
+        }
+    }
+
+    /// Judge `unit`, the one at `at`; `runs` says whether to judge a run of
+    /// a file the line wrote too, which a copy of it in another folder the
+    /// line may be in leaves to the unit itself (see [`Unit::others`]).
+    fn unit(&mut self, at: usize, unit: &Unit, runs: bool) {
         self.called(unit);
         let Some(key) = unit.key() else {
             // A program only known when it runs may be a shell, or start one.
-            self.startup_then_run(unit, None);
+            if runs {
+                self.startup_then_run(unit, None);
+            }
             return;
         };
         self.elevated(unit, &key);
         self.reads(unit, unit.reads);
         self.secrets(at, unit, &key);
-        self.write_then_run(unit, &key);
-        self.program_then_run(unit);
-        self.startup_then_run(unit, Some(&key));
+        if runs {
+            self.write_then_run(unit, &key);
+            self.program_then_run(unit);
+            self.startup_then_run(unit, Some(&key));
+        }
         self.files(unit, &key);
         self.send(at, unit, &key);
         self.data(at, unit, &key);
@@ -1402,12 +1526,74 @@ const COPY_VALUED: [&str; 8] = [
     "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
 ];
 
+/// How a reason ends when only an option the line does not show, an
+/// argument only known when it runs that may be it, makes the program do
+/// what it says: `may force a push with an option only known when it runs`.
+/// `effect` reads such a finding as not understood, not as a change.
+pub(crate) const UNREAD_OPTION: &str = " with an option only known when it runs";
+
+/// The verbs a reason may join to its first with `and` or `or` (`rewrites
+/// or deletes`), which [`hedged`] puts in their plain form too.
+const JOINED_VERBS: [&str; 6] = [
+    "deletes",
+    "recreates",
+    "removes",
+    "destroys",
+    "writes",
+    "throws",
+];
+
+/// `reason`, a finding's, said of what a program may do when only an
+/// option the line does not show turns it on: `deletes a tag` becomes `may
+/// delete a tag with an option only known when it runs`.
+pub(crate) fn hedged(reason: &str) -> String {
+    if reason.ends_with(UNREAD_OPTION) {
+        return reason.to_string();
+    }
+    let mut out = String::from("may");
+    let mut joined = false;
+    for (at, word) in reason.split(' ').enumerate() {
+        out.push(' ');
+        if at == 0 || (joined && JOINED_VERBS.contains(&word)) {
+            out.push_str(&plain_verb(word));
+        } else {
+            out.push_str(word);
+        }
+        joined = matches!(word, "and" | "or");
+    }
+    // A reason with a comma in it (`leaves a swarm, even as its last
+    // manager`) takes one before the option too.
+    if reason.contains(',') {
+        out.push(',');
+    }
+    out.push_str(UNREAD_OPTION);
+    out
+}
+
+/// A verb of the third person in its plain form: `deletes` is `delete`,
+/// `pushes` `push` and `empties` `empty`.
+fn plain_verb(word: &str) -> Cow<'_, str> {
+    if let Some(stem) = word.strip_suffix("ies") {
+        return Cow::Owned(format!("{stem}y"));
+    }
+    if let Some(stem) = word
+        .strip_suffix("es")
+        .filter(|stem| stem.ends_with("sh") || stem.ends_with("ch") || stem.ends_with("ss"))
+    {
+        return Cow::Borrowed(stem);
+    }
+    Cow::Borrowed(word.strip_suffix('s').unwrap_or(word))
+}
+
 /// `mv`/`cp`-style operands: the sources and the destination, with `-t
 /// DIR` (`-tDIR`, `--target-directory[=]DIR`) naming the destination when
-/// given.
+/// given. The value of an option that may split into words when it runs
+/// (`-S $X`, see [`may_split`]) is an operand too, since a word after the
+/// first is one.
 fn sources_and_destination<'a>(
     args: &'a [Arg],
     takes_value: &[&str],
+    shell: Shell,
 ) -> (Vec<&'a Arg>, Option<Arg>) {
     let mut operands = Vec::new();
     let mut target = None;
@@ -1415,17 +1601,24 @@ fn sources_and_destination<'a>(
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known().filter(|_| options) else {
-            operands.push(arg);
+            match unread_target(arg, shell).filter(|_| options) {
+                Some(dir) => target = Some(dir),
+                None => operands.push(arg),
+            }
             continue;
+        };
+        let mut value = |value: Option<&'a Arg>| {
+            operands.extend(value.filter(|value| may_split(value, shell)));
+            value
         };
         if text == "--" {
             options = false;
         } else if text == "-t" || text == "--target-directory" {
-            target = iter.next().map(folder);
+            target = value(iter.next()).map(folder);
         } else if let Some(dir) = text.strip_prefix("--target-directory=") {
             target = Some(folder(&Arg::Known(dir.to_string())));
         } else if takes_value.contains(&text) {
-            iter.next();
+            value(iter.next());
         } else if text.starts_with("--") {
         } else if let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) {
             // `-t` in a bundle (`cp -rt DIR`) takes the rest of the bundle,
@@ -1433,7 +1626,7 @@ fn sources_and_destination<'a>(
             if let Some(at) = bundle.find('t') {
                 let rest = &bundle[at + 1..];
                 target = if rest.is_empty() {
-                    iter.next().map(folder)
+                    value(iter.next()).map(folder)
                 } else {
                     Some(folder(&Arg::Known(rest.to_string())))
                 };
@@ -1453,6 +1646,28 @@ fn sources_and_destination<'a>(
     }
 }
 
+/// The destination folder an argument only known when it runs names, when
+/// its readable start is `-t` given its value (`--target-directory=$T`,
+/// `--target-directory="$T"`, `-t"$T"`, `-rt$T`): a folder only known when
+/// it runs, the value as written.
+fn unread_target(arg: &Arg, shell: Shell) -> Option<Arg> {
+    let start = unknown_start(arg, shell)?;
+    let written = arg.text();
+    let value = if start.starts_with("--target-directory=") {
+        written.split_once('=')?.1
+    } else {
+        let bundle = start
+            .strip_prefix('-')
+            .filter(|bundle| !bundle.starts_with('-'))?;
+        let letters = bundle.find('t')?;
+        if !bundle[..letters].chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        written.split_once('t')?.1
+    };
+    Some(Arg::Unknown(value.to_string()))
+}
+
 /// The files a unit writes, for matching a script the line then runs.
 pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
     let Some(key) = unit.key() else {
@@ -1467,7 +1682,7 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
             .cloned()
             .collect(),
         "cp" | "install" | "mv" | "ln" if unit.shell != Shell::PowerShell => {
-            let (sources, destination) = sources_and_destination(args, &COPY_VALUED);
+            let (sources, destination) = sources_and_destination(args, &COPY_VALUED, unit.shell);
             destination.map_or_else(Vec::new, |destination| into_folder(&destination, &sources))
         }
         "copy-item" | "move-item" => {
@@ -1494,13 +1709,43 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
         }
         "set-content" | "add-content" | "out-file" | "tee-object" => content_files(args),
         "new-item" => new_item_files(args),
-        "dd" => args
-            .iter()
-            .filter_map(|arg| arg.known()?.strip_prefix("of="))
-            .map(|file| Arg::Known(file.to_string()))
-            .collect(),
+        "dd" => dd_outputs(args, unit.shell),
         _ => Vec::new(),
     }
+}
+
+/// The files `dd` writes: the value of each `of=` operand, and a file only
+/// known when it runs for each operand that may be one: an `of=` whose value
+/// is only known then (`of=$DISK`, `of="$(…)"`), an operand wholly only known
+/// then (`"$OUT"`), and one that may split into words when it runs
+/// (`bs=$B`, see [`may_split`]), any of which may be an `of=`.
+pub(crate) fn dd_outputs(args: &[Arg], shell: Shell) -> Vec<Arg> {
+    args.iter()
+        .filter_map(|arg| {
+            let readable = match arg {
+                Arg::Known(text) => {
+                    return text
+                        .strip_prefix("of=")
+                        .map(|file| Arg::Known(file.to_string()));
+                }
+                Arg::Null => return None,
+                Arg::Unknown(text) | Arg::Template { text, .. } => text.as_str(),
+                Arg::Input => "",
+            };
+            let key = readable
+                .split_once('=')
+                .map(|(key, _)| key)
+                .filter(|key| !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphabetic()));
+            let written = arg.text();
+            match key {
+                Some("of") => Some(Arg::Unknown(
+                    written.strip_prefix("of=").unwrap_or(written).to_string(),
+                )),
+                Some(_) if !may_split(arg, shell) => None,
+                _ => Some(Arg::Unknown(written.to_string())),
+            }
+        })
+        .collect()
 }
 
 /// The files `Set-Content`, `Add-Content`, `Out-File` and `Tee-Object`

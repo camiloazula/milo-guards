@@ -280,7 +280,9 @@ powershell finds=destroy_resources | docker rm -f @ids
 powershell finds=destroy_resources | docker rm -f $containers.Id
 powershell finds=destroy_resources | $ids = docker ps -aq; docker rm -f $ids
 powershell finds=destroy_resources | docker rm -f $a
-cmd safe | docker rm -f "%IDS%"
+# cmd puts `%IDS%` in as text before the program splits its command line,
+# so quotes around it do not keep a value that holds a `"` one word.
+cmd finds=destroy_resources | docker rm -f "%IDS%"
 cmd finds=destroy_resources | docker rm -f %IDS%
 cmd finds=destroy_resources | docker rm %IDS%
 cmd finds=destroy_resources | docker rm -f !IDS!
