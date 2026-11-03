@@ -140,6 +140,10 @@ pub(crate) struct Unit {
     /// in step with `args`, and empty for any other unit, or one that
     /// lost them, in which no argument counts as read this way.
     pub(crate) listed: Vec<bool>,
+    /// The values the line gives `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`
+    /// where it runs, by name (see [`Split::tf_cli_args`]): terraform reads
+    /// them as arguments of its command.
+    pub(crate) tf_cli_args: Vec<(String, Arg)>,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
     /// more for a part of the line the grammar reads again (what follows the
@@ -225,6 +229,7 @@ impl Unit {
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
+            tf_cli_args: Vec::new(),
             depth: 0,
         }
     }
@@ -535,6 +540,12 @@ struct Reaching {
     flagged: bool,
 }
 
+/// Whether terraform reads the variable `name` as arguments of its command:
+/// `TF_CLI_ARGS`, and `TF_CLI_ARGS_<command>` for one command.
+pub(crate) fn tf_cli_args(name: &str) -> bool {
+    name == "TF_CLI_ARGS" || name.starts_with("TF_CLI_ARGS_")
+}
+
 /// Everything a line was split into.
 #[derive(Debug, Default)]
 #[allow(
@@ -689,6 +700,10 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
+    /// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given for
+    /// the program being added, by name, noted as `node_options` is:
+    /// terraform reads them as arguments of its command.
+    pub(crate) tf_cli_args: Vec<(String, Arg)>,
     /// How many assignments and wrappers hand the program being added an
     /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the
     /// interpreter loads what that environment tells it to, which the code
@@ -1056,6 +1071,7 @@ impl Split {
         unit.dir.clone_from(&self.dir);
         unit.elsewhere.clone_from(&self.elsewhere);
         unit.stayed.clone_from(&self.stayed);
+        unit.tf_cli_args.clone_from(&self.tf_cli_args);
         self.last_stayed.clear();
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;

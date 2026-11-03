@@ -2645,14 +2645,19 @@ cannot tell, and the reason says what it deletes, not where.
 `podman-compose`). `system prune`, `container prune`, `network prune`,
 `volume rm` and `volume prune`, `image prune -a`, `stack rm`, `service rm`,
 `compose down -v` and `compose rm -v`, and podman's `system reset`, `pod
-prune`, `machine rm` and `kube down` destroy. `rm` is read by what it takes:
+prune`, `machine rm` and `kube down` destroy. compose's own `--dry-run`, on
+either side of its command, runs nothing (`docker compose --dry-run down
+-v`); `--dry-run=false` and one after `--` do not count. A `--filter` takes a
+value, so `docker system prune --filter until=24h` names no target. `rm` is read by what it takes:
 one named container is safe, forced or not (`docker rm -f web`); several
 forced at once, a choice made when the line runs (`$(docker ps -aq)`, a
 pipe's input, a variable that expands to several words), podman's `rm -a`
 and `--filter`, and `-v` (the container's volumes) are not. Which variables
 expand to several words depends on the shell: in a POSIX shell an unquoted
 one, and a quoted one holding an array (`"$@"`, `"${ids[@]}"`, one word per
-element), but not `"$name"`; in PowerShell any variable except `$env:` and a
+element), but not `"$name"`, nor a quoted variable after a plain head
+(`app-"$ENV"` is one word, `app-$ENV` may be several); in PowerShell any
+variable except `$env:` and a
 splat (`@ids`), since an array handed to a program is one argument per
 element, but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`,
 which is expanded as text. A POSIX word also splits when an unquoted `$`
@@ -2682,8 +2687,12 @@ The global options of each program that take a value (`-H`, `--context`,
 
 **Clusters.** `kubectl` and `oc`: `delete` of anything, with the reason naming
 a namespace, `--all` or `-A`; `drain`; `scale --replicas=0`; `replace
---force`; `apply --prune`. `--dry-run=client` and `=server` only rehearse and
-are safe, the last one written counting. A replica count is read as Go reads
+--force`; `apply --prune`; `apply --force`, which deletes an object it cannot
+patch and creates it again (`--force-conflicts` is not it).
+`--dry-run=client` and `=server` only rehearse and are safe, the last one
+written counting, before the command or after it (kubectl reads its
+command's flags on either side, and one it does not take there runs
+nothing). A replica count is read as Go reads
 an integer (`0`, `00`, `0x0`, `0b0`, `0o0`, `0_0`, with a sign, are all zero);
 one that is not a plain decimal and not a zero, or only known when it runs, is
 `unknown`. `kubectl` is also read behind `microk8s`, `k3s` and
@@ -2695,9 +2704,19 @@ delete` (also `node` and `registry`).
 **Infrastructure.** `terraform` and `tofu`: `destroy` and `apply -destroy`
 (a Go flag, so `-destroy`, `--destroy` and `-destroy=true`, not
 `-destroy=false`; any `-destroy` turned on before `--` counts, even with a
-`=false` after it, since a value option may have taken that word); `plan
--destroy` is safe. `terragrunt` the same, also behind `run-all` and `run --all
---`: the word after `--` is the terraform command (or `terraform` behind `exec
+`=false` after it, since a value option may have taken that word), and
+`apply -replace=ADDRESS` (also `-replace ADDRESS`), which destroys what it
+names to create it again; `plan -destroy` and `plan -replace` are safe.
+terraform puts the words of `TF_CLI_ARGS`, and of `TF_CLI_ARGS_apply` for
+`apply`, in front of its command's own, so the values the line gives them
+where terraform runs are read as arguments of `apply`: a prefix assignment
+(`TF_CLI_ARGS=-destroy terraform apply`), `env TF_CLI_ARGS=…`, and an
+assignment or `export` earlier in the line, which may set a variable that
+is already exported. A value only known when it runs makes `apply`
+`unknown`; `TF_CLI_ARGS_plan` does not reach `apply`. `terragrunt` the
+same (`-replace` and `TF_CLI_ARGS` included, since terraform gets its
+arguments and its environment), also behind `run-all` and `run --all --`:
+the word after `--` is the terraform command (or `terraform` behind `exec
 --`), and every word before it is read, the options that take a value
 (`--queue-include-dir`, `--parallelism`) skipped. `pulumi destroy` (also
 `down`, unless `--preview-only`, a Go-style flag that `--preview-only=false`
@@ -2723,6 +2742,31 @@ word, so `m rm`, `vol rm` and `apps rm` are read too), `vercel`
 `kv:namespace delete`), `firebase` (`…:delete` and `…:remove`, as in
 `database:remove`), `hcloud`, `scw`, `oci` (`delete`, `bulk-delete`,
 `terminate`), `eksctl` and `kops` (`delete`).
+
+A family of delete verbs read by its prefix (`delete-*` for `gcloud`, `az`
+and `doctl`, `purge-*` for `az`) is a verb only where a verb can be: after a
+verb that takes operands (`deploy`, `create`) such a word is the name of what
+that verb makes, so `gcloud functions deploy delete-user` and `doctl compute
+droplet create delete-me` are safe. A whole delete verb is still read there
+(`gcloud deploy targets delete t`, `gcloud logging logs delete x`), since
+some of those verbs are also groups.
+
+Some verbs destroy under another name. Scaling a service to nothing takes
+it down as a delete would: `fly scale count 0` (also `web=0` for a process
+group), `heroku ps:scale web=0` (also `scale` and `dyno:scale`, with a size
+after `:`), `aws ecs update-service --desired-count 0`, `aws autoscaling
+set-desired-capacity --desired-capacity 0` and `update-auto-scaling-group`
+with a `--desired-capacity` or `--max-size` of 0, `az vmss scale
+--new-capacity 0`, `az aks scale` and `az aks nodepool scale --node-count 0`,
+`gcloud compute instance-groups managed resize --size 0` and `gcloud
+container clusters resize --num-nodes 0` (also behind `alpha` and `beta`),
+and `eksctl scale nodegroup --nodes 0` (also `-N`, `--nodes-max` and `-M`).
+A count is read as kubectl's is; one only known when it runs (`web=$N`), or
+a heroku decrease (`web-1`), which may leave none, is `unknown`. `az
+deployment group create --mode Complete` (also the older `az group
+deployment create`, any case) deletes every resource of the group its
+template does not list; a mode only known when it runs is `unknown`, and
+`what-if` only shows it.
 
 A rehearsal flag (`--dry-run`, `--preview-only`) or `--help` is read only
 before `--` and not as the value of an option that takes a value, since pflag
@@ -2754,8 +2798,9 @@ another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
 that destroys, `terraform taint`, `terraform workspace delete`, `aws s3 mv`,
 `docker rmi -f` of every image); a program run on another machine
 (`ssh host docker system prune`, `docker exec c rm -rf /`, `kubectl exec p --
-rm -rf /`); a command a tool reads from a file or its environment
-(`TF_CLI_ARGS=-destroy`, a `kubectl` plugin, a shell alias); and the `delete`
+rm -rf /`); a command a tool reads from a file or from an environment the
+line does not show (`TF_CLI_ARGS` set before the line, or by PowerShell's
+`$env:` or cmd's `set`, a `kubectl` plugin, a shell alias); and the `delete`
 verb of a resource that is named `delete` (`gcloud config set project delete`
 reads as a delete, because the verb is the last word of the command and the
 guard cannot tell it from a name that follows).

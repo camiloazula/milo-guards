@@ -510,7 +510,6 @@ posix safe | gcloud config configurations activate $C
 posix safe | heroku config:set FOO=$BAR
 posix safe | heroku config:set $(cat .env)
 posix safe | heroku config:get $KEY
-posix safe | heroku ps:scale web=$N
 posix safe | wrangler secret put $NAME
 posix safe | wrangler kv key put $K $V
 posix safe | wrangler r2 object put b/$K
@@ -542,6 +541,116 @@ posix finds=destroy_resources | gcloud compute instances delete $VM
 posix finds=destroy_resources | gcloud storage cp $F gs://b/; gcloud storage rm gs://b/x
 posix finds=destroy_resources | gcloud storage rsync $SRC gs://b --delete-unmatched-destination-objects
 posix finds=destroy_resources | az storage blob upload -f $F -c c -n x; az group delete -n g -y
+
+# Destroying under another name: scaling a service to nothing, replacing what
+# a stack manages, deploying in a mode that deletes what a template does not
+# list, and a destroy flag terraform reads from `TF_CLI_ARGS` set on the line.
+posix safe | fly scale count 2
+posix safe | fly scale count 2 -a app
+posix safe | fly scale count web=2 worker=1
+posix safe | fly scale show
+posix safe | heroku ps:scale web=2
+posix safe | heroku ps:scale web=1:standard-1x worker=2
+posix safe | heroku ps
+posix safe | aws ecs update-service --cluster c --service s --desired-count 2
+posix safe | aws ecs update-service --cluster c --service s --force-new-deployment
+posix safe | aws autoscaling set-desired-capacity --auto-scaling-group-name g --desired-capacity 3
+posix safe | aws autoscaling update-auto-scaling-group --auto-scaling-group-name g --max-size 4
+posix safe | az vmss scale -g rg -n s --new-capacity 2
+posix safe | az aks scale -g rg -n c --node-count 3
+posix safe | gcloud compute instance-groups managed resize g --size 3
+posix safe | gcloud container clusters resize c --num-nodes 2
+posix safe | gcloud compute instances describe x
+posix safe | eksctl scale nodegroup --cluster c --name n --nodes 2
+posix safe | terraform plan -replace=aws_instance.web
+posix safe | az deployment group create -g rg --template-file t.json
+posix safe | az deployment group create -g rg --mode Incremental --template-file t.json
+posix safe | az deployment group what-if -g rg --mode Complete --template-file t.json
+posix safe | kubectl apply -f x.yaml --force-conflicts --server-side
+posix safe | kubectl apply --force -f x.yaml --dry-run=server
+posix safe | TF_CLI_ARGS=-auto-approve terraform apply
+posix safe | TF_CLI_ARGS=-destroy terraform plan
+posix safe | TF_CLI_ARGS_plan=-destroy terraform apply
+posix safe | TF_CLI_ARGS=$ARGS terraform plan
+posix safe | export TF_CLI_ARGS=-no-color; terraform apply
+posix safe | TF_CLI_ARGS=-destroy echo terraform apply
+posix safe | heroku ps:scale web+1
+posix safe | gcloud beta container clusters resize c --num-nodes 2
+posix finds=destroy_resources | fly scale count 0
+posix finds=destroy_resources | fly scale count 0 -a app
+posix finds=destroy_resources | flyctl scale count web=0
+posix finds=destroy_resources | fly scale count web=2 worker=0
+posix finds=destroy_resources | heroku ps:scale web=0
+posix finds=destroy_resources | heroku ps:scale web=0:standard-1x
+posix finds=destroy_resources | heroku ps:scale web=1 worker=0 -a app
+posix finds=destroy_resources | heroku scale web=0
+posix finds=destroy_resources | aws ecs update-service --cluster c --service s --desired-count 0
+posix finds=destroy_resources | aws ecs update-service --cluster c --service s --desired-count=0
+posix finds=destroy_resources | aws autoscaling set-desired-capacity --auto-scaling-group-name g --desired-capacity 0
+posix finds=destroy_resources | aws autoscaling update-auto-scaling-group --auto-scaling-group-name g --max-size 0
+posix finds=destroy_resources | az vmss scale -g rg -n s --new-capacity 0
+posix finds=destroy_resources | az aks scale -g rg -n c --node-count 0
+posix finds=destroy_resources | az aks nodepool scale -g rg --cluster-name c -n p --node-count 0
+posix finds=destroy_resources | gcloud compute instance-groups managed resize g --size 0
+posix finds=destroy_resources | gcloud compute instance-groups managed resize g --size=0 --zone z
+posix finds=destroy_resources | gcloud container clusters resize c --num-nodes 0
+posix finds=destroy_resources | gcloud beta container clusters resize c --num-nodes 0
+posix finds=destroy_resources | eksctl scale nodegroup --cluster c --name n --nodes 0
+posix finds=destroy_resources | eksctl scale nodegroup --cluster c --name n -N 0
+posix finds=destroy_resources | terraform apply -replace=aws_instance.web -auto-approve
+posix finds=destroy_resources | terraform apply -replace aws_instance.web
+posix finds=destroy_resources | tofu apply --replace=aws_instance.web
+posix finds=destroy_resources | terragrunt apply -replace=aws_instance.web
+posix finds=destroy_resources | az deployment group create -g rg --mode Complete --template-file t.json
+posix finds=destroy_resources | az deployment group create -g rg --mode complete --template-file t.json
+posix finds=destroy_resources | az deployment group create -g rg --mode=Complete --template-file t.json
+posix finds=destroy_resources | az group deployment create -g rg --mode Complete --template-file t.json
+posix finds=destroy_resources | kubectl apply --force -f x.yaml
+posix finds=destroy_resources | kubectl -n prod apply -f x.yaml --force
+posix finds=destroy_resources | TF_CLI_ARGS=-destroy terraform apply -auto-approve
+posix finds=destroy_resources | TF_CLI_ARGS_apply=-destroy terraform apply
+posix finds=destroy_resources | TF_CLI_ARGS="-auto-approve -destroy" terraform apply
+posix finds=destroy_resources | TF_CLI_ARGS=-replace=aws_instance.web terraform apply
+posix finds=destroy_resources | env TF_CLI_ARGS=-destroy terraform apply
+posix finds=destroy_resources | export TF_CLI_ARGS=-destroy; terraform apply
+posix finds=destroy_resources | export TF_CLI_ARGS_apply=-destroy && terraform apply
+posix finds=destroy_resources | TF_CLI_ARGS=-destroy; terraform apply
+posix finds=destroy_resources | TF_CLI_ARGS=-destroy tofu apply
+posix finds=destroy_resources | TF_CLI_ARGS=-destroy terragrunt apply
+posix finds=destroy_resources | export "TF_CLI_ARGS=-destroy"; terraform apply
+posix finds=destroy_resources | TF_CLI_ARGS=-destroy bash -c 'terraform apply'
+posix finds=destroy_resources | TF_CLI_ARGS=-destroy terragrunt run --all -- apply
+# A count, a mode or arguments only known when it runs may be the one that
+# destroys.
+posix finds=unknown | fly scale count $N
+posix finds=unknown | heroku ps:scale web=$N
+posix finds=unknown | aws ecs update-service --cluster c --service s --desired-count $N
+posix finds=unknown | eksctl scale nodegroup --cluster c --name n --nodes $N
+posix finds=unknown | az deployment group create -g rg --mode $MODE --template-file t.json
+posix finds=unknown | TF_CLI_ARGS=$ARGS terraform apply
+posix finds=unknown | TF_CLI_ARGS_apply="$ARGS" terraform apply
+posix finds=unknown | env TF_CLI_ARGS=$ARGS terraform apply
+posix finds=unknown | heroku ps:scale web-1
+# Lines that destroy nothing, though a word looks like a verb that does: a
+# rehearsal, one container named with a quoted variable, and a resource whose
+# name starts with a delete verb.
+posix safe | docker compose --dry-run down -v
+posix safe | docker compose down -v --dry-run
+posix safe | docker-compose --dry-run down -v
+posix safe | kubectl --dry-run=client delete ns prod
+posix safe | docker rm -f app-"$ENV"
+posix safe | docker rm -f "app-$ENV"
+posix safe | gcloud functions deploy delete-user --runtime nodejs20
+posix safe | doctl compute droplet create delete-me
+posix finds=destroy_resources | docker compose --dry-run=false down -v
+posix finds=destroy_resources | docker compose down -v -- --dry-run
+posix finds=destroy_resources | docker rm -f app-"$ENV" db
+posix finds=destroy_resources | docker rm -f app-$ENV
+posix finds=destroy_resources | docker rm -f app-"$@"
+posix finds=destroy_resources | gcloud logging logs delete x
+posix finds=destroy_resources | gcloud deploy targets delete t
+posix finds=destroy_resources | doctl compute droplet delete delete-me
+posix finds=destroy_resources | docker system prune --filter until=24h
 
 # A destroying command is found inside a shell's script, behind a wrapper, a
 # path, an assignment, in a list or a pipeline, and when a package runner

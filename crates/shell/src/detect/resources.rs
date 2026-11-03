@@ -25,6 +25,22 @@ enum Say<'a> {
 
 use Say::{Destroys, Safe, Unread};
 
+impl Say<'_> {
+    /// What `self` says, or what `next` says when that is more: a line
+    /// that destroys outweighs one only known when it runs, and that one a
+    /// safe one.
+    fn or_else(self, next: impl FnOnce() -> Self) -> Self {
+        match self {
+            Destroys(..) => self,
+            Unread(_) => match next() {
+                said @ Destroys(..) => said,
+                _ => self,
+            },
+            Safe => next(),
+        }
+    }
+}
+
 impl Checker<'_> {
     /// Containers, clusters, infrastructure stacks and cloud resources.
     pub(super) fn resources(&mut self, unit: &Unit, key: &str) {
@@ -46,8 +62,8 @@ impl Checker<'_> {
             "kind" => kind(args),
             "k3d" => k3d(args),
             // Infrastructure.
-            "terraform" | "tofu" => terraform(args),
-            "terragrunt" => terragrunt(args),
+            "terraform" | "tofu" => terraform(args, unit),
+            "terragrunt" => terragrunt(args, unit),
             "pulumi" => pulumi(args),
             "cdk" => first_word(
                 args,
@@ -95,19 +111,18 @@ impl Checker<'_> {
                     (before == Some("storage") && word == "remove")
                         || word == "delete"
                         || word == "purge"
-                        || word.starts_with("delete-")
-                        || word.starts_with("purge-")
                 },
+                &["delete-", "purge-"],
                 "deletes Azure resources",
-            ),
+            )
+            .or_else(|| complete_deployment(args, &values)),
             "doctl" => cloud(
                 args,
                 &values,
                 4,
                 false,
-                |_, word| {
-                    matches!(word, "delete" | "del" | "d" | "rm") || word.starts_with("delete-")
-                },
+                |_, word| matches!(word, "delete" | "del" | "d" | "rm"),
+                &["delete-"],
                 "deletes DigitalOcean resources",
             ),
             "flyctl" | "fly" => cloud(
@@ -116,14 +131,17 @@ impl Checker<'_> {
                 3,
                 false,
                 |_, word| matches!(word, "destroy" | "delete" | "rm" | "remove"),
+                &[],
                 "destroys a Fly.io app, machine or volume",
-            ),
+            )
+            .or_else(|| fly_scale(args, &values)),
             "vercel" => cloud(
                 args,
                 &values,
                 2,
                 false,
                 |_, word| matches!(word, "remove" | "rm" | "del"),
+                &[],
                 "removes Vercel deployments, projects or settings",
             ),
             "heroku" => cloud(
@@ -134,14 +152,17 @@ impl Checker<'_> {
                 |_, word| {
                     word == "destroy" || word.ends_with(":destroy") || word.ends_with(":delete")
                 },
+                &[],
                 "destroys a Heroku app or add-on",
-            ),
+            )
+            .or_else(|| heroku_scale(args, &values)),
             "wrangler" => cloud(
                 args,
                 &values,
                 4,
                 false,
                 |_, word| word == "delete" || word.ends_with(":delete"),
+                &[],
                 "deletes Cloudflare resources",
             ),
             "firebase" => cloud(
@@ -150,6 +171,7 @@ impl Checker<'_> {
                 1,
                 true,
                 |_, word| word.ends_with(":delete") || word.ends_with(":remove"),
+                &[],
                 "deletes Firebase resources",
             ),
             "hcloud" => cloud(
@@ -158,6 +180,7 @@ impl Checker<'_> {
                 3,
                 false,
                 |_, word| word == "delete",
+                &[],
                 "deletes Hetzner Cloud resources",
             ),
             "scw" => cloud(
@@ -166,6 +189,7 @@ impl Checker<'_> {
                 4,
                 false,
                 |_, word| matches!(word, "delete" | "terminate"),
+                &[],
                 "deletes Scaleway resources",
             ),
             "oci" => cloud(
@@ -174,6 +198,7 @@ impl Checker<'_> {
                 6,
                 false,
                 |_, word| matches!(word, "delete" | "bulk-delete" | "terminate"),
+                &[],
                 "deletes Oracle Cloud resources",
             ),
             "eksctl" => cloud(
@@ -182,6 +207,7 @@ impl Checker<'_> {
                 2,
                 false,
                 |_, word| word == "delete",
+                &[],
                 "deletes an EKS cluster or its parts",
             ),
             "kops" => cloud(
@@ -190,6 +216,7 @@ impl Checker<'_> {
                 2,
                 false,
                 |_, word| word == "delete",
+                &[],
                 "deletes a kops cluster or its parts",
             ),
             "sam" => first_word(
@@ -200,6 +227,7 @@ impl Checker<'_> {
             ),
             _ => return,
         };
+        let said = said.or_else(|| scaled(key, args, &values));
         match said {
             Safe => {}
             Destroys(reason, target) => self.add(Rule::DestroyResources, reason, target),
@@ -363,6 +391,10 @@ const COMPOSE_VALUES: &[&str] = &[
     "-H",
     "--host",
 ];
+
+/// Options of the `prune` and `rm` sub-commands of `docker system`, `volume`
+/// and their like that take a value: `--filter until=24h` names no target.
+const PRUNE_VALUES: &[&str] = &["--filter"];
 
 /// Options of `docker rm` and `podman rm` that take a value.
 const RM_VALUES: &[&str] = &["-t", "--time", "--cidfile", "--filter"];
@@ -855,9 +887,11 @@ fn computed(arg: &Arg, unit: &Unit, split: &Split) -> bool {
                 || text.contains('`')
                 || text.contains("<(")
                 || match shell {
+                    // A word splits where an expansion in it is not
+                    // quoted: `app-"$ENV"` is one word, `app-$ENV` and
+                    // `$ids` may be several.
                     Shell::Posix => {
-                        !text.starts_with('"')
-                            || text.contains("$@")
+                        text.contains("$@")
                             || text.contains("${@")
                             || text.contains("[@]")
                             || splits(text)
@@ -1008,12 +1042,20 @@ fn first_word<'a>(
 /// compute instances delete vm`); `hit` is given the word before it. With
 /// `colon`, a `topic:command` word (`heroku config:set`) is a whole command,
 /// so the words after it are operands.
+///
+/// `families` are the prefixes of a family of delete verbs (`delete-`, as in
+/// `delete-access-config`). A word with one is a verb only where a verb can
+/// be: after a verb that takes operands (`deploy`, `create`) it is the name
+/// of what that verb makes (`gcloud functions deploy delete-user`). A word
+/// `hit` names is read there all the same, since some of those verbs are
+/// also groups (`gcloud deploy targets delete`).
 fn cloud<'a>(
     args: &'a [Arg],
     values: &[&str],
     depth: usize,
     colon: bool,
     hit: fn(Option<&str>, &str) -> bool,
+    families: &[&str],
     reason: &'static str,
 ) -> Say<'a> {
     let words = words(args, values);
@@ -1023,7 +1065,8 @@ fn cloud<'a>(
     for (at, word) in words.iter().take(depth).enumerate() {
         match word.known() {
             Some(text) => {
-                if hit(before, text) {
+                let family = !leaf && families.iter().any(|prefix| text.starts_with(prefix));
+                if family || hit(before, text) {
                     return Destroys(reason, words.get(at + 1).copied());
                 }
                 // A verb that does not delete takes operands, not another
@@ -1135,17 +1178,31 @@ fn dry_run(args: &[Arg]) -> bool {
     on
 }
 
-/// What `kubectl scale --replicas` is given.
+/// What a count of replicas, instances or nodes is given.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Replicas {
     Zero,
     Other,
     Unread,
 }
 
-/// The last `--replicas` the line gives, read from the arguments that are not
-/// another option's value (`--cache-dir --replicas=0` is a directory) and
-/// before `--`.
-fn replicas(args: &[Arg]) -> Replicas {
+impl Replicas {
+    /// The riskier of two counts: a zero, then one only known when it runs.
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Zero, _) | (_, Self::Zero) => Self::Zero,
+            (Self::Unread, _) | (_, Self::Unread) => Self::Unread,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The last count the line gives the option `name` (`--replicas 0`,
+/// `--replicas=0`, and for a short one `-N0` too), read from the arguments
+/// that are not another option's value (`--cache-dir --replicas=0` is a
+/// directory) and before `--`.
+fn count_of(args: &[Arg], name: &str, values: &[&str]) -> Replicas {
+    let short = name.len() == 2 && !name.starts_with("--");
     let mut found = Replicas::Other;
     let mut at = 0;
     while let Some(arg) = args.get(at) {
@@ -1154,18 +1211,22 @@ fn replicas(args: &[Arg]) -> Replicas {
         if arg.known() == Some("--") {
             break;
         }
-        if text == "--replicas" {
+        let joined = text
+            .strip_prefix(name)
+            .and_then(|rest| match rest.strip_prefix('=') {
+                Some(value) => Some(value),
+                None if short && !rest.is_empty() => Some(rest),
+                None => None,
+            });
+        if text == name {
             found = count(args.get(at));
             at += 1;
-        } else if let Some(value) = text.strip_prefix("--replicas=") {
+        } else if let Some(value) = joined {
             found = match arg {
                 Arg::Known(_) => count(Some(&Arg::Known(value.to_string()))),
                 _ => Replicas::Unread,
             };
-        } else if arg
-            .known()
-            .is_some_and(|known| KUBECTL_VALUES.contains(&known))
-        {
+        } else if arg.known().is_some_and(|known| values.contains(&known)) {
             at += 1;
         }
     }
@@ -1191,7 +1252,7 @@ fn count(value: Option<&Arg>) -> Replicas {
     }
 }
 
-/// What a replica count written out says. kubectl reads it as Go's
+/// What a count written out says. kubectl reads it as Go's
 /// `strconv.ParseInt` with base 0 does: a sign, then `0x`, `0o` or `0b`, or
 /// a leading `0` for octal, with `_` between digits (`0x0`, `0b0`, `0o0`,
 /// `0_0` and `00` are all zero). A plain decimal is read as it is; any other
@@ -1263,7 +1324,7 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
     let Some(sub_name) = sub.known() else {
         return Unread(None);
     };
-    let target = words(after, &[]).first().copied();
+    let target = words(after, PRUNE_VALUES).first().copied();
     match (name, sub_name) {
         ("system", "prune") if has_flag(after, None, Some("volumes")) => {
             Destroys("removes unused containers, images and volumes", target)
@@ -1311,7 +1372,12 @@ fn remove_containers<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a>
     Safe
 }
 
+/// `docker compose`, `docker-compose` and `podman-compose`. `--dry-run`, a
+/// flag of compose itself, runs nothing on either side of the command.
 fn compose(args: &[Arg]) -> Say<'_> {
+    if rehearsal(args, COMPOSE_VALUES, "dry-run") {
+        return Safe;
+    }
     let Some((cmd, rest)) = command(args, COMPOSE_VALUES) else {
         return Safe;
     };
@@ -1342,7 +1408,10 @@ fn kubectl(args: &[Arg]) -> Say<'_> {
     let Some(name) = cmd.known() else {
         return Unread(None);
     };
-    if !matches!(name, "delete" | "drain" | "scale" | "replace" | "apply") || dry_run(rest) {
+    // A rehearsal before the command counts too: kubectl reads the flags of
+    // its command on either side of it, and one it does not take there is
+    // an error that runs nothing.
+    if !matches!(name, "delete" | "drain" | "scale" | "replace" | "apply") || dry_run(args) {
         return Safe;
     }
     let operands = words(rest, KUBECTL_VALUES);
@@ -1368,7 +1437,7 @@ fn kubectl(args: &[Arg]) -> Say<'_> {
             Destroys(reason, target)
         }
         "drain" => Destroys("evicts every pod from a node", target),
-        "scale" => match replicas(rest) {
+        "scale" => match count_of(rest, "--replicas", KUBECTL_VALUES) {
             Replicas::Zero => Destroys("scales a workload down to nothing", target),
             Replicas::Unread => Unread(Some("scales to a count only known when it runs")),
             Replicas::Other => Safe,
@@ -1378,6 +1447,10 @@ fn kubectl(args: &[Arg]) -> Say<'_> {
         }
         "apply" if has_flag(rest, None, Some("prune")) => {
             Destroys("deletes cluster objects the files do not list", target)
+        }
+        // `--force` deletes an object it cannot patch and creates it again.
+        "apply" if has_flag(rest, None, Some("force")) => {
+            Destroys("deletes and recreates cluster objects", target)
         }
         _ => Safe,
     }
@@ -1479,23 +1552,74 @@ fn k3d(args: &[Arg]) -> Say<'_> {
 
 const TERRAFORM_DESTROYS: &str = "destroys the infrastructure a configuration manages";
 
-fn terraform(args: &[Arg]) -> Say<'_> {
+fn terraform<'a>(args: &'a [Arg], unit: &Unit) -> Say<'a> {
     let Some((cmd, rest)) = command(args, &[]) else {
         return Safe;
     };
     match cmd.known() {
         Some("destroy") => Destroys(TERRAFORM_DESTROYS, None),
-        Some("apply") if turned_on(rest, "destroy") => Destroys(TERRAFORM_DESTROYS, None),
+        Some("apply") => apply(rest, unit),
         Some(_) => Safe,
         None => Unread(None),
     }
+}
+
+/// `terraform apply` with `rest` after it, and the arguments the line gives
+/// it in `TF_CLI_ARGS` and `TF_CLI_ARGS_apply`, which terraform puts in
+/// front of its own: `-destroy` destroys everything, and `-replace=ADDRESS`
+/// destroys what it names to create it again. A value of those variables
+/// only known when it runs may be either.
+fn apply<'a>(rest: &[Arg], unit: &Unit) -> Say<'a> {
+    let Some(mut args) = tf_cli_args(unit, "apply") else {
+        return Unread(Some(
+            "runs terraform apply with arguments only known when it runs",
+        ));
+    };
+    args.extend_from_slice(rest);
+    if turned_on(&args, "destroy") {
+        Destroys(TERRAFORM_DESTROYS, None)
+    } else if replaces(&args) {
+        Destroys("destroys resources to create them again", None)
+    } else {
+        Safe
+    }
+}
+
+/// The arguments terraform's `command` reads from `TF_CLI_ARGS` and
+/// `TF_CLI_ARGS_<command>` as the line sets them where the unit runs, split
+/// at spaces as terraform splits them (quotes taken off), or `None` when one
+/// of those values is only known when it runs.
+fn tf_cli_args(unit: &Unit, command: &str) -> Option<Vec<Arg>> {
+    let mut found = Vec::new();
+    for (name, value) in &unit.tf_cli_args {
+        let applies = name == "TF_CLI_ARGS" || name.strip_prefix("TF_CLI_ARGS_") == Some(command);
+        if !applies {
+            continue;
+        }
+        let text = value.known()?;
+        found.extend(
+            text.split_whitespace()
+                .map(|word| Arg::Known(word.replace(['"', '\''], ""))),
+        );
+    }
+    Some(found)
+}
+
+/// Whether `-replace` (a Go flag that takes an address: `-replace=ADDRESS`,
+/// `-replace ADDRESS`, `--replace=…`) is given before `--`.
+fn replaces(args: &[Arg]) -> bool {
+    flags(args, &[]).into_iter().any(|arg| {
+        let text = written(arg);
+        let text = text.strip_prefix("--").or_else(|| text.strip_prefix('-'));
+        text.is_some_and(|name| name == "replace" || name.starts_with("replace="))
+    })
 }
 
 /// terragrunt: terraform's commands, also run over every module (`run-all
 /// destroy`, `run --all -- destroy`, the old `destroy-all`). What follows a
 /// `--` is handed to terraform (or to the program `exec` runs), so its first
 /// word is the command; before it, any word is read.
-fn terragrunt(args: &[Arg]) -> Say<'_> {
+fn terragrunt<'a>(args: &'a [Arg], unit: &Unit) -> Say<'a> {
     let (own, passed) = match walk(args, TERRAGRUNT_VALUES).1 {
         Some(at) => (
             args.get(..at).unwrap_or_default(),
@@ -1509,18 +1633,25 @@ fn terragrunt(args: &[Arg]) -> Say<'_> {
             .iter()
             .any(|word| word.known().is_some_and(|text| names.contains(&text)))
     };
-    let destroy = turned_on(own, "destroy");
-    if named(&["destroy", "destroy-all"]) || (named(&["apply"]) && destroy) {
+    if named(&["destroy", "destroy-all"]) {
         return Destroys(TERRAFORM_DESTROYS, None);
+    }
+    // terraform gets terragrunt's own arguments and its environment.
+    if named(&["apply"]) {
+        match apply(own, unit) {
+            Safe => {}
+            said => return said,
+        }
     }
     if let Some((word, rest)) = passed.and_then(|passed| command(passed, &[])) {
         match word.known() {
             Some("destroy") => return Destroys(TERRAFORM_DESTROYS, None),
-            Some("apply") if destroy || turned_on(rest, "destroy") => {
-                return Destroys(TERRAFORM_DESTROYS, None)
-            }
+            Some("apply") => match apply(&[own, rest].concat(), unit) {
+                Safe => {}
+                said => return said,
+            },
             // `exec -- terraform destroy`.
-            Some("terraform" | "tofu") => match terraform(rest) {
+            Some("terraform" | "tofu") => match terraform(rest, unit) {
                 Safe => {}
                 said => return said,
             },
@@ -1637,9 +1768,9 @@ fn gcloud<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
         false,
         |before, word| {
             matches!(word, "delete" | "destroy" | "bulk-delete")
-                || word.starts_with("delete-")
                 || (before == Some("storage") && word == "rm")
         },
+        &["delete-"],
         "deletes Google Cloud resources",
     );
     if !matches!(said, Safe) {
@@ -1670,5 +1801,180 @@ fn gsutil(args: &[Arg]) -> Say<'_> {
         }
         Some(_) => Safe,
         None => Unread(None),
+    }
+}
+
+const SCALES_TO_NOTHING: &str = "scales a workload down to nothing";
+const SCALES_UNREAD: &str = "scales to a count only known when it runs";
+
+/// Commands that set how many of a thing run, by the CLI, the words of the
+/// command and the options that set the count: a count of zero takes the
+/// service down as a delete would.
+const SCALES: &[(&str, &[&str], &[&str])] = &[
+    ("aws", &["ecs", "update-service"], &["--desired-count"]),
+    (
+        "aws",
+        &["autoscaling", "set-desired-capacity"],
+        &["--desired-capacity"],
+    ),
+    (
+        "aws",
+        &["autoscaling", "update-auto-scaling-group"],
+        &["--desired-capacity", "--max-size"],
+    ),
+    ("az", &["vmss", "scale"], &["--new-capacity"]),
+    ("az", &["aks", "scale"], &["--node-count", "-c"]),
+    ("az", &["aks", "nodepool", "scale"], &["--node-count", "-c"]),
+    (
+        "gcloud",
+        &["compute", "instance-groups", "managed", "resize"],
+        &["--size"],
+    ),
+    (
+        "gcloud",
+        &["container", "clusters", "resize"],
+        &["--num-nodes"],
+    ),
+    (
+        "eksctl",
+        &["scale", "nodegroup"],
+        &["--nodes", "-N", "--nodes-max", "-M"],
+    ),
+];
+
+/// A count of zero, or one only known when it runs, given to one of the
+/// [`SCALES`] commands of `key`. gcloud's `alpha` and `beta` in front of a
+/// command change nothing here.
+fn scaled<'a>(key: &str, args: &'a [Arg], values: &[&str]) -> Say<'a> {
+    let words = words(args, values);
+    let skip =
+        usize::from(key == "gcloud" && is_one_of(words.first().copied(), &["alpha", "beta"]));
+    let words = words.get(skip..).unwrap_or_default();
+    let mut found = Replicas::Other;
+    let mut target = None;
+    for (cli, path, options) in SCALES {
+        let named = *cli == key
+            && words.len() >= path.len()
+            && path
+                .iter()
+                .zip(words)
+                .all(|(name, word)| word.known() == Some(*name));
+        if named {
+            target = words.get(path.len()).copied();
+            for option in *options {
+                found = found.or(count_of(args, option, values));
+            }
+        }
+    }
+    said_of(found, target)
+}
+
+/// `fly scale count 0`, `fly scale count web=0 worker=2`: the count of
+/// machines, for the app or for a process group, as an operand.
+fn fly_scale<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
+    let words = words(args, values);
+    let scale = is_one_of(words.first().copied(), &["scale"])
+        && is_one_of(words.get(1).copied(), &["count"]);
+    if !scale {
+        return Safe;
+    }
+    let mut found = Replicas::Other;
+    for word in words.get(2..).unwrap_or_default() {
+        let Some(text) = word.known() else {
+            found = found.or(Replicas::Unread);
+            continue;
+        };
+        // A process group's count, or the app's; any other word is an
+        // option's value (`--region iad`).
+        let value = text.split_once('=').map_or(text, |(_, value)| value);
+        if text.contains('=') || value.starts_with(|c: char| c.is_ascii_digit()) {
+            found = found.or(number(value));
+        }
+    }
+    said_of(found, None)
+}
+
+/// `heroku ps:scale web=0` (also `scale` and `dyno:scale`): a count for each
+/// process type, `type=COUNT[:SIZE]`, or a change of it, `type+N` and
+/// `type-N`. A decrease may leave none, which only shows when it runs.
+fn heroku_scale<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
+    let words = words(args, values);
+    if !is_one_of(words.first().copied(), &["ps:scale", "scale", "dyno:scale"]) {
+        return Safe;
+    }
+    let mut found = Replicas::Other;
+    for word in words.get(1..).unwrap_or_default() {
+        let Some(text) = word.known() else {
+            found = found.or(Replicas::Unread);
+            continue;
+        };
+        if let Some((_, value)) = text.split_once('=') {
+            let count = value.split(':').next().unwrap_or(value);
+            found = found.or(number(count));
+        } else if text.contains('-') {
+            found = found.or(Replicas::Unread);
+        }
+    }
+    said_of(found, None)
+}
+
+/// What a count a scale command is given says.
+fn said_of(found: Replicas, target: Option<&Arg>) -> Say<'_> {
+    match found {
+        Replicas::Zero => Destroys(SCALES_TO_NOTHING, target),
+        Replicas::Unread => Unread(Some(SCALES_UNREAD)),
+        Replicas::Other => Safe,
+    }
+}
+
+/// `az deployment group create --mode Complete` (also the older `az group
+/// deployment create`): a deployment in complete mode deletes every resource
+/// in the group its template does not list. `what-if` and `validate` only
+/// show what it would do.
+fn complete_deployment<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
+    let words = words(args, values);
+    let names = |path: &[&str]| {
+        words.len() >= path.len()
+            && path
+                .iter()
+                .zip(&words)
+                .all(|(name, word)| word.known() == Some(*name))
+    };
+    if !names(&["deployment", "group", "create"]) && !names(&["group", "deployment", "create"]) {
+        return Safe;
+    }
+    let mut mode = None;
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        at += 1;
+        let text = written(arg);
+        if arg.known() == Some("--") {
+            break;
+        }
+        if text == "--mode" {
+            mode = args.get(at);
+            at += 1;
+        } else if text.starts_with("--mode=") {
+            mode = Some(arg);
+        } else if arg.known().is_some_and(|known| values.contains(&known)) {
+            at += 1;
+        }
+    }
+    let Some(mode) = mode else {
+        return Safe;
+    };
+    match mode.known() {
+        Some(text) => {
+            let value = text.strip_prefix("--mode=").unwrap_or(text);
+            if value.eq_ignore_ascii_case("complete") {
+                Destroys(
+                    "deletes the resources of a group its template does not list",
+                    None,
+                )
+            } else {
+                Safe
+            }
+        }
+        None => Unread(Some("deploys in a mode only known when it runs")),
     }
 }

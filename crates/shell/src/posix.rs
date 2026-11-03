@@ -1660,6 +1660,7 @@ impl Walker<'_> {
         // The same for `PYTHONPATH=… python3 -c …`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
+        let terraform = self.split.tf_cli_args.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -1680,6 +1681,7 @@ impl Walker<'_> {
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
+        self.split.tf_cli_args.truncate(terraform);
         self.split.unscope_hidden(outer);
     }
 
@@ -1825,10 +1827,26 @@ impl Walker<'_> {
 
     /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
     /// `export NODE_OPTIONS` of a value the line set another way: what node
-    /// gets then is not read.
+    /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too; an
+    /// `export TF_CLI_ARGS` alone adds nothing to what the line set.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        if let Some((name, _)) = source
+            .split_once('=')
+            .filter(|(name, _)| unit::tf_cli_args(name))
+        {
+            let value = match word.known() {
+                Some(text) => Arg::Known(
+                    text.split_once('=')
+                        .map_or("", |(_, value)| value)
+                        .to_string(),
+                ),
+                None => Arg::Unknown(source.to_string()),
+            };
+            self.split.tf_cli_args.push((name.to_string(), value));
+            return;
+        }
         match word.known() {
             Some(text) => {
                 if let Some(value) = text.strip_prefix("NODE_OPTIONS=") {
@@ -1875,20 +1893,24 @@ impl Walker<'_> {
         }
     }
 
-    /// Note the value `assignment` gives `NODE_OPTIONS` or `PYTHONPATH`,
-    /// when it is one of those variables'.
+    /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
+    /// `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of those
+    /// variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        if name != "NODE_OPTIONS" && name != "PYTHONPATH" {
+        let terraform = unit::tf_cli_args(name);
+        if name != "NODE_OPTIONS" && name != "PYTHONPATH" && !terraform {
             return;
         }
         let value = assignment
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
-        if name == "PYTHONPATH" {
+        if terraform {
+            self.split.tf_cli_args.push((name.to_string(), value));
+        } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
         } else {
             self.split.node_options.push(value);

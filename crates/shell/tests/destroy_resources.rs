@@ -43,3 +43,14 @@ fn a_target_a_prompt_can_show() {
         Some("namespace")
     );
 }
+
+/// A filter's value is not what a prune removes: there is no target to show.
+#[test]
+fn a_filter_is_not_a_target() {
+    let assessment = classify(
+        "docker system prune --filter until=24h",
+        Shell::Posix,
+        &posix(),
+    );
+    assert_eq!(assessment.findings()[0].target, None);
+}
