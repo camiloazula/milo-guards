@@ -182,6 +182,74 @@ risky:
 - A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
   grammar reads `{rm` as a program of that name: `Unreadable`.
 
+**Tools that run their arguments as a command** come off as `sudo` does,
+each with the options it reads and those of them that take a value, as
+`getopt` reads them (in a bundle, `strace -fo log rm`, or attached):
+
+- Tracers and runners: `strace` (`-o`, `-e`, `-p`, `-s` and its other
+  options that take one), `ssh-agent`, `chronic` and `script`. `script -c`
+  (`--command`, wherever it stands, as util-linux reads it) runs a shell line;
+  otherwise the words after the file it records to are the command (the BSDs
+  and macOS), and `-p` plays a recording back and runs nothing.
+- `launchctl asuser UID` and `launchctl bsexec PID` run the words after them;
+  `launchctl submit … -- cmd` starts the command as a job (with `-p`, the
+  program `-p` names, given the words after `--`).
+- `lima` runs its words in the default Lima machine. `nix run INSTALLABLE --
+  ARGS` runs the package's program, named by the attribute after `#`
+  (`nixpkgs#hello` runs `hello`, `nixpkgs#bash -- -c '…'` reads the script);
+  a package sets which of its programs runs, which need not be its name and
+  may be one that runs its arguments, so the words after `--` are also read
+  as a command, and the riskier reading counts.
+- The runners that load secrets into the command's environment first:
+  `aws-vault exec PROFILE [--] cmd`, `doppler run`, `op run`, `infisical
+  run`, `direnv exec DIR cmd` and `dotenv` (dotenv-cli, `-e`, `-v`, `-p`
+  and `-c` take a value). `doppler run --command` and `infisical run
+  --command` run a shell line: POSIX on a POSIX line, cmd on Windows.
+- `wsl` runs its words as a line in the Linux shell of a distribution, from
+  any shell of Windows: after its options (`-d`, `-u`, `--cd`,
+  `--shell-type`, `--distribution-id` take a value), or every word after
+  `--`, read in the POSIX grammar. `-e` (`--exec`) runs the words after it
+  as a program and its arguments, with no shell. Any other option
+  (`--list`, `--install`, `--shutdown`) manages WSL and runs nothing. Windows
+  hands `wsl` one command line, which it passes on to the shell as it is;
+  whether the line it is started from quotes an argument with a space is not
+  on the line, so both are read and the riskier counts: `wsl pwsh -c
+  "Remove-Item C:\Windows -Recurse"` runs `Remove-Item` as one script, and
+  `wsl 'rm -rf ~'` may run `rm -rf ~`. The folder `--cd` names is not
+  followed.
+
+GNU **`parallel`** runs a command once for each value: its options, the
+command, then the values after `:::` (or the files after `::::`, or `-a`),
+or with neither, its input. Each job is a line its shell runs: the command's
+words joined with spaces, each value put in, quoted, where a replacement
+string stands (`{}` or the `-I` string, `{.}`, `{/}`, `{//}`, `{/.}`, `{#}`,
+`{%}`, and `{1}` to name a source) or after the words when none does. Every
+job is judged, each source's values in turn, and one more line that gives
+the command every value at once, since the jobs run together (`parallel
+docker rm -f ::: web db` removes several containers). A word with a space
+splits when the words are joined (`-q` quotes each word instead); the guard
+reads it whole too, and the riskier reading counts. With no command each
+value is a line of its own, and lines read from the input are its input run
+as a shell runs it. A command of plain words fed its input is read as
+`xargs` reads it (`ls ~ | parallel rm -rf`). A value only known when it runs,
+or read from the input or a file, stands in a line as `"$1"`. Past 256 jobs,
+for a `{= … =}` expression (Perl), a numbered string where several values go
+to a job (`-n`, `-N`, `-L`, `-X`, `-m`, `--link`, `:::+`), an option that
+changes how values are split, named or separated (`--colsep`, `--csv`,
+`--header`, `--plus`, `--rpl`, `--arg-sep`, the `--…replace` options), or
+an option the guard does not know (a long one may be shortened to an
+unambiguous start, as `parallel` reads it), the line is `Unreadable`.
+
+`env -S` splits its string into the command, and the arguments after it are
+added to its words (`env -S 'rm -rf' ~`); the string may be attached (`env
+-S'rm -rf ~'`, `env -iS'…'`), and `--split-string=` and a shorter start of
+the long name (`--split=…`, `--s`) are the same.
+
+A script that `xargs` or `parallel` hands to a shell (`xargs -n1 sh -c 'docker
+rm -f "$1"' _`) runs once for each item it reads, as a loop body runs, so it
+is judged as one: its `$1` and `$@` name a different value each time, only
+known when it runs.
+
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
 counts as far as a depth limit, and the text of all the nested scripts read
@@ -2810,7 +2878,10 @@ could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
 `env -P` changes where programs are found, `env -C` the folder they run in).
 `time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
-start sessions: those wrap a reader into `Unknown`. A shell started with a
+start sessions: those wrap a reader into `Unknown`. So do the other tools that
+run a command (`strace -o` and `script` write files, `parallel` runs many,
+`wsl` another system's shell, and the secret runners hand it an environment
+the line does not show). A shell started with a
 script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) is a program the
 table does not know, so it is `Unknown` even when the script it holds only
 reads.

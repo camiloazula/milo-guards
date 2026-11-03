@@ -42,16 +42,23 @@ pub(super) fn rsh(args: &[Arg]) -> Option<Arg> {
 }
 
 /// `env`: assignments and options, then the program; `-S` splits a string
-/// into the command.
+/// into the command, the arguments after it added to its words.
 pub(super) fn env(args: &[Arg]) -> Launch {
     let mut at = 0;
     while let Some(arg) = args.get(at) {
+        if let Some(split) = arg.known().and_then(split_string) {
+            let (script, rest) = match split {
+                SplitString::Attached(attached) => {
+                    (Arg::Known(attached.to_string()), &args[at + 1..])
+                }
+                SplitString::Next => match args.get(at + 1) {
+                    Some(script) => (script.clone(), &args[at + 2..]),
+                    None => return Launch::Itself,
+                },
+            };
+            return Launch::Script(Shell::Posix, with_words(script, rest));
+        }
         match arg.known() {
-            Some("-S" | "--split-string") => {
-                return args.get(at + 1).map_or(Launch::Itself, |script| {
-                    Launch::Script(Shell::Posix, script.clone())
-                });
-            }
             Some("-u" | "--unset" | "-C" | "--chdir") => at += 2,
             Some(text)
                 if text.starts_with('-') || (text.contains('=') && !text.starts_with('=')) =>
@@ -64,14 +71,66 @@ pub(super) fn env(args: &[Arg]) -> Launch {
     Launch::Itself
 }
 
+/// Where the string of `env -S` is.
+enum SplitString<'a> {
+    /// Attached to the option: `-S'cmd'`, `-iS'cmd'`, `--split-string=cmd`.
+    Attached(&'a str),
+    /// The next word.
+    Next,
+}
+
+/// Whether the option `text` is `env -S` (`--split-string`, or a shorter
+/// start of the long name, `--split=cmd`), and where its string is.
+fn split_string(text: &str) -> Option<SplitString<'_>> {
+    if let Some(long) = text.strip_prefix("--") {
+        let (name, value) = long
+            .split_once('=')
+            .map_or((long, None), |(name, value)| (name, Some(value)));
+        return (!name.is_empty() && "split-string".starts_with(name))
+            .then(|| value.map_or(SplitString::Next, SplitString::Attached));
+    }
+    let bundle = text.strip_prefix('-')?;
+    for (at, letter) in bundle.char_indices() {
+        match letter {
+            'S' => {
+                let rest = &bundle[at + 1..];
+                return Some(if rest.is_empty() {
+                    SplitString::Next
+                } else {
+                    SplitString::Attached(rest)
+                });
+            }
+            'i' | '0' | 'v' => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The script `env -S` runs: the string's words, then the arguments after
+/// it, each one word.
+fn with_words(script: Arg, rest: &[Arg]) -> Arg {
+    if rest.is_empty() {
+        return script;
+    }
+    let words = super::shell_words(rest);
+    let line = format!("{} {}", script.text(), words.text());
+    match (script, words) {
+        (Arg::Known(_), Arg::Known(_)) => Arg::Known(line),
+        _ => Arg::Unknown(line),
+    }
+}
+
 /// The variables `env` sets (`X=1`) or unsets (`-u X`) for the program it
 /// runs, read as [`env`] reads its arguments.
 pub(super) fn env_sets(args: &[Arg]) -> Vec<String> {
     let mut names = Vec::new();
     let mut at = 0;
     while let Some(arg) = args.get(at) {
+        if arg.known().and_then(split_string).is_some() {
+            break;
+        }
         match arg.known() {
-            Some("-S" | "--split-string") => break,
             Some("-u" | "--unset") => {
                 names.extend(args.get(at + 1).map(|name| name.text().to_string()));
                 at += 2;

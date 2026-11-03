@@ -260,6 +260,118 @@ posix finds=delete | find . -exec sh -c 'rm -rf /' \\;
 posix finds=delete | cmd.exe /c "rd /s /q C:\\Users\\me"
 posix finds=delete | powershell.exe -Command "Remove-Item -Recurse -Force ~"
 
+# Wrappers that run their arguments as a command: tracing and running tools,
+# `parallel`, `launchctl`, `wsl`, `lima`, `nix run` and the runners that load
+# secrets first. The command they run is judged.
+posix finds=delete | strace rm -rf ~
+posix finds=delete | strace -f -o trace.log rm -rf ~
+posix finds=delete | strace -fo trace.log rm -rf ~
+posix finds=delete | strace -e trace=file -s 200 rm -rf ~
+posix finds=delete | script -q /dev/null rm -rf /
+posix finds=delete | script -q -t 0 /dev/null rm -rf /
+posix finds=delete | script -qc 'rm -rf ~' /dev/null
+posix finds=delete | script --command='rm -rf ~' /dev/null
+posix finds=delete | ssh-agent rm -rf ~
+posix finds=delete | ssh-agent -t 600 rm -rf ~
+posix finds=delete | chronic rm -rf ~
+posix finds=delete | chronic -ev rm -rf ~
+posix finds=destroy_resources | chronic terraform destroy
+posix finds=delete | parallel rm -rf ::: ~
+posix finds=destroy_resources | parallel docker rm -f ::: web db
+posix finds=delete | parallel -j4 rm -rf {} ::: build ~
+posix finds=delete | parallel 'rm -rf {}' ::: ~
+posix finds=delete | parallel rm -rf {1} ::: ~ ::: a
+posix finds=delete | parallel {1} -rf {2} ::: rm ::: ~
+posix finds=delete | parallel sh -c 'rm -rf {}' ::: ~
+posix finds=delete | parallel -q sh -c 'rm -rf {}' ::: ~
+posix finds=destroy_resources | parallel docker rm -f {} ::: web db
+posix finds=delete | parallel -I @ rm -rf @ ::: ~
+posix finds=delete | parallel -a list.txt rm -rf
+posix finds=delete | parallel rm -rf :::: list.txt
+posix finds=run_input | ls | parallel
+posix finds=unreadable | parallel -n2 rm -rf {1} {2} ::: a ~
+posix finds=unreadable | parallel --frobnicate rm -rf ::: ~
+posix finds=delete | parallel ::: 'rm -rf ~' 'echo hi'
+posix finds=delete | ls ~ | parallel rm -rf
+posix finds=delete | parallel rm -rf {} ::: ~/.ssh/id.pub
+posix finds=delete | parallel rm -rf {//} ::: ~/x
+posix finds=unreadable | parallel rm -rf '{= s/a/b/ =}' ::: ~
+posix finds=unreadable | parallel --colsep , rm -rf ::: a,~
+posix finds=delete | parallel rm -rf ::: $X
+posix finds=delete | launchctl asuser 501 rm -rf /
+posix finds=delete | launchctl bsexec 1 rm -rf /
+posix finds=delete | launchctl submit -l x -- rm -rf ~
+posix finds=delete | launchctl submit -l x -p /bin/rm -- rm -rf ~
+posix finds=delete | wsl rm -rf ~
+posix finds=delete | wsl -- rm -rf /mnt/c/Users/me
+posix finds=delete | wsl -e rm -rf ~
+posix finds=delete | wsl --exec rm -rf ~
+posix finds=delete | wsl -d Ubuntu -u root rm -rf ~
+posix finds=delete | wsl 'rm -rf ~'
+posix finds=delete | wsl ls '&&' rm -rf ~
+posix finds=delete | wsl -e sh -c 'rm -rf ~'
+posix finds=delete | wsl echo 'a;rm -rf ~'
+posix finds=delete | lima rm -rf /
+posix finds=delete | nix run nixpkgs#hello -- rm -rf ~
+posix finds=delete | nix run nixpkgs#bash -- -c 'rm -rf ~'
+posix finds=delete | aws-vault exec prod -- rm -rf /
+posix finds=delete | aws-vault exec --duration 1h prod -- rm -rf /
+posix finds=delete | aws-vault exec prod rm -rf /
+posix finds=delete | doppler run -- rm -rf /
+posix finds=delete | doppler run -p app -c dev -- rm -rf /
+posix finds=delete | doppler run --command 'rm -rf /'
+posix finds=delete | op run -- rm -rf /
+posix finds=delete | op run --env-file .env -- rm -rf /
+posix finds=delete | infisical run -- rm -rf /
+posix finds=delete | infisical run --env prod --command 'rm -rf /'
+posix finds=delete | direnv exec . rm -rf /
+posix finds=delete | dotenv -- rm -rf /
+posix finds=delete | dotenv -e .env.prod -- rm -rf /
+posix finds=delete | sudo doppler run -- strace -f chronic rm -rf ~
+posix safe | strace -c ls
+posix safe | strace -p 1234
+posix safe | parallel echo ::: a b
+posix safe | parallel gzip {} ::: a.log b.log
+posix safe | parallel mv {} {.}.bak ::: a.txt
+posix safe | ls | parallel gzip
+posix safe | ls | parallel -j4 'gzip {}'
+posix safe | parallel ::: ls 'echo hi'
+posix safe | wsl ls
+posix safe | wsl --list
+posix safe | wsl -e ls -la
+posix safe | doppler run -- npm test
+posix safe | op run -- npm test
+posix safe | aws-vault exec prod -- aws s3 ls
+posix safe | direnv exec . make
+posix safe | chronic make
+posix safe | ssh-agent make
+posix safe | script -q /dev/null ls
+posix safe | nix run nixpkgs#hello
+posix safe | launchctl asuser 501 ls
+
+# `env -S` with its string attached, `--split-string=` and its shorter
+# spellings split the string as `env -S STRING`, with the arguments after it.
+posix finds=delete | env -S"rm -rf ~"
+posix finds=delete | env -S'rm -rf ~'
+posix finds=delete | env --split-string='rm -rf ~'
+posix finds=delete | env --split='rm -rf ~'
+posix finds=delete | env -iS'rm -rf ~'
+posix finds=delete | env -S 'rm -rf' ~
+posix finds=delete | env -S'rm -rf' ~
+posix safe | env -S 'make test'
+posix safe | env -S'make test'
+posix finds=delete | env --s 'rm -rf ~'
+posix finds=delete | env -u FOO -S'rm -rf ~'
+posix finds=unknown | env -S 'rm -rf' "$X"
+
+# The script `xargs` hands to `sh -c` gets its input as `$1` and `$@`, known
+# only when it runs.
+posix finds=destroy_resources | docker ps -aq | xargs -n1 sh -c 'docker rm -f "$1"' _
+posix finds=delete | ls | xargs sh -c 'rm -rf "$@"' sh
+posix finds=delete | ls ~ | xargs -I{} sh -c 'rm -rf "$1"' _ {}
+posix safe | docker ps -aq | xargs -n1 sh -c 'echo "$1"' _
+posix safe | ls | xargs -n1 sh -c 'cd "$1" && make' _
+
 # A trap action is a script that runs later.
 posix safe | trap 'rm -rf build' EXIT
 posix safe | trap "rm -rf build" EXIT
