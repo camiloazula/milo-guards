@@ -44,7 +44,8 @@ pub struct ArgExplanation {
     /// program takes it as a path (`reset` in `git reset` lands inside the
     /// workspace); the rules decide which are paths. `None` for an option
     /// (`-rf`, `/s`), a value only known when it runs, and what a pipeline
-    /// hands on.
+    /// hands on. In a POSIX shell nothing after the first `--` is an option:
+    /// in `rm -- -rf`, `--` is not placed and `-rf` is.
     pub resolved: Option<String>,
 }
 
@@ -241,6 +242,9 @@ fn resolved(
 }
 
 fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplanation {
+    // In a POSIX shell the first `--` ends the options: what follows it is an
+    // operand, whatever it starts with (`rm -- -rf` deletes a file `-rf`).
+    let mut ended = false;
     UnitExplanation {
         shell: unit.shell,
         depth: unit.depth,
@@ -249,7 +253,12 @@ fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplan
         args: unit
             .args
             .iter()
-            .map(|arg| ArgExplanation {
+            .map(|arg| {
+                let option = !ended && arg.known().is_some_and(|text| is_option(text, unit.shell));
+                ended |= unit.shell == Shell::Posix && arg.known() == Some("--");
+                (arg, option)
+            })
+            .map(|(arg, option)| ArgExplanation {
                 written: arg.text().to_string(),
                 kind: match arg {
                     Arg::Known(_) => ArgKind::Known,
@@ -260,7 +269,7 @@ fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplan
                 },
                 resolved: arg
                     .known()
-                    .filter(|text| !is_option(text, unit.shell))
+                    .filter(|_| !option)
                     .and_then(|_| {
                         resolved(
                             arg,
@@ -291,21 +300,62 @@ fn is_option(text: &str, shell: Shell) -> bool {
 }
 
 /// A text as the tree prints it: a control character (a newline, a tab, an
-/// ESC) is written as an escape (`\n`, `\u{1b}`), so what the line holds can
-/// neither pose as a line of the tree nor reach a terminal as a sequence.
-/// The fields stay raw; only the tree escapes.
+/// ESC), a line or paragraph separator and a format character (a
+/// right-to-left override, a bidi isolate, a zero-width space) are written as
+/// escapes (`\n`, `\u{1b}`, `\u{202e}`), so what the line holds can neither
+/// pose as a line of the tree, nor reach a terminal as a sequence, nor show
+/// its text in another order than it is read. The fields stay raw; only the
+/// tree escapes.
 struct Escaped<'a>(&'a str);
 
+/// The format characters of Unicode (general category `Cf`): they draw
+/// nothing, and the bidi controls among them (U+202A to U+202E, U+2066 to
+/// U+2069) reorder the text around them.
+const FORMAT: [(char, char); 21] = [
+    ('\u{00ad}', '\u{00ad}'),
+    ('\u{0600}', '\u{0605}'),
+    ('\u{061c}', '\u{061c}'),
+    ('\u{06dd}', '\u{06dd}'),
+    ('\u{070f}', '\u{070f}'),
+    ('\u{0890}', '\u{0891}'),
+    ('\u{08e2}', '\u{08e2}'),
+    ('\u{180e}', '\u{180e}'),
+    ('\u{200b}', '\u{200f}'),
+    ('\u{202a}', '\u{202e}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206f}'),
+    ('\u{feff}', '\u{feff}'),
+    ('\u{fff9}', '\u{fffb}'),
+    ('\u{110bd}', '\u{110bd}'),
+    ('\u{110cd}', '\u{110cd}'),
+    ('\u{13430}', '\u{1343f}'),
+    ('\u{1bca0}', '\u{1bca3}'),
+    ('\u{1d173}', '\u{1d17a}'),
+    ('\u{e0001}', '\u{e0001}'),
+    ('\u{e0020}', '\u{e007f}'),
+];
+
+/// Whether the tree writes `c` as an escape.
+fn escaped(c: char) -> bool {
+    if c.is_ascii() {
+        return c.is_ascii_control();
+    }
+    c.is_control()
+        || matches!(c, '\u{2028}' | '\u{2029}')
+        || FORMAT.iter().any(|&(from, to)| (from..=to).contains(&c))
+}
+
 impl fmt::Display for Escaped<'_> {
+    /// The text between escapes is written a run at a time: a tree can hold
+    /// megabytes of nested script.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for c in self.0.chars() {
-            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-                write!(f, "{}", c.escape_debug())?;
-            } else {
-                write!(f, "{c}")?;
-            }
+        let mut from = 0;
+        for (at, c) in self.0.char_indices().filter(|&(_, c)| escaped(c)) {
+            f.write_str(self.0.get(from..at).unwrap_or_default())?;
+            write!(f, "{}", c.escape_debug())?;
+            from = at + c.len_utf8();
         }
-        Ok(())
+        f.write_str(self.0.get(from..).unwrap_or_default())
     }
 }
 
@@ -429,4 +479,27 @@ fn write_finding(f: &mut fmt::Formatter<'_>, indent: &str, finding: &Finding) ->
         write!(f, " ({})", Escaped(target))?;
     }
     writeln!(f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escaped, Escaped, FORMAT};
+
+    #[test]
+    fn every_format_character_is_written_as_an_escape() {
+        for &(from, to) in &FORMAT {
+            for c in from..=to {
+                assert!(escaped(c));
+                let printed = Escaped(&c.to_string()).to_string();
+                assert_eq!(printed, format!("\\u{{{:x}}}", u32::from(c)));
+            }
+        }
+    }
+
+    #[test]
+    fn other_text_is_written_as_it_is() {
+        for text in ["rm -rf ~/x", "é", "日本", "a\u{301}", "\\", "'\""] {
+            assert_eq!(Escaped(text).to_string(), text);
+        }
+    }
 }

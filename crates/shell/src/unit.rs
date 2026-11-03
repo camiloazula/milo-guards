@@ -798,6 +798,12 @@ pub(crate) struct Split {
     /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
     /// a line must not make this grow without bound.
     pub(crate) find_work: usize,
+    /// How many groups a `coproc` opened that the grammar did not see
+    /// (`coproc { ls; }`, `coproc NAME { { ls; }; }`): it has no `coproc`,
+    /// so it reads each `{` as a word and each `}` that closes one as a
+    /// command of its own. The walk takes such a `}` off as it closes one,
+    /// and runs nothing for it.
+    pub(crate) coproc_groups: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -2779,11 +2785,14 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     // (The line itself, at depth 0, is the shell whose functions these are.)
     let apart = !here && depth > 0;
     split.apart += usize::from(apart);
+    // A group a `coproc` opens closes in the same script.
+    let groups = std::mem::take(&mut split.coproc_groups);
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
         Shell::Cmd => crate::cmd::split(split, text, depth),
     }
+    split.coproc_groups = groups;
     split.apart -= usize::from(apart);
     if !here {
         split.restore_dir(outer);

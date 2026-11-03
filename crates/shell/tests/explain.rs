@@ -84,6 +84,56 @@ fn arguments_come_as_written_and_as_resolved() {
 }
 
 #[test]
+fn an_argument_after_a_posix_double_dash_is_an_operand_whatever_it_starts_with() {
+    let placed = |line: &str, shell: Shell, paths: &Paths| -> Vec<(String, bool)> {
+        explain(line, shell, paths).units[0]
+            .args
+            .iter()
+            .map(|arg| (arg.written.clone(), arg.resolved.is_some()))
+            .collect()
+    };
+    let pairs = |pairs: &[(&str, bool)]| -> Vec<(String, bool)> {
+        pairs
+            .iter()
+            .map(|&(text, placed)| (text.to_string(), placed))
+            .collect()
+    };
+    // `rm` takes `-rf` as a file: it is placed, and the `--` is not.
+    assert_eq!(
+        placed("rm -- -rf ~/x", Shell::Posix, &posix()),
+        pairs(&[("--", false), ("-rf", true), ("~/x", true)])
+    );
+    assert_eq!(
+        placed("rm -rf -- -x ~", Shell::Posix, &posix()),
+        pairs(&[("-rf", false), ("--", false), ("-x", true), ("~", true)])
+    );
+    // Only the first `--` ends the options; a second is a file named `--`.
+    assert_eq!(
+        placed("rm -- -- x", Shell::Posix, &posix()),
+        pairs(&[("--", false), ("--", true), ("x", true)])
+    );
+    let explanation = explain("rm -- -rf ~/x", Shell::Posix, &posix());
+    assert_eq!(
+        explanation.units[0].args[1].resolved.as_deref(),
+        Some("a path inside the workspace")
+    );
+    assert!(explanation
+        .to_string()
+        .contains("    -rf (as a path: a path inside the workspace)\n"));
+    // The verdict is the same as before: the rules read the `--` themselves.
+    assert_eq!(rules(explanation.findings()), [Rule::Delete]);
+    assert_eq!(
+        explanation.assessment(),
+        classify("rm -- -rf ~/x", Shell::Posix, &posix())
+    );
+    // A PowerShell or cmd `--` is not a POSIX one: the dashes stay options.
+    assert_eq!(
+        placed("Remove-Item -- -Recurse", Shell::PowerShell, &windows()),
+        pairs(&[("--", false), ("-Recurse", false)])
+    );
+}
+
+#[test]
 fn a_known_argument_has_its_quotes_taken_off_and_others_keep_the_source() {
     let explanation = explain(r#"rm 'a b' $X "c $Y""#, Shell::Posix, &posix());
     let args: Vec<_> = explanation.units[0]
@@ -137,6 +187,23 @@ fn control_characters_never_pose_as_tree_lines_or_reach_a_terminal() {
         tree.contains(r"git status\n  safe\nunit 4: x\u{1b}[2J"),
         "{tree}"
     );
+    // A bidi control or another format character is written as an escape
+    // too, so a terminal shows the text in the order it is read.
+    for c in [
+        '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}',
+        '\u{2068}', '\u{2069}', '\u{200b}', '\u{feff}',
+    ] {
+        let line = format!("rm {c}~/x");
+        let explanation = explain(&line, Shell::Posix, &posix());
+        let tree = explanation.to_string();
+        assert!(!tree.contains(c), "{tree:?}");
+        assert!(
+            tree.contains(&format!("\\u{{{:x}}}~/x", u32::from(c))),
+            "{tree:?}"
+        );
+        // The raw field keeps it.
+        assert!(explanation.units[0].args[0].written.contains(c));
+    }
     // The redirect target and a `cd` folder go through the same escape.
     let tree = explain("cd 'a\nb' && echo hi > 'c\nd'", Shell::Posix, &posix()).to_string();
     assert!(tree.contains("runs from: a\\nb\n"), "{tree}");

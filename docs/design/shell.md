@@ -170,8 +170,12 @@ one (`coproc NAME { … }`). The program is the first word past the name, the
 `{` words that open the group (`coproc { { rm -rf ~; }; }` is read through
 both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
 -rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
-the `rm`. The grammar has no `coproc`, so three forms are not read, and are
-risky:
+the `rm`. The grammar reads the `}` that closes such a group as a command of
+its own; the shell runs nothing for it, so the walk takes off one bare `}` with
+no arguments for each `{` a `coproc` opened in the same script, and it is no
+unit: `coproc { ls *.txt; }` and `coproc NAME { ls; }` only read, as `coproc
+cat` does, and a quoted `'}'` is still a program. The grammar has no `coproc`,
+so three forms are not read, and are risky:
 
 - A loop, conditional, `case` or function after it, or inside its group
   (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
@@ -3301,6 +3305,18 @@ itself (a part that cannot be read, a program known only when it runs, a limit
 hit). Every known argument that is not an option gets a place, whether or not
 the program takes it as a path (`reset` in `git reset` lands inside the
 workspace); which arguments are paths is the rules' business, not the tree's.
+In a POSIX shell nothing after the first `--` is an option: in `rm -- -rf
+~/x` and `rm -rf -- -x ~`, `rm` takes `-rf` and `-x` as files, so they get a
+place and the `--` gets none (a second `--` is a file too). A PowerShell or cmd
+`--` ends nothing here.
+
+The tree never shows the line's text raw where it could mislead: a control
+character (a newline, a tab, an ESC), a line or paragraph separator (U+2028,
+U+2029) and a Unicode format character (category `Cf`: the bidi controls
+U+202A to U+202E and U+2066 to U+2069, a zero-width space, a byte order mark)
+are written as escapes (`\n`, `\u{1b}`, `\u{202e}`), so the text can neither pose
+as a line of the tree, nor reach a terminal as a sequence, nor show in another
+order than it is read. The fields of `Explanation` keep the text raw.
 
 `classify` is `explain` without the tree: both take their answer from one
 reading of the line (`effect` too, from the same split), so `Explanation::findings`
@@ -3401,7 +3417,9 @@ holds seeded noise that never panics, a line too long or too nested being
 unreadable, a line whose nested scripts are read too often being unreadable,
 too many here-documents, a too-long cmd chain and too-deep nesting not being
 read while everyday lines with many `<<` or `&` are, and the tests that time
-a nasty line against a 200 ms bound;
+a nasty line against a 200 ms bound. Each of them runs `explain` and draws its
+tree too, which do more work than `classify`: a line past a limit is
+unreadable there as well, and the slower of the two is held to the bound;
 `tests/timing.rs` and `tests/limits.rs` hold the rest, as each bullet says:
 
 - **Never panics, and `classify`, `effect` and `explain` agree.** (The wide run

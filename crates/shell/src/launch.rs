@@ -195,6 +195,9 @@ fn add_launched(
             }
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
+                if key == "coproc" && unit.shell == Shell::Posix {
+                    split.coproc_groups += coproc_groups(unit.args.get(..start).unwrap_or_default());
+                }
                 split.environment += usize::from(sets_environment(&key));
                 split
                     .node_options
@@ -747,6 +750,16 @@ fn coproc(args: &[Arg]) -> Launch {
     } else {
         runs(args, Some(at))
     }
+}
+
+/// How many groups the words before what a `coproc` runs open: each `{`
+/// of the words [`coproc`] steps over (`{ {` is one word, two groups).
+fn coproc_groups(own: &[Arg]) -> usize {
+    own.iter()
+        .filter_map(Arg::known)
+        .filter(|text| opens_group(text))
+        .map(|text| text.matches('{').count())
+        .sum()
 }
 
 /// The words that open a compound command with a body of its own.

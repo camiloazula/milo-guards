@@ -104,15 +104,31 @@ posix effect=reads_workspace | nocorrect ls
 posix effect=reads_workspace | - ls
 posix effect=reads_workspace | coproc cat
 posix effect=reads_workspace | coproc LANG=C ls
+# A group, named or not, reads as what it runs: the `}` that closes it runs
+# nothing.
+posix effect=reads_workspace | coproc { ls *.txt; }
+posix effect=reads_workspace | coproc NAME { ls *.txt; }
+posix effect=reads_workspace | coproc { { ls; }; }
+posix effect=reads_workspace | coproc NAME {\n ls\n}
+posix effect=reads_workspace | eval 'coproc { ls; }'
 posix effect=changes | noglob rm -rf ~
 posix effect=changes | - rm -rf ~
 posix effect=changes | coproc rm -rf ~
 posix effect=changes | coproc { rm -rf ~; }
 posix effect=changes | coproc LANG=C rm -rf ~
 posix effect=changes | coproc { { rm -rf ~; }; }
+posix effect=changes | coproc NAME { touch x; }
+posix effect=changes | coproc { ls; } > out.txt
 posix effect=unknown | noglob $CMD
 posix effect=unknown | coproc PATH=/x ls
 posix effect=unknown | coproc FOO=1 ls
+# Only a bare `}` that closes a group a `coproc` opened is taken off: any
+# other `}` is a program the table does not know.
+posix effect=unknown | ls; }
+posix effect=unknown | coproc { ls; }; }
+posix effect=unknown | coproc { ls; '}'
+posix effect=unknown | coproc ls; }
+posix effect=unknown | coproc { ls; }; bash -c '}'
 posix effect=unknown | coproc NAME { PATH=/x ls; }
 
 # A zsh modifier turns zsh's flag off and never bash's. `noglob`, `nocorrect`

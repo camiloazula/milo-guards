@@ -1,17 +1,44 @@
 //! Whatever the text, classifying it ends, never panics, and never calls
 //! a line it could not read safe; and the same for `effect`, which never
-//! calls such a line reads-only. The counts that guard the grammars' time
+//! calls such a line reads-only, and for `explain` and the tree it draws,
+//! which do more work than `classify` and are held to the same limits and
+//! the same time. The counts that guard the grammars' time
 //! stop a line too long, too nested or too tangled to read, and do not take
 //! everyday lines that hold a lot of `<<` or `&` for tangled ones.
 
 mod common;
 mod noise;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use common::{check, disagreements, posix, took, windows};
-use milo_guards_shell::{classify, effect, Effect, Rule, Shell};
+use common::{check, disagreements, posix, windows};
+use milo_guards_shell::{classify, effect, explain, Effect, Paths, Rule, Shell};
 use noise::Lcg;
+
+/// How long the slower of `classify` and `explain` with its tree takes to
+/// read `line`, each the quickest of three runs: a limit holds for both.
+fn took(line: &str, shell: Shell, paths: &Paths) -> Duration {
+    let explained = (0..3)
+        .map(|_| {
+            let started = Instant::now();
+            let _ = explain(line, shell, paths).to_string();
+            started.elapsed()
+        })
+        .min()
+        .unwrap_or_default();
+    common::took(line, shell, paths).max(explained)
+}
+
+/// Whether `explain` finds `line` unreadable, its tree drawn and saying so.
+fn explained_unreadable(line: &str, shell: Shell, paths: &Paths) -> bool {
+    let explanation = explain(line, shell, paths);
+    let tree = explanation.to_string();
+    explanation
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::Unreadable)
+        && tree.contains(Rule::Unreadable.name())
+}
 
 /// Pieces of shell syntax, joined at random into lines no grammar expects.
 const PIECES: [&str; 40] = [
@@ -99,6 +126,7 @@ fn a_line_too_long_or_too_nested_is_not_read() {
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
     assert_eq!(effect(&long, Shell::Posix, &posix()), Effect::Unknown);
+    assert!(explained_unreadable(&long, Shell::Posix, &posix()));
     // Every `(` row is stopped before it is parsed, by the count of open
     // `(`; the walk's own depth limit is tested on lines without one, in
     // `nesting_the_count_of_open_parens_cannot_see_is_stopped_by_the_walk`.
@@ -119,6 +147,10 @@ fn a_line_too_long_or_too_nested_is_not_read() {
                 .findings()
                 .iter()
                 .any(|finding| finding.rule == Rule::Unreadable),
+            "{shell:?} {open}"
+        );
+        assert!(
+            explained_unreadable(&nested, shell, &paths),
             "{shell:?} {open}"
         );
         // `effect` reads the same tree. Past the depth limit (400) is
@@ -150,6 +182,7 @@ fn nesting_the_count_of_open_parens_cannot_see_is_stopped_by_the_walk() {
         };
         check(shell, &paths, &[], &[(line, Rule::Unreadable)]);
         assert_eq!(effect(line, shell, &paths), Effect::Unknown, "{shell:?}");
+        assert!(explained_unreadable(line, shell, &paths), "{shell:?}");
     }
 }
 
@@ -183,6 +216,9 @@ fn here_documents_are_read_in_any_number_unless_too_many_wait_on_one_line() {
     // the line, closed or not.
     let waiting = "cat <<EOF; ".repeat(300) + "\nEOF\n";
     let continued = "cat <<EOF; \\\n".repeat(300) + "\nEOF\n";
+    for line in [&waiting, &continued] {
+        assert!(explained_unreadable(line, Shell::Posix, &posix()));
+    }
     check(
         Shell::Posix,
         &posix(),
@@ -208,6 +244,9 @@ fn a_long_chain_in_cmd_is_not_read_and_one_that_reads_is() {
     let short = "echo x & ".repeat(300) + "echo y";
     let shorter_pipeline = "echo x | ".repeat(300) + "cat";
     let both = "echo x & echo y | ".repeat(150) + "echo z";
+    for line in [&long, &longer_pipeline] {
+        assert!(explained_unreadable(line, Shell::Cmd, &windows()));
+    }
     check(
         Shell::Cmd,
         &windows(),
@@ -230,6 +269,7 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
         .iter()
         .any(|finding| finding.rule == Rule::Unreadable));
     assert_eq!(effect(&line, Shell::Posix, &posix()), Effect::Unknown);
+    assert!(explained_unreadable(&line, Shell::Posix, &posix()));
     // A few reads of a short script are fine (in robust.cases).
 }
 

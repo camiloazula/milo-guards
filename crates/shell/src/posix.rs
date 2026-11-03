@@ -793,6 +793,16 @@ fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
     found
 }
 
+/// Whether `name`, a command's name, is a bare `}`: the reserved word that
+/// closes a group, which the grammar reads as a command when it did not see
+/// the group open (`coproc { ls; }`). A quoted `'}'` is a program's name.
+fn closes_group(name: Node<'_>, source: &str) -> bool {
+    name.named_child_count() == 1
+        && name
+            .named_child(0)
+            .is_some_and(|word| word.kind() == "word" && unit::text(&word, source) == "}")
+}
+
 /// What stands for an expansion in a template: a variable the guard cannot
 /// name, so a script read from the template finds a value known only when it
 /// runs where the expansion was.
@@ -1534,6 +1544,11 @@ impl Walker<'_> {
         let nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
             .collect();
+        // The `}` that closes a group a `coproc` opened runs nothing.
+        if self.split.coproc_groups > 0 && nodes.is_empty() && closes_group(name, self.source) {
+            self.split.coproc_groups -= 1;
+            return;
+        }
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
         let qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());

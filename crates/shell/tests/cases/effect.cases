@@ -639,6 +639,12 @@ powershell effect=changes | Set-Content a.txt hi
 powershell effect=changes | Add-Content a.txt hi
 powershell effect=changes | Get-Content a.txt | Set-Content b.txt
 powershell effect=changes | Get-Content a.txt > b.txt
+# A redirect writes its file whether or not the program has arguments.
+powershell effect=changes | echo >a
+powershell effect=changes | echo > a
+powershell effect=changes | echo x > a
+powershell effect=changes | Write-Output >a
+powershell effect=changes | Write-Output x > a
 powershell effect=changes | Get-Content a.txt | Out-File b.txt
 powershell effect=changes | Copy-Item a b
 powershell effect=changes | Move-Item a b
