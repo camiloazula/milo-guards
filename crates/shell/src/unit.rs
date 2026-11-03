@@ -3394,22 +3394,14 @@ pub(crate) fn split(
     (drive, home_drive): (Option<char>, Option<char>),
     effect: bool,
 ) -> Split {
-    let mut split = Split {
-        drive,
-        home_drive,
-        ..Split::default()
-    };
+    let mut split = Split::default();
+    start(&mut split, false, (drive, home_drive));
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
     if split.psdrive {
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
-        split = Split {
-            psdrive: true,
-            drive,
-            home_drive,
-            ..Split::default()
-        };
+        start(&mut split, true, (drive, home_drive));
         script(&mut split, command, shell, 0);
     }
     // A function body or a loop may run after the line turns `extendedglob`
@@ -3428,6 +3420,21 @@ pub(crate) fn split(
     split.settle_functions();
     split.settle_pwd();
     split
+}
+
+/// Start `split` afresh for a read of the line from the drive `drive` with
+/// home on `home_drive`; `psdrive` says the read knows the drives the line
+/// makes. A function of its own, as [`start_again_extended`] is, so that the
+/// `Split` it builds is not held on the stack while [`split`] reads the line:
+/// the walk of a deeply nested line needs all of it.
+#[inline(never)]
+fn start(split: &mut Split, psdrive: bool, (drive, home_drive): (Option<char>, Option<char>)) {
+    *split = Split {
+        drive,
+        home_drive,
+        psdrive,
+        ..Split::default()
+    };
 }
 
 /// Clear `split` for a second read of the line that reads the words of its
