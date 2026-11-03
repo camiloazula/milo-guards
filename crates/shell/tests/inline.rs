@@ -113,13 +113,18 @@ fn long_inline_code_is_read_in_linear_time() {
             &line[..20]
         );
         // What nests too deeply to read is not safe, and the rest is read.
-        // Past the depth a tree is walked, the count of open parentheses
-        // already makes the whole line unreadable, before the code is read.
-        let deep = classify(&line, Shell::Posix, &posix())
+        // The body of a quoted here-document is a literal to the shell, so
+        // the shell's count of open parentheses does not see it: the reader
+        // of the code does, and calls nested past what it reads are code it
+        // does not read.
+        let assessment = classify(&line, Shell::Posix, &posix());
+        let deep = assessment
             .findings()
             .iter()
             .any(|finding| finding.rule == Rule::Unreadable);
-        let expected = line.contains(&chain) || line.contains(&"f(".repeat(500));
-        assert_eq!(deep, expected, "{:?}", &line[..20]);
+        assert_eq!(deep, line.contains(&chain), "{:?}", &line[..20]);
+        if line.contains(&"f(".repeat(500)) {
+            assert!(!assessment.is_safe(), "{:?}", &line[..20]);
+        }
     }
 }
