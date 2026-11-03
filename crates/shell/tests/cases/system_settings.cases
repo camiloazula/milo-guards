@@ -728,6 +728,43 @@ posix finds=system_settings | service iptables flush
 posix finds=system_settings | service pf onestop
 posix finds=system_settings reason="stops a service that protects the system" | service ufw stop
 
+# An init script a shell runs or the line sources is the script run as the
+# program; a shell reads a script named without a folder from the working
+# folder. A shell given `-c` runs a line, read as its own.
+posix safe | sh /etc/init.d/nginx stop
+posix safe | sh /etc/init.d/ufw status
+posix safe | sh ./init.d/ufw stop
+posix safe | sh -c /etc/init.d/ufw stop
+posix finds=system_settings | sh /etc/init.d/ufw stop
+posix finds=system_settings | bash /etc/init.d/ufw stop
+posix finds=system_settings | dash /etc/init.d/ufw stop
+posix finds=system_settings | sh -x /etc/init.d/ufw stop
+posix finds=system_settings | bash -- /etc/init.d/ufw stop
+posix finds=system_settings | . /etc/init.d/ufw stop
+posix finds=system_settings | source /etc/init.d/ufw stop
+posix finds=system_settings | cd /etc/init.d && sh ufw stop
+posix finds=system_settings | sh -c '/etc/init.d/ufw stop'
+
+# pwsh on Linux runs an init script as the script it is.
+powershell@posix safe | & '/etc/init.d/nginx' stop
+powershell@posix finds=system_settings | & '/etc/init.d/ufw' stop
+powershell@posix finds=system_settings | Start-Process /etc/init.d/ufw stop
+powershell@posix finds=system_settings | bash /etc/init.d/ufw stop
+
+# A pattern given to any service manager may stop a protecting service, as
+# `systemctl stop 'uf*'` may.
+posix finds=system_settings | sv down /etc/service/uf*
+posix finds=system_settings | sv down /etc/service/*
+posix finds=system_settings | cd /etc/service && sv down *
+posix finds=system_settings reason="stops services that may protect the system" | service 'uf*' stop
+
+# `invoke-rc.d --query` only asks, `rc-service --user` runs the user's own
+# services, and `-d` is SUSE's `chkconfig --del`.
+posix safe | invoke-rc.d --query ufw stop
+posix safe | rc-service --user ufw stop
+posix safe | rc-service -U ufw stop
+posix finds=system_settings | chkconfig -d iptables
+
 # Stopping a protecting daemon by its process is the same as stopping the
 # service: `killall` and `pkill` of `auditd`, `firewalld` and the antivirus
 # and endpoint daemons are risky; other processes are everyday work.
@@ -745,6 +782,35 @@ posix finds=system_settings | pkill clamd
 posix finds=system_settings | pkill 'firewall'
 posix finds=system_settings | killall -r 'audit'
 posix finds=system_settings reason="stops a service that protects the system" | pkill auditd
+
+# `ufw` and `AppArmor` never run as processes, so a short pattern that
+# matches their names is everyday work. `pkill agent` matches `wazuh-agentd`
+# and `ossec-agentd`, so it stays risky.
+posix safe | pkill app
+posix safe | pkill server
+posix safe | killall ufw
+posix safe | killall apparmor
+posix finds=system_settings | pkill agent
+
+# `pkill -f` searches the command lines the protecting daemons run with, so
+# a pattern that runs past a name into its arguments stops the daemon.
+posix safe | pkill -f 'node server.js'
+posix safe | pkill -f /opt/myapp
+posix finds=system_settings | pkill -f 'auditd '
+posix finds=system_settings | pkill -f 'firewalld --nofork'
+posix finds=system_settings | pkill -f 'wdavdaemon edr'
+posix finds=system_settings | pkill -f 'clamd --foreground'
+posix finds=system_settings | pkill -f /usr/sbin/firewalld
+
+# The daemons behind the protecting launchd labels, stopped by process.
+posix finds=system_settings | killall socketfilterfw
+posix finds=system_settings | pkill -f socketfilterfw
+posix finds=system_settings | killall syspolicyd
+posix finds=system_settings | killall XProtect
+posix finds=system_settings | killall XprotectService
+posix finds=system_settings | killall endpointsecurityd
+posix finds=system_settings | killall falcond
+posix finds=system_settings | killall 'Little Snitch Daemon'
 posix finds=stop_unknown | kill $(pidof auditd)
 
 # launchctl kill and stop of a daemon that protects the machine (the
@@ -761,6 +827,7 @@ posix finds=system_settings | launchctl stop com.apple.syspolicyd
 posix finds=system_settings | launchctl kill KILL system/com.apple.XProtect.daemon.scan
 posix finds=system_settings | launchctl stop com.crowdstrike.falcond
 posix finds=system_settings | launchctl kill 9 system/com.microsoft.wdav.daemon
+posix finds=system_settings | launchctl kill 9 system/com.apple.XprotectFramework.PluginService
 posix finds=system_settings reason="stops a service that protects the system" | launchctl stop com.apple.alf
 
 # Antivirus and endpoint daemons protect the machine as the firewall does.
@@ -795,6 +862,16 @@ posix finds=system_settings | systemctl isolate multi-user.target
 posix finds=system_settings | systemctl isolate $target
 posix finds=system_settings,stop_system | systemctl isolate poweroff.target
 posix finds=system_settings,stop_system | systemctl isolate reboot.target
+posix finds=system_settings,stop_system | systemctl isolate runlevel0.target
+posix finds=system_settings,stop_system | systemctl isolate runlevel1.target
+posix finds=system_settings,stop_system | systemctl isolate runlevel6.target
+posix finds=system_settings,stop_system | systemctl isolate shutdown.target
+posix finds=system_settings,stop_system | systemctl isolate exit.target
+posix finds=system_settings,stop_system | systemctl isolate final.target
+posix finds=system_settings lacks=stop_system | systemctl isolate runlevel3.target
+posix safe | systemctl isolate
+posix safe | systemctl set-default runlevel3.target
+posix safe | systemctl set-default runlevel5.target
 posix finds=system_settings | systemctl set-default rescue.target
 posix finds=system_settings | systemctl set-default emergency.target
 posix finds=system_settings | systemctl set-default poweroff.target

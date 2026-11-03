@@ -1710,16 +1710,19 @@ of their strictest, so each family below was added on that test.
   `-p`/`--property` value the same way. The other init systems are read the
   same way: `rc-update del` (or `delete`, or a verb only known when it runs),
   `update-rc.d name disable` or `remove`, and `chkconfig name off` or
-  `chkconfig --del name` (with `--level` skipped) take a service out of what
+  `chkconfig --del name` (`-d` on SUSE, with `--level` skipped) take a service out of what
   starts at boot, as `systemctl disable` does, whatever the service;
   `rc-update add`, `update-rc.d name defaults` or `enable` and `chkconfig
   name on` are safe. Some `systemctl` verbs change many units at once:
   `isolate` starts a target and stops every unit it does not want, so it is
   risky whatever the target (and also `stop_system` for `poweroff`,
-  `reboot`, `halt`, `kexec`, `soft-reboot`, `rescue` and `emergency`, as
-  `systemctl poweroff` and `rescue` are); `set-default` to a target other
-  than `graphical` or `multi-user` (with or without `.target`), or to one
-  only known when it runs, changes what the computer boots into;
+  `reboot`, `halt`, `kexec`, `soft-reboot`, `rescue`, `emergency`,
+  `shutdown`, `exit`, `final` and the runlevels that are their aliases,
+  `runlevel0`, `runlevel1` and `runlevel6`, as `systemctl poweroff` and
+  `rescue` are), and without a target it is an error and safe;
+  `set-default` to a target other than `graphical`, `multi-user` or the
+  runlevels that alias them (`runlevel2` to `runlevel5`), with or without
+  `.target`, or to one only known when it runs, changes what the computer boots into;
   `preset-all` enables and disables units by the preset files. `edit`,
   `revert` and `preset` of a unit that protects the machine (below), a
   pattern or a unit only known when it runs change how that protection
@@ -1743,7 +1746,9 @@ of their strictest, so each family below was added on that test.
   same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
   'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
-  (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
+  (`systemctl stop 'firewall*'`) is risky too, and so is one given to any
+  other service manager (`sv down /etc/service/*`, `cd /etc/service && sv
+  down *`), which the shell expands against the files. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
@@ -1756,8 +1761,16 @@ of their strictest, so each family below was added on that test.
   (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
   placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
   as `/etc/init.d/ufw stop`, is the service of its name with its first
-  operand as the action; `invoke-rc.d name action` and `rc-service name
-  action` (whose `-e` and `-r` take a name) read the same; runit's `sv
+  operand as the action. So is the script a shell runs (`sh
+  /etc/init.d/ufw stop`, `bash -x …`, and `cd /etc/init.d && sh ufw stop`,
+  since a shell reads a script named without a folder from the working
+  folder) or the line sources (`. /etc/init.d/ufw stop`, `source …`), the
+  operands after it being the script's; a shell given `-c` runs a line,
+  which is read as one. `invoke-rc.d name action` and `rc-service name
+  action` (whose `-e` and `-r` take a name) read the same, except that
+  `invoke-rc.d --query` only asks whether the action would be allowed and
+  `rc-service -U` (`--user`) runs the user's own services, as `systemctl
+  --user` does; runit's `sv
   command service...` stops each service when the command is `stop`,
   `shutdown`, `force-stop`, `force-shutdown`, or starts with the letters
   `sv` reads as down, exit or pause (`d`, `D`, `x`, `X`, `e`, `E`, `p`), or
@@ -1773,15 +1786,26 @@ of their strictest, so each family below was added on that test.
   `wazuh-agent`, `ossec`); a unit is compared without `.service` and
   without its instance (`clamd@scan`). Stopping the daemon's process is the
   same: `killall` and `pkill` of a name that is, or a pattern that matches,
-  `auditd`, `firewalld`, `ufw`, `apparmor`, `clamd`, `freshclam`, `mdatp`,
-  `wdavdaemon`, `falcon-sensor`, `falcond`, `osqueryd`, `wazuh-agentd`,
-  `sentineld` or `ossec-agentd` is `system_settings` (`pkill firewalld`,
-  `killall auditd`, `pkill audit`); `fail2ban-server` is left out, since
-  `pkill` searches each name for its pattern and `pkill server` is everyday
-  work. `launchctl kill` and `stop` of a daemon that protects a Mac are a
+  `auditd`, `firewalld`, `clamd`, `freshclam`, `mdatp`, `wdavdaemon`,
+  `falcon-sensor`, `falcond`, `osqueryd`, `wazuh-agentd`, `sentineld`,
+  `ossec-agentd`, or on a Mac `socketfilterfw`, `syspolicyd`, `XProtect`,
+  `XprotectService`, `endpointsecurityd`, `com.crowdstrike.falcon.Agent`
+  and Little Snitch's daemon and network extension, is `system_settings`
+  (`pkill firewalld`, `killall auditd`, `pkill audit`, and `pkill agent`,
+  which matches `wazuh-agentd`). `pkill -f` also searches the command
+  lines these daemons usually run with (`/usr/sbin/firewalld --nofork
+  --nopid`), so a pattern that runs past a name into its arguments
+  (`pkill -f 'auditd '`) is risky too. `ufw` and `apparmor` are left out,
+  since neither runs as a process (`ufw` loads the rules and exits,
+  AppArmor lives in the kernel), and so is `fail2ban-server`: `pkill`
+  searches each name for its pattern, and `pkill app` and `pkill server`
+  are everyday work. Each pattern is read once for the processes the
+  system needs and the ones that protect it, as a line may give thousands.
+  `launchctl kill` and `stop` of a daemon that protects a Mac are a
   bootout of it: a label that is, or starts with and a dot, `com.apple.alf`
   (the application firewall), `com.apple.auditd`, `com.apple.syspolicyd`
-  (Gatekeeper), `com.apple.xprotect`, `com.apple.endpointsecurity`,
+  (Gatekeeper), `com.apple.xprotect`, `com.apple.xprotectframework`,
+  `com.apple.endpointsecurity`,
   `com.crowdstrike`, `com.microsoft.wdav`, `com.sentinelone` or
   `at.obdev.littlesnitchd`, without case (`launchctl kill 9
   system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
@@ -1809,9 +1833,11 @@ of their strictest, so each family below was added on that test.
   persistent-apps`), a path in the workspace or the user's own folder,
   `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
 
-`hostname`, `service`, `sv` and init scripts are read in POSIX shells only:
-in PowerShell and cmd they are Windows programs or aliases (`sv` is
-PowerShell's `Set-Variable`) and are left alone.
+`hostname`, `service` and `sv` are read in POSIX shells only: in PowerShell
+and cmd they are Windows programs or aliases (`sv` is PowerShell's
+`Set-Variable`) and are left alone. An init script is read in PowerShell too
+(`& '/etc/init.d/ufw' stop`, `Start-Process /etc/init.d/ufw stop`), since pwsh
+on Linux runs a path under `/etc/init.d` as the script it is; cmd never does.
 
 ### The rule enum is exhaustive on purpose
 
