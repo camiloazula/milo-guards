@@ -591,6 +591,7 @@ impl Walker<'_> {
                 if each {
                     self.item = stage;
                     self.split.repeats += 1;
+                    self.split.begin_body();
                 }
                 // The block of an event, and a breakpoint's action, runs
                 // later, in this session.
@@ -617,6 +618,7 @@ impl Walker<'_> {
                 }
                 self.item = outer;
                 if each {
+                    self.split.end_body(None);
                     self.split.repeats -= 1;
                 }
                 // What a sub-expression in its arguments runs is handed to it.
@@ -648,7 +650,9 @@ impl Walker<'_> {
                     self.split.lose_locations();
                 }
                 self.split.repeats += 1;
+                self.split.begin_body();
                 self.children(node, stage, level);
+                self.end_body(node);
                 self.split.repeats -= 1;
             }
             // What a condition guards, or a `try` may stop short of, may not
@@ -733,6 +737,7 @@ impl Walker<'_> {
     /// [`Self::walk`], which nests as deep as the tree, stays small.)
     fn foreach(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.repeats += 1;
+        self.split.begin_body();
         let mut names = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -751,6 +756,7 @@ impl Walker<'_> {
                 }
             }
         }
+        self.split.end_body(None);
         self.split.repeats -= 1;
     }
 
@@ -761,6 +767,7 @@ impl Walker<'_> {
     fn switch(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.branches += 1;
         self.split.repeats += 1;
+        self.split.begin_body();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             let first = self.split.units.len();
@@ -774,6 +781,7 @@ impl Walker<'_> {
                 self.hold(&["_".to_string(), "psitem".to_string()], first, uses);
             }
         }
+        self.split.end_body(None);
         self.split.repeats -= 1;
         self.split.branches -= 1;
     }
@@ -1234,6 +1242,40 @@ impl Walker<'_> {
             }),
             _ => false,
         }
+    }
+
+    /// Note that the loop or the function `node` has been read (see
+    /// [`Split::end_body`]). Kept off the frame of [`Self::walk`], which the
+    /// deepest nesting recurses through.
+    #[inline(never)]
+    fn end_body(&mut self, node: Node<'_>) {
+        let name = (node.kind() == "function_statement")
+            .then(|| self.function_name(node))
+            .flatten();
+        self.split.end_body(name.as_deref());
+    }
+
+    /// The name a call of the function `node` defines uses, in lower case
+    /// and without its scope (`function global:Build { }` is called as
+    /// `build`), as a PowerShell unit's name is matched.
+    fn function_name(&self, node: Node<'_>) -> Option<String> {
+        let mut cursor = node.walk();
+        let name = node
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "function_name")?;
+        let name = unit::text(&name, self.source).to_ascii_lowercase();
+        let bare = [
+            "global:",
+            "script:",
+            "local:",
+            "private:",
+            "using:",
+            "workflow:",
+        ]
+        .iter()
+        .find_map(|scope| name.strip_prefix(scope))
+        .unwrap_or(&name);
+        Some(bare.to_string())
     }
 
     /// Whether a function definition is named as a location cmdlet

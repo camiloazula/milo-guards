@@ -23,13 +23,16 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         return;
     };
     assigned(split, tree.root_node(), &text);
-    Walker {
+    let mut walker = Walker {
         source: &text,
         depth,
         input: false,
+        tail: false,
+        loops: Vec::new(),
         split,
-    }
-    .walk(tree.root_node(), None, 0);
+    };
+    walker.walk(tree.root_node(), None, 0);
+    walker.close_loops();
 }
 
 /// `set TEMP=…`: a variable the line sets no longer names its usual place.
@@ -56,6 +59,14 @@ struct Walker<'a> {
     /// Whether the commands being walked have a file redirected onto their
     /// input (`python < x.py`, `(python) < x.py`).
     input: bool,
+    /// The `for` loops whose command goes on past where the grammar ends
+    /// it, each with the node it ends with (see [`Walker::open_loop`]):
+    /// `None` for one that ends with the statement this text was split
+    /// from.
+    loops: Vec<Option<usize>>,
+    /// Whether the text is the rest of a longer statement, split again on
+    /// its own (see [`Self::statement`]).
+    tail: bool,
     split: &'a mut Split,
 }
 
@@ -189,8 +200,9 @@ impl Walker<'_> {
             // `for %%i in (…) do …`: what it does runs once for each item.
             "for_stmt" => {
                 self.split.repeats += 1;
+                self.split.begin_body();
                 self.children(node, stage, level);
-                self.split.repeats -= 1;
+                self.open_loop(node);
             }
             // What a condition guards may not run.
             "if_stmt" => {
@@ -199,6 +211,49 @@ impl Walker<'_> {
                 self.split.branches -= 1;
             }
             _ => self.children(node, stage, level),
+        }
+        while self.loops.last() == Some(&Some(node.id())) {
+            self.loops.pop();
+            self.end_loop();
+        }
+    }
+
+    /// Note that the `for` loop `node` has been read as far as the grammar
+    /// takes it. cmd reads the whole rest of the statement after `do` as
+    /// its command, past `&`, `&&` and `||` (`for %%i in (1 2) do rd /s /q
+    /// build & cd ..` runs the `cd` on each pass), where the grammar ends it
+    /// at the first: the loop ends with the list it is the start of, or,
+    /// when the text is the rest of a longer statement (see
+    /// [`Self::tail`]), with that statement.
+    fn open_loop(&mut self, node: Node<'_>) {
+        let mut end = None;
+        let mut at = node;
+        while let Some(parent) = at
+            .parent()
+            .filter(|parent| matches!(parent.kind(), "command_sep" | "cond_exec"))
+        {
+            end = Some(parent.id());
+            at = parent;
+        }
+        match end {
+            Some(end) => self.loops.push(Some(end)),
+            None if self.tail && at.end_byte() + 1 >= self.source.len() => {
+                self.loops.push(None);
+            }
+            None => self.end_loop(),
+        }
+    }
+
+    /// Note that a `for` loop's command has been read to its end.
+    fn end_loop(&mut self) {
+        self.split.end_body(None);
+        self.split.repeats -= 1;
+    }
+
+    /// End every loop still open once the line is read.
+    fn close_loops(&mut self) {
+        while self.loops.pop().is_some() {
+            self.end_loop();
         }
     }
 
@@ -279,13 +334,21 @@ impl Walker<'_> {
         let language = tree_sitter_batch::LANGUAGE.into();
         if let Some(tree) = unit::parse(self.split, &text, &language) {
             assigned(self.split, tree.root_node(), &text);
-            Walker {
+            let mut walker = Walker {
                 source: &text,
                 depth: self.depth,
                 input: self.input,
+                tail: true,
+                loops: Vec::new(),
                 split: self.split,
+            };
+            walker.walk(tree.root_node(), stage, level + 1);
+            // A loop whose command goes on to the end of the text goes on
+            // with the statement it was split from.
+            let open = walker.loops.len();
+            for _ in 0..open {
+                self.open_loop(node);
             }
-            .walk(tree.root_node(), stage, level + 1);
         }
         true
     }

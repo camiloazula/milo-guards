@@ -144,8 +144,10 @@ cmd finds=overwrite | cd sub > ..\\x.txt & dir
 
 # A redirect on a cd in a loop or a function is also placed from where it
 # goes. The body runs more than once: the next pass starts where the last
-# one's `cd` went, so the file may be opened from either folder.
-posix safe | for i in 1 2; do cd sub > out.txt; done
+# one's `cd` went, so the file may be opened from either folder. The guard
+# does not count a loop's passes, so a loop whose `cd` goes on from where it
+# is also opens it from a folder only known when it runs.
+posix finds=overwrite reason="writes to a file only known when it runs" | for i in 1 2; do cd sub > out.txt; done
 posix safe | f() { cd sub < ../x; }; f; f
 posix finds=overwrite | for i in 1 2; do cd .. > x; done
 posix finds=overwrite | while true; do cd .. > x; done
