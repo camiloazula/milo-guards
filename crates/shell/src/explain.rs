@@ -1,6 +1,7 @@
 //! The line as the rules saw it: [`explain`](crate::explain) and the types it
 //! returns.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::detect::Judged;
@@ -215,7 +216,8 @@ fn redirects(
                 write.hidden,
                 resolver,
                 true,
-            ),
+            )
+            .map(str::to_string),
             dir: write.dir.as_ref().map(|dir| dir.text().to_string()),
             findings: findings.clone(),
         })
@@ -231,20 +233,24 @@ fn resolved(
     hidden: bool,
     resolver: &Resolver,
     into: bool,
-) -> Option<String> {
+) -> Option<&'static str> {
     arg.known()?;
     let place = if into {
         resolver.place_into(dir, arg, shell, hidden, Access::Item)
     } else {
         resolver.place(dir, arg, shell, hidden, Access::Item)
     };
-    Some(place.words().to_string())
+    Some(place.words())
 }
 
 fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplanation {
     // In a POSIX shell the first `--` ends the options: what follows it is an
     // operand, whatever it starts with (`rm -- -rf` deletes a file `-rf`).
     let mut ended = false;
+    // A unit's arguments share its folder, so the same word lands in the
+    // same place: each is placed once (a runner read many ways hands
+    // thousands of copies of a few words on).
+    let mut placed: BTreeMap<&str, Option<&'static str>> = BTreeMap::new();
     UnitExplanation {
         shell: unit.shell,
         depth: unit.depth,
@@ -267,16 +273,22 @@ fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplan
                     Arg::Input => ArgKind::Input,
                     Arg::Null => ArgKind::Unknown,
                 },
-                resolved: arg.known().filter(|_| !option).and_then(|_| {
-                    resolved(
-                        arg,
-                        unit.dir.as_ref(),
-                        unit.shell,
-                        unit.hidden,
-                        resolver,
-                        false,
-                    )
-                }),
+                resolved: arg
+                    .known()
+                    .filter(|_| !option)
+                    .and_then(|text| {
+                        *placed.entry(text).or_insert_with(|| {
+                            resolved(
+                                arg,
+                                unit.dir.as_ref(),
+                                unit.shell,
+                                unit.hidden,
+                                resolver,
+                                false,
+                            )
+                        })
+                    })
+                    .map(str::to_string),
             })
             .collect(),
         wrappers: unit.wrappers.clone(),
@@ -343,9 +355,12 @@ fn escaped(c: char) -> bool {
 }
 
 impl fmt::Display for Escaped<'_> {
-    /// The text between escapes is written a run at a time: a tree can hold
-    /// megabytes of nested script.
+    /// Printable ASCII is written as it is, and other text a run at a time
+    /// between escapes: a tree can hold megabytes of nested script.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.bytes().all(|byte| matches!(byte, b' '..=b'~')) {
+            return f.write_str(self.0);
+        }
         let mut from = 0;
         for (at, c) in self.0.char_indices().filter(|&(_, c)| escaped(c)) {
             f.write_str(self.0.get(from..at).unwrap_or_default())?;
@@ -420,18 +435,25 @@ impl UnitExplanation {
         }
         if !self.args.is_empty() {
             writeln!(f, "  args")?;
+            // A unit may hold thousands of arguments: each line is written
+            // in pieces, with no formatting to parse.
             for arg in &self.args {
-                write!(f, "    {}", Escaped(&arg.written))?;
+                f.write_str("    ")?;
+                fmt::Display::fmt(&Escaped(&arg.written), f)?;
                 match (&arg.resolved, arg.kind) {
-                    (Some(place), _) => write!(f, " (as a path: {})", Escaped(place))?,
-                    (None, ArgKind::Unknown) => write!(f, " (known only when it runs)")?,
-                    (None, ArgKind::Template) => {
-                        write!(f, " (partly known only when it runs)")?;
+                    (Some(place), _) => {
+                        f.write_str(" (as a path: ")?;
+                        fmt::Display::fmt(&Escaped(place), f)?;
+                        f.write_str(")")?;
                     }
-                    (None, ArgKind::Input) => write!(f, " (from the previous stage)")?,
+                    (None, ArgKind::Unknown) => f.write_str(" (known only when it runs)")?,
+                    (None, ArgKind::Template) => {
+                        f.write_str(" (partly known only when it runs)")?;
+                    }
+                    (None, ArgKind::Input) => f.write_str(" (from the previous stage)")?,
                     (None, _) => {}
                 }
-                writeln!(f)?;
+                f.write_str("\n")?;
             }
         }
         write_findings(f, &self.findings)

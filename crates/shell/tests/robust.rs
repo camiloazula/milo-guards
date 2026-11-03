@@ -2,7 +2,7 @@
 //! a line it could not read safe; and the same for `effect`, which never
 //! calls such a line reads-only, and for `explain` and the tree it draws,
 //! which do more work than `classify` and are held to the same limits and
-//! the same time. The counts that guard the grammars' time
+//! the same time bounds. The counts that guard the grammars' time
 //! stop a line too long, too nested or too tangled to read, and do not take
 //! everyday lines that hold a lot of `<<` or `&` for tangled ones.
 
@@ -15,18 +15,32 @@ use common::{check, disagreements, posix, windows};
 use milo_guards_shell::{classify, effect, explain, Effect, Paths, Rule, Shell};
 use noise::Lcg;
 
-/// How long the slower of `classify` and `explain` with its tree takes to
-/// read `line`, each the quickest of three runs: a limit holds for both.
+/// How long the slowest of `classify`, `explain` and the tree `explain`
+/// draws takes on `line`, each the quickest of three runs: a bound holds for
+/// each. The tree is timed apart from the reading it draws, as a caller pays
+/// for it apart: it holds every argument of every unit, megabytes for a line
+/// read many ways.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only a test times it, to catch a quadratic read"
+)]
 fn took(line: &str, shell: Shell, paths: &Paths) -> Duration {
-    let explained = (0..3)
-        .map(|_| {
-            let started = Instant::now();
-            let _ = explain(line, shell, paths).to_string();
-            started.elapsed()
-        })
-        .min()
-        .unwrap_or_default();
-    common::took(line, shell, paths).max(explained)
+    let quickest = |run: &mut dyn FnMut() -> Duration| (0..3).map(|_| run()).min();
+    let explained = quickest(&mut || {
+        let started = Instant::now();
+        let _ = explain(line, shell, paths);
+        started.elapsed()
+    });
+    let explanation = explain(line, shell, paths);
+    let drawn = quickest(&mut || {
+        let started = Instant::now();
+        let _ = explanation.to_string();
+        started.elapsed()
+    });
+    [explained, drawn]
+        .into_iter()
+        .flatten()
+        .fold(common::took(line, shell, paths), Duration::max)
 }
 
 /// Whether `explain` finds `line` unreadable, its tree drawn and saying so.

@@ -255,14 +255,18 @@ rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar reads the
 for it, so the walk takes off one bare `}` with no arguments for each `{` a
 `coproc` opened in the same script, and it is no unit: `coproc { ls *.txt; }`
 and `coproc NAME { ls; }` only read, as `coproc cat` does, and a quoted `'}'`
-is still a program. The grammar has no `coproc`, so two forms are not read, and
-are risky:
+is still a program. A group whose commands start on the next line (`coproc
+NAME {`, a newline, `ls`) leaves the `coproc` with nothing to run on its own
+line: it is no unit either, and the lines after it are read as they stand. The
+grammar has no `coproc`, so three forms are not read, and are risky:
 
 - A loop, conditional, `case` or function after it, or inside its group
   (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
   into pieces whose body hides behind the program `do`: `Unreadable`.
 - A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
   grammar reads `{rm` as a program of that name: `Unreadable`.
+- A group that never closes in its script (`coproc {`, `coproc { ls }`, `coproc
+  { ls; '}'`), which bash does not run as written: `Unreadable`.
 
 The other words that start a command of their own are read the same way,
 since the grammar does not read a group or a negation after them either.
@@ -4196,7 +4200,8 @@ too many here-documents, a too-long cmd chain and too-deep nesting not being
 read while everyday lines with many `<<` or `&` are, and the tests that time
 a nasty line against a 200 ms bound. Each of them runs `explain` and draws its
 tree too, which do more work than `classify`: a line past a limit is
-unreadable there as well, and the slower of the two is held to the bound;
+unreadable there as well, and `classify`, `explain` and the drawing of the tree
+are each held to the bound;
 `tests/timing.rs` and `tests/limits.rs` hold the rest, as each bullet says:
 
 - **Never panics, and `classify`, `effect` and `explain` agree.** (The wide run
