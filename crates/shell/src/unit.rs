@@ -961,6 +961,20 @@ pub(crate) struct Place {
     locations: Locations,
 }
 
+/// Where the line is when the right side of an `||` ends the shell (see
+/// [`Split::exits_after`]): the rest of the line runs only when the left side
+/// did not fail.
+#[derive(Debug)]
+pub(crate) struct Exit {
+    dir: Option<Arg>,
+    dir_code: bool,
+    drive: Option<char>,
+    drive_guess: bool,
+    maybe_moved: bool,
+    elsewhere: Vec<Option<Arg>>,
+    stayed: Vec<Option<Arg>>,
+}
+
 /// A list of commands joined by `&&` or `||` being read, from
 /// [`Split::list_start`] to [`Split::list_end`].
 #[derive(Debug)]
@@ -1812,6 +1826,45 @@ impl Split {
             self.chain.stops.extend(list.places.iter().cloned());
         }
         self.add_stops();
+    }
+
+    /// The right side of the `||` about to be read ends the shell (`cd s ||
+    /// exit`): the rest of the line runs only when the left side did not
+    /// fail, so a plain `cd` that ends it ran (none of the folders it may
+    /// have stayed in, see [`Self::stayed`]), and so did every right side of
+    /// `&&` in it (none of the folders it may have stopped in, see
+    /// [`Chain`]). Note where the line is then, before [`Self::list_or`] says
+    /// the left side may have failed, which only the right side reads;
+    /// [`Self::exited`] puts it back when that side ends.
+    pub(crate) fn exits_after(&self) -> Exit {
+        let mut stayed = self.stayed.clone();
+        stayed.retain(|folder| !self.last_stayed.contains(folder));
+        Exit {
+            dir: self.dir.clone(),
+            dir_code: self.dir_code,
+            drive: self.drive,
+            drive_guess: self.drive_guess,
+            maybe_moved: self.maybe_moved,
+            elsewhere: self.elsewhere.clone(),
+            stayed,
+        }
+    }
+
+    /// The right side of `||` that ended the shell has been read: put the
+    /// line back where [`Self::exits_after`] noted it, for what comes after.
+    /// The `cd`s read since still count as read (see [`Self::moves`]), which
+    /// only makes a later action less certain of where it runs.
+    pub(crate) fn exited(&mut self, exit: Exit) {
+        self.dir = exit.dir;
+        self.dir_code = exit.dir_code;
+        self.drive = exit.drive;
+        self.drive_guess = exit.drive_guess;
+        self.maybe_moved = exit.maybe_moved;
+        self.elsewhere = exit.elsewhere;
+        self.stayed = exit.stayed;
+        self.last_stayed.clear();
+        self.chain.stops.clear();
+        self.chain.stayed.clear();
     }
 
     /// Begin a right side of `&&` or `||` in a list; [`Self::link_end`] ends
@@ -3215,14 +3268,71 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
     })
 }
 
-/// Whether `text` is a `/X`-style switch, not a path. A long path spelt with
-/// forward slashes (`//?/C:/x`) is a path: read as one, it can only be judged
-/// more strictly.
+/// Whether `text` is a `/X`-style switch, not a path: a slash and a switch
+/// name (`/q`, `/-y`, `/?`, `/mir`), or a run of short ones (`/s/q`), each
+/// with an optional `:value` (`/a:-d`, `/R:3`, `/a:h/s/q`). A name is
+/// letters, digits, `-`, `+` and `?`; in a run each is at most [`RUN_NAME`]
+/// characters, so `/evil/share/x` is a path with folders.
+///
+/// Anything else is a path, which can only be judged more strictly than a
+/// switch: a text that starts with two separators (`//server/share`,
+/// `//?/C:/x`, `/\server`), one core reads as a share or a device
+/// (`/dev/sda`), and one with a `\` or a `.` in it. So is a switch whose
+/// value starts with a drive or runs on into a path (`/x:C:/Windows`,
+/// `/x://evil/s`): its value is a path, and the argument is judged as one.
 pub(crate) fn is_switch(text: &str) -> bool {
-    text.starts_with('/')
-        && text.len() > 1
-        && !text[1..].contains(['\\', '.'])
-        && milo_guards_core::spelling::verbatim(text).is_none()
+    switch_names(text).is_some()
+}
+
+/// The names of the switches `text` is, in order (`/a:h/s/q` is `a`, `s` and
+/// `q`), when it is one by [`is_switch`]; `None` for a path.
+pub(crate) fn switch_names(text: &str) -> Option<Vec<&str>> {
+    use milo_guards_core::{spelling, Flavour};
+    let body = text.strip_prefix('/')?;
+    if body.is_empty()
+        || body.starts_with(['/', '\\'])
+        || text.contains(['\\', '.'])
+        || spelling::network(text, Flavour::Windows)
+        || spelling::device(text, Flavour::Windows).is_some()
+    {
+        return None;
+    }
+    let drive = |value: &str| {
+        let mut chars = value.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':')
+    };
+    let parts: Vec<&str> = body.split('/').collect();
+    let run = parts.len() > 1;
+    parts
+        .into_iter()
+        .map(|part| {
+            let (name, value) = match part.split_once(':') {
+                Some((name, value)) => (name, Some(value)),
+                None => (part, None),
+            };
+            let named = !name.is_empty()
+                && (!run || name.chars().count() <= RUN_NAME)
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '+' | '?'));
+            (named && !value.is_some_and(drive)).then_some(name)
+        })
+        .collect()
+}
+
+/// The longest name of a switch written in a run of several (`/s/q`,
+/// `/mir/np`): a longer part makes the text a path with folders.
+const RUN_NAME: usize = 3;
+
+/// The value of a `/NAME:value` switch whose name is one of `names`, without
+/// case (`/LOG:C:\x.txt`, `/exclude:list.txt`): a value that is a path, which
+/// [`is_switch`] leaves to be judged as one.
+pub(crate) fn switch_value<'a>(text: &'a str, names: &[&str]) -> Option<&'a str> {
+    let (name, value) = text.strip_prefix('/')?.split_once(':')?;
+    names
+        .iter()
+        .any(|known| name.eq_ignore_ascii_case(known))
+        .then_some(value)
 }
 
 /// The arguments that are not `/X`-style switches.

