@@ -220,6 +220,54 @@ cmd finds=delete | D: & rd /s /q Data
 cmd finds=delete | cd \\ & rd /s /q Users
 cmd finds=delete | set TEMP=%USERPROFILE%\\Documents & rd /s /q %TEMP%
 
+# A program named by its path is judged by its last part, quoted or not,
+# with the variables that name a known place put in.
+cmd rules=delete | C:\\Windows\\System32\\cmd.exe /c rd /s /q C:\\
+cmd rules=delete | %SystemRoot%\\System32\\cmd.exe /c rd /s /q C:\\Users\\me
+cmd rules=delete | "%SystemRoot%"\\System32\\cmd.exe /c rd /s /q C:\\Users\\me
+cmd rules=stop_system | C:\\Windows\\System32\\shutdown.exe /s /t 0
+cmd rules=stop_system | @C:\\Windows\\System32\\shutdown.exe /s /t 0
+cmd rules=stop_system | call C:\\Windows\\System32\\shutdown.exe /s /t 0
+cmd rules=stop_system | C:/Windows/System32/shutdown.exe /s
+cmd rules=system_settings | C:\\Windows\\System32\\reg.exe delete HKLM\\Software\\X /f
+cmd rules=delete | "C:\\Windows\\System32\\cmd.exe"/c rd /s /q C:\\
+cmd rules=delete | start "x" C:\\Windows\\System32\\cmd.exe /c rd /s /q C:\\
+cmd finds=unknown | %X%\\System32\\shutdown.exe /s
+cmd safe | tool.exe --version
+cmd safe | C:\\x\\tool.exe --version
+cmd safe | "C:\\x\\tool.exe" --version
+# cmd takes the carets off the program's name too.
+cmd rules=delete | r^d /s /q C:\\Windows
+cmd rules=delete | de^l /s /q C:\\Windows\\*
+# cmd finds a built-in at the start of a longer word: `echo.x`, `rd/s`,
+# `cmd/c`. A word that may name a program in a folder is read both ways.
+cmd rules=drop_data | echo.DROP TABLE t| psql
+cmd rules=drop_data | echo:DROP TABLE t| psql
+cmd rules=drop_data | echo(DROP TABLE t| psql
+cmd rules=delete | rd/s/q C:\\Windows
+cmd rules=delete | cmd/c rd /s /q C:\\
+cmd rules=stop_system | echo\\..\\..\\..\\..\\Windows\\System32\\shutdown.exe /s /t 0
+cmd safe | echo.
+cmd safe | echo.hello
+cmd safe | ver && dir
+cmd safe | D: & dir
+cmd rules=delete | cd\\ & rd /s /q Users
+# An `if` or a `for` after `&&`, `||` or `|` is read as one at the start of
+# a statement.
+cmd rules=delete | ver && if exist q rd /s /q C:\\Windows
+cmd rules=delete | ver && @if exist q rd /s /q C:\\Windows
+cmd rules=delete | ver || if exist q rd /s /q C:\\Windows
+cmd rules=delete | ver && IF exist q rd /s /q C:\\Windows
+cmd rules=delete | ver | if exist q rd /s /q C:\\Windows
+cmd rules=delete | ver && if exist q (rd /s /q C:\\Windows) else (del x)
+cmd rules=delete | ver && for %%i in (a) do rd /s /q C:\\Windows
+cmd rules=delete | if exist q rd /s /q C:\\Windows
+# The grammar cannot read the `%i` of a `for` typed at the prompt, on its own
+# or after `&&`.
+cmd rules=unreadable | for %i in (a) do rd /s /q C:\\Windows
+cmd rules=unreadable | ver && for %i in (a) do rd /s /q C:\\Windows
+cmd safe | ver && if exist q dir
+
 # Windows paths compare without case.
 cmd safe | rd /s /q c:\\users\\ME\\DEV\\REPO\\target
 cmd finds=delete | rd /s /q c:\\USERS\\me

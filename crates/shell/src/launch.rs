@@ -79,6 +79,23 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     split.unscope_hidden(outer);
 }
 
+/// Add `first` and `second`, two readings of one command (cmd's `echo\x.exe`
+/// may run `echo` or the file): each is judged, so the riskier one counts.
+pub(crate) fn add_either(split: &mut Split, mut first: Unit, second: Unit, depth: usize) {
+    if !split.fork(MAX_FORKS) {
+        first.depth = depth;
+        split.problem(
+            Rule::Unreadable,
+            "reads in too many ways to judge each",
+            Some(first.program.text()),
+        );
+        split.push(first);
+        return;
+    }
+    add(split, first, depth);
+    add(split, second, depth);
+}
+
 /// Whether the wrapper `key` may hand the program it runs an environment of
 /// its own (`env FOO=1`, `sudo FOO=1`, `xargs`): every wrapper but the few
 /// that only change how the program runs (`time`, `nice`, `timeout`).

@@ -67,6 +67,31 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   argument and cannot tell whether it is the file. PowerShell reads `$HOME\.ssh\id` as one word but its
   grammar fails at the backslash, so such a word is put in quotes first. A cmd
   "comment" that hides a command cannot be read.
+- cmd's first word is read as cmd reads it, not where the grammar ends the
+  name (it reads `C:\Windows\System32\cmd.exe` as `C` given
+  `:\Windows…`, and `r^d` as `r` given `^d`). The word is every piece that
+  touches the name, with the carets taken off and the variables that name a
+  known place put in (an unknown one leaves the program `unknown`). cmd
+  first looks for a built-in at its start: the whole word, or the part
+  before the first `+`, `/`, `[`, `]`, `,`, `;`, `=` or `(` (`rd/s/q`,
+  `echo(x`), or the part before the first `.`, `\` or `:` (`echo.x`,
+  `cd..`, `cd\x`); the rest of the word is the built-in's first argument,
+  and `echo` drops the one character after its name (`echo.DROP TABLE t`
+  says `DROP TABLE t`). In the last case cmd runs the file the word names
+  when there is one, which only the disk can say, so a word that names a
+  program (`dir.bat`, `echo\..\..\Windows\System32\shutdown.exe`) is
+  read both ways and the riskier counts. Any other word, quoted or not, is
+  the path of a program, judged by its last part as the bare name is
+  (`%SystemRoot%\System32\cmd.exe /c …` is `cmd /c …`); a `/` ends the
+  name (`cmd/c`) unless it follows a drive (`C:/Windows/System32/shutdown.exe`
+  is `shutdown`).
+- The batch grammar reads an `if` or a `for` only at the start of a line:
+  after `&&`, `||` or `|` it is a command named `if` with its condition and
+  body as arguments. The guard splits that command's text again on its own,
+  so `ver && if exist q rd /s /q C:\Windows` is the `delete` that
+  `if exist q rd /s /q C:\Windows` is. A `for` typed at the prompt
+  (`for %i in …`, not `%%i`) is not read by the grammar and is `unreadable`
+  wherever it stands.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:
   what the grammar cannot parse comes back risky.
 
