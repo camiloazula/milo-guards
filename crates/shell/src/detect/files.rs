@@ -343,8 +343,14 @@ impl Checker<'_> {
                 self.unpack(unit, key);
                 self.pack_and_remove(unit, key);
             }
-            "unzip" | "expand-archive" => self.unpack(unit, key),
-            "zip" | "rar" => self.pack_and_remove(unit, key),
+            "unzip" | "expand-archive" | "cpio" | "gcpio" | "bsdcpio" | "ditto" | "pax"
+            | "unrar" | "unar" | "jar" | "py" => self.unpack(unit, key),
+            _ if key.starts_with("python") => self.unpack(unit, key),
+            "rar" => {
+                self.unpack(unit, key);
+                self.pack_and_remove(unit, key);
+            }
+            "zip" => self.pack_and_remove(unit, key),
 
             // Writing into files.
             "truncate" => {

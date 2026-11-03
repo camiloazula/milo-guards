@@ -1626,7 +1626,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder, or to the absolute paths stored in it (`tar -xP`). |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`) or renamed as it runs (`pax -s`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -2001,6 +2001,15 @@ paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
 | `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
 | `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
 | `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+| `cpio`, `gcpio`, `bsdcpio` | copy-in (`-i`, `--extract`): `-D dir`, `-Ddir`, `--directory=dir` (every one given); pass-through (`-p`, `--pass-through`) copies into its first operand, under `-D` | `-t`/`--list`, `-o`/`--create`, `--to-stdout`, `--only-verify-crc` |
+| `ditto` | `-x`: the last operand, after the archives | `-c`; with neither, `ditto` copies, which this rule does not read |
+| `pax` | `-r`: the working directory; `-r -w` copies into the last operand | `-w` alone, neither (a listing) |
+| `unrar`, `rar` | `x` and `e` (any case): an operand after the archive's name that ends with `/` or `\`; any other, which may be a folder that exists; `-op<dir>`; the working directory when no operand ends with a separator and no `-op` is given | any other command (`l`, `t`, `p`, `a`) |
+| `unar` | `-o dir`, `-output-directory dir` (one dash or two) | `-o -` (to the screen) |
+| `jar` | `x`, `-x`, `--extract`: the working directory, and `-C dir`, `--dir dir`, `--dir=dir`, which a JDK from 21 on unpacks into instead | `c`, `t`, `u`, `i`, `--list`, `--describe-module`, `--validate` |
+| `python -m zipfile` | `-e ARCHIVE DIR` (`--extract`, any prefix) | `-l`, `-c`, `-t` |
+| `python -m tarfile` | `-e ARCHIVE [DIR]` (`--extract`), the working directory without `DIR` | `-l`, `-c`, `-t` |
+| .NET `ExtractToDirectory` (PowerShell) | the second argument of a static call (`[IO.Compression.ZipFile]::ExtractToDirectory('x.zip', $HOME)`, `ZipFileExtensions`, `[Formats.Tar.TarFile]`), the first of one called on an archive (`$zip.ExtractToDirectory(dir)`); judged as `Expand-Archive -DestinationPath` of it | |
 
 `tar` takes a long option written as a unique prefix, which the guard reads
 for the modes and `--to-stdout` as well as `--directory`. A mode is read from
@@ -2012,9 +2021,52 @@ whose mode is only known when it runs (`tar "$mode" -f x.tar -C ~`, `tar $mode
 -C ~`) is judged as if it extracted, unless a mode letter or long mode is
 read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
 
+`tar --cd dir` (bsdtar's spelling, also `--cd=dir`) is `-C dir`. `-H` and
+`-L` take a value in GNU tar (a format, a tape length) and none in bsdtar
+(they follow links). GNU tar refuses a value that is an option, or that holds
+a `C`, which no format or length does, so in either case the word after the
+letter, or the rest of its bundle, is read as bsdtar reads it: `tar -xf x.tar
+-H -C /etc`, `tar -xf x.tar -L -C /etc` and `tar -xf x.tar -HC /etc` unpack
+into `/etc`, and `tar -xf x.tar -H ustar -C build` stays safe.
+
+The other unpackers read their folder as `tar` does, with these choices:
+
+- A mode only known when it runs may be the one that unpacks: `cpio "$mode"
+  -D ~`, `jar "$mode" a.jar` (from the home directory), `pax "$mode"` (into
+  the working directory, and into the last operand when there are two), and a
+  `python -m zipfile` or `tarfile` line with no mode read but one only known
+  when it runs, which unpacks into a folder only known then. `ditto` with an
+  argument only known when it runs and no `-c` unpacks into its last operand.
+- `unrar` and `rar` take an operand as the folder when it ends with a
+  separator, or when it names a folder that exists, which the line does not
+  show: every operand after the archive's name (but `@list` files) is judged
+  as a folder, so `unrar x a.rar notes.txt ~/` and `unrar x a.rar ~` unpack
+  into the home directory, and `unrar x a.rar build/` is safe. A switch only
+  known when it runs that may be `-op` names a folder only known when it
+  runs.
+- `jar x` with `-C` is judged into both the working directory and the folder
+  `-C` names: a JDK before 21 unpacks into the working directory whatever `-C`
+  says.
+- The stored paths are kept as they are, so they land anywhere ("unpacks to
+  absolute paths only known when it runs"), with `cpio --absolute-filenames`
+  (GNU) or `--insecure` (bsdcpio), `jar` with `P` (`jar xPf`), `unrar -ep3`
+  and `python -m tarfile --filter fully_trusted` (or a filter only known when
+  it runs). `pax -s` renames each stored path by a rule that only meets the
+  names when it runs: "unpacks to paths only known when it runs" (`copies to
+  …` with `-rw`).
+- GNU cpio without `--no-absolute-filenames`, `pax`, and Python's `tarfile`
+  before 3.14 without `--filter` also keep a stored absolute path. As for
+  every other archive, the stored paths are not in the line and are not read:
+  `cpio -idm < a.cpio` is safe in the workspace. A cautious choice would make
+  every such line `overwrite`; it is not taken.
+- `cpio -o`, `ditto -c`, `pax -w` and `jar c` write an archive, which this
+  rule does not judge, and plain `ditto src dst` copies, which it does not
+  read either.
+
 The reasons say `unpacks into your home directory`, `unpacks into a folder
-outside the workspace`, `unpacks into a folder only known when it runs`. A
-folder that is the workspace, inside it or a temporary file is not risky.
+outside the workspace`, `unpacks into a folder only known when it runs`
+(`copies into …` for `cpio -p` and `pax -rw`). A folder that is the
+workspace, inside it or a temporary file is not risky.
 
 ### Archiving that removes what it archives
 
