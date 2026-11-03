@@ -6,6 +6,7 @@ use std::ops::Range;
 use tree_sitter::Node;
 
 use crate::launch;
+use crate::path;
 use crate::powershell::native;
 use crate::unit::{self, Arg, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
@@ -410,33 +411,49 @@ impl Walker<'_> {
     }
 
     /// The arguments of a program that splits its own command line, as
-    /// it reads them: cmd hands a program the text after its name as
-    /// written, carets outside quotes and variables apart (`raw`), and the
-    /// program splits it. A POSIX shell or an interpreter does so by the C
-    /// runtime's rules, where `\"` is a quote and a quote does not end a word
-    /// (`bash -c "echo \"hi\"; rm -rf ~"` hands bash `echo "hi"; rm -rf ~`).
-    /// `cmd` runs the text after `/c` as it is, quotes and all (`cmd /c bash
-    /// -c "rm -rf ~"`), by its own rule for the quotes around it. A word with
-    /// a variable that is only known when it runs is unknown.
+    /// it reads them: cmd hands every program it starts, all but its own
+    /// built-in commands, the text after its name as written, carets outside
+    /// quotes and variables apart (`raw`), and the program splits it. A
+    /// program does so by the C runtime's rules, where `\"` is a quote and a
+    /// quote does not end a word (`bash -c "echo \"hi\"; rm -rf ~"` hands
+    /// bash `echo "hi"; rm -rf ~`), and so does a runner or a wrapper that
+    /// starts another (`uv run bash -c …`, `wsl …`, `git submodule foreach
+    /// …`). `start` hands the program it starts the same text, after a title
+    /// in quotes. `cmd` runs the text after `/c` as it is, quotes and all
+    /// (`cmd /c bash -c "rm -rf ~"`), by its own rule for the quotes around
+    /// it. A word with a variable that is only known when it runs is unknown.
     fn own_split(&self, unit: &mut Unit, raw: &str) {
         let Some(key) = unit.key() else {
             return;
         };
+        let Some(program) = unit.program.known() else {
+            return;
+        };
+        let start = program.eq_ignore_ascii_case("start");
+        if is_built_in(program) && !start {
+            return;
+        }
         let text = uncaret(raw);
+        // Each word, and the text it was written as: a word only known when
+        // it runs keeps its quotes (`docker rm -f "%IDS%"` is one name).
         let words = if key == "cmd" {
             native::words("cmd", &[], &text)
-        } else if launch::SHELLS.contains(&key.as_str())
-            || launch::INTERPRETERS.contains(&key.as_str())
-            || key.starts_with("python3.")
-        {
-            native::argv(&text)
+                .into_iter()
+                .map(|word| (word.clone(), word))
+                .collect()
         } else {
-            return;
+            let mut words = native::argv_written(&text);
+            // `start "title" program …`: the title is no argument (see
+            // `Self::unit`).
+            if start && text.trim_start().starts_with('"') && words.len() >= 2 {
+                words.remove(0);
+            }
+            words
         };
         unit.args = words
             .into_iter()
-            .map(|word| {
-                expand_variables(&word, self.split).map_or_else(|| Arg::Unknown(word), Arg::Known)
+            .map(|(word, written)| {
+                expand_variables(&word, self.split).map_or(Arg::Unknown(written), Arg::Known)
             })
             .collect();
     }
@@ -755,17 +772,27 @@ impl Walker<'_> {
     }
 
     /// Whether the redirect `node` hands the command an input: a file (`<`,
-    /// `0<`) or another handle (`0<&3`).
+    /// `0<`) or another handle (`0<&3`). The null device holds nothing to
+    /// read (`python < NUL`), so it is none.
     fn reads_input(&self, node: Node<'_>) -> bool {
         let mut cursor = node.walk();
-        let reads = node
-            .named_children(&mut cursor)
-            .filter(|child| child.kind() == "redirect_op")
-            .any(|child| {
-                unit::text(&child, self.source)
-                    .trim_start_matches(|c: char| c.is_ascii_digit())
-                    .starts_with('<')
-            });
+        let mut reads = false;
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "redirect_op" => {
+                    reads = unit::text(&child, self.source)
+                        .trim_start_matches(|c: char| c.is_ascii_digit())
+                        .starts_with('<');
+                }
+                "redirect_target" if reads => {
+                    let target = self.quoted_value(child);
+                    return !target
+                        .known()
+                        .is_some_and(|target| path::null_device(target, Shell::Cmd));
+                }
+                _ => {}
+            }
+        }
         reads
     }
 

@@ -434,27 +434,42 @@ A cmd line reads the shells and interpreters it starts with the same tables
 as the other shells: one that starts a POSIX shell (`bash -c "rm -rf /"`,
 `sh`, `zsh` and the rest, by their name or their path, as
 `C:\msys64\usr\bin\bash.exe`) has its script split in the POSIX grammar,
-and a shell with no script reads its input (`RunInput`), as `cmd` does. A
+and a shell with no script reads its input (`RunInput`), as `cmd` does; a
+shell's `--version` or `--help` prints and runs nothing, in every shell. A
 shell handed an input of its own, a file redirected onto it or something
 piped into it, hands it on to what its script runs: `cmd /c python < x.py`
 and `type x.py | cmd /c python` run `x.py`, which is `Unknown` as `python <
 x.py` is (an interpreter in cmd reads its input when it is handed one, see
-[Inline code](#inline-code)).
+[Inline code](#inline-code)). The null device holds nothing to read, so
+`python < NUL` is handed no input.
 
-cmd does not split a program's arguments: it hands the program the text after
-its name as written, with the carets outside quotes taken off and the
-variables put in, and the program splits it. So a POSIX shell or an
-interpreter started from a cmd line (the names of `SHELLS` and
-`INTERPRETERS`) is given the words the C runtime makes of that text (see
-[Splitting](#splitting)): a quote does not end a word and `\"` is a quote,
-so `bash -c "echo \"hi\"; rm -rf ~"` hands bash `echo "hi"; rm -rf ~`, a
-`Delete`, where cmd's own quotes would give `echo \hi\; rm -rf ~`. A shell
-built on Cygwin or MSYS2 also reads single quotes; a script that opens one and
-does not close it in the C runtime's word is unreadable as POSIX, and so
-risky. `cmd` itself is given the text as it is, quotes and all, with cmd's
-rule for the quotes around the command after `/c` (see Splitting), so
-`cmd /c bash -c "rm -rf ~"` runs `bash -c "rm -rf ~"`, not `bash -c rm -rf
-~`.
+cmd does not split a program's arguments: it hands every program it starts,
+all but its own built-in commands, the text after its name as written, with
+the carets outside quotes taken off and the variables put in, and the program
+splits it. So a program started from a cmd line is given the words the C
+runtime makes of that text (see [Splitting](#splitting)): a quote does not
+end a word and `\"` is a quote, so `bash -c "echo \"hi\"; rm -rf ~"` hands
+bash `echo "hi"; rm -rf ~`, a `Delete`, where cmd's own quotes would give
+`echo \hi\; rm -rf ~`. A runner or a wrapper splits its text the same way
+and hands on the words it made (`uv run`, `npx`, `pnpm dlx`, `npm exec`,
+`wsl`, `git submodule foreach`), and `start` hands the program it starts the
+text after its title. A word that holds a variable only known when it runs
+keeps its quotes, so `docker rm -f "%IDS%"` is one name. A shell built on
+Cygwin or MSYS2 also reads single quotes; a script that opens one and does
+not close it in the C runtime's word is unreadable as POSIX, and so risky.
+`cmd` itself is given the text as it is, quotes and all, with cmd's rule for
+the quotes around the command after `/c` (see Splitting), so `cmd /c bash -c
+"rm -rf ~"` runs `bash -c "rm -rf ~"`, not `bash -c rm -rf ~`.
+
+A PowerShell or POSIX line that starts `cmd` hands it one command line made
+of its words, which cmd reads by the same rules. PowerShell puts a word that
+holds white space outside the quotes in it between double quotes and leaves
+the quotes in it as they are (as it does for `cmd.exe` in every mode of
+passing arguments); a POSIX shell on Windows (Cygwin, MSYS2) quotes a word
+with white space or a quote in it and puts a `\` before each quote, as the C
+runtime reads them. So `cmd /c bash -c "rm -rf ~"` from PowerShell or a POSIX
+shell runs `bash -c "rm -rf ~"` too. A word only known when it runs stays one
+where it stands.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`, and the command

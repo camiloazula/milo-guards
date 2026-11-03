@@ -20,7 +20,8 @@ pub(crate) const INTERPRETERS: [&str; 11] = [
 ];
 
 /// A POSIX shell: `-c` runs its first operand; a script file is its own
-/// business; with neither, it reads commands from its input.
+/// business; `--version` and `--help` print; with none of them, it reads
+/// commands from its input.
 pub(super) fn shell(args: &[Arg]) -> Launch {
     let mut command = false;
     let mut stdin = false;
@@ -31,6 +32,8 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
         };
         match text {
             "--" => break,
+            // `bash --version` prints and runs nothing.
+            "--version" | "--help" if !command && !stdin => return Launch::Itself,
             "-o" | "+o" | "-O" | "+O" | "--rcfile" | "--init-file" => {
                 iter.next();
             }

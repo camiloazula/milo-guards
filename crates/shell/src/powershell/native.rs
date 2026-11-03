@@ -126,13 +126,27 @@ fn cmd_quotes(rest: &str, strip: bool) -> String {
 
 /// The C runtime's split of a command line.
 pub(crate) fn argv(text: &str) -> Vec<String> {
+    argv_written(text)
+        .into_iter()
+        .map(|(word, _)| word)
+        .collect()
+}
+
+/// The C runtime's split of a command line: each word, and the text it was
+/// written as, quotes and all.
+pub(crate) fn argv_written(text: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = text.chars().collect();
     let mut words = Vec::new();
     let mut word = String::new();
     let mut in_word = false;
     let mut quoted = false;
     let mut at = 0;
+    let mut began = 0;
+    let written = |from: usize, to: usize| chars[from..to].iter().collect::<String>();
     while let Some(&c) = chars.get(at) {
+        if !in_word {
+            began = at;
+        }
         match c {
             '\\' => {
                 let run = chars[at..].iter().take_while(|&&c| c == '\\').count();
@@ -160,7 +174,7 @@ pub(crate) fn argv(text: &str) -> Vec<String> {
             }
             ' ' | '\t' | '\n' | '\r' if !quoted => {
                 if in_word {
-                    words.push(std::mem::take(&mut word));
+                    words.push((std::mem::take(&mut word), written(began, at)));
                     in_word = false;
                 }
                 at += 1;
@@ -173,7 +187,7 @@ pub(crate) fn argv(text: &str) -> Vec<String> {
         }
     }
     if in_word {
-        words.push(word);
+        words.push((word, written(began, chars.len())));
     }
     words
 }

@@ -914,7 +914,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => {
             interpreter(key, args, posix || input)
         }
-        "cmd" => cmd(args),
+        "cmd" => cmd(args, unit.shell),
         "powershell" | "pwsh" => powershell(args),
         "invoke-expression" if unit.shell == Shell::PowerShell && unit.downloaded => {
             Launch::Downloaded

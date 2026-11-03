@@ -435,6 +435,38 @@ cmd safe | git commit -m "say \\"hi\\""
 cmd rules=delete | cmd /c bash -c "echo \\"hi\\"; rm -rf ~"
 cmd rules=delete | cmd /c "bash -c "rm -rf ~""
 cmd safe | cmd /c bash -c "echo hi"
+# Every program cmd starts but its own built-ins splits its arguments so,
+# and a runner or a wrapper hands on the words it made of them.
+cmd rules=delete | uv run bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | uvx bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | npx -y bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | pnpm dlx bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | npm exec bash -- -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | cmd /c uv run bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | wsl bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | wsl -e bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | git submodule foreach "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | start "" bash -c "echo \\"hi\\"; rm -rf ~"
+cmd safe | npx eslint "src/**/*.js"
+cmd safe | uv run pytest -k "not slow"
+cmd safe | docker run --rm -e "A=\\"b\\"" alpine echo hi
+# A PowerShell or POSIX line hands cmd its words as one command line, a word
+# with white space in quotes.
+powershell rules=delete | cmd /c bash -c "rm -rf ~"
+powershell rules=delete | cmd /c bash -c 'rm -rf ~'
+powershell rules=delete | cmd.exe /c bash -c "rm -rf /"
+powershell rules=delete | cmd /c sh -c "rm -rf ~"
+posix rules=delete | cmd /c bash -c "rm -rf ~"
+powershell rules=delete | cmd /c --% bash -c "rm -rf ~"
+powershell safe | cmd /c "npm test && npm run build"
+powershell safe | cmd /c bash -c "echo hi"
+posix safe | cmd /c bash -c 'echo "a b"'
+# What prints only or reads nothing runs nothing: a shell's `--version`, and
+# an input from the null device.
+cmd safe | bash --version
+cmd safe | bash --help
+cmd safe | python < NUL
+cmd safe | node 0<nul
 # A file, a module or a script name given to them is their own business.
 cmd safe | python manage.py migrate
 cmd safe | bash build.sh

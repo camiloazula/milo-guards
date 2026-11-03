@@ -437,6 +437,12 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("cat <<EOF; ", "", "")),
         (Shell::Posix, fit("a(D);", "", "")),
         (Shell::PowerShell, "()".repeat(4_096)),
+        // A runner that starts another, each read in turn: about a tenth of
+        // a second in a release build.
+        (Shell::Cmd, fit("bun exec ", "", "")),
+        (Shell::Posix, fit("bun exec ", "", "")),
+        (Shell::PowerShell, fit("bun exec ", "", "")),
+        (Shell::PowerShell, fit("cmd /c ", "", "")),
     ];
     for (shell, line) in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
