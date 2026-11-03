@@ -341,6 +341,89 @@ knows whether the word was quoted, and reads a wildcard as one either way,
 also behind zsh's `noglob` (`noglob ./*`), which keeps the shell from
 expanding it. A `[` alone is a name, as the program `[` is.
 
+**Tools that run their arguments as a command** come off as `sudo` does,
+each with the options it reads and those of them that take a value, as
+`getopt` reads them (in a bundle, `strace -fo log rm`, or attached):
+
+- Tracers and runners: `strace` (`-o`, `-e`, `-p`, `-s`, `--detach-on` and
+  its other options that take one), `ssh-agent`, `chronic` and `script`.
+  `script -c` (`--command`, wherever it stands, as util-linux reads it) runs
+  a shell line; otherwise the words after the file it records to are the
+  command (the BSDs and macOS), and `-p` plays a recording back and runs
+  nothing. `-F` takes a value on FreeBSD (`-F pipe`) and none on macOS, so
+  both readings are judged and the riskier counts.
+- `launchctl asuser UID` and `launchctl bsexec PID` run the words after them;
+  `launchctl submit … -- cmd` starts the command as a job (with `-p`, the
+  program `-p` names, given the words after `--`).
+- `lima` runs its words in the default Lima machine. `nix run INSTALLABLE --
+  ARGS` runs the package's program, named by the attribute after `#`
+  (`nixpkgs#hello` runs `hello`, `nixpkgs#bash -- -c '…'` reads the script);
+  a package sets which of its programs runs, which need not be its name and
+  may be one that runs its arguments, so the words after `--` are also read
+  as a command, and the riskier reading counts; with no installable (`nix
+  run -- ARGS`, the flake of the folder it is in), they are read as one.
+- The runners that load secrets into the command's environment first:
+  `aws-vault exec PROFILE [--] cmd`, `doppler run`, `op run`, `infisical
+  run`, `direnv exec DIR cmd` and `dotenv` (dotenv-cli, `-e`, `-v`, `-p`
+  and `-c` take a value). `doppler run --command` and `infisical run
+  --command` run a shell line: POSIX on a POSIX line, cmd on Windows.
+- `wsl` runs its words as a line in the Linux shell of a distribution, from
+  any shell of Windows: after its options (`-d`, `-u`, `--cd`,
+  `--shell-type`, `--distribution-id` take a value; a `~` among them starts
+  in the home directory, as `--cd ~` does), or every word after
+  `--`, read in the POSIX grammar. `-e` (`--exec`) runs the words after it
+  as a program and its arguments, with no shell. Any other option
+  (`--list`, `--install`, `--shutdown`) manages WSL and runs nothing. Windows
+  hands `wsl` one command line, which it passes on to the shell as it is;
+  whether the line it is started from quotes an argument with a space is not
+  on the line, so both are read and the riskier counts: `wsl pwsh -c
+  "Remove-Item C:\Windows -Recurse"` runs `Remove-Item` as one script, and
+  `wsl 'rm -rf ~'` may run `rm -rf ~`. The folder `--cd` names is not
+  followed.
+
+GNU **`parallel`** runs a command once for each value: its options, the
+command, then the values after `:::` (or the files after `::::`, or `-a`),
+or with neither, its input. Each job is a line its shell runs: the command's
+words joined with spaces, each value put in, quoted, where a replacement
+string stands (`{}` or the `-I` string, `{.}`, `{/}`, `{//}`, `{/.}`, `{#}`,
+`{%}`, and `{1}` to name a source) or after the words when none does. Every
+job is judged, each source's values in turn, and one more line that gives
+the command every value at once, since the jobs run together (`parallel
+docker rm -f ::: web db` removes several containers). A word with a space
+splits when the words are joined. `-q` quotes each word instead, its values
+put in before it is quoted, so a value stays one word with the text around
+it (`parallel -q sh -c 'make -C {}' ::: crates/*`). The guard reads a word
+after the program that way too (`parallel sh -c 'rm -rf {}' ::: ~`), and the
+riskier reading counts. `--trim` takes the spaces off the sides of each value
+it names before the value is put in. With no command each
+value is a line of its own, and lines read from the input are its input run
+as a shell runs it. A command of plain words fed its input is read as
+`xargs` reads it (`ls ~ | parallel rm -rf`). A value only known when it runs,
+or read from the input or a file, stands in a line as `"$1"`. Past 256 jobs
+or 32 sources, for jobs whose lines together are longer than the longest
+line (64 KiB, which is as far as they are built), for a replacement string
+that is empty or longer than 64 bytes, for a `{= … =}` expression (Perl),
+a numbered string where several values go to a job (`-n`, `-N`, `-L`,
+`-X`, `-m`, `--link`, `:::+`), an option that changes how values are
+split, named or separated (`--colsep`, `--csv`, `--header`, `--plus`,
+`--rpl`, `--arg-sep`, the `--…replace` options), or an option the guard
+does not know (a long one may be shortened to an unambiguous start, as
+`parallel` reads it), the line is `Unreadable`.
+
+`env -S` splits its string into words that are `env`'s own arguments again,
+with the arguments after it (`env -S 'rm -rf' ~`): GNU env puts them back
+among its arguments, so they may hold its options and assignments as well
+as the command (`env -S'-i X=1 rm -rf ~'`). The guard reads `env` with them
+as a POSIX line. The string may be attached (`env -S'rm -rf ~'`, `env
+-iS'…'`), and `--split-string=` and a shorter start of the long name
+(`--split=…`, `--s`) are the same. A string with one of its own escapes
+(`\_` for a space, `\c`, `${NAME}`) is not read: `Unreadable`.
+
+A script that `xargs` or `parallel` hands to a shell (`xargs -n1 sh -c 'docker
+rm -f "$1"' _`) runs once for each item it reads, as a loop body runs, so it
+is judged as one: its `$1` and `$@` name a different value each time, only
+known when it runs.
+
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. So is the value
 of each `NAME=VALUE` a POSIX `alias` defines: what a call of the name runs,
@@ -362,6 +445,9 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Wrappers in front of a program | 15 | `sudo env nice … rm` |
 | `find` inside `find -exec` | 16 | the walk, so the stack |
 | `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
+| Jobs `parallel` runs | 256 | each a line built from the command and a value of each source, judged one by one |
+| Sources of values to `parallel` | 32 | each job holds a value of each `:::`, `::::` or `-a` |
+| Lines `parallel` builds | 64 KiB | the jobs' lines together are one script, read no further than the longest line, so built no further; a value put in at each of thousands of `{}` is megabytes otherwise |
 | Brackets opened with none closed | 400 | counted before parsing, outside the literals below: `(` in every shell, `${` in a POSIX shell (where any other `{` may be a word) and `{`, `${` and `[` in PowerShell, each kind closed only by its own closer, all added up. Past the parse tree depth the line is unreadable whatever the grammar makes of it, and the grammars take long to find that out: cmd's time grows with the square of the depth, PowerShell's lexer reads on to the next `}` at every `${` (`${` repeated took 21 ms on one machine, stopped by the budget of what a lexer reads, and 3.4 s on a slower one), and the grammars recover from an error at each bracket (at the length limit, in POSIX `a${` 0.28 s, `${a` 0.26 s, `${` 0.17 s; in PowerShell `$a{` 0.9 s, `${a}{` 0.8 s, `$[` 0.1 s) |
 | `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing, outside a string: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
 | Here-documents started on one line (POSIX) | 256 | counted before parsing, outside the literals below: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more) |
@@ -3697,7 +3783,10 @@ could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
 `env -P` changes where programs are found, `env -C` the folder they run in).
 `time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
-start sessions: those wrap a reader into `Unknown`. A shell started with a
+start sessions: those wrap a reader into `Unknown`. So do the other tools that
+run a command (`strace -o` and `script` write files, `parallel` runs many,
+`wsl` another system's shell, and the secret runners hand it an environment
+the line does not show). A shell started with a
 script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) is a program the
 table does not know, so it is `Unknown` even when the script it holds only
 reads.
@@ -4324,13 +4413,16 @@ a nasty line against a 200 ms bound;
   `just verify` runs (500 ms and 2 s). In a release build the longest takes
   under 100 ms, and most are far quicker. Lines that made `find -exec` build
   gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
-  ones of several levels, are timed the same.
+  ones of several levels, are timed the same, as are `parallel` lines that
+  would build megabytes of jobs and the other wrappers that read their words
+  as a command (`wsl`, `env -S`, `nix run`, the secret runners), at the
+  length limit.
 - **The limits.** (In `tests/limits.rs`, another binary of its own, for the
   same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,
   the most shells in shells, wrappers in front of a program, finds in finds,
   here-documents started on a line, the `find -exec` work (in places, at a
-  fixed weight), brackets still open and cmd's `&` and `|` that still read:
+  fixed weight), the jobs, sources and bytes `parallel` builds, brackets still open and cmd's `&` and `|` that still read:
   the last two inside a string, where the grammar sees no nesting, so the count
   alone is measured. One past each is unreadable, so a later
   change to a limit, or to how deep a grammar nests, fails loudly. `find`s

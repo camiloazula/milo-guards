@@ -14,6 +14,8 @@ use crate::{Rule, Shell};
 mod find;
 mod interpreters;
 mod npm;
+mod parallel;
+mod tools;
 mod wrappers;
 
 use find::find_exec;
@@ -338,6 +340,15 @@ fn add_launched(
                     && dotglob::starts_with(&unit.args);
                 let stage = unit.stage;
                 let inherited = key == "trap" && trap_inherited(&unit.args);
+                // A script `xargs` or `parallel` hands to a shell runs once
+                // for each item it reads, as a loop body runs: its `$1` and
+                // `$@` are a different value each time, only known when it
+                // runs.
+                let per_item = key == "parallel"
+                    || unit
+                        .wrappers
+                        .iter()
+                        .any(|wrapper| matches!(wrapper.as_str(), "xargs" | "parallel"));
                 let shell_at = split.units.len();
                 split.push(unit);
                 // A `trap` action in double quotes is expanded when the trap
@@ -389,6 +400,7 @@ fn add_launched(
                         // PowerShell's `Invoke-Expression` runs its string in
                         // the session, which has one location.
                         let here = key == "eval" || key == "invoke-expression";
+                        split.repeats += usize::from(per_item);
                         if key == "alias" {
                             // Each `NAME=VALUE` is a body of its own.
                             let definitions: Vec<(String, String)> = split
@@ -409,6 +421,7 @@ fn add_launched(
                         } else {
                             unit::script_in(split, &text, shell, depth + 1, here);
                         }
+                        split.repeats -= usize::from(per_item);
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
@@ -729,6 +742,22 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             }
         }
         "xargs" if posix => xargs(args),
+        "parallel" if posix => parallel::parallel(args),
+        // Tracers and runners that run the program after their options.
+        "strace" if posix => tools::strace(args),
+        "script" if posix => tools::script(args),
+        "ssh-agent" if posix => tools::ssh_agent(args),
+        "chronic" if posix => tools::chronic(args),
+        "launchctl" if posix => tools::launchctl(unit),
+        "lima" if posix => tools::lima(args),
+        "nix" if posix => tools::nix(unit),
+        // Runners that load secrets into the command's environment first.
+        "aws-vault" if posix => tools::aws_vault(args),
+        "doppler" | "infisical" | "op" if posix => tools::secrets_run(key, unit),
+        "direnv" if posix => tools::direnv(args),
+        "dotenv" if posix => tools::dotenv(args),
+        // `wsl` runs its words in a Linux shell, from any shell of Windows.
+        "wsl" => tools::wsl(args),
         // `alias f='cat .env'`: a call of `f` runs the value, read as a
         // script where it is defined, as a function's body is; each
         // `NAME=VALUE` is read apart where the script is.
@@ -1101,6 +1130,130 @@ pub(super) fn after_options_by(
         }
     }
     None
+}
+
+/// [`after_options`] for a program that reads its options as `getopt`
+/// does: short letters in a bundle, where a letter of `short` takes the rest
+/// of the bundle or, at its end, the next word (`-fo log`); a long option of
+/// `long` takes the next word unless its value follows `=`.
+pub(super) fn after_getopt(args: &[Arg], short: &str, long: &[&str]) -> Option<usize> {
+    after_options_by(args, |text, _| getopt_word(text, short, long))
+}
+
+/// What the option `text` is among options read as [`after_getopt`] reads
+/// them.
+fn getopt_word(text: &str, short: &str, long: &[&str]) -> Word {
+    if let Some(name) = text.strip_prefix("--") {
+        return if long.contains(&name) {
+            Word::Value
+        } else {
+            Word::Flag
+        };
+    }
+    let bundle = text.strip_prefix('-').unwrap_or(text);
+    for (at, letter) in bundle.char_indices() {
+        if short.contains(letter) {
+            return if at + letter.len_utf8() == bundle.len() {
+                Word::Value
+            } else {
+                Word::Flag
+            };
+        }
+    }
+    Word::Flag
+}
+
+/// The value of the option `letter` (also in a bundle, `-qc CMD`, or
+/// attached, `-cCMD`) or `--name` (also `--name=value`), wherever it stands
+/// before a `--`, as a program that reads its options as `getopt` does finds
+/// it among its operands; `short` and `long` are the other options that take
+/// a value, whose values are skipped.
+pub(super) fn getopt_value(
+    args: &[Arg],
+    letter: Option<char>,
+    name: &str,
+    short: &str,
+    long: &[&str],
+) -> Option<Arg> {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        at += 1;
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        if let Some(option) = text.strip_prefix("--") {
+            let (option, value) = option
+                .split_once('=')
+                .map_or((option, None), |(option, value)| (option, Some(value)));
+            if option == name {
+                return value.map_or_else(
+                    || args.get(at).cloned(),
+                    |value| Some(Arg::Known(value.to_string())),
+                );
+            }
+            if value.is_none() && long.contains(&option) {
+                at += 1;
+            }
+        } else if let Some(bundle) = text.strip_prefix('-') {
+            for (index, found) in bundle.char_indices() {
+                let rest = &bundle[index + found.len_utf8()..];
+                if Some(found) == letter {
+                    return if rest.is_empty() {
+                        args.get(at).cloned()
+                    } else {
+                        Some(Arg::Known(rest.to_string()))
+                    };
+                }
+                if short.contains(found) {
+                    at += usize::from(rest.is_empty());
+                    break;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The index after the subcommand `word`, the first word after the options
+/// of the program (read as [`after_getopt`] reads them).
+pub(super) fn subcommand(args: &[Arg], word: &str, short: &str, long: &[&str]) -> Option<usize> {
+    let at = after_getopt(args, short, long)?;
+    (args.get(at)?.known()? == word).then_some(at + 1)
+}
+
+/// `text` as one word of a POSIX shell line: as it is when the shell would
+/// read it so, in single quotes otherwise. A quoted `~` names the home
+/// directory to the guard as much as a bare one, as every other path it
+/// reads, so quoting never hides one.
+pub(super) fn shell_word(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./~:=@%+,-".contains(c));
+    if plain {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// Arguments made into a POSIX shell line that runs them as they are, each
+/// one word ([`shell_word`]). Unknown when any of them is.
+pub(super) fn shell_words(args: &[Arg]) -> Arg {
+    let line = args
+        .iter()
+        .map(|arg| {
+            arg.known()
+                .map_or_else(|| arg.text().to_string(), shell_word)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if args.iter().all(|arg| arg.known().is_some()) {
+        Arg::Known(line)
+    } else {
+        Arg::Unknown(line)
+    }
 }
 
 /// The value of `short` or `--long` (also `--long=value`).

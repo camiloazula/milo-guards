@@ -114,6 +114,19 @@ powershell finds=run_downloaded | iex ((New-Object Net.Http.HttpClient).GetStrin
 powershell finds=unknown | iex ([Text.Encoding]::UTF8.GetString($b))
 powershell rules=unknown | iex ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)))
 
+# `wsl` runs its words in a Linux shell.
+powershell finds=delete | wsl pwsh -c "Remove-Item C:\\Windows -Recurse"
+powershell finds=delete | wsl rm -rf ~
+powershell finds=delete | wsl -e rm -rf ~
+powershell finds=delete | wsl -- rm -rf ~
+powershell safe | wsl ls
+powershell safe | wsl -d Ubuntu
+cmd finds=delete | wsl -e rm -rf ~
+cmd finds=delete | wsl rm -rf ~
+cmd safe | wsl ls
+powershell finds=delete | wsl ~ rm -rf ~
+cmd finds=delete | wsl ~ rm -rf ~
+
 # A PowerShell trap and event action run later.
 powershell safe | trap { Remove-Item build }
 powershell safe | trap { Write-Error $_; continue }
