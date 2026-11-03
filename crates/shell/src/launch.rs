@@ -80,6 +80,39 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     split.unscope_hidden(outer);
 }
 
+/// Add `units`, the readings of one command (cmd's `echo\x.exe` may run
+/// `echo` or the file): each is judged, so the riskier one counts. Each of
+/// two or more may be the one that does not run, so each is read as a
+/// branch: a `cd` among them may not have moved the line (`cd.\a\b.bat`
+/// moves it or runs the file).
+pub(crate) fn add_readings(split: &mut Split, units: Vec<Unit>, depth: usize) {
+    let mut units = units.into_iter();
+    let Some(mut first) = units.next() else {
+        return;
+    };
+    let rest: Vec<Unit> = units.collect();
+    if rest.is_empty() {
+        add(split, first, depth);
+        return;
+    }
+    if !rest.iter().all(|_| split.fork(MAX_FORKS)) {
+        first.depth = depth;
+        split.problem(
+            Rule::Unreadable,
+            "reads in too many ways to judge each",
+            Some(first.program.text()),
+        );
+        split.push(first);
+        return;
+    }
+    split.branches += 1;
+    add(split, first, depth);
+    for unit in rest {
+        add(split, unit, depth);
+    }
+    split.branches -= 1;
+}
+
 /// Whether the wrapper `key` may hand the program it runs an environment of
 /// its own (`env FOO=1`, `sudo FOO=1`, `xargs`): every wrapper but the few
 /// that only change how the program runs (`nice`, `timeout`). The words

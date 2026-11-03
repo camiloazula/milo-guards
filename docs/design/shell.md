@@ -101,6 +101,53 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   argument and cannot tell whether it is the file. PowerShell reads `$HOME\.ssh\id` as one word but its
   grammar fails at the backslash, so such a word is put in quotes first. A cmd
   "comment" that hides a command cannot be read.
+- cmd's first word is read as cmd reads it, not where the grammar ends the
+  name (it reads `C:\Windows\System32\cmd.exe` as `C` given
+  `:\Windows…`, and `r^d` as `r` given `^d`). The word is every piece that
+  touches the name, with the carets taken off and the variables that name a
+  known place put in (an unknown one leaves the program `unknown`). cmd
+  ends the name at a `,`, `;` or `=` outside quotes as at a space
+  (`shutdown,/s` is `shutdown /s`). It then looks for a built-in at the
+  name's start: the whole name, or the part before the first `+`, `/`,
+  `[`, `]` or `(` (`rd/s/q`, `echo(x`), or the part before the first `.`, `\` or `:` (`echo.x`,
+  `cd..`, `cd\x`); the rest of the word is the built-in's first argument,
+  and `echo` drops the one character after its name (`echo.DROP TABLE t`
+  says `DROP TABLE t`). In the last case cmd runs the file the word names
+  when there is one, which only the disk can say, so a word that names a
+  program (`dir.bat`, `echo\..\..\Windows\System32\shutdown.exe`) is
+  read both ways and the riskier counts; each reading may be the one that
+  does not run, so a `cd` among them may not have moved the line. Any other
+  name, quoted or not, is the path of a program, judged by its last part as
+  the bare name is (`%SystemRoot%\System32\cmd.exe /c …` is `cmd /c …`).
+  A drive with no folder after it is read past too: cmd and PowerShell run
+  `C:shutdown` from that drive's current folder, which for an elevated cmd
+  is `C:\Windows\System32`, so it is `shutdown`. Windows drops the dots and
+  spaces that end a file's name, and the guard does too
+  (`shutdown.exe. /s` is `shutdown /s`).
+  A `/` outside the quotes ends the name (`cmd/c`) unless it follows a
+  drive (`C:/Windows/System32/shutdown.exe` is `shutdown`); one after a
+  folder in a name with no quotes (`C:\Windows/System32/shutdown.exe`)
+  may end it or not, so both are read. One inside the quotes is part of
+  the path.
+- The batch grammar reads an `if` or a `for` only at the start of a line:
+  after `&&`, `||` or `|` it is a command named `if` with its condition and
+  body as arguments. The guard splits that command's text again on its own,
+  so `ver && if exist q rd /s /q C:\Windows` is the `delete` that
+  `if exist q rd /s /q C:\Windows` is. Nor does it read a `call`, `if` or
+  `for` spelled with carets (`ca^ll`, `i^f`), which cmd takes off first:
+  that command's text is split again with the carets of its first word
+  taken off. A `call` of the program `call` (`call call rd /s /q C:\x`)
+  runs the command after it, so the text from the second `call` is split
+  again the same way. A `,`, `;` or `=` ends such a first word as a space
+  does (`ca^ll,rd …` and `call call,rd …` are `call rd …`). A command the
+  guard still reads as the program `call`, `if` or `for`, spelled some way
+  it does not split again (`call^,rd …`), is `unreadable`; a `call` of a
+  label (`call:sub`) runs no program. Each text split again counts against the line's
+  budget of nested script text, so a line of `f^or … do f^or … do …`,
+  where each command holds the rest of the line, is `unreadable` past it
+  instead of read once for each command. A `for` typed at the prompt
+  (`for %i in …`, not `%%i`) is not read by the grammar and is `unreadable`
+  wherever it stands.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:
   what the grammar cannot parse comes back risky.
 - The bash grammar reads every word after the operator of a redirect as one
@@ -298,8 +345,10 @@ A script handed to a shell is split again, in its own grammar: `bash -c`,
 of each `NAME=VALUE` a POSIX `alias` defines: what a call of the name runs,
 read where it is defined, as a function's body is. A nested script
 counts as far as a depth limit, and the text of all the nested scripts read
-for one line as far as a budget a few times the longest line. Past either, the
-line is unreadable.
+for one line as far as a budget a few times the longest line; a cmd command
+the guard reads again as a statement of its own (`ver && if …`, `i^f`,
+`call call`) counts against the same budget. Past either, the line is
+unreadable.
 
 The other limits, each read as unreadable past it, and each pinned by a test
 that finds the edge by measuring it and asserts both sides (see Tests):
