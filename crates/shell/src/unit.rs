@@ -594,7 +594,9 @@ pub(crate) struct Split {
     /// where it was before each `cd` that may not have run (in a branch,
     /// after `&&` or `||` or on the left of `||`, in a loop or a function
     /// body, in a pipeline stage or behind a wrapper, but not in an `if
-    /// true` body), each moved on by every `cd` read since. Only a run of a
+    /// true` body), each moved on by every `cd` read since (a list of `&&`
+    /// keeps the folders it may have stopped in until it ends, see
+    /// [`Chain::stops`]). Only a run of a
     /// file is judged from them (see [`Unit::elsewhere`]): a file written
     /// before such a `cd` and run after it may be the one the line runs. At
     /// most [`MAX_ELSEWHERE`]; past that, one folder only known when it
@@ -681,6 +683,17 @@ pub(crate) struct Split {
     /// `Walker::always_taken`): it still counts as a branch for everything
     /// else, and is left out only for whether a `cd` in it may not have run.
     pub(crate) taken: usize,
+    /// How many of [`Self::branches`] are the right side of `&&` or `||` in
+    /// a list (see [`Self::link_start`]): a `cd` there is left out of
+    /// whether it may not have run, which the list says for itself, once,
+    /// when that side ends.
+    links: usize,
+    /// The list of commands joined by `&&` or `||` being read (see
+    /// [`Chain`]).
+    chain: Chain,
+    /// Whether the next list read is the left side of the one being read
+    /// (`a && b && c` is `(a && b) && c`), and so part of its chain.
+    joins: bool,
     /// How deep the line is inside a function body or a loop, whose
     /// commands may run after the line has turned the option on.
     pub(crate) bodies: usize,
@@ -844,13 +857,45 @@ pub(crate) struct Place {
     elsewhere: Vec<Option<Arg>>,
 }
 
-/// Where the line is when a list of commands joined by `&&` or `||` begins,
-/// for [`Split::may_not_have_moved`]: how many `cd`s this shell had run, and
-/// every folder the line may be in.
-#[derive(Debug, Clone)]
-pub(crate) struct Mark {
+/// A list of commands joined by `&&` or `||` being read, from
+/// [`Split::list_start`] to [`Split::list_end`].
+#[derive(Debug)]
+pub(crate) struct List {
+    /// How many `cd`s this shell had run when the list began.
     moves: usize,
+    /// Every folder the line may have been in when the list began.
     places: Vec<Option<Arg>>,
+    /// The chain of the list this one is in, given back when this one ends;
+    /// `None` when this list is the left side of the one being read, whose
+    /// chain it is part of.
+    outer: Option<Chain>,
+}
+
+/// The right side of `&&` or `||` in a list, from [`Split::link_start`] to
+/// [`Split::link_end`].
+#[derive(Debug)]
+pub(crate) struct Link {
+    /// How many `cd`s this shell had run when it began.
+    moves: usize,
+    /// Every folder the line may have been in when it began.
+    places: Vec<Option<Arg>>,
+}
+
+/// What a list of commands joined by `&&` or `||` (its left sides that are
+/// lists themselves included) leaves for the commands after it.
+#[derive(Debug, Default)]
+struct Chain {
+    /// The folders the list may have stopped in: where the line was before
+    /// each right side that moved it, which may not have run, and where the
+    /// list began. A command later in the list runs only when the ones
+    /// before it let it, so only a command after the list may be in one of
+    /// them, until an `||` (see [`Self::or`]).
+    stops: Vec<Option<Arg>>,
+    /// Whether the list has an `||`: a command after one runs when a side
+    /// before it failed, or when the left of the `||` ran without the ones
+    /// between, so from then on each folder the list may have stopped in is
+    /// one the rest of it may run in too.
+    or: bool,
 }
 
 /// An action that runs later, in this shell, from wherever the line has
@@ -1019,7 +1064,9 @@ impl Split {
                 // the line where it was; nor does a stage of a PowerShell
                 // pipeline (each of its commands is one), which runs in the
                 // line's own session.
-                unsure = self.branches > self.taken
+                // The right side of `&&` or `||` is left to the list it is
+                // in (see [`Self::link_end`]).
+                unsure = self.branches > self.taken + self.links
                     || self.repeats > 0
                     || (unit.stage.is_some() && unit.shell != Shell::PowerShell)
                     || !unit.wrappers.is_empty();
@@ -1389,29 +1436,96 @@ impl Split {
         }
     }
 
-    /// Where the line is as a list of commands joined by `&&` or `||` begins,
-    /// for [`Self::may_not_have_moved`].
-    pub(crate) fn mark(&self) -> Mark {
-        Mark {
+    /// Every folder the line may be in now: where the walk has it, then the
+    /// others (see [`Self::elsewhere`]).
+    fn places(&self) -> Vec<Option<Arg>> {
+        std::iter::once(self.dir.clone())
+            .chain(self.elsewhere.iter().cloned())
+            .collect()
+    }
+
+    /// Begin a list of commands joined by `&&` or `||`; [`Self::list_end`]
+    /// ends it. When [`Self::list_head`] said it is the left side of the
+    /// list being read, it is part of that one's chain.
+    pub(crate) fn list_start(&mut self) -> List {
+        let outer = if std::mem::take(&mut self.joins) {
+            None
+        } else {
+            Some(std::mem::take(&mut self.chain))
+        };
+        List {
             moves: self.moves,
-            places: std::iter::once(self.dir.clone())
-                .chain(self.elsewhere.iter().cloned())
-                .collect(),
+            places: self.places(),
+            outer,
         }
     }
 
-    /// Note that what the walk has read so far may have left the line
-    /// somewhere else than it thinks, when the `cd`s this shell has run are
-    /// not the ones it had run at `mark`, where the list began: for the left
-    /// side of `||`, which only runs the right side when it failed, and for
-    /// a right side that moved the line, which runs only when the left let
-    /// it. The line may then still be in any folder it may have been in at
-    /// `mark`.
-    pub(crate) fn may_not_have_moved(&mut self, mark: &Mark) {
-        if self.moves != mark.moves {
+    /// Say whether the next list read, the left side of the one being read,
+    /// is a list itself (`a && b && c` is `(a && b) && c`): it is then part
+    /// of the same chain, whose commands it runs first.
+    pub(crate) fn list_head(&mut self, head: bool) {
+        self.joins = head;
+    }
+
+    /// End `list`: the line may now be in any folder the list may have
+    /// stopped in (see [`Chain::stops`]), unless the list is the left side
+    /// of another, which says so when it ends.
+    pub(crate) fn list_end(&mut self, list: List) {
+        if let Some(outer) = list.outer {
+            self.add_stops();
+            self.chain = outer;
+        }
+    }
+
+    /// An `||` in `list`: its right side runs only when the left failed, so
+    /// a `cd` on the left may not have moved the line, and the line may be
+    /// where the list began or in any folder it may have stopped in.
+    pub(crate) fn list_or(&mut self, list: &List) {
+        self.chain.or = true;
+        if self.moves != list.moves {
             self.maybe_moved = true;
+            self.chain.stops.extend(list.places.iter().cloned());
+        }
+        self.add_stops();
+    }
+
+    /// Begin a right side of `&&` or `||` in a list; [`Self::link_end`] ends
+    /// it. It may not run, so it is a branch.
+    pub(crate) fn link_start(&mut self) -> Link {
+        self.branches += 1;
+        self.links += 1;
+        Link {
+            moves: self.moves,
+            places: self.places(),
+        }
+    }
+
+    /// End `link`, a right side of `list`: when it moved the line, it may
+    /// not have run, so the list may have stopped where the line was before
+    /// it, or where the list began, if the left side did not move it. A
+    /// command later in the list runs only when this side did, so these are
+    /// left for after the list (see [`Chain::stops`]): a chain of `n` `cd`s
+    /// leaves the line in at most `n + 1` folders.
+    pub(crate) fn link_end(&mut self, list: &List, link: Link) {
+        self.branches -= 1;
+        self.links -= 1;
+        if self.moves != link.moves {
+            self.maybe_moved = true;
+            self.chain.stops.extend(link.places);
+            self.chain.stops.extend(list.places.iter().cloned());
+            if self.chain.or {
+                self.add_stops();
+            }
+        }
+    }
+
+    /// Say the line may be in any folder the list being read may have
+    /// stopped in (see [`Chain::stops`]).
+    fn add_stops(&mut self) {
+        let stops = std::mem::take(&mut self.chain.stops);
+        if !stops.is_empty() {
             let mut folders = std::mem::take(&mut self.elsewhere);
-            folders.extend(mark.places.iter().cloned());
+            folders.extend(stops);
             self.set_elsewhere(folders);
         }
     }

@@ -1209,7 +1209,7 @@ impl Walker<'_> {
     /// may not run.
     fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
-        let before = self.split.mark();
+        let list = self.split.list_start();
         let mut at = 0;
         let last = self
             .tail_of
@@ -1220,7 +1220,7 @@ impl Walker<'_> {
             // The right side of `||` only runs when the left failed: a `cd`
             // on the left may not have moved the line.
             if child.kind() == "||" {
-                self.split.may_not_have_moved(&before);
+                self.split.list_or(&list);
             }
             if !child.is_named() {
                 continue;
@@ -1235,18 +1235,21 @@ impl Walker<'_> {
                     first: self.split.units.len(),
                 });
             }
-            let moves = self.split.moves_so_far();
-            self.split.branches += usize::from(at > 0);
-            self.walk(child, stage, level + 1);
-            self.split.branches -= usize::from(at > 0);
             // A `cd` on the right side runs only when the left let it: when
             // it did not (`cd sub && cd sub2`), the line may still be where
-            // the list began.
-            if at > 0 && self.split.moves_so_far() != moves {
-                self.split.may_not_have_moved(&before);
+            // that side began, or where the list did.
+            if at > 0 {
+                let link = self.split.link_start();
+                self.walk(child, stage, level + 1);
+                self.split.link_end(&list, link);
+            } else {
+                self.split.list_head(child.kind() == "list");
+                self.walk(child, stage, level + 1);
+                self.split.list_head(false);
             }
             at += 1;
         }
+        self.split.list_end(list);
     }
 
     /// Note a function definition before its body is read: its name, where

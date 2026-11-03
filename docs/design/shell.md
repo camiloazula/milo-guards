@@ -2086,10 +2086,22 @@ Some risks only show when units are read together.
   a && cd s; bash x.sh` and `echo x > x.sh; cd a; false && cd s; bash ../x.sh`
   may run the file they wrote and are `unknown`, while `echo x > log.txt; test
   -d sub && cd sub; ./app` runs no file it wrote from any of them and stays
-  safe. A `cd` before the write needs none of this: the write and the run are
-  placed from the same folder. Past eight such folders the line may be
-  anywhere, and a run of a script by a relative path is `unknown` once the
-  line writes any file.
+  safe. A list of `&&` stops at its first failing command, so it may only end
+  where it began or where one of its `cd`s took the line, one folder more
+  than it has `cd`s, and a command later in the same list runs only when
+  every `cd` before it did, so it is in one folder: the folders the list may
+  have stopped in count for the commands after the list, and are not moved
+  on by the list's own later `cd`s. `cd a && make > log && cd ../b && make >
+  log && cd .. && ./run` and `echo x > log; cd a && cd b && cd c && cd d;
+  ./app` stay safe, while `echo x > x.sh; cd a && cd b && cd c && cd d; bash
+  ../../x.sh` (the list stopped after `cd b`) is `unknown`. An `||` lets its
+  right side run where the list may have stopped, and lets a command after
+  it run where the left of it left the line, so from an `||` on those
+  folders count for the rest of the list too. The write is placed only from
+  where the walk has the line and the run from every folder it may be in, so
+  a `cd` that may not have run counts whether it comes before the write or
+  after it. Past eight such folders the line may be anywhere, and a run of a
+  script by a relative path is `unknown` once the line writes any file.
   The file may be run as the program itself, not only handed to a shell: a
   program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
   file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x

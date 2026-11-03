@@ -87,6 +87,30 @@ cmd finds=unknown | echo x > x.bat & if exist s cd s & x
 # unknown once the line writes a file, and safe when it writes none.
 posix finds=unknown reason="runs a script only known when it runs" | echo x > log.txt; false && cd a; false && cd b; false && cd c; false && cd d; ./app
 posix safe | false && cd a; false && cd b; false && cd c; false && cd d; ./app
+# In a list of `&&`, a command after a `cd` runs only when that `cd` ran, so
+# it is in one folder; after the list the line may be where it began or where
+# any `cd` of it took it, one folder more than it has `cd`s. Everyday chains
+# that write a log stay safe, wherever the write is.
+posix safe | cd client && npm ci > ci.log && cd ../server && npm ci > ci.log && cd ../worker && npm ci > ci.log && cd .. && ./start.sh
+posix safe | cd packages/a && npm run build > build.log && cd ../b && npm run build > build.log && cd ../c && npm run build > build.log && cd ../.. && ./scripts/test.sh
+posix safe | cd services/api && go test ./... > test.log && cd ../web && npm test > test.log && cd ../cli && cargo test > test.log && cd ../.. && ./ci/report.sh
+posix safe | cd a && make > log && cd ../b && make > log && cd ../c && make > log && cd .. && ./run
+posix safe | echo x > log; cd a && cd b && cd c && cd d; ./app
+posix safe | cd a && cd b && cd c && cd d; echo x > log; ./app
+posix safe | echo x > x.sh; cd a && cd b && bash ../x.sh
+powershell safe | 'x' > log; cd a && cd b && cd c && cd d; .\\app.ps1
+powershell safe | 'x' > x.ps1; cd a && cd b && .\\x.ps1
+cmd safe | echo x > x.bat & cd a && cd b && x.bat
+# The folders such a list may have stopped in are still kept for after it,
+# and an `||` may run its right side from any of them, or let a later command
+# run where the list stopped.
+posix finds=unknown | echo x > x.sh; cd a && cd b && cd c && cd d; bash x.sh
+posix finds=unknown | echo x > x.sh; cd a && cd b && cd c && cd d; bash ../../x.sh
+posix finds=unknown | echo x > a/x.sh; cd a && cd b || bash x.sh
+posix finds=unknown | echo x > x.sh; true || cd a && bash x.sh
+posix finds=unknown | echo x > a/x.sh; cd a || cd b; bash x.sh
+powershell finds=unknown | 'x' > a\\x.ps1; cd a && cd b || .\\x.ps1
+cmd finds=unknown | echo x > a\\x.bat & cd a && cd b || x.bat
 # A `cd` that surely ran, a run of another file, and everyday lines that run
 # nothing they wrote.
 posix safe | echo x > x.sh; if true; then cd s; fi; bash x.sh
