@@ -3,13 +3,16 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use tree_sitter::{Node, TreeCursor};
+use tree_sitter::Node;
 
 use crate::dotglob;
 use crate::launch;
 use crate::startup;
 use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
+
+mod fork_bomb;
+mod values;
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let (text, marks, near, open) = join_continuations(text);
@@ -37,28 +40,35 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
             None,
         );
     }
-    let (names, looped) = assigned(tree.root_node(), text);
-    for name in names {
-        split.reassign(&name);
-    }
-    for name in looped {
-        split.loop_variable(&name);
-    }
-    if split.kept.on {
-        environment(split, tree.root_node(), text);
-    }
-    Walker {
+    let mut walker = Walker {
         source: text,
         marks: &marks,
         depth,
         split,
         redirected: None,
+        lost: None,
         last_command: 0..0,
         tail_of: Vec::new(),
         tail: None,
         unstaged: None,
+        sets: std::collections::HashMap::new(),
+        functions: std::collections::HashSet::new(),
+    };
+    // One walk of the tree finds the variables the line sets and the values
+    // it gives them.
+    let (names, looped) = assigned(tree.root_node(), text, |node| walker.note_value(node));
+    walker.noted();
+    for name in names {
+        walker.split.reassign(&name);
     }
-    .walk(tree.root_node(), None, 0);
+    for name in looped {
+        walker.split.loop_variable(&name);
+    }
+    if walker.split.kept.on {
+        environment(walker.split, tree.root_node(), text);
+    }
+    walker.walk(tree.root_node(), None, 0);
+    walker.fork_bombs(tree.root_node());
 }
 
 /// Whether a character may stand in a zsh glob qualifier the guard reads:
@@ -81,19 +91,58 @@ fn qualifier_char(c: char) -> bool {
 /// is: with `extendedglob` they are operators, and `^x(D)`, `*git~x(D)` and
 /// `.#git(D)` match `.git`, which a guard that reads them as plain text
 /// would not see.
-fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
-    word.chars()
-        .last()
-        .filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
-    if word.contains(['^', '#']) || word.char_indices().any(|(at, c)| c == '~' && at > 0) {
-        return None;
-    }
-    let end = rest.iter().position(|c| *c == ')')?;
+///
+/// `word` gives the last character of the word and whether it holds one of
+/// those operators; it is asked only once `rest` is a qualifier, and kept as
+/// the text grows (see [`Word`]), so a line of many `(` in one long word is
+/// not read back to its start at each.
+fn qualifier(word: impl FnOnce() -> (Option<char>, bool), rest: &[char]) -> Option<usize> {
+    // The body is qualifier characters only, so the scan for its `)` stops
+    // at the first other one.
+    let end = rest.iter().position(|c| !qualifier_char(*c))?;
     let body = &rest[..end];
     let ends = rest
         .get(end + 1)
         .is_none_or(|next| next.is_whitespace() || ";&|)<>".contains(*next));
-    (ends && body.contains(&'D') && body.iter().all(|c| qualifier_char(*c))).then_some(end + 1)
+    if rest[end] != ')' || !ends || !body.contains(&'D') {
+        return None;
+    }
+    let (last, operators) = word();
+    last.filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
+    (!operators).then_some(end + 1)
+}
+
+/// The last word of a text that only grows, the part after its last space,
+/// as [`qualifier`] reads it: each part added is looked through once.
+#[derive(Default)]
+struct Word {
+    /// How much of the text has been looked through.
+    seen: usize,
+    /// Whether the word has started (a character after the last space).
+    started: bool,
+    /// Its last character.
+    last: Option<char>,
+    /// Whether it holds `^` or `#`, or a `~` that does not start it.
+    operators: bool,
+}
+
+impl Word {
+    fn of(&mut self, text: &str) -> (Option<char>, bool) {
+        for c in text.get(self.seen..).unwrap_or_default().chars() {
+            if c.is_whitespace() {
+                *self = Self {
+                    last: Some(c),
+                    ..Self::default()
+                };
+            } else {
+                self.operators |= c == '^' || c == '#' || (c == '~' && self.started);
+                self.started = true;
+                self.last = Some(c);
+            }
+        }
+        self.seen = text.len();
+        (self.last.filter(|_| self.started), self.operators)
+    }
 }
 
 /// `text` with each backslash-newline taken out, as the shell does before
@@ -134,6 +183,8 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     // each delimiter, whether `<<-` lets it be indented with tabs, and
     // whether the word had a quote or a backslash (a body fed as it is).
     let mut bodies: Vec<(String, bool, bool)> = Vec::new();
+    // The last word of `joined` (see [`qualifier`]).
+    let mut word = Word::default();
     let mut at = 0;
     while let Some(&c) = chars.get(at) {
         at += 1;
@@ -153,8 +204,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
         // zsh's `(D)` glob qualifier at the end of a word.
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
-            let word = joined.rsplit(char::is_whitespace).next().unwrap_or("");
-            if let Some(length) = qualifier(word, rest) {
+            if let Some(length) = qualifier(|| word.of(&joined), rest) {
                 at += length;
                 marks.push(joined.len());
                 continue;
@@ -551,6 +601,63 @@ fn backtick_codes(body: &str, skip: &[Range<usize>], strips: bool) -> Option<Vec
     Some(codes)
 }
 
+/// The words the grammar took into `redirect` that the shell reads as
+/// arguments of the command (see [`Lost`]): after the first file of a file
+/// redirect, which the grammar reads each word after the operator as, and
+/// after the delimiter of a here-document on the line it starts (`rm <<EOF
+/// -rf ~`). None for any other redirect.
+fn lost_in(redirect: Node<'_>) -> Vec<Node<'_>> {
+    let mut cursor = redirect.walk();
+    match redirect.kind() {
+        "file_redirect" => redirect
+            .children_by_field_name("destination", &mut cursor)
+            .skip(1)
+            .collect(),
+        "heredoc_redirect" => {
+            let opened = redirect
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "heredoc_start")
+                .map(|start| start.end_position().row);
+            let mut cursor = redirect.walk();
+            redirect
+                .children_by_field_name("argument", &mut cursor)
+                .filter(|word| opened.is_some_and(|row| word.start_position().row <= row))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `name`, a command's name, holds a wildcard the shell expands
+/// (`./*`, `??`, `[r]m`): one outside quotes, an expansion and a backslash.
+/// The program is then the first name it matches, only known when it runs.
+fn names_by_pattern(name: Node<'_>, source: &str) -> bool {
+    let start = name.start_byte();
+    let mut plain = unit::text(&name, source).as_bytes().to_vec();
+    unit::for_each_node(name, |part| {
+        if part.is_named() && !matches!(part.kind(), "command_name" | "concatenation" | "word") {
+            let from = part.start_byte().saturating_sub(start);
+            let to = part.end_byte().saturating_sub(start).min(plain.len());
+            for byte in plain.get_mut(from..to).unwrap_or_default() {
+                *byte = b'_';
+            }
+        }
+    });
+    let mut escaped = false;
+    let mut unquoted = Vec::with_capacity(plain.len());
+    for byte in plain {
+        if escaped {
+            escaped = false;
+            unquoted.push(b'_');
+        } else if byte == b'\\' {
+            escaped = true;
+        } else {
+            unquoted.push(byte);
+        }
+    }
+    unit::pattern(&String::from_utf8_lossy(&unquoted))
+}
+
 /// The command a redirect after `node` belongs to, when `node` is a list, a
 /// pipeline or a negated command: the grammar puts the redirect on the whole
 /// of it, and the shell on the last command (`a && b < f` redirects `b`).
@@ -613,6 +720,61 @@ fn last_child(node: Node<'_>) -> Option<Node<'_>> {
     last
 }
 
+/// Whether a redirect the grammar holds on a statement whose last command
+/// is the last command of the list `node` is on that command (`a || b 2> e`
+/// is `a || (b 2> e)`).
+fn redirected_last(node: Node<'_>) -> bool {
+    let mut node = node;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "redirected_statement" => {
+                return parent
+                    .child_by_field_name("body")
+                    .is_some_and(|body| body.id() == node.id());
+            }
+            "list" if last_child(parent).is_some_and(|last| last.id() == node.id()) => {
+                node = parent;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether `node` holds a negated command anywhere (`! cd a`, `{ ! cd a; }`,
+/// `cd a && ! cd b`): it succeeds when what it negates fails, so a `cd` in it
+/// may have failed while `node` succeeded.
+fn negates(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    loop {
+        if cursor.node().kind() == "negated_command" {
+            return true;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return false;
+            }
+        }
+    }
+}
+
+/// Whether the argument `text` of `exit` may stand for more than one word,
+/// which zsh refuses with "too many arguments" and goes on past: a glob, `$@`
+/// or `$*`, an array or a brace expansion. `$?` and `${name}` are one word.
+fn many_words(text: &str) -> bool {
+    text.char_indices().any(|(at, c)| match c {
+        '*' | '[' | '@' => true,
+        '?' | '{' => !text[..at].ends_with('$'),
+        _ => false,
+    })
+}
+
 /// The ids of the lists along the last command of `node`: the ones whose
 /// last command a redirect after `node` is opened before.
 fn list_ids(node: Node<'_>) -> Vec<usize> {
@@ -663,26 +825,34 @@ fn dashes_before_heredoc(rest: &str) -> usize {
 /// The variables the line sets anywhere (assignments, also after `export`
 /// or `local`, `for` variables, `unset` and `read`), and among them the ones
 /// a `for` loop or a `read` sets: each of those holds one item of what the
-/// loop walks or the input it reads. One walk of the tree finds both.
-fn assigned(root: Node<'_>, source: &str) -> (Vec<String>, Vec<String>) {
+/// loop walks or the input it reads. One walk of the tree finds both, and
+/// hands each node to `also` on the way.
+fn assigned<'t>(
+    root: Node<'t>,
+    source: &str,
+    mut also: impl FnMut(Node<'t>),
+) -> (Vec<String>, Vec<String>) {
     let mut names = Vec::new();
     let mut looped = Vec::new();
-    unit::for_each_node(root, |node| match node.kind() {
-        "variable_assignment" => names.extend(
-            node.child_by_field_name("name")
-                .map(|name| unit::text(&name, source).to_string()),
-        ),
-        "unset_command" => {
-            let mut cursor = node.walk();
-            names.extend(
-                node.named_children(&mut cursor)
+    unit::for_each_node(root, |node| {
+        also(node);
+        match node.kind() {
+            "variable_assignment" => names.extend(
+                node.child_by_field_name("name")
                     .map(|name| unit::text(&name, source).to_string()),
-            );
-        }
-        _ => {
-            let found = loop_variables(node, source);
-            names.extend(found.iter().cloned());
-            looped.extend(found);
+            ),
+            "unset_command" => {
+                let mut cursor = node.walk();
+                names.extend(
+                    node.named_children(&mut cursor)
+                        .map(|name| unit::text(&name, source).to_string()),
+                );
+            }
+            _ => {
+                let found = loop_variables(node, source);
+                names.extend(found.iter().cloned());
+                looped.extend(found);
+            }
         }
     });
     (names, looped)
@@ -798,35 +968,6 @@ fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
 /// runs where the expansion was.
 pub(crate) const OPAQUE: &str = "$__v";
 
-/// Whether `command`, a `coproc`, has a redirect in front of the command it
-/// starts (`coproc { 2>/dev/null rm -rf ~; }`, `coproc > out rm -rf ~`). The
-/// grammar takes the words after the redirect's target for more targets, so
-/// the command is not among the arguments and cannot be read.
-fn words_lost_after_redirect(command: Node<'_>) -> bool {
-    let Some(parent) = command
-        .parent()
-        .filter(|parent| parent.kind() == "redirected_statement")
-        .filter(|parent| {
-            parent
-                .child_by_field_name("body")
-                .is_some_and(|body| body.id() == command.id())
-        })
-    else {
-        return false;
-    };
-    let mut cursor = parent.walk();
-    let lost = parent
-        .children_by_field_name("redirect", &mut cursor)
-        .any(|redirect| {
-            let mut cursor = redirect.walk();
-            redirect
-                .children_by_field_name("destination", &mut cursor)
-                .count()
-                > 1
-        });
-    lost
-}
-
 struct Walker<'a> {
     source: &'a str,
     /// Where `source` had a `(D)` glob qualifier taken out (see
@@ -836,6 +977,9 @@ struct Walker<'a> {
     split: &'a mut Split,
     /// The redirects of the statement being walked, for its body command.
     redirected: Option<Redirected>,
+    /// The words the grammar took for more files of the redirects of the
+    /// statement being walked, for the command they are arguments of.
+    lost: Option<Lost>,
     /// The units of the command walked last (not what its arguments run):
     /// read right after a statement's body, it is the body's last command.
     last_command: Range<usize>,
@@ -852,6 +996,11 @@ struct Walker<'a> {
     /// stage the pipeline itself is in: only its last command is in the
     /// pipeline, and the ones before it run where the pipeline does.
     unstaged: Option<(usize, Option<Stage>)>,
+    /// The values each node of the tree gives variables, by node id, for the
+    /// walk to read where the node runs (see [`values`]).
+    sets: std::collections::HashMap<usize, Vec<(String, crate::values::Value)>>,
+    /// The functions the line defines, as the tree is read before the walk.
+    functions: std::collections::HashSet<String>,
 }
 
 /// The state just before the last command of a list: a redirect on a list
@@ -862,6 +1011,21 @@ struct Tail {
     moved: usize,
     moves: usize,
     first: usize,
+}
+
+/// The words after the file of a redirect on a statement (`rm 2>/dev/null
+/// -rf ~`, `command >out rm -rf ~`): the grammar reads every word after the
+/// operator as one more file, and the shell only the first, so the rest are
+/// arguments of the command the redirect is on, after the ones before it.
+struct Lost {
+    /// The node id of that command: the statement's body, or the last
+    /// command of the list, pipeline or negation it is.
+    command: usize,
+    /// The node ids of the redirects the words were taken from.
+    redirects: Vec<usize>,
+    words: Vec<Arg>,
+    /// Whether one of the words had a `(D)` glob qualifier.
+    qualified: bool,
 }
 
 /// The redirects of a statement whose body is a command: the node id of
@@ -1010,6 +1174,10 @@ impl Walker<'_> {
                 .problem(Rule::Unreadable, "nests too deeply to read", None);
             return;
         }
+        // Kept out of `node`, which the walk recurses through.
+        if self.reads_again(node) {
+            return;
+        }
         self.split.branches += usize::from(background);
         self.node(node, stage, level);
         self.split.branches -= usize::from(background);
@@ -1023,12 +1191,7 @@ impl Walker<'_> {
             // `cmd < f`, `cmd > f`, `cmd <<EOF`.
             // The redirects of a command are for its input too: a
             // here-document it reads its code from.
-            "redirected_statement" => {
-                let outer = self.redirected.take();
-                self.redirected = self.redirects(node);
-                self.redirected(node, stage, level);
-                self.redirected = outer;
-            }
+            "redirected_statement" => self.statement(node, stage, level),
             // `GLOBIGNORE=x` on a line of its own, or after `export`: the
             // shell has it from here on.
             "variable_assignment" => {
@@ -1073,8 +1236,14 @@ impl Walker<'_> {
                         self.startup_words(&[self.arg(child)], written);
                     }
                 }
+                let first = self.split.units.len();
                 self.declaration(node, stage);
+                let own = first..self.split.units.len();
                 self.children(node, stage, level);
+                // What its substitutions run is handed to it, as to a
+                // command: `export $(cat .env)` sets what `cat` prints.
+                self.split
+                    .nest(own.clone(), own.end..self.split.units.len());
             }
             // `(( GLOBIGNORE=1 ))`
             "binary_expression" => {
@@ -1156,6 +1325,8 @@ impl Walker<'_> {
                 if let Some(function) = &function {
                     let here = function.here.clone();
                     self.function_children(node, stage, level, &here);
+                } else if node.kind() == "for_statement" {
+                    self.loop_children(node, stage, level);
                 } else {
                     self.children(node, stage, level);
                 }
@@ -1177,6 +1348,7 @@ impl Walker<'_> {
                 self.pipeline_in(node, pipeline, 0, level);
             }
             "file_redirect" => {
+                self.lost_unread(node);
                 self.redirect(node);
                 self.children(node, None, level);
             }
@@ -1218,6 +1390,38 @@ impl Walker<'_> {
         }
     }
 
+    /// A redirected statement, with its redirects and the words they took
+    /// at hand for its body (kept out of `node`, which the walk recurses
+    /// through).
+    fn statement(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let outer = self.redirected.take();
+        let outer_lost = self.lost.take();
+        self.redirected = self.redirects(node);
+        self.lost = self.lost_words(node);
+        self.redirected(node, stage, level);
+        self.redirected = outer;
+        self.lost = outer_lost;
+    }
+
+    /// Words after the file of `redirect` that are no command's arguments
+    /// (see [`Lost`]): the shell refuses the line (`{ ls; } > out rm -rf
+    /// ~`), or reads it in a way the grammar does not show, so they cannot
+    /// be read.
+    fn lost_unread(&mut self, redirect: Node<'_>) {
+        if !lost_in(redirect).is_empty()
+            && !self
+                .lost
+                .as_ref()
+                .is_some_and(|lost| lost.redirects.contains(&redirect.id()))
+        {
+            self.split.problem(
+                Rule::Unreadable,
+                "has words after a redirect that cannot be read",
+                Some(unit::text(&redirect, self.source)),
+            );
+        }
+    }
+
     /// Whether `node` is an `if` that surely runs its one body: its condition
     /// is the command `true` or `:` alone, no `elif` or `else` follows, no
     /// function of that name is defined to stand in for it, and no alias,
@@ -1250,6 +1454,7 @@ impl Walker<'_> {
         let mut cursor = node.walk();
         let list = self.split.list_start();
         let mut at = 0;
+        let mut exit = None;
         let last = self
             .tail_of
             .contains(&node.id())
@@ -1271,8 +1476,28 @@ impl Walker<'_> {
                 _ => stage,
             };
             // The right side of `||` only runs when the left failed: a `cd`
-            // on the left may not have moved the line.
+            // on the left may not have moved the line. When that side ends
+            // the shell (`cd s || exit`), the rest of the line runs only
+            // where the left side took it.
             if child.kind() == "||" {
+                // A redirect the grammar holds on the whole list is on its
+                // last command (`cd s || exit 2> e`).
+                // A left side that may succeed when its `cd` failed (`! cd
+                // s || exit`, or a `cd` the line made a function of) does
+                // not say the `cd` ran.
+                if stage.is_none()
+                    && staged.is_none()
+                    && child
+                        .next_named_sibling()
+                        .is_some_and(|right| self.exits(right))
+                    && !redirected_last(node)
+                    && !child.prev_named_sibling().is_none_or(negates)
+                    && !["cd", "chdir", "pushd", "popd"]
+                        .iter()
+                        .any(|name| self.split.defines_function(name))
+                {
+                    exit = Some(self.split.exits_after());
+                }
                 self.split.list_or(&list);
             }
             if !child.is_named() {
@@ -1295,6 +1520,9 @@ impl Walker<'_> {
                 let link = self.split.link_start();
                 self.walk(child, stage, level + 1);
                 self.split.link_end(&list, link);
+                if let Some(exit) = exit.take() {
+                    self.split.exited(exit);
+                }
             } else {
                 self.split.list_head(heads_list(child));
                 self.walk(child, stage, level + 1);
@@ -1303,6 +1531,48 @@ impl Walker<'_> {
             at += 1;
         }
         self.split.list_end(list);
+    }
+
+    /// Whether `node`, the right side of an `||`, ends the shell: the
+    /// builtin `exit`, alone or last in a `{ …; }` group. Not `return`, which
+    /// bash goes on past outside a function; not an `exit` with a redirect,
+    /// before or after its name, which does not run when the redirect fails;
+    /// not one with more than one argument, which zsh goes on past; not one
+    /// in a subshell, a pipeline or the background, which ends only that
+    /// process; and not after a function of that name, an alias, `enable` or
+    /// `disable` may have changed what the name stands for.
+    fn exits(&self, node: Node<'_>) -> bool {
+        let mut node = node;
+        while node.kind() == "compound_statement" {
+            // `{ …; exit & }` ends only the background process.
+            let Some(last) = last_child(node)
+                .filter(|last| last.next_sibling().is_none_or(|next| next.kind() != "&"))
+            else {
+                return false;
+            };
+            node = last;
+        }
+        let mut cursor = node.walk();
+        let mut arguments = node.children_by_field_name("argument", &mut cursor);
+        let one = arguments
+            .next()
+            .is_none_or(|argument| !many_words(unit::text(&argument, self.source)))
+            && arguments.next().is_none();
+        let mut cursor = node.walk();
+        let redirected = node.named_children(&mut cursor).any(|child| {
+            matches!(
+                child.kind(),
+                "file_redirect" | "heredoc_redirect" | "herestring_redirect"
+            )
+        });
+        node.kind() == "command"
+            && node
+                .child_by_field_name("name")
+                .is_some_and(|name| unit::text(&name, self.source) == "exit")
+            && one
+            && !redirected
+            && !self.split.defines_function("exit")
+            && !self.split.renames_builtins()
     }
 
     /// Note a function definition before its body is read: its name, where
@@ -1314,7 +1584,6 @@ impl Walker<'_> {
             .filter(|_| node.kind() == "function_definition")?;
         let name = unit::text(&name, self.source);
         self.split.define_function(name);
-        self.fork_bomb(node, name);
         let opens = node
             .child_by_field_name("redirect")
             .is_some_and(|redirect| self.opens_by_folder(redirect));
@@ -1328,6 +1597,31 @@ impl Walker<'_> {
         if let Some(start) = start {
             self.split.defined(*start);
         }
+    }
+
+    /// Whether `last`, the last argument of `command`, is the number written
+    /// right against the redirect after the command (`0` in `exec 0<.env`):
+    /// its descriptor, which the grammar reads apart.
+    fn descriptor_of_redirect(&self, command: Node<'_>, last: Node<'_>) -> bool {
+        if last.kind() != "number" || last.end_byte() != command.end_byte() {
+            return false;
+        }
+        let Some(statement) = command
+            .parent()
+            .filter(|parent| parent.kind() == "redirected_statement")
+        else {
+            return false;
+        };
+        let mut cursor = statement.walk();
+        let found = statement
+            .children_by_field_name("redirect", &mut cursor)
+            .next()
+            .is_some_and(|redirect| {
+                redirect.kind() == "file_redirect"
+                    && redirect.start_byte() == last.end_byte()
+                    && redirect.child_by_field_name("descriptor").is_none()
+            });
+        found
     }
 
     /// Whether `redirect` opens a file that a relative name picks by the
@@ -1383,54 +1677,6 @@ impl Walker<'_> {
                     self.walk_in(*child, stage, level + 1, background);
                 }
             }
-        }
-    }
-
-    /// A function that starts itself in the background, or as one side of a
-    /// pipeline, starts copies of itself without end: `:(){ :|:& };:`.
-    fn fork_bomb(&mut self, function: Node<'_>, name: &str) {
-        let Some(body) = function.child_by_field_name("body") else {
-            return;
-        };
-        // A function defined inside is judged when the walk reaches it, so
-        // its commands are not read again here: each node is read once. Each
-        // level of the walk says whether what it holds runs apart, so the
-        // scan never climbs back up: it is linear in the nodes.
-        let mut cursor = body.walk();
-        let mut stack = vec![Level::of(body, false, &mut cursor)];
-        let mut bomb = false;
-        while let Some(level) = stack.last_mut() {
-            let Some(&inner) = level.children.get(level.at) else {
-                stack.pop();
-                continue;
-            };
-            let apart = level.apart
-                || level.staged
-                || level
-                    .children
-                    .get(level.at + 1)
-                    .is_some_and(|next| next.kind() == "&");
-            level.at += 1;
-            if inner.kind() == "function_definition" {
-                continue;
-            }
-            if apart
-                && inner.kind() == "command"
-                && inner
-                    .child_by_field_name("name")
-                    .is_some_and(|called| self.arg(called).known() == Some(name))
-            {
-                bomb = true;
-                break;
-            }
-            stack.push(Level::of(inner, apart, &mut cursor));
-        }
-        if bomb {
-            self.split.problem(
-                Rule::StopSystem,
-                "starts copies of itself without end",
-                Some(name),
-            );
         }
     }
 
@@ -1509,6 +1755,35 @@ impl Walker<'_> {
         self.split.bind(name, words, start);
     }
 
+    /// The children of a `for`, as [`Self::children`] walks them; the loop's
+    /// variable is then set from what runs in its words and from the
+    /// variables they name, as `k=$(cat f)` is (`for k in $(cat f)`).
+    fn loop_children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let first = self.split.units.len();
+        let mut cursor = node.walk();
+        let values: Vec<Node<'_>> = node.children_by_field_name("value", &mut cursor).collect();
+        let last = values.last().map(Node::id);
+        let mut end = first;
+        let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in all.iter().enumerate() {
+            if child.is_named() {
+                let background = all.get(at + 1).is_some_and(|next| next.kind() == "&");
+                self.walk_in(*child, stage, level + 1, background);
+            }
+            if Some(child.id()) == last {
+                end = self.split.units.len();
+            }
+        }
+        if let Some(variable) = node.child_by_field_name("variable") {
+            let text: Vec<&str> = values
+                .iter()
+                .map(|value| unit::text(value, self.source))
+                .collect();
+            let name = unit::text(&variable, self.source);
+            self.split.assign(name, first..end, &text.join(" "));
+        }
+    }
+
     fn children(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
         let all: Vec<Node<'_>> = node.children(&mut cursor).collect();
@@ -1529,16 +1804,35 @@ impl Walker<'_> {
         if self.holds_ignore_assignment(node) {
             self.split.hide();
         }
-        let program = self.arg(name);
+        // `./* -rf /`: the shell expands an unquoted wildcard in the
+        // program's name, and the first name it matches is the program.
+        let program = if names_by_pattern(name, self.source) {
+            Arg::Unknown(unit::text(&name, self.source).to_string())
+        } else {
+            self.arg(name)
+        };
         let mut cursor = node.walk();
-        let nodes: Vec<Node<'_>> = node
+        let mut nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
             .collect();
+        // The grammar reads the `0` of `cmd 0< f` as an argument and the `<`
+        // as a redirect of its own: the `0` is the redirect's descriptor.
+        if nodes
+            .last()
+            .is_some_and(|last| self.descriptor_of_redirect(node, *last))
+        {
+            nodes.pop();
+        }
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
-        let qualified = nodes.iter().any(|arg| self.qualified(*arg));
+        let mut qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());
         let mut nodes = nodes.into_iter().peekable();
         while let Some(arg) = nodes.next() {
+            // `exec {fd}>out`: a `{NAME}` stuck to a redirect is where bash
+            // puts the descriptor it opens, not an argument.
+            if self.names_descriptor(arg) {
+                continue;
+            }
             // `$"text"` is a locale-translated string: its `$` comes apart
             // from the string, and the word is only known when it runs.
             let translated = !arg.is_named()
@@ -1546,6 +1840,16 @@ impl Walker<'_> {
                 && nodes
                     .peek()
                     .is_some_and(|next| next.start_byte() == arg.end_byte());
+            // `coproc { {rm,-rf,~}; }`: the grammar reads `{ {` as one word
+            // and the rest of the brace list its last `{` opens as the next
+            // one. The shell reads a `{` for the first and the list for the
+            // rest.
+            let opening = arg.kind() == "word"
+                && launch::opens_group(unit::text(&arg, self.source))
+                && nodes.peek().is_some_and(|next| {
+                    next.start_byte() == arg.end_byte()
+                        && crate::path::brace_list(&format!("{{{}", unit::text(next, self.source)))
+                });
             if let (true, Some(string)) = (translated, nodes.peek().copied()) {
                 nodes.next();
                 let word = self
@@ -1553,9 +1857,28 @@ impl Walker<'_> {
                     .get(arg.start_byte()..string.end_byte())
                     .unwrap_or_default();
                 args.push(Arg::Unknown(word.to_string()));
+            } else if let (true, Some(next)) = (opening, nodes.peek().copied()) {
+                nodes.next();
+                let braces = unit::text(&arg, self.source).matches('{').count();
+                args.extend((1..braces).map(|_| Arg::Known("{".to_string())));
+                args.push(match self.arg(next) {
+                    Arg::Known(text) => Arg::Known(format!("{{{text}")),
+                    _ => Arg::Unknown(
+                        self.source
+                            .get(arg.end_byte().saturating_sub(1)..next.end_byte())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                });
             } else {
                 args.push(self.arg(arg));
             }
+        }
+        // `rm 2>/dev/null -rf ~`: the words the grammar took for more files
+        // of a redirect after the command are its arguments.
+        if let Some(lost) = self.lost.as_ref().filter(|lost| lost.command == node.id()) {
+            args.extend(lost.words.iter().cloned());
+            qualified |= lost.qualified;
         }
         // The grammar leaves a `-` that is the last word before a
         // here-document out of the tree (`cat a - <<EOF` has the argument
@@ -1648,19 +1971,13 @@ impl Walker<'_> {
         {
             self.split.hide_functions();
         }
-        if program.known() == Some("coproc") && words_lost_after_redirect(node) {
-            self.split.problem(
-                Rule::Unreadable,
-                "starts a command after a redirect that cannot be read",
-                Some(unit::text(&node, self.source)),
-            );
-        }
         let outer = self.split.scope_hidden(prefixed);
         // `NODE_OPTIONS=… node -e …`: node reads the value as its options.
         // The same for `PYTHONPATH=… python3 -c …` and `ZIPOPT=… zip`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
         let zip = self.split.zip_options.len();
+        let terraform = self.split.tf_cli_args.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -1682,6 +1999,7 @@ impl Walker<'_> {
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
         self.split.zip_options.truncate(zip);
+        self.split.tf_cli_args.truncate(terraform);
         self.split.unscope_hidden(outer);
     }
 
@@ -1735,6 +2053,72 @@ impl Walker<'_> {
             body: body.id(),
             inputs,
             from,
+        })
+    }
+
+    /// Whether `word`, an argument, is a `{NAME}` (one word to the
+    /// grammar, or a concatenation) stuck to the redirect operator after it (`exec {fd}>out`, `exec {fd}>&-`): bash opens a
+    /// descriptor and puts its number in `NAME`.
+    fn names_descriptor(&self, word: Node<'_>) -> bool {
+        let text = unit::text(&word, self.source);
+        text.strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+            .is_some_and(|name| {
+                name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            && self
+                .source
+                .get(word.end_byte()..)
+                .is_some_and(|rest| rest.starts_with(['<', '>']))
+    }
+
+    /// The words the grammar took for more files of the redirects of
+    /// `statement` (see [`Lost`]), with the command they are arguments of.
+    /// `None` when there are none, or when the statement's body is a group,
+    /// a loop, a branch or a subshell, which takes no arguments: the
+    /// redirects are then unreadable (see the `file_redirect` arm of
+    /// [`Self::node`]).
+    fn lost_words(&self, statement: Node<'_>) -> Option<Lost> {
+        let mut redirects = Vec::new();
+        let mut nodes = Vec::new();
+        let mut cursor = statement.walk();
+        for redirect in statement.children_by_field_name("redirect", &mut cursor) {
+            // The redirects the grammar holds inside a here-document's
+            // (`cat <<EOF > out -n`) are the command's too.
+            let mut inner = redirect.walk();
+            let held: Vec<Node<'_>> = if redirect.kind() == "heredoc_redirect" {
+                redirect
+                    .children_by_field_name("redirect", &mut inner)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for redirect in std::iter::once(redirect).chain(held) {
+                let lost = lost_in(redirect);
+                if !lost.is_empty() {
+                    redirects.push(redirect.id());
+                    nodes.extend(lost);
+                }
+            }
+        }
+        if redirects.is_empty() {
+            return None;
+        }
+        nodes.sort_by_key(Node::start_byte);
+        let qualified = nodes.iter().any(|word| self.qualified(*word));
+        let words = nodes.iter().map(|word| self.arg(*word)).collect();
+        let body = statement.child_by_field_name("body")?;
+        let command = if body.kind() == "command" {
+            body
+        } else {
+            last_simple(body)?
+        };
+        Some(Lost {
+            command: command.id(),
+            redirects,
+            words,
+            qualified,
         })
     }
 
@@ -1827,10 +2211,44 @@ impl Walker<'_> {
 
     /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
     /// `export NODE_OPTIONS` of a value the line set another way: what node
-    /// gets then is not read.
+    /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too, and so
+    /// is `export TF_CLI_ARGS` (also `declare -x`) of a name the line gave
+    /// no value it reads: `read`, `mapfile` or `printf -v` may have set it,
+    /// so what terraform gets is only known when it runs.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        // The grammar reads a bare name as a variable, not a word.
+        if let Some(name) = Some(word.known().unwrap_or(source))
+            .filter(|name| !name.contains('=') && unit::tf_cli_args(name))
+        {
+            let noted = self
+                .split
+                .tf_cli_args
+                .iter()
+                .any(|(noted, _)| noted == name);
+            if !noted {
+                self.split
+                    .tf_cli_args
+                    .push((name.to_string(), Arg::Unknown(source.to_string())));
+            }
+            return;
+        }
+        if let Some((name, _)) = source
+            .split_once('=')
+            .filter(|(name, _)| unit::tf_cli_args(name))
+        {
+            let value = match word.known() {
+                Some(text) => Arg::Known(
+                    text.split_once('=')
+                        .map_or("", |(_, value)| value)
+                        .to_string(),
+                ),
+                None => Arg::Unknown(source.to_string()),
+            };
+            self.split.tf_cli_args.push((name.to_string(), value));
+            return;
+        }
         match word.known() {
             Some(text) => {
                 if let Some(value) = text.strip_prefix("NODE_OPTIONS=") {
@@ -1886,23 +2304,29 @@ impl Walker<'_> {
         }
     }
 
-    /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH` or
-    /// `ZIPOPT`, when it is one of those variables'.
+    /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
+    /// `ZIPOPT`, `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of
+    /// those variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        if !matches!(name, "NODE_OPTIONS" | "PYTHONPATH" | "ZIPOPT") {
+        let terraform = unit::tf_cli_args(name);
+        if !matches!(name, "NODE_OPTIONS" | "PYTHONPATH" | "ZIPOPT") && !terraform {
             return;
         }
         let value = assignment
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
-        match name {
-            "PYTHONPATH" => self.split.python_path.push(value),
-            "ZIPOPT" => self.split.zip_options.push(value),
-            _ => self.split.node_options.push(value),
+        if terraform {
+            self.split.tf_cli_args.push((name.to_string(), value));
+        } else if name == "PYTHONPATH" {
+            self.split.python_path.push(value);
+        } else if name == "ZIPOPT" {
+            self.split.zip_options.push(value);
+        } else {
+            self.split.node_options.push(value);
         }
     }
 
@@ -2120,6 +2544,7 @@ impl Walker<'_> {
         level: usize,
         from: Option<OpensFrom>,
     ) {
+        self.lost_unread(node);
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
         self.heredoc_backticks(node);
@@ -2434,7 +2859,10 @@ impl Walker<'_> {
                     .children(&mut cursor)
                     .find(|child| !child.is_named())
                     .is_some_and(|operator| unit::text(&operator, self.source) == "<<-");
-                Some(heredoc_fed(raw, strips, quoted))
+                // Whether an expansion in the body runs a command, as the
+                // grammar reads it: a quoted delimiter expands nothing.
+                let runs = !quoted && lost.iter().copied().chain(body.copied()).any(runs_command);
+                Some(heredoc_fed(raw, strips, quoted, runs))
             }
             _ => None,
         }
@@ -2499,6 +2927,7 @@ impl Walker<'_> {
                 let mut value = String::new();
                 let mut template = String::new();
                 let mut partial = false;
+                let mut runs = false;
                 let mut cursor = node.walk();
                 for part in node.children(&mut cursor) {
                     // The grammar leaves a `$$` out of the named parts when
@@ -2521,8 +2950,11 @@ impl Walker<'_> {
                             value.push_str(&text);
                             template.push_str(&text);
                         }
-                        Arg::Template { text, .. } => {
+                        Arg::Template {
+                            text, runs: hole, ..
+                        } => {
                             partial = true;
+                            runs |= hole;
                             template.push_str(&text);
                         }
                         Arg::Unknown(_) | Arg::Input | Arg::Null
@@ -2532,6 +2964,7 @@ impl Walker<'_> {
                             ) =>
                         {
                             partial = true;
+                            runs |= runs_command(part);
                             template.push_str(OPAQUE);
                         }
                         Arg::Unknown(_) | Arg::Input | Arg::Null => {
@@ -2542,7 +2975,8 @@ impl Walker<'_> {
                 if partial {
                     Arg::Template {
                         text: template,
-                        source: source.to_string(),
+                        source: source.into(),
+                        runs,
                     }
                 } else {
                     Arg::Known(value)
@@ -2570,6 +3004,7 @@ impl Walker<'_> {
         let mut value = String::new();
         let mut template = String::new();
         let mut partial = false;
+        let mut runs = false;
         let mut at = start;
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -2590,11 +3025,13 @@ impl Walker<'_> {
                     }
                     Arg::Unknown(_) | Arg::Template { .. } | Arg::Input | Arg::Null => {
                         partial = true;
+                        runs |= runs_command(child);
                         template.push_str(OPAQUE);
                     }
                 },
                 _ => {
                     partial = true;
+                    runs |= runs_command(child);
                     template.push_str(OPAQUE);
                 }
             }
@@ -2606,7 +3043,8 @@ impl Walker<'_> {
         if partial {
             Arg::Template {
                 text: template,
-                source: source.to_string(),
+                source: source.into(),
+                runs,
             }
         } else {
             Arg::Known(value)
@@ -2645,7 +3083,7 @@ impl Walker<'_> {
 /// as an expansion). A body with both an escaped and an expanding `$` or
 /// backtick is known only when it runs: a template reads each `$` it holds as
 /// an expansion, and would take a character the client gets as it is for one.
-fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
+fn heredoc_fed(raw: &str, strips: bool, quoted: bool, runs: bool) -> Arg {
     let lines: String = if strips {
         raw.split_inclusive('\n')
             .map(|line| line.trim_start_matches('\t'))
@@ -2680,34 +3118,19 @@ fn heredoc_fed(raw: &str, strips: bool, quoted: bool) -> Arg {
         (true, true) => Arg::Unknown(raw.to_string()),
         (false, true) => Arg::Template {
             text,
-            source: raw.to_string(),
+            source: raw.into(),
+            runs,
         },
         (_, false) => Arg::Known(text),
     }
 }
 
-/// One node of the fork-bomb scan, with its children still to read.
-struct Level<'t> {
-    children: Vec<Node<'t>>,
-    /// The next child to read.
-    at: usize,
-    /// Whether the node, or one it is inside (up to the function's body), is
-    /// followed by `&` or is a stage of a pipeline: what it holds runs as a
-    /// process of its own.
-    apart: bool,
-    /// Whether the children are the stages of a pipeline of more than one.
-    staged: bool,
-}
-
-impl<'t> Level<'t> {
-    fn of(node: Node<'t>, apart: bool, cursor: &mut TreeCursor<'t>) -> Self {
-        Self {
-            children: node.children(cursor).collect(),
-            at: 0,
-            apart,
-            staged: node.kind() == "pipeline" && node.named_child_count() > 1,
-        }
-    }
+/// Whether `node` is a command substitution (`$(…)`, a backtick), or holds
+/// one (`${x:-$(…)}`, `$(( $(…) ))`): an expansion that runs a command.
+fn runs_command(node: Node<'_>) -> bool {
+    let mut runs = false;
+    unit::for_each_node(node, |inner| runs |= inner.kind() == "command_substitution");
+    runs
 }
 
 /// A bare word as the program receives it: a backslash keeps the next
