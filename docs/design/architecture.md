@@ -154,13 +154,14 @@ permissive licences.
 
 A test file is named by what it checks (`cd.rs`, `drop_data.rs`,
 `found_whole.rs`), never by the ticket, the issue or the review that asked
-for it. A fix adds its rows to the file of what it checks; a second file for
-one thing is only for a large one (`stop_processes.rs` and
-`stop_processes_windows.rs`). Rows that only differ by their data are one
-table, and a row is kept once: the same input under the same shell and paths
-with the same answer is a duplicate, the same input under another shell, other
-paths or for another answer is not. There are three kinds of test, and each
-has its place:
+for it. A fix adds a case line to the case file of what it checks
+(`tests/cases/<what-it-checks>.cases`, the format in
+[CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), not Rust; a second file
+for one thing is only for a large one (`stop_processes.rs` and
+`stop_processes_windows.rs`). A case is kept once, and the runner refuses a
+repeat: the same input under the same shell and paths with the same answer is
+a duplicate, the same input under another shell, other paths or for another
+answer is not. There are three kinds of test, and each has its place:
 
 - A test of a source file's own helpers is in that file's
   `#[cfg(test)] mod tests`.
@@ -213,9 +214,12 @@ A new guard is a new crate. Follow these steps.
    does, so a caller does not write the type parameter.
 4. **Keep the contract.** What cannot be read is risky. Read structure, not raw
    text. Reasons are a few plain words a permission prompt can show.
-5. **Test it.** Use core's `testing` module as a dev-dependency with the
-   `testing` feature: a table of safe inputs, and a table of risky inputs each
-   with the rule it must break. Add a test that walks `Rule::ALL` and checks
+5. **Test it.** Write its safe inputs, and its risky inputs each with the
+   rule it must break, in case files
+   ([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), read by a runner in
+   its `tests/common` on core's shared reading of the format; core's `testing`
+   module (a dev-dependency with the `testing` feature) checks what is made
+   in Rust. Add a test that walks `Rule::ALL` and checks
    the wire names are what you documented. Add a `robust.rs` that feeds it
    noise and checks that it never panics.
 6. **Add it to the front door.** In `crates/guards/Cargo.toml` add an optional

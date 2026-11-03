@@ -3262,8 +3262,9 @@ for POSIX lines and `tests/cases/windows.cases` for PowerShell and cmd, checked
 by `tests/posix.rs` and `tests/windows.rs`, and beside them a file for each
 part of the guard (`cd`, `posix_wildcards`, `stop_processes`, `drop_data`,
 `here_documents` and the rest), its plain cases in a case file of its name
-(the format is in [CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)) or, until
-they move there, in tables built on core's test kit. Each case is a line and
+(the format is in [CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), and
+what is made in a loop or checks a structure in the Rust file beside it,
+built on core's test kit. Each case is a line and
 the answer it must get: safe, or the rules it must find. A new rule comes with
 cases of both kinds, and a fix adds cases to the file of what it checks. The everyday lines that must stay safe go through
 the front door: `crates/guards/tests/everyday.rs` reads them from its
@@ -3296,11 +3297,12 @@ read of a key must not be `ReadsOnly`. The same check runs `explain` over each
 row: its findings and assessment must be `classify`'s, and its tree must show
 every finding. `tests/explain.rs` holds what `explain` shows.
 
-`tests/read_secret.rs` holds the rows of `read_secret`: the everyday lines that
-stay safe, a line for every program the rule knows, a redirect, a listing
-piped into a reader, every spelling of a key in a POSIX shell, on a Mac, in
-PowerShell and in cmd, and what the kernel serves; its rows go through the same
-`effect` check. `tests/send_secret.rs` holds the rows of `send_secret`. The
+`tests/cases/read_secret.cases` holds the cases of `read_secret`: the everyday
+lines that stay safe, a line for every program the rule knows, a redirect, a
+listing piped into a reader, every spelling of a key in a POSIX shell, on a
+Mac, in PowerShell and in cmd, and what the kernel serves; its cases go
+through the same `effect` check. `tests/cases/send_secret.cases` holds the
+cases of `send_secret`. The
 front door's
 `crates/guards/tests/agree.rs` holds the shell and the file guard to one
 answer (see [Reading a key](#reading-a-key)).

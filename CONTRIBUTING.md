@@ -68,7 +68,8 @@ cargo install cargo-deny       # for just deny and just advisories
 ## Case files
 
 A plain case, a line and the answer it must get, is written in a case file,
-not as a row of a Rust table. The cases of a behaviour are in
+not as a row of a Rust table, and a fix or a new rule adds its cases as lines
+there, not as Rust. The cases of a behaviour are in
 `crates/<crate>/tests/cases/<what-it-checks>.cases`, beside the test file of
 the same name, `tests/<what-it-checks>.rs`, which checks them all with one
 call: `common::cases::check("<what-it-checks>")`. What is not a plain case
@@ -217,9 +218,13 @@ and the runner, are in its `tests/common/cases.rs` (for the path model,
 - A new rule comes with cases of safe and risky lines
   ([GUIDELINES.md](GUIDELINES.md), [Case files](#case-files)), and a rule's
   wire name never changes once a caller uses it.
+- A fix adds a case line, not Rust: the line that was judged wrong and the
+  answer it must get, in the case file of what it checks
+  ([Case files](#case-files)). It writes Rust only for what a case file
+  cannot hold.
 - A test goes in the file named by what it checks, never in one named after
-  a ticket or a review; a fix adds cases (or rows) to that file
-  ([GUIDELINES.md](GUIDELINES.md#tests)). A test of a source file's own
+  a ticket or a review ([GUIDELINES.md](GUIDELINES.md#tests)). A test of a
+  source file's own
   helpers goes in that file's `#[cfg(test)] mod tests`; a test of what a crate
   does and of its edge cases in `crates/<crate>/tests/<what-it-checks>.rs`,
   with shared helpers in `tests/common`; a test of the front door from end to

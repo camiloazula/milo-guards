@@ -101,21 +101,29 @@ crates depend on each other and how that is enforced is in
 
 ### Tests
 
-- **A new rule comes with table tests of safe and risky lines**, each line
-  with the verdict and the reason it should get. [Shell](docs/design/shell.md)
+- **A new rule comes with cases of safe and risky lines**, each line with
+  the verdict and the reason it should get, in a case file.
+  [Shell](docs/design/shell.md)
 - **A test file is named by what it checks, never by a ticket, an issue or a
-  review**, and a fix adds its rows to that file. A source file's own helpers
-  are tested in its `#[cfg(test)] mod tests`; what a crate does and its edge
-  cases in `crates/<crate>/tests/<what-it-checks>.rs`, with shared helpers in
+  review**. A source file's own helpers are tested in its
+  `#[cfg(test)] mod tests`; what a crate does and its edge cases in
+  `crates/<crate>/tests/<what-it-checks>.rs`, with shared helpers in
   `tests/common`; the front door end to end in `crates/guards/tests`.
   [Architecture](docs/design/architecture.md#where-a-test-goes)
-- **A plain case goes in a case file**, one line to a case, not in a Rust
+- **A plain case goes in a case file**, one line to a case, never in a Rust
   table: `crates/<crate>/tests/cases/<what-it-checks>.cases`, checked by the
   test file of the same name, in every guard, the path model and the code
-  reader. Rust keeps generated cases,
-  timing, tests of the API and of a structure, and the secrets guard's
-  credential-shaped values, which it builds so that none sits in the
-  repository. [CONTRIBUTING.md](CONTRIBUTING.md#case-files)
+  reader. A line is the shell (and paths), the answer (`safe`, or the rules
+  it must find, with a reason or effect where it matters), ` | ` and the line
+  exactly as written, with a few fixed escapes; the runner refuses a
+  malformed line, an unknown field and a case that repeats another. Rust
+  keeps generated cases, timing, tests of the API and of a structure, and the
+  secrets guard's credential-shaped values, which it builds so that none sits
+  in the repository. [CONTRIBUTING.md](CONTRIBUTING.md#case-files)
+- **A fix adds a case line, not Rust**: the line that was judged wrong, with
+  the answer it must get, in the case file of what it checks. It writes Rust
+  only when the case cannot be one line of a case file.
+  [CONTRIBUTING.md](CONTRIBUTING.md#case-files)
 - **Do not re-enable the disabled clippy lints**, and gate a deliberate panic
   behind `#[allow(..., reason = "...")]`.
   [Architecture](docs/design/architecture.md)
