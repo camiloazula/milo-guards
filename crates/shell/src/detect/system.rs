@@ -258,6 +258,13 @@ impl Checker<'_> {
             "schtasks" if shell != Shell::Posix && has_switch(args, "create") => {
                 self.add(Rule::SystemSettings, "creates a scheduled task", None);
             }
+            // A task runs its action later, as `schtasks /create` does.
+            "register-scheduledtask" if shell == Shell::PowerShell => {
+                self.add(Rule::SystemSettings, "creates a scheduled task", None);
+            }
+            "set-scheduledtask" if shell == Shell::PowerShell => {
+                self.add(Rule::SystemSettings, "changes a scheduled task", None);
+            }
             "forfiles" if shell != Shell::Posix && has_switch(args, "c") => {
                 self.add(Rule::Unknown, "runs a command for each matched file", None);
             }

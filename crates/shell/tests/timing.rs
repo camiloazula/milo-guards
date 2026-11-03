@@ -502,3 +502,59 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
         }
     }
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
+    let _serial = serial();
+    // The variables of a line are read once for the whole of it; a chain of
+    // members or calls is walked down only when it starts at the session or
+    // the default values; a value is read for blocks only as deep as a limit;
+    // and the letters of numbers are made lower case in one pass.
+    let limit = if cfg!(debug_assertions) {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_millis(250)
+    };
+    let fit = |unit: &str, head: &str, tail: &str| {
+        let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
+        format!("{head}{}{tail}", unit.repeat(count))
+    };
+    let rows = [
+        fit("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
+        fit("$v = 1; ", "", "Invoke-Command $v"),
+        fit("$v = { 1 }; Invoke-Command $v; ", "", ""),
+        fit(".a()", "$x", ""),
+        fit(".a()", "$ExecutionContext", ""),
+        fit(".a", "$ExecutionContext", " = $b"),
+        fit("[0]", "$ExecutionContext.InvokeCommand", ".Value = $b"),
+        fit(".Add(1, $b)", "$PSDefaultParameterValues", ""),
+        fit("@{e=", "Get-ChildItem | Sort-Object ", ""),
+        fit("@{e=@{e=1}}, ", "Get-ChildItem | Sort-Object ", "x"),
+        fit(" -replace 'a', $b", "'a'", ""),
+        fit(" -replace 'a', 'b'", "'a'", ""),
+        fit("1MB ", "echo ", ""),
+        fit("1MB+", "", "1"),
+        fit("$o | Add-Member ScriptMethod X $b; ", "", ""),
+        fit(
+            "-Value $b ",
+            "Add-Member -MemberType ScriptMethod -Name X ",
+            "",
+        ),
+    ];
+    for line in &rows {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let paths = paths_for(Shell::PowerShell);
+        let started = std::time::Instant::now();
+        let _ = classify(line, Shell::PowerShell, &paths);
+        let took = started.elapsed();
+        assert!(took < limit, "{took:?} for {:?}", &line[..20]);
+    }
+}

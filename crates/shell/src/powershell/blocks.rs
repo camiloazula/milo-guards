@@ -46,7 +46,7 @@ struct Cmdlet {
 /// The cmdlets whose script blocks the guard reads. The ones that register
 /// an event action are read with the events (`Register-ObjectEvent` and the
 /// like), each for its own parameter order.
-const CMDLETS: [Cmdlet; 10] = [
+const CMDLETS: [Cmdlet; 13] = [
     Cmdlet {
         name: "invoke-command",
         blocks: &["scriptblock", "command"],
@@ -105,6 +105,7 @@ const CMDLETS: [Cmdlet; 10] = [
             "definitionname",
             "definitionpath",
             "type",
+            "literalpath",
         ],
         positional: Some(Positional::One),
         slots: &[&["scriptblock", "command"], &["initializationscript"]],
@@ -197,6 +198,129 @@ const CMDLETS: [Cmdlet; 10] = [
         slots: &[&["name"], &["expression", "command"]],
         lone: false,
     },
+    // The completer runs whenever the command's arguments are completed.
+    Cmdlet {
+        name: "register-argumentcompleter",
+        blocks: &["scriptblock"],
+        values: &["commandname", "parametername"],
+        positional: None,
+        slots: &[],
+        lone: true,
+    },
+    // The handler runs when its key is pressed; the key comes first by
+    // position, then the block.
+    Cmdlet {
+        name: "set-psreadlinekeyhandler",
+        blocks: &["scriptblock"],
+        values: &[
+            "chord",
+            "key",
+            "function",
+            "briefdescription",
+            "description",
+            "vimode",
+        ],
+        positional: Some(Positional::One),
+        slots: &[&["chord", "key"], &["scriptblock"]],
+        lone: true,
+    },
+    Cmdlet {
+        name: "use-transaction",
+        blocks: &["transactedscript"],
+        values: &[],
+        positional: Some(Positional::One),
+        slots: &[],
+        lone: true,
+    },
+];
+
+/// A cmdlet that takes a property it reads from each item, which may be a
+/// script block or a table that holds one (a calculated property,
+/// `@{n='x';e={ … }}`), and runs it on each item.
+struct Properties {
+    names: &'static [&'static str],
+    /// The parameters that take such a property; a prefix names one.
+    properties: &'static [&'static str],
+    /// The other parameters that take a value.
+    values: &'static [&'static str],
+    /// Whether the property is also given by position.
+    positional: bool,
+}
+
+/// The cmdlets that run a block given as a property.
+const PROPERTIES: [Properties; 8] = [
+    Properties {
+        names: &["sort-object", "sort"],
+        properties: &["property"],
+        values: &["top", "bottom", "culture", "inputobject"],
+        positional: true,
+    },
+    Properties {
+        names: &["group-object", "group"],
+        properties: &["property"],
+        values: &["culture", "inputobject"],
+        positional: true,
+    },
+    Properties {
+        names: &["select-object", "select"],
+        properties: &["property"],
+        values: &[
+            "first",
+            "last",
+            "skip",
+            "skiplast",
+            "index",
+            "skipindex",
+            "excludeproperty",
+            "expandproperty",
+            "inputobject",
+        ],
+        positional: true,
+    },
+    Properties {
+        names: &["format-table", "ft"],
+        properties: &["property", "groupby"],
+        values: &["view", "expand", "inputobject"],
+        positional: true,
+    },
+    Properties {
+        names: &["format-list", "fl"],
+        properties: &["property", "groupby"],
+        values: &["view", "expand", "inputobject"],
+        positional: true,
+    },
+    Properties {
+        names: &["format-wide", "fw"],
+        properties: &["property", "groupby"],
+        values: &["view", "expand", "column", "inputobject"],
+        positional: true,
+    },
+    Properties {
+        names: &["format-custom", "fc"],
+        properties: &["property", "groupby"],
+        values: &["view", "expand", "depth", "inputobject"],
+        positional: true,
+    },
+    Properties {
+        names: &["measure-object", "measure"],
+        properties: &["property"],
+        values: &["inputobject"],
+        positional: true,
+    },
+];
+
+/// The member types `Add-Member` and `Update-TypeData` add that run no
+/// script of their own; any other (`ScriptMethod`, `ScriptProperty`, a number
+/// or a value only known when it runs) may run its value as a block.
+const PLAIN_MEMBERS: [&str; 8] = [
+    "noteproperty",
+    "aliasproperty",
+    "codeproperty",
+    "codemethod",
+    "propertyset",
+    "memberset",
+    "property",
+    "method",
 ];
 
 /// The parameters every cmdlet here takes a value for, and which are never a
@@ -255,6 +379,10 @@ pub(super) struct Shape {
     /// Holds a `Get-Process` listing, which the rules for stopping processes
     /// judge (`Stop-Process -Id (Get-Process node).Id`).
     pub listing: bool,
+    /// Cannot be a script block only known when it runs: text, a number, a
+    /// word, a block written out, a table of them, or a variable the line
+    /// sets to one (see [`super::variables::Variables::inert`]).
+    pub plain: bool,
 }
 
 /// An argument and its shape.
@@ -330,6 +458,14 @@ pub(super) fn check(
     command: &str,
     depth: usize,
 ) -> bool {
+    if let Some(table) = PROPERTIES.iter().find(|table| table.names.contains(&key)) {
+        properties(split, table, args, shapes, command);
+        return false;
+    }
+    if matches!(key, "add-member" | "update-typedata") {
+        script_members(split, key, args, shapes, command);
+        return false;
+    }
     let Some(cmdlet) = CMDLETS.iter().find(|cmdlet| cmdlet.name == key) else {
         return false;
     };
@@ -340,6 +476,8 @@ pub(super) fn check(
         .map(|(arg, shape)| Item { arg, shape: *shape })
         .collect();
     let mut unread = false;
+    // A script file only known when it runs (`-FilePath $f`).
+    let mut file_unread = false;
     let mut named = false;
     let mut written_out = false;
     let mut bound = Vec::new();
@@ -383,6 +521,14 @@ pub(super) fn check(
             // the next place to the arguments that follow.
             bound.push(name.clone());
             if let Some(value) = iter.next() {
+                if matches!(
+                    key,
+                    "invoke-command" | "start-job" | "register-scheduledjob"
+                ) && names(&name, &["filepath", "literalpath"])
+                    && value.arg.known().is_none()
+                {
+                    file_unread = true;
+                }
                 if for_each && names(&name, &["membername"]) {
                     members.push(value.arg);
                 }
@@ -466,7 +612,180 @@ pub(super) fn check(
             Some(command),
         );
     }
+    if file_unread {
+        split.problem(
+            Rule::Unknown,
+            "runs a script only known when it runs",
+            Some(command),
+        );
+    }
     stops
+}
+
+/// A property given to `Sort-Object`, `Select-Object` and the like, by name
+/// or by position, is a name, or a block it runs on each item, written out or
+/// in a calculated property (`@{e={ … }}`). One that may be a block only
+/// known when it runs (`Sort-Object $b`, `@{e=$b}`, a splat) is unknown.
+fn properties(
+    split: &mut Split,
+    table: &Properties,
+    args: &[Arg],
+    shapes: &[Shape],
+    command: &str,
+) {
+    let mut unread = false;
+    let mut iter = args.iter().zip(shapes).peekable();
+    while let Some((arg, shape)) = iter.next() {
+        if shape.splat {
+            unread = true;
+            continue;
+        }
+        let Some(name) = parameter(arg) else {
+            unread |= table.positional && !shape.plain;
+            continue;
+        };
+        let colon = arg.known().is_some_and(|text| text.ends_with(':'));
+        let takes = names(&name, table.properties);
+        if takes
+            || colon
+            || ((names(&name, table.values) || names(&name, &SHARED_VALUES))
+                && iter
+                    .peek()
+                    .is_some_and(|(next, _)| parameter(next).is_none()))
+        {
+            if let Some((_, value)) = iter.next() {
+                unread |= takes && !value.plain;
+            }
+            while let Some((_, more)) = iter.next_if(|(_, next)| next.joined) {
+                unread |= takes && !more.plain;
+            }
+        }
+    }
+    if unread {
+        split.problem(
+            Rule::Unknown,
+            "runs a script block only known when it runs",
+            Some(command),
+        );
+    }
+}
+
+/// `Add-Member` and `Update-TypeData` add a member to objects, and a script
+/// member (`ScriptMethod`, `ScriptProperty`) runs its value as a block
+/// whenever it is used: a value that is not a block written out, a member
+/// type only known when it runs, a splat, and `Update-TypeData -TypeData`
+/// (objects that may hold script members) are unknown.
+fn script_members(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape], command: &str) {
+    let add = key == "add-member";
+    // Given by name: the member type (`None` when only known when it runs),
+    // and whether it was given at all.
+    let mut member_type: Option<Option<String>> = None;
+    let mut note = false;
+    let mut unread = false;
+    let mut values: Vec<&Shape> = Vec::new();
+    let mut bound: Vec<&str> = Vec::new();
+    let mut positional: Vec<(&Arg, &Shape)> = Vec::new();
+    let others: &[&str] = if add {
+        &["name", "typename", "inputobject"]
+    } else {
+        &[
+            "typename",
+            "membername",
+            "typeconverter",
+            "typeadapter",
+            "defaultdisplayproperty",
+            "defaultdisplaypropertyset",
+            "defaultkeypropertyset",
+            "serializationmethod",
+            "serializationdepth",
+            "targettypeforserialization",
+            "inheritpropertyserializationset",
+            "stringserializationsource",
+            "propertyserializationset",
+            "appendpath",
+            "prependpath",
+        ]
+    };
+    let mut iter = args.iter().zip(shapes).peekable();
+    while let Some((arg, shape)) = iter.next() {
+        if shape.splat {
+            unread = true;
+            continue;
+        }
+        let Some(name) = parameter(arg) else {
+            positional.push((arg, shape));
+            continue;
+        };
+        if names(&name, &["membertype"]) || name == "type" {
+            bound.push("membertype");
+            if let Some((value, _)) = iter.next() {
+                member_type = Some(value.known().map(str::to_ascii_lowercase));
+            }
+        } else if names(&name, &["value", "secondvalue"]) {
+            bound.push(if names(&name, &["value"]) {
+                "value"
+            } else {
+                "secondvalue"
+            });
+            if let Some((_, value)) = iter.next() {
+                values.push(value);
+            }
+        } else if add
+            && names(
+                &name,
+                &[
+                    "notepropertyname",
+                    "notepropertyvalue",
+                    "notepropertymembers",
+                ],
+            )
+        {
+            note = true;
+            iter.next();
+        } else if !add && names(&name, &["typedata"]) {
+            unread = true;
+            iter.next();
+        } else if names(&name, others) || names(&name, &SHARED_VALUES) {
+            if names(&name, &["name"]) {
+                bound.push("name");
+            }
+            if iter
+                .peek()
+                .is_some_and(|(next, _)| parameter(next).is_none())
+            {
+                iter.next();
+            }
+        } else {
+            continue;
+        }
+        while iter.next_if(|(_, next)| next.joined).is_some() {}
+    }
+    // `Add-Member` takes its type, name, value and second value by position,
+    // in that order, past the ones given by name.
+    if add && !note {
+        let slots = ["membertype", "name", "value", "secondvalue"]
+            .into_iter()
+            .filter(|slot| !bound.contains(slot));
+        for ((arg, shape), slot) in positional.iter().zip(slots) {
+            match slot {
+                "membertype" => member_type = Some(arg.known().map(str::to_ascii_lowercase)),
+                "value" | "secondvalue" => values.push(shape),
+                _ => {}
+            }
+        }
+    }
+    let script = match &member_type {
+        None => false,
+        Some(None) => true,
+        Some(Some(kind)) => !PLAIN_MEMBERS.contains(&kind.as_str()),
+    };
+    if unread || (script && values.iter().any(|value| !value.block)) {
+        split.problem(
+            Rule::Unknown,
+            "adds a script member only known when it runs",
+            Some(command),
+        );
+    }
 }
 
 /// A member name `ForEach-Object` is given (`% Invoke`, `-MemberName Delete`)
@@ -694,4 +1013,56 @@ pub(super) fn first_string<'tree>(children: &[Node<'tree>]) -> Option<Node<'tree
         }
         node = node.named_child(0)?;
     }
+}
+
+/// Whether a chain of members (`$ExecutionContext.InvokeCommand.$h`,
+/// `….psobject.Properties['CommandNotFoundAction'].Value`) reaches a member
+/// by a way the guard cannot name: a name only known when it runs, an item
+/// by index, the result of a call, or the object's own view of its members
+/// (`psobject`, `psbase`, `psadapted`, `psextended`). Such a member may be a
+/// hook, or a method that runs code.
+pub(super) fn obscure(node: Node<'_>, source: &str) -> bool {
+    let mut node = unwrap(node);
+    for _ in 0..unit::MAX_TREE_DEPTH {
+        match node.kind() {
+            "member_access" => {
+                let mut cursor = node.walk();
+                let member = node
+                    .named_children(&mut cursor)
+                    .filter(|child| child.kind() == "member_name")
+                    .last();
+                match member.and_then(|member| called(member, source)) {
+                    None => return true,
+                    Some(name)
+                        if matches!(
+                            name.as_str(),
+                            "psobject" | "psbase" | "psadapted" | "psextended"
+                        ) =>
+                    {
+                        return true;
+                    }
+                    Some(_) => {}
+                }
+            }
+            "element_access" | "invokation_expression" => return true,
+            "parenthesized_expression" => {}
+            _ => return false,
+        }
+        let Some(object) = node.named_child(0) else {
+            return false;
+        };
+        node = unwrap(object);
+    }
+    true
+}
+
+/// The member an assignment sets (`$x.y = …`, `$x[0] = …`), however the
+/// grammar wraps it; `None` when it sets a variable.
+pub(super) fn assigned_target(node: Node<'_>) -> Option<Node<'_>> {
+    let mut left = node.named_child(0)?;
+    if left.kind() == "left_assignment_expression" {
+        left = left.named_child(0)?;
+    }
+    let left = unwrap(left);
+    matches!(left.kind(), "member_access" | "element_access").then_some(left)
 }
