@@ -312,32 +312,65 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Wrappers in front of a program | 15 | `sudo env nice … rm` |
 | `find` inside `find -exec` | 16 | the walk, so the stack |
 | `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
-| Opening `(` with none closed | 400 | counted before parsing, blind to quoting; only `(` is counted, not `{` or `[`: cmd's grammar takes time that grows with the square of the depth |
-| `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
-| Here-documents started on one line (POSIX) | 256 | counted before parsing: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more); with no command before the `<<` the grammar is slow, see the noise below |
+| Brackets opened with none closed | 400 | counted before parsing, outside the literals below: `(` in every shell, `${` in a POSIX shell (where any other `{` may be a word) and `{`, `${` and `[` in PowerShell, each kind closed only by its own closer, all added up. Past the parse tree depth the line is unreadable whatever the grammar makes of it, and the grammars take long to find that out: cmd's time grows with the square of the depth, PowerShell's lexer reads on to the next `}` at every `${` (`${` repeated took 21 ms on one machine, stopped by the budget of what a lexer reads, and 3.4 s on a slower one), and the grammars recover from an error at each bracket (at the length limit, in POSIX `a${` 0.28 s, `${a` 0.26 s, `${` 0.17 s; in PowerShell `$a{` 0.9 s, `${a}{` 0.8 s, `$[` 0.1 s) |
+| `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing, outside a string: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
+| Here-documents started on one line (POSIX) | 256 | counted before parsing, outside the literals below: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more) |
+| Pipes, `|` and not `||`, in one POSIX pipeline | 400 | counted before parsing, outside the literals below, double quotes and comments: bash's grammar takes time that grows with the square of the stages of a pipeline that ends in an error (`a|` repeated to the length limit took 20 to 30 s), and a real pipeline of 401 commands is unreadable. A pipeline ends at `;`, `&`, `&&`, `||` and a line break that does not follow a `|`, so a script of 450 `grep x f | wc -l` reads; a list inside brackets or a compound command (`( … )`, `$( … )`, `{ … }`, `if … fi`, `while … done`, `case … esac`) ends one only back to where it opened, so the pipeline around it goes on (`a|if :;then :;fi|` repeated took 2.6 s); a `|` right after a separator, an error, goes on with the pipeline before it. A `|` in a double-quoted string is text (a table in a pull request's body) |
+| What the grammars' lexers read for a line | 4 MiB, and 32 times the text parsed | the lexer is handed the text 256 bytes at a time and asks again past each piece and whenever it goes back, so what it reads is counted to within a piece, without a clock; past the budget the parse is stopped and the line is `unreadable`, `takes too long to read`. The budget is the line's, shared by its nested scripts and inline code. A line people write is read once or twice over; a few real shapes a few hundred times over a short text (cmd's chain of 400 commands, its brackets 400 deep, a here-document after a long group), under a megabyte; the noise below reads gigabytes. No edge is measured for it, since what a lexer reads depends on the shape: `tests/timing.rs` times the noise it stops, and the limits tests check that the real shapes above still read |
+| The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. A spelling past either is folded as a `cd` folds it, each `..` after a name taken off with the name, so going down and back up (`cd crates/a && cargo build && cd ../..`, over and over) costs nothing; still past either, or not folded because a `cd` may have followed a link physically (`cd -P`, or a POSIX target with a name after a `..`, see [The paths a line reads](#the-paths-a-line-reads)), the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
+| Paths a `Copy-Item` or `Move-Item` is read for | 64 different spellings | each operand is read as the destination of the others (see [Protected paths](#protected-paths)), once for each spelling, so the work is each destination with each name; past 64 different ones the line is `unreadable`, `names too many paths to read` |
+
+The literals the counts skip are text the shell reads as nothing but text,
+so no command hides there: in a POSIX shell a single-quoted string (`'…'`,
+`$'…'`), and the body of a here-document whose delimiter is quoted
+(`<<'EOF'`, `<<"EOF"`, `<<\EOF`), or is a plain name (`<<EOF`) with no `$(`,
+backquote or backslash in the body; in cmd a string closed on its line
+(`"a & b"`, not `^"…"`). The walk that finds them keeps track of double
+quotes, escapes, comments and brackets: a command substitution (`$( … )`),
+in double quotes or not, is walked as code up to the `)` that closes it, so a
+quoted here-document in it is skipped too (`git commit -m "$(cat <<'EOF'
+… EOF )"`), and a `<<` in arithmetic (`(( … ))`, `$(( … ))`, `$[ … ]`) is a
+shift, which starts no here-document. Where it cannot be sure it stops
+skipping for the rest of the text, so it can only count more: a backquote
+inside double quotes (it holds quotes and backslashes of its own), a `case`
+inside brackets (a pattern closes with a `)` that opened nothing), a quote or
+a here-document that is not closed, a here-document delimiter with an
+expansion (`<<$x`), and a quote in a comment, which starts nothing. A POSIX
+double-quoted string is counted for `(` and here-documents, as before, and
+not for pipes. So `printf '%s\n' 'a<<b' …` with 300 quoted `a<<b`, `echo ':( :(
+…'` with 500 `:(`, and a C header written through `<<'EOF'` whose long macro
+has 300 lines of `std::cout << x << \` are safe; the same header through an
+unquoted `<<EOF` (whose body joins lines at each backslash) is counted, and
+turned away past 256 `<<` on one joined line.
 
 The grammars themselves take time that grows with the square of the line on
-some noise that none of the counts above covers. Measured in a release build
-at 65,000 bytes (the longest line), in POSIX: `)` repeated takes about 10 s, `)a`
-repeated (32,000 times, so not only a run of one character) about 9 s, `a|`
-repeated 19.7 s, `|` or `>` repeated 4 to 5 s, and `<` repeated 3 s; here-documents
-with no command before the `<<`, which the count above does not reach because
-each is closed or on a line of its own: `<<A\nA\n` repeated 3.6 s, `<<A;\n`
-4.0 s, `<<A\n` 4.9 s, and `<<A;` sixteen to a line (under the count) 5.4 s (`cat <<A\n` repeated
-takes 1 ms, so the cost is in the missing command); in PowerShell, `echo ` then
-`${` repeated 17 s, and `"${` repeated 3.5 s; in cmd, `@` repeated about 10 s.
-Another machine took twice as long (20 s for `)` and for cmd's `@`, 9.5 s for
-`|` and `>`, 6.7 s for `<`, 19 s for `)a`). A debug build is about three times
-slower (29 s for `)`). cmd's `&` and `|` are counted above. A real line
-never has them, and they come back risky, so the guard is slow there, never
-wrong.
+some noise. Measured in a release build at 65,000 bytes (the longest line),
+before the budget of what a lexer reads: in POSIX, `)` repeated took about 10
+s, `)a` 9 s, `|` or `>` 4 to 5 s, `<` 3 s, `()` 9 s, `f() ` 1.1 s, `(echo) `
+1.4 s, and here-documents with no command before the `<<` (`<<A\nA\n`,
+`<<A;\n`, `<<A\n`) 2 to 5 s; in PowerShell `echo ` then `${` 17 s and `"${`
+3.5 s; in cmd `@` 10 s, `()` 22 s, `(echo) ` 5 to 12 s, `cd x; echo y > NUL; `
+1 s, and `echo ` then `$((1<<2)); echo ` 3 to 11 s. Each of these goes back
+over the rest of the line at every token, so the budget stops it, and each
+now comes back `unreadable` in tens of milliseconds; `tests/timing.rs` times
+them. `a|` repeated (20 to 30 s) did not read much and is stopped by the
+count of pipes. Some code of the guard's own was slow on noise too, and is
+not now: PowerShell's walk asked each child for the next one, which walks
+the children again (`()` repeated took 24 s), and the POSIX walk read a long
+word back to its start at each `(` (`()` repeated took most of a second).
 
-The open-`(` count does not catch brackets that close. Balanced ones take
-time too, measured in a release build at 64 KiB on the same branch: in POSIX,
-`()` repeated 9.0 s and `f() ` repeated 1.1 s; in cmd, `(echo) ` repeated
-5.2 s, and `echo ` then `$((1<<2)); echo ` repeated 3.2 s. These are examples
-of what was measured, not every slow shape: a new measurement can find
-another, and the list is not a promise that anything else is fast.
+What is left is the grammars' work that does not read the text again, and no
+count reaches it: mostly the work of recovering from an error, which the
+grammars do again at every token of some noise. Measured on a busy machine,
+in a release build at the length limit: in PowerShell `()` 0.3 s, `(echo) `
+0.4 s, `<<A;\n` 0.15 s, `echo ` then `$((1<<2)); echo ` 0.2 s, `${a}`
+repeated 0.6 s, `${a} ` 0.5 s, `$a${a}` 0.4 s and `{` ten deep then closed,
+repeated, 0.3 s; in POSIX `${a` ten deep then closed, repeated, 0.2 s. A
+recovery reads no more text, and takes no more steps of the parser, than a
+plain line does, so the budget of what a lexer reads does not see it, nor
+would a count of steps; only a clock would, and the guard keeps none. These are examples of what was measured, not every
+slow shape: a new measurement can find another, and the list is not a
+promise that anything else is fast.
 
 ### Actions that run later
 
@@ -1987,7 +2020,9 @@ How the copy reads its operands: `Copy-Item` and `Move-Item` bind `-Path` at
 position 0 and `-Destination` at position 1, and a comma list of sources is
 flattened into the arguments, so with no `-Destination` each operand after the
 first is read as the destination in turn, the rest as sources, and a risky
-reading wins. The value of a parameter, a common one included (`-ErrorAction
+reading wins. Readings whose destinations are spelt the same have the same
+sources, so each spelling is read once, and past 64 different spellings the
+line is `unreadable` (see the limits under [Splitting](#splitting)). The value of a parameter, a common one included (`-ErrorAction
 Stop`, `-ea 0`, `-OutVariable o`), is never an operand. A source that comes
 only from a pipeline (`gci src | cpi -Destination conf\app`), is unknown, or
 is what `find -exec`, `-execdir` or `-ok` found (`{}`) lands as a name that
@@ -2517,8 +2552,9 @@ A line is never safe because the guard gave up on it. These come back risky:
   after the file of a redirect on a group, a loop or a subshell (`{ ls; } >
   out rm -rf ~`), which the grammar cuts up.
 - A line the grammar cannot parse.
-- Shells nested past a limit, a parse tree nested too deep, or a line longer
-  than the limit.
+- Shells nested past a limit, a parse tree nested too deep, a line longer
+  than the limit, or one the grammar would read over and over past its
+  budget (see the limits under [Splitting](#splitting)).
 
 `unknown` is for a program or a script. `unreadable` is for a line the guard
 could not read.

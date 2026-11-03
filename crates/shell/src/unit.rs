@@ -12,7 +12,7 @@ use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
 /// One argument as the program receives it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Arg {
     /// Its value is in the text: `target`, `~/x`, `"a b"`.
     Known(String),
@@ -829,6 +829,10 @@ pub(crate) struct Split {
     /// each script): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// The bytes of text the grammars have parsed for the line, and the
+    /// bytes their lexers were handed for it: see [`MAX_LEXED`].
+    parsed: usize,
+    lexed: usize,
     /// How many times the line has forked into two readings, each judged
     /// (see [`crate::launch::Launch::Either`]).
     forks: usize,
@@ -855,6 +859,11 @@ struct Pwd {
     /// Whether the line makes `PWD` the physical path, which resolves the
     /// links on the way: `cd -P`, `set -P`, `set -o physical`.
     physical: bool,
+    /// Whether a POSIX `cd` of the line went to a target with a name after a
+    /// `..` (`link/../etc`, `../x`): bash and zsh follow it physically when
+    /// the folded folder does not exist, so the `..` the line's folder holds
+    /// are not folded by spelling.
+    climbed: bool,
     /// The first `PS4` or `BASH_ENV` value the line wrote with `$PWD` in it,
     /// to judge against every `cd` of the line once it is all read.
     used: Option<String>,
@@ -1251,6 +1260,9 @@ impl Split {
         } else if let Some(target) = moved {
             self.moves += 1;
             self.moved += 1;
+            if unit.shell == Shell::Posix && target.known().is_some_and(names_after_dots) {
+                self.pwd.climbed = true;
+            }
             let dir = self.moved_to(self.dir.as_ref(), &target, unit.shell);
             // Every other folder the line may be in moves too; a `cd` that
             // may not have run also leaves the line where it was.
@@ -1443,6 +1455,22 @@ impl Split {
             // place is only known when it runs.
             Arg::Known(text) if self.psdrive && crate::path::drive_of(&text).is_some() => {
                 Arg::Unknown(text)
+            }
+            // A folder spelt longer, or deeper, than any a system opens:
+            // every path read from it would cost its length. A `cd` folds
+            // the `..` it applies, so such a spelling is folded (going down
+            // and back up is no longer than staying), unless a `cd` may
+            // have followed a link physically; still too long, the folder is
+            // not followed.
+            Arg::Known(text) if too_long(&text) => {
+                let folded = (shell != Shell::Posix || !(self.pwd.physical || self.pwd.climbed))
+                    .then(|| fold_dots(&text, shell))
+                    .flatten()
+                    .filter(|folded| !too_long(folded));
+                match folded {
+                    Some(folded) => Arg::Known(folded),
+                    None => Arg::Unknown(target.text().to_string()),
+                }
             }
             dir => dir,
         }
@@ -2818,6 +2846,72 @@ fn steps_up(target: &Arg, shell: Shell) -> bool {
     })
 }
 
+/// Whether a name follows a `..` in the POSIX path `text`.
+fn names_after_dots(text: &str) -> bool {
+    text.split('/')
+        .skip_while(|part| *part != "..")
+        .any(|part| !matches!(part, "" | "." | ".."))
+}
+
+/// Whether the folder `text`, the `cd`s joined, is spelt longer than
+/// [`MAX_DIR_LEN`] or deeper than [`MAX_DIR_PARTS`].
+fn too_long(text: &str) -> bool {
+    text.len() > MAX_DIR_LEN || text.matches(['/', '\\']).count() > MAX_DIR_PARTS
+}
+
+/// `text`, a folder the `cd`s joined, with each `..` after a name folded
+/// into it (`a/b/../..` is `.`), as a `cd` folds it, and each empty part
+/// past the first dropped. The part after a root (`/`, `C:`, `~`) is not
+/// folded, so the folder stays one below it. `None` for a text the walk does
+/// not fold: one that starts with two separators (`\\server\share`, `//x`)
+/// or names a provider path (`a::b`).
+fn fold_dots(text: &str, shell: Shell) -> Option<String> {
+    let separator = |c: char| c == '/' || (shell != Shell::Posix && c == '\\');
+    let mut chars = text.chars();
+    if text.contains("::")
+        || (chars.next().is_some_and(separator) && chars.next().is_some_and(separator))
+    {
+        return None;
+    }
+    // Each part, with the separator written before it.
+    let mut parts: Vec<(Option<char>, &str)> = Vec::new();
+    let (mut start, mut before) = (0, None);
+    for (at, c) in text.char_indices().filter(|(_, c)| separator(*c)) {
+        parts.push((before, &text[start..at]));
+        (start, before) = (at + c.len_utf8(), Some(c));
+    }
+    parts.push((before, &text[start..]));
+    let root = parts
+        .first()
+        .is_some_and(|(_, part)| part.is_empty() || part.contains([':', '~']));
+    let folds = |part: &str| {
+        !matches!(part, "" | "." | "..") && !part.contains(['~', ':', '$', '*', '?', '[', '{', '`'])
+    };
+    let mut kept: Vec<(Option<char>, &str)> = Vec::with_capacity(parts.len());
+    for (at, (before, part)) in parts.into_iter().enumerate() {
+        if at > 0 && part.is_empty() {
+            continue;
+        }
+        let after_root = root && kept.len() == 1;
+        if part == ".." && !after_root && kept.last().is_some_and(|(_, last)| folds(last)) {
+            kept.pop();
+        } else {
+            kept.push((before, part));
+        }
+    }
+    let mut folded = String::with_capacity(text.len());
+    for (at, (before, part)) in kept.into_iter().enumerate() {
+        if at > 0 {
+            folded.push(before.unwrap_or('/'));
+        }
+        folded.push_str(part);
+    }
+    if folded.is_empty() {
+        folded.push('.');
+    }
+    Some(folded)
+}
+
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.
 pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
     // What a package runner starts is a program (`npx cd src`), not the
@@ -3011,24 +3105,28 @@ pub(crate) const MAX_LEN: usize = 64 * 1024;
 /// few times the longest line, which a plain line never nears.
 const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 
-/// The most here-documents a POSIX script may start on one line before it is
-/// not read: the bash grammar holds each until the line ends and takes time
-/// that grows with the square of how many are waiting (a second, at the
-/// length limit), and no real script starts this many on a line. Here-
-/// documents on lines of their own that follow a command (`cat <<A` and a
-/// line break, repeated) cost no more than the text does, and here-strings
-/// (`<<<`) are not here-documents. Here-documents with no command before the
-/// `<<` are slow without being counted (`<<A` and a line break, repeated to
-/// the length limit, takes seconds in a release build) and are listed with
-/// the other slow noise in `docs/design/shell.md`.
-const MAX_HEREDOCS: usize = 256;
+/// How much the grammars' lexers may read for a line before the parse is
+/// stopped and the text is unreadable: [`MAX_LEXED_BASE`] bytes, and
+/// [`MAX_LEXED`] times the text parsed for the line (its scripts and inline
+/// code too), in the bytes the grammar is handed: [`LEXED_PIECE`] at a time,
+/// so what its lexer reads, again or for the first time, is counted to
+/// within a piece. That needs no clock, so the answer is the same on every
+/// machine.
+///
+/// A line a person or an agent writes is read once or twice over, and a few
+/// shapes a few hundred times over a short text (cmd's chain of 400
+/// commands, its brackets 400 deep, a here-document after a long group):
+/// under a megabyte. The noise that stalls a grammar goes back over the rest
+/// of the line at every token, and reads gigabytes at the length limit (a
+/// lexer reads a megabyte in a few milliseconds).
+const MAX_LEXED: usize = 32;
 
-/// The most `&`, and the most `|`, a cmd line may hold before it is not
-/// read: cmd's grammar nests a chain one level for each, so a line past
-/// the depth the walk goes is unreadable whatever else it holds, and its
-/// grammar takes time that grows with the square of the chain to find that
-/// out (seconds, at the length limit).
-const MAX_CMD_SEPARATORS: usize = MAX_TREE_DEPTH;
+/// See [`MAX_LEXED`].
+const MAX_LEXED_BASE: usize = 4 * 1024 * 1024;
+
+/// The most bytes the grammar is handed at once (more only to end where a
+/// character does): see [`MAX_LEXED`].
+const LEXED_PIECE: usize = 256;
 
 /// The most folders a redirect is placed from for the calls it covers to
 /// functions that move the line: each is a place the redirect is judged
@@ -3041,6 +3139,21 @@ const MAX_CALL_STARTS: usize = 32;
 /// judged from, and past this many the line may be anywhere, so such a run is
 /// unknown.
 const MAX_ELSEWHERE: usize = 8;
+
+/// The longest spelling of the folder the line is in that is followed (the
+/// `cd`s joined, `a/b/../c`), in bytes and in separators. Every path the rules
+/// read after a `cd` is read from that folder, so its length is paid once for
+/// each, and a line that went one folder down at every `cd` would pay for all
+/// its `cd`s again at every path. A spelling past either is folded as a `cd`
+/// folds it, each `..` after a name taken off with the name (`a/../a/..` is
+/// `.`), so going down and back up costs nothing; past either still, or when
+/// a `cd` may have followed a link physically (`cd -P`, `cd link/../etc`), the
+/// folder is only known when it runs. 1,024 bytes is the longest path macOS
+/// opens (`PATH_MAX`), and no real folder is 128 deep.
+const MAX_DIR_LEN: usize = 1024;
+
+/// See [`MAX_DIR_LEN`].
+const MAX_DIR_PARTS: usize = 128;
 
 /// The most functions that move the line or whose definition is redirected
 /// that a line may define (a name defined again counts again, kept or
@@ -3057,72 +3170,6 @@ const MAX_MOVING_FUNCTIONS: usize = 256;
 /// can make stays bounded however often it defines one name; the ones before
 /// are kept together, as one range that holds them all.
 const MAX_BODIES: usize = 4;
-
-/// Whether the grammar of `shell` would take too long over `text`, and why,
-/// found by counting bytes without parsing:
-///
-/// - more `(` opened (`{` and `[` are not counted), with none closed in
-///   between, than a parse tree is walked deep (the line is unreadable whatever the grammar makes of it,
-///   and cmd's takes seconds to find that out at the length limit);
-/// - in cmd, more `&`, or more `|`, than [`MAX_CMD_SEPARATORS`] (`&&` and
-///   `||` count once);
-/// - in a POSIX shell, more here-documents started on one line (a `\` before
-///   the line break continues it) than [`MAX_HEREDOCS`].
-///
-/// The count ignores quoting, so it can only err towards unreadable.
-fn too_tangled(text: &str, shell: Shell) -> Option<&'static str> {
-    let bytes = text.as_bytes();
-    let (mut open, mut heredocs) = (0_usize, 0_usize);
-    let (mut ands, mut pipes) = (0_usize, 0_usize);
-    // How many `<` in a row end just before `at`, and whether the `&` or `|`
-    // just before it was the second of a pair.
-    let (mut run, mut paired) = (0_usize, false);
-    // A line break after the text settles a run of `<` at its end.
-    for (at, byte) in bytes
-        .iter()
-        .copied()
-        .chain(std::iter::once(b'\n'))
-        .enumerate()
-    {
-        if byte == b'<' {
-            run += 1;
-            continue;
-        }
-        // `<<EOF` starts a here-document, `<<<` a here-string; more than
-        // three in a row is noise, which counts.
-        if shell == Shell::Posix && (run == 2 || run >= 4) {
-            heredocs += 1;
-            if heredocs > MAX_HEREDOCS {
-                return Some("starts too many here-documents to read");
-            }
-        }
-        run = 0;
-        match byte {
-            b'(' => {
-                open += 1;
-                if open > MAX_TREE_DEPTH {
-                    return Some("nests too deeply to read");
-                }
-            }
-            b')' => open = open.saturating_sub(1),
-            b'\n' if at == 0 || bytes[at - 1] != b'\\' => heredocs = 0,
-            b'&' | b'|' if shell == Shell::Cmd => {
-                // The second of two the same is part of `&&` or `||`.
-                let second = !paired && at >= 1 && bytes[at - 1] == byte;
-                paired = second;
-                if !second {
-                    let count = if byte == b'&' { &mut ands } else { &mut pipes };
-                    *count += 1;
-                    if *count > MAX_CMD_SEPARATORS {
-                        return Some("chains too many commands to read");
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
 
 /// Split `command`, started on the drive `drive` with home on `home_drive`;
 /// `effect` says it is also read for [`crate::effect`].
@@ -3194,7 +3241,7 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     if !within_limits(split, text, depth) {
         return;
     }
-    if let Some(why) = too_tangled(text, shell) {
+    if let Some(why) = crate::tangled::too_tangled(text, shell) {
         split.problem(Rule::Unreadable, why, None);
         return;
     }
@@ -3230,18 +3277,52 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
 }
 
 /// Parse `text` with `language`; `None` (and a finding) when the parser
-/// gives nothing back, and a finding beside the tree when part of it is an
-/// error.
+/// gives nothing back or reads past its budget (see [`MAX_LEXED`]), and a
+/// finding beside the tree when part of it is an error.
 pub(crate) fn parse(
     split: &mut Split,
     text: &str,
     language: &tree_sitter::Language,
 ) -> Option<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
-    let tree = parser
-        .set_language(language)
-        .ok()
-        .and_then(|()| parser.parse(text, None));
+    if parser.set_language(language).is_err() {
+        split.problem(Rule::Unreadable, "cannot be read", None);
+        return None;
+    }
+    let bytes = text.as_bytes();
+    // The budget is the line's, shared by every script and piece of code in
+    // it, so a line that starts many cannot spend it many times over.
+    split.parsed = split.parsed.saturating_add(bytes.len());
+    let budget = MAX_LEXED
+        .saturating_mul(split.parsed)
+        .saturating_add(MAX_LEXED_BASE)
+        .saturating_sub(split.lexed);
+    // The bytes handed to the grammar so far.
+    let lexed = std::cell::Cell::new(0_usize);
+    let mut read = |at: usize, _: tree_sitter::Point| -> &[u8] {
+        // A piece at a time, ending where a character does: the lexer asks
+        // again past each piece, and whenever it goes back before one.
+        let end = (at.saturating_add(LEXED_PIECE)..=bytes.len())
+            .find(|end| text.is_char_boundary(*end))
+            .unwrap_or(bytes.len());
+        let piece = bytes.get(at..end).unwrap_or_default();
+        lexed.set(lexed.get().saturating_add(piece.len().max(1)));
+        piece
+    };
+    let mut progress = |_: &tree_sitter::ParseState| {
+        if lexed.get() > budget {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    };
+    let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
+    let tree = parser.parse_with_options(&mut read, None, Some(options));
+    split.lexed = split.lexed.saturating_add(lexed.get());
+    if lexed.get() > budget {
+        split.problem(Rule::Unreadable, "takes too long to read", None);
+        return None;
+    }
     if let Some(tree) = tree {
         if tree.root_node().has_error() {
             split.problem(Rule::Unreadable, "cannot be read in full", None);

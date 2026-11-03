@@ -49,6 +49,7 @@ mod path;
 mod posix;
 mod powershell;
 mod startup;
+mod tangled;
 mod unit;
 mod values;
 
