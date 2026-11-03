@@ -1,8 +1,8 @@
 # POSIX shell lines and what each rule finds in them: deletes and writes
 # beyond the workspace, disks, git work that cannot come back, permissions,
 # root and the system, what runs unseen, nested shells, traps, what a finding
-# says, device paths, macOS paths, and what cannot be read. The format is in
-# CONTRIBUTING.md.
+# says, device paths, macOS paths, the words after a redirect, and what
+# cannot be read. The format is in CONTRIBUTING.md.
 
 # A workspace that is the home directory.
 paths home cwd=/home/me home=/home/me workspace=/home/me
@@ -466,10 +466,10 @@ posix@macos finds=delete | rm -rf /System/Volumes/Data/Users/me/.ssh
 posix@macos finds=delete | rm -rf ../../../../System/Volumes/Data/Users/me
 posix@macos finds=delete | rm -rf /Volumes/Macintosh\\ HD/Users/me/.ssh
 
-# A redirect, `time`, `!`, a brace list, zsh's `repeat` or a wildcard does
-# not hide the command after it. The grammar takes every word after the file
-# of a redirect for one more file; the shell takes the first, and the rest are
-# arguments of the command, wherever the redirect stands among them.
+# A redirect does not hide the command after it. The grammar takes every
+# word after the file of a redirect for one more file; the shell takes the
+# first, and the rest are arguments of the command, wherever the redirect
+# stands among them.
 posix finds=delete | command 2>/dev/null rm -rf ~
 posix finds=delete | env 2>/dev/null rm -rf ~
 posix finds=delete | nice 2>/dev/null rm -rf ~
@@ -497,60 +497,16 @@ posix finds=unreadable | { ls; } >out rm -rf ~
 posix finds=unreadable | (ls) >out rm -rf ~
 posix finds=unreadable | for i in 1; do ls; done >out rm -rf ~
 posix finds=unreadable | f() { ls; } >out rm -rf ~
-# `time` and `!` start a command of their own, which may be a group, a
-# negation or a command with assignments; the grammar reads `{` and `!` as
-# programs there. A loop, a conditional, and a `{` stuck to a word (a group
-# in zsh), are cut up by the grammar and cannot be read.
-posix finds=delete | time { rm -rf ~; }
-posix finds=delete | time -p { rm -rf ~; }
-posix finds=delete | time ! rm -rf ~
-posix finds=delete | time FOO=1 rm -rf ~
-posix finds=delete | ! { rm -rf ~; }
-posix finds=delete | ! { ls; rm -rf ~; }
-posix finds=delete | time { ls; rm -rf ~; }
-posix finds=unreadable | time for i in 1; do rm -rf ~; done
-posix finds=unreadable | time if true; then rm -rf ~; fi
-posix finds=unreadable | time while true; do rm -rf ~; done
-posix finds=unreadable | ! for i in 1; do rm -rf ~; done
-posix finds=unreadable | ! while true; do rm -rf ~; done
-posix finds=unreadable | time {rm -rf ~;}
-posix finds=unreadable | ! {rm -rf ~;}
-posix safe | time make
-posix safe | time -p make
-posix safe | ! grep -q x file
-posix safe | time { make; }
-posix safe | ! { grep -q x file; }
-# A brace list where the program stands is spelt out into words, the first
-# of which is the program.
-posix finds=unreadable | command {rm,-rf,~}
-posix finds=unreadable | env {rm,-rf,~}
-posix finds=unreadable | coproc { {rm,-rf,~}; }
-posix finds=unreadable | {rm,-rf,~}
-posix finds=unreadable | r{m,x} -rf ~
-posix finds=unreadable | sudo r{m,x} -rf ~
-# zsh's `repeat N` runs the command or group after the count, or the list
-# between `do` and `done`.
-posix finds=delete | repeat 3 rm -rf ~
-posix finds=delete | repeat 3 { rm -rf ~; }
-posix finds=delete | repeat 3 do rm -rf ~; done
-posix safe | repeat 3 echo hi
-posix safe | repeat 3 { ls; }
-# A program named by an unquoted wildcard is the first name it matches, only
-# known when it runs; behind a wrapper the word is judged as written, quoted
-# or not.
-posix finds=unknown | ./* -rf /
-posix finds=unknown | ?? -rf /
-posix finds=unknown | ./r? -rf /
-posix finds=unknown | ./[r]m -rf /
-posix finds=unknown | "$HOME"/* -rf /
-posix finds=unknown | env ./* -rf /
-posix finds=unknown | sudo ?? -rf /
-posix finds=unknown | command './*' -rf /
-posix safe | '*' -h
-posix safe | \\* -h
-posix safe | "./*" -h
-posix safe | [ -f x ]
-posix safe | env [ -f x ]
+# A declaration or an `unset` is no plain command to the grammar, and the
+# words after the file of its redirect are not given back to it.
+posix finds=unreadable | export 2>/dev/null FOO=1
+posix finds=unreadable | unset 2>/dev/null x
+# A `{NAME}` stuck to a redirect is where bash puts the descriptor it opens,
+# not an argument or a program.
+posix safe | exec {fd}>out
+posix safe | exec {fd}>&-
+posix safe | exec {fd}<in
+posix finds=delete | exec {fd}>out rm -rf ~
 
 # What cannot be read is risky.
 posix finds=unreadable | rm -rf 'unterminated

@@ -1620,6 +1620,11 @@ impl Walker<'_> {
         let mut args = Vec::with_capacity(nodes.len());
         let mut nodes = nodes.into_iter().peekable();
         while let Some(arg) = nodes.next() {
+            // `exec {fd}>out`: a `{NAME}` stuck to a redirect is where bash
+            // puts the descriptor it opens, not an argument.
+            if self.names_descriptor(arg) {
+                continue;
+            }
             // `$"text"` is a locale-translated string: its `$` comes apart
             // from the string, and the word is only known when it runs.
             let translated = !arg.is_named()
@@ -1837,6 +1842,23 @@ impl Walker<'_> {
             inputs,
             from,
         })
+    }
+
+    /// Whether `word`, an argument, is a `{NAME}` (one word to the
+    /// grammar, or a concatenation) stuck to the redirect operator after it (`exec {fd}>out`, `exec {fd}>&-`): bash opens a
+    /// descriptor and puts its number in `NAME`.
+    fn names_descriptor(&self, word: Node<'_>) -> bool {
+        let text = unit::text(&word, self.source);
+        text.strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+            .is_some_and(|name| {
+                name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            && self
+                .source
+                .get(word.end_byte()..)
+                .is_some_and(|rest| rest.starts_with(['<', '>']))
     }
 
     /// The words the grammar took for more files of the redirects of

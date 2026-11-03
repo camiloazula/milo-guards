@@ -79,7 +79,13 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   negation they are the last command's, as the redirect is. A group, a loop,
   a subshell or a function takes no arguments, and the shell refuses such a
   line (`{ ls; } > out rm -rf ~`): it is `unreadable`, `has words after a
-  redirect that cannot be read`.
+  redirect that cannot be read`. So is a declaration (`export`, `declare`,
+  `local`, `readonly`, `typeset`) or an `unset` with words after the file of
+  its redirect (`export 2>/dev/null FOO=1`): the shell runs it, but the
+  grammar reads it as no plain command, and the guard does not give it the
+  words back. A `{NAME}` stuck to a redirect operator (`exec {fd}>out`,
+  `exec {fd}>&-`) is where bash puts the descriptor it opens, not an
+  argument.
 
 ### Wrappers and scripts
 
@@ -205,18 +211,26 @@ a conditional or a function after any of them (`time for …`, `! while …`), a
 a `{` stuck to a word (`time {rm -rf ~;}`, `! {rm -rf ~;}`), are cut up by the
 grammar as after `coproc`, and are `Unreadable`: a program named `while`, `if`,
 `for` or any of the words that open such a command, and one that starts with a
-`{`, is read so wherever it stands.
+`{`, is read so wherever it stands. So is a program named `do`, `then`, `elif`
+or `else`, the body of a loop or a conditional the grammar cut off from the
+words that open it: zsh skips the separators after `repeat`'s count, so
+`repeat 3; do rm -rf ~; done`, on one line or on three, runs the `rm` three
+times, and the grammar reads `repeat 3` and a program named `do`.
 
 The program after a wrapper is the word the shell makes of it. A brace list
-(`command {rm,-rf,~}`, `r{m,x} -rf ~`) is spelt out into words, the first of
+(`command {rm,-rf,~}`, `r{m,x} -rf ~`) or a sequence expression (`r{m..m} -rf
+~`, `{1..3}`, `{a..c}`, `{1..9..2}`) is spelt out into words, the first of
 which is the program: `Unreadable`, `runs a program a brace list names, which
 cannot be read`, behind a wrapper or not (`{rm,-rf,~}` alone is a line the
-grammar cannot parse). A word with an unquoted wildcard (`./* -rf /`, `?? -rf
-/`, `[r]m`) names the first file it matches, so the program is only known when
-it runs: `Unknown`, as for `$CMD`. A quoted one (`'*' -h`) is the name as
-written; behind a wrapper (`env ./* -rf /`) the guard no longer knows whether
-the word was quoted, and reads a wildcard as one either way. A `[` alone is a
-name, as the program `[` is.
+grammar cannot parse). The check reads the word as the shell has it after
+quotes are taken out, so a quoted list (`'{rm,-rf,~}'`), which the shell does
+not spell out, is `Unreadable` too. A word with an unquoted wildcard (`./* -rf
+/`, `?? -rf /`, `[r]m`) names the first file it matches, so the program is
+only known when it runs: `Unknown`, as for `$CMD`. A quoted one (`'*' -h`) is
+the name as written; behind a wrapper (`env ./* -rf /`) the guard no longer
+knows whether the word was quoted, and reads a wildcard as one either way,
+also behind zsh's `noglob` (`noglob ./*`), which keeps the shell from
+expanding it. A `[` alone is a name, as the program `[` is.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script

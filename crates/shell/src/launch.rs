@@ -153,7 +153,7 @@ fn add_launched(
             if let Some(program) = unit.program.known() {
                 // `command {rm,-rf,~}`: the shell spells the list out into
                 // words, and the first is the program.
-                if crate::path::brace_list(program) {
+                if crate::path::brace_expansion(program) {
                     split.problem(
                         Rule::Unreadable,
                         "runs a program a brace list names, which cannot be read",
@@ -656,6 +656,13 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         key if unit.shell == Shell::Posix && COMPOUND.contains(&key) => {
             Launch::Opaque("starts a compound command that cannot be read")
         }
+        // The body of a loop or a conditional the grammar cut off from the
+        // words that open it: zsh's `repeat 3; do cmd; done` (zsh skips the
+        // separators after the count), or a loop after `time` or `!`. A
+        // line the shell runs never has a program of these names.
+        key if unit.shell == Shell::Posix && BODY.contains(&key) => {
+            Launch::Opaque("runs the body of a loop or a conditional that cannot be read")
+        }
         // A `{` stuck to a word (`! {rm -rf ~;}`): zsh runs a group, the
         // grammar reads a program of that name.
         key if unit.shell == Shell::Posix && key.starts_with('{') => {
@@ -837,6 +844,9 @@ fn stuck_group(text: &str) -> bool {
 
 /// The words that open a compound command with a body of its own.
 const COMPOUND: [&str; 7] = ["while", "until", "if", "for", "select", "case", "function"];
+
+/// The words that open the body of a loop or a branch of a conditional.
+const BODY: [&str; 4] = ["do", "then", "elif", "else"];
 
 /// Whether `text` is the `{` of a group, or several of them in one word: the
 /// grammar reads `{ {` as one.
