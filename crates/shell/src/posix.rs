@@ -1999,7 +1999,13 @@ impl Walker<'_> {
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         unit.stdin = stdin;
         unit.startup = startup;
-        self.add_readings(unit, readings);
+        // Kept out of `add_readings` when there are none: its frame is not
+        // added to the deepest walk of a nested line.
+        if readings.is_empty() {
+            launch::add(self.split, unit, self.depth);
+        } else {
+            self.add_readings(unit, readings);
+        }
         self.split.environment -= environed;
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
@@ -2015,10 +2021,6 @@ impl Walker<'_> {
     /// second would start where the first went: its words are only known
     /// when it runs.
     fn add_readings(&mut self, mut unit: Unit, readings: Vec<(usize, Vec<Arg>)>) {
-        if readings.is_empty() {
-            launch::add(self.split, unit, self.depth);
-            return;
-        }
         let moves = std::iter::once(&unit.program)
             .chain(&unit.args)
             .filter_map(Arg::known)

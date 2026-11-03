@@ -3388,15 +3388,7 @@ pub(crate) fn split(
             && split.write_in_body.is_empty()
             && split.read_in_body.is_empty())
     {
-        let psdrive = split.psdrive;
-        split = Split {
-            psdrive,
-            extended_bodies: true,
-            drive,
-            home_drive,
-            ..Split::default()
-        };
-        split.kept.on = effect;
+        start_again_extended(&mut split);
         script(&mut split, command, shell, 0);
     }
     split.hide_bodies();
@@ -3404,6 +3396,25 @@ pub(crate) fn split(
     split.settle_functions();
     split.settle_pwd();
     split
+}
+
+/// Clear `split` for a second read of the line that reads the words of its
+/// function bodies and loops with `extendedglob` on, keeping what it was
+/// started with. A function of its own, so that the `Split` it builds is
+/// not held on the stack while [`split`] reads the line: the walk of a
+/// deeply nested line needs all of it.
+#[inline(never)]
+fn start_again_extended(split: &mut Split) {
+    let fresh = Split {
+        psdrive: split.psdrive,
+        extended_bodies: true,
+        drive: split.drive,
+        home_drive: split.home_drive,
+        ..Split::default()
+    };
+    let effect = split.kept.on;
+    *split = fresh;
+    split.kept.on = effect;
 }
 
 /// Whether `text`, a script or inline code `depth` levels deep, may be read:
