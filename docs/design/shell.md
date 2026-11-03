@@ -2843,16 +2843,24 @@ a path.
   own names (`Environment::FOO`, `Variable::x`) or after `cd Env:`; their
   place reads as `the session's environment` and `a session variable`.
   `Alias:` and `Function:` change what a later command runs, so they stay
-  risky. A word on `Env:` or `Variable:` may change a variable that names a
-  place, whatever the cmdlet (`Set-Item Env:TEMP ~`, `Remove-Item Env:TEMP`,
-  `Rename-Item Env:FOO TEMP`, `cd Env:; Set-Item TEMP ~`), so on a line with
-  one `$env:TEMP`, `$HOME` and the others no longer name their place; and an
-  item a program reads as its arguments or its command (`TF_CLI_ARGS`,
-  `npm_config_call`, `NODE_OPTIONS`, `ZIPOPT`) set by a pattern
-  (`Env:npm_config_*`), a name only known when it runs, the new name of a
-  rename, copy or move of an `Env:` item, or a plain name after a word that
-  names the `Env:` drive itself (`cd Env:`) is only known when it runs, as a
-  value set to it by name is. `Temp:` (a drive of the file system since
+  risky. On those drives the place after `Set-Item`'s item is its value, as
+  `-Value` is, so `Set-Item Env:JAVA_HOME 'C:\Program Files\Java'` writes
+  no folder. An item or content cmdlet that changes an item there may change
+  a variable that names a place (`Set-Item Env:TEMP ~`, `Remove-Item
+  Env:TEMP`, `Rename-Item Env:FOO TEMP`, `cd Env:; Set-Item TEMP ~`, `Get-ChildItem
+  Env:TE* | Remove-Item`), so on that line `$env:TEMP`, `$HOME` and the
+  others it may change no longer name their place, here and in a cmd the
+  line starts (`%TEMP%`, `%CD%`), as after `$env:TEMP = …`. Each word is read
+  as the walk reads it (`` Env`:TEMP ``, a here-string, an alias the line
+  sets): a name written out changes that variable, a wildcard each it
+  matches, and a word only known when it runs any; a read (`Test-Path
+  Env:CI`, `Get-ChildItem Env:`) changes none. An item a program reads as
+  its arguments or its command (`TF_CLI_ARGS`, `npm_config_call`,
+  `NODE_OPTIONS`, `ZIPOPT`) set by a pattern (`Env:npm_config_*`), a name
+  only known when it runs, the new name of a rename, copy or move of an
+  `Env:` item, or a plain name after a location cmdlet goes to the `Env:`
+  drive (`cd Env:`) is only known when it runs, as a value set to it by name
+  is, and noted once however many units set one. `Temp:` (a drive of the file system since
   PowerShell 7.4) is the user's temporary folder, as `$env:TEMP` is: `Remove-Item
   Temp:\scratch -Recurse` and `cd Temp:; Remove-Item NUL` are safe, and
   `Remove-Item Temp:\ -Recurse` deletes a temporary folder. A drive the line

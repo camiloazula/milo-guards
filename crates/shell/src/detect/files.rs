@@ -376,7 +376,25 @@ impl Checker<'_> {
                 } else {
                     "changes"
                 };
-                for target in self.list_items(unit, &Params::read(args)) {
+                let params = Params::read(args);
+                // `Set-Item Env:JAVA_HOME 'C:\Program Files\Java'`: on the
+                // session's own drives the place after the item is its value,
+                // as `-Value` is, and no path.
+                let items = item_paths(unit, &params, &["path", "literalpath"]);
+                let session = key == "set-item"
+                    && !items.is_empty()
+                    && items.iter().all(|item| {
+                        matches!(
+                            self.place(shell, unit.scope(), item, Access::Item),
+                            Place::Session(_)
+                        )
+                    });
+                let targets = if session {
+                    self.listed_paths(unit, items)
+                } else {
+                    self.list_items(unit, &params)
+                };
+                for target in targets {
                     self.write_as(shell, unit.scope(), &target, verb, Access::Item);
                 }
             }

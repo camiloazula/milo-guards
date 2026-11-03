@@ -867,7 +867,18 @@ pub(crate) struct NodeOptions {
 }
 
 impl NodeOptions {
+    /// Note one more value. One only known when it runs right after
+    /// another is not noted again: what reads them asks whether any is,
+    /// and noting each would grow the list for every unit that sets one.
     pub(crate) fn push(&mut self, value: Arg) {
+        if value.known().is_none()
+            && self
+                .values
+                .last()
+                .is_some_and(|last| last.known().is_none())
+        {
+            return;
+        }
         let first = self
             .preloads
             .last()
@@ -1610,8 +1621,22 @@ impl Split {
 
     /// Note the value `value` the line gives the variable `name`, one of
     /// [`read_as_arguments`]'s. The list is copied only when a unit shares
-    /// it, so a unit is handed the list without copying its values.
+    /// it, so a unit is handed the list without copying its values. A value
+    /// only known when it runs is noted once for a name until a known one
+    /// follows it: the readers count every value, so another adds nothing,
+    /// and noting each would copy the list for every unit that sets one
+    /// (`Set-Item Env:$n x` repeated).
     pub(crate) fn note_argument_variable(&mut self, name: String, value: Arg) {
+        if value.known().is_none()
+            && self
+                .argument_variables
+                .iter()
+                .rev()
+                .find(|(noted, _)| *noted == name)
+                .is_some_and(|(_, last)| last.known().is_none())
+        {
+            return;
+        }
         Rc::make_mut(&mut self.argument_variables).push((name, value));
     }
 

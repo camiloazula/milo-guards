@@ -858,7 +858,9 @@ fn distinct_assignments() -> String {
 fn drives_devices_and_session_places_are_read_in_linear_time() {
     let _serial = serial();
     // Each drive the line makes is looked up by name, a word on a session
-    // drive is read once, and a path past `/dev/fd` is walked once.
+    // drive is read once, a variable a program reads as its arguments is
+    // noted once for a value only known when it runs, and a path past
+    // `/dev/fd` is walked once.
     let windows = common::windows();
     let distinct = |each: fn(usize) -> String| {
         move |size: usize| {
@@ -885,6 +887,26 @@ fn drives_devices_and_session_places_are_read_in_linear_time() {
         &windows,
         distinct(|at| format!("Set-Item Env:x{at} 1; Remove-Item -Recurse \"$env:TEMP\\x\"; ")),
     );
+    for (what, head, part) in [
+        ("Set-Item Env:$n x …", "", "Set-Item Env:$n x; "),
+        ("Set-Item Env:* x …", "", "Set-Item Env:* x; "),
+        ("cd Env:; Set-Item $n x …", "cd Env:; ", "Set-Item $n x; "),
+        ("Rename-Item Env:* a …", "", "Rename-Item Env:* a; "),
+        (
+            "Rename-Item Env:* npm_config_call …",
+            "",
+            "Rename-Item Env:* npm_config_call; ",
+        ),
+        (
+            "Set-Item Env`:TEMP x …",
+            "",
+            "Set-Item Env`:TEMP x; Remove-Item \"$env:TEMP\\x\"; ",
+        ),
+    ] {
+        assert_linear(what, Shell::PowerShell, &windows, |size| {
+            format!("{head}{}", filled(part, size, head.len()))
+        });
+    }
     assert_linear(
         "Remove-Item Temp:\\x …",
         Shell::PowerShell,

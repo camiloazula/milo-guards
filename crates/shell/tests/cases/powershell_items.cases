@@ -606,8 +606,12 @@ powershell finds=overwrite | Set-Item Alias:ls Remove-Item
 powershell finds=delete | Remove-Item Alias:ls
 powershell finds=delete | Remove-Item Function:prompt
 powershell finds=delete | Remove-Item Cert:\\CurrentUser\\My\\x
-# A value only known when it runs is judged as a path, as for any `Set-Item`.
-powershell finds=overwrite | Set-Item Env:FOO $x
+# On those drives the place after the item is its value, as `-Value` is,
+# and no path.
+powershell safe | Set-Item Env:FOO $x
+powershell safe | Set-Item Env:JAVA_HOME 'C:\\Program Files\\Java'
+powershell safe | Set-Item Env:Path "$env:Path;C:\\tools"
+powershell finds=overwrite | Set-Item -Path Env:FOO, ~\\x -Value 1
 # A change to the environment or a variable that names a place makes it a
 # place only known when it runs, as `$env:TEMP = …` does.
 powershell finds=delete | Set-Item -Path Env:TEMP -Value C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\.ssh"
@@ -618,6 +622,32 @@ powershell finds=delete | Set-Item Env:TE* C:\\Users\\me; Remove-Item -Recurse "
 powershell finds=delete | Remove-Item -Recurse "$env:TEMP\\x"; Set-Item -Path Env:TEMP -Value C:\\Users\\me
 powershell finds=delete | Set-Item -Path Variable:HOME -Value C:\\Windows -Force; Remove-Item -Recurse "$HOME\\dev\\repo\\build"
 powershell safe | Remove-Item -Recurse "$env:TEMP\\x"
+# The item is read as PowerShell reads it: escaped, quoted or in a
+# here-string, by an alias the line sets, or handed on by a listing.
+powershell finds=delete | Set-Item Env`:TEMP -Value ~; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Content Env`:TEMP C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Content "Env`:TEMP" C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Content @'\nEnv:TEMP\n'@ C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Item Variable`:HOME C:\\Windows -Force; Remove-Item -Recurse "$HOME\\dev\\repo\\build"
+powershell finds=delete | Set-Alias x Set-Item; x Env:TEMP ~; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Get-ChildItem Env:TE* | Remove-Item; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | New-Item -Path Env: -Name TEMP -Value ~; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Item "Env:$n" ~; Remove-Item -Recurse "$env:TEMP\\x"
+# A cmd the line starts is handed the session's environment.
+powershell finds=delete | Set-Item -Path Env:TEMP -Value C:\\Users\\me; cmd /c "rd /s /q %TEMP%\\.ssh"
+powershell finds=delete | Set-Content Env:TEMP C:\\Users\\me; cmd /c "rd /s /q %TEMP%\\.ssh"
+powershell finds=delete | Set-Item -Path Env:TEMP -Value C:\\Users\\me; Start-Process cmd "/c rd /s /q %TEMP%\\.ssh"
+powershell finds=delete | Set-Item -Path Env:CD -Value C:\\Users\\me; cmd /c "rd /s /q %CD%\\.ssh"
+powershell finds=delete | $env:TEMP = 'C:\\Users\\me'; cmd /c "rd /s /q %TEMP%\\.ssh"
+powershell safe | cmd /c "rd /s /q %TEMP%\\x"
+# A read of the drives, or a change of another item, changes no place.
+powershell safe | if (Test-Path Env:CI) { $c = 1 }; Remove-Item -Recurse -Force "$env:TEMP\\build"
+powershell safe | Get-ChildItem Env:; Remove-Item -Recurse "$env:TEMP\\x"
+powershell safe | Get-Content Env:PATH; New-Item -ItemType Directory "$env:LOCALAPPDATA\\Temp\\x"
+powershell safe | Get-ChildItem Variable:; Remove-Item -Recurse "$HOME\\dev\\repo\\build"
+powershell safe | Remove-Item Env:FOO; Remove-Item -Recurse "$env:TEMP\\x"
+powershell safe | Set-Item Env:FOO $x; Remove-Item -Recurse "$env:TEMP\\x"
+powershell finds=delete | Set-Item Env:T[E]MP ~; Remove-Item -Recurse "$env:TEMP\\x"
 # So does one a program reads as its arguments or its command: by a pattern,
 # by the new name of a rename, or by a plain name after a `cd` to `Env:`.
 powershell safe | Set-Item Env:FOO x; npx

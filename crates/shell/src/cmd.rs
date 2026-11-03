@@ -1074,7 +1074,8 @@ fn unquoted_operator(text: &str) -> Option<usize> {
 
 /// `text` with cmd's escapes taken off (`^&` is `&`) and the variables that
 /// name a known place put in; `None` when any other variable (`%X%`, `%%f`,
-/// `!X!`), or one the line sets, makes it known only when it runs.
+/// `!X!`), or one the line sets (or the PowerShell line that starts this
+/// cmd), makes it known only when it runs.
 fn expand(text: &str, split: &Split) -> Option<String> {
     expand_variables(&unescape(text), split)
 }
@@ -1092,7 +1093,10 @@ fn expand_variables(text: &str, split: &Split) -> Option<String> {
         let after = &rest[at + 1..];
         let end = after.find('%')?;
         let name = &after[..end];
-        if split.reassigned(name) {
+        // A PowerShell line that starts this cmd may have changed it
+        // (`$env:TEMP = …`, `Set-Item Env:TEMP …`): cmd is handed the
+        // session's environment.
+        if split.reassigned(name) || split.reassigned(&format!("env:{name}")) {
             return None;
         }
         value.push_str(place(name)?);
