@@ -699,6 +699,105 @@ line leaves things, whichever is more conservative and needs the least state:
   it stands, when the trap is set, and is a placeholder variable in the text
   the action is read from, so it is not read twice.
 
+### Aliases and functions a PowerShell line sets
+
+A PowerShell line can give a command a new name and then use it:
+`Set-Alias x Remove-Item; x -Recurse -Force ~` deletes the home directory.
+Before its commands are judged, the walk reads every name the line sets,
+anywhere in it (`Walker::define`, kept in `powershell::Aliases`):
+
+- **An alias**: `Set-Alias` and `New-Alias` (also `sal` and `nal`), with the
+  name and the command given by name or by position (`-Name` first, then
+  `-Value`), and the other parameters skipped with their values
+  (`-Description`, `-Option`, `-Scope`); `Set-Item` (also `si`) on items of
+  the `Alias:` drive (`Set-Item Alias:x Remove-Item`, also `-Path Alias:\x
+  -Value …`, `-LiteralPath`, a list of paths, each set), which is an
+  `overwrite` of an item outside the workspace as well; and an assignment to
+  `$alias:x` or `${alias:x}`. The arguments are bound as PowerShell binds
+  them (`Walker::bound_args`): a list (`-Option ReadOnly,AllScope`) is one
+  argument, so it moves neither the name nor the command, and a bare `--`
+  ends the parameters, so `Set-Alias -- x Remove-Item` sets `x`. In an
+  assignment to several targets (`$alias:x, $y = 'Remove-Item', 1`) each
+  target takes the value in its place, the last one what is left; a target
+  whose value cannot be paired so (the value is not a list written out, or
+  its items are not one for each target) is set to something only known
+  when it runs. A target may be in parentheses (`($alias:x) = …`,
+  `($alias:x, $y) = …`), as PowerShell takes one; any other variable of the
+  `Alias:` or `Function:` drive on the left side that is not read as a target
+  sets its name to what is only known when it runs, so a spelling the guard
+  does not read fails closed.
+  Other writes to the `Alias:` and `Function:` drives (`New-Item`,
+  `Set-Content`, a path after `cd Alias:`) are not read as names, and are
+  that `overwrite`.
+- **A function whose body is only known when it runs**: an assignment to
+  `$function:f` or `${function:f}` (a scope in front, `$function:global:f`,
+  is taken off) of anything but a block written out (`$b`, a string, which
+  PowerShell turns into a block). A block written out (`${function:f} = {
+  … }`), like `function f { … }`, is read where it stands, as its body is
+  judged as if it stood on the line.
+
+A command whose program is a name the line sets (in any case, also after `&`)
+is then judged as its own program and as each command the name may stand
+for, every one of them, the riskier counting: an alias that is set in a
+branch, or that PowerShell refuses (a read-only built-in alias, a name the
+line made read-only, `-WhatIf`), leaves the name what it was, so the name
+itself is always one reading. `Set-Alias ls Remove-Item; ls -Recurse -Force
+~` is the `delete` of `~` though `ls` is `Get-ChildItem`; `Set-Alias ll
+Get-ChildItem; ll` stays safe. Each reading is a unit of its own, built from
+the same arguments by the rules of its program, so an alias to `pwsh`,
+`Start-Process`, `Invoke-Command` or `iex` is read as that cmdlet is (its
+script, its script block, a download it runs); the readings past the first
+are read as if in a branch, since they may not be what runs. A target that
+is a name the line sets too is followed (`Set-Alias y x`), as PowerShell
+looks an alias up again when it runs, each name once. Two commands with the
+same key are one reading. A block is read as running apart from the session
+(a `Start-Job`'s, a `Start-ThreadJob`'s, a `ForEach-Object -Parallel` one's)
+only when every reading runs it so: `Set-Alias x Start-Job; x { cd ~ };
+Remove-Item -Recurse -Force *` may run the block in the session, which then
+moves the line home.
+
+As the names are read from the whole line first, a command written before
+the name is set is judged by it too, which matters for one that runs after it
+(in a function body, a loop or a `trap`): `function f { x -Recurse -Force ~
+}; Set-Alias x Remove-Item; f` is a `delete`. A name set by a script the line
+runs (`Invoke-Expression 'Set-Alias x Remove-Item'`) is read when that script
+is, so a command of that name judged before is not judged by it: `unknown`,
+with the reason `sets an alias or function for a command the line may have
+run already`. The names are one table for the whole line, a child shell's
+(`pwsh -c "Set-Alias …"`) among them, though a child cannot change what its
+parent runs: `Get-ChildItem; pwsh -c "Set-Alias Get-ChildItem Get-Date"` is
+`unknown` by that reason. It is rare, and fails closed.
+
+`unknown`, as what cannot be read:
+
+- an alias to a command only known when it runs (`Set-Alias x $t`, `Set-Item
+  Alias:x $t`, `$alias:x = $t`, a splat that may hold the value): a command
+  of the name is `runs an alias the line sets to a command only known when it
+  runs`;
+- a function whose body is only known when it runs: a command of the name is
+  `runs a function the line sets to a block only known when it runs`;
+- an alias whose name is only known when it runs (`Set-Alias $n Remove-Item`,
+  `Set-Alias @p`), or not given at all, as `Set-Alias`, `New-Alias` and
+  `Set-Item` also take it from the properties of what the pipeline hands them
+  (`$o | Set-Alias`, `$o | Set-Item`), which may be any command after it;
+  and `Import-Alias` (also `ipal`), which sets every alias in a file the line
+  may have written itself (`'x,Remove-Item' | Set-Content a.csv; Import-Alias
+  a.csv; x -Recurse -Force ~`): `sets an alias whose name is only known when
+  it runs`.
+
+A name set to something only known when it runs, with no command of that
+name, is safe: `Set-Alias x $t` alone runs nothing. A line reads at most 64
+names (the same name set to the same command again counts once), past which
+it is `unknown` (`sets more aliases and functions than the guard reads`),
+and adds at most 256 readings in all, past which it is `unreadable` (`runs
+commands through more aliases than the guard reads`): each reading is one
+more unit to judge, so the work stays bounded however many times a name is
+used. What a name stands for is worked out once, with the key of each
+target taken when it is set, so a command of a name costs one lookup however
+many targets of its own key the name has. A module's aliases and functions,
+and the names a profile sets, are not read; only what the line itself
+writes.
+
 ### Values read again as code
 
 bash reads some values a second time, and runs the code it finds in them
@@ -2787,11 +2886,17 @@ A line is never safe because the guard gave up on it. These come back risky:
   `runs code the guard does not read fully`, unless it is found to do
   something worse (see [Inline code](#inline-code)).
 - A .NET call that deletes, writes or starts a program.
+- A PowerShell command whose name the line sets to something only known
+  when it runs: an alias to a command not written out (`Set-Alias x $t; x`),
+  a function whose body is not a block written out (`$function:f = $b; f`),
+  an alias whose name is not written out (`Set-Alias $n Remove-Item`), and a
+  name a script the line runs sets after a command of that name was judged
+  (see [Aliases and functions a PowerShell line sets](#aliases-and-functions-a-powershell-line-sets)).
 - PowerShell code known only when it runs: a script block that is not written
   out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
   `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
   `-Process`/`-Begin`/`-End`/`-RemainingScripts` and the first block of
-  `ForEach-Object`, `Where-Object -FilterScript`, `New-Module`,
+  `ForEach-Object`, `Where-Object -FilterScript`, `New-Module` (also `nmo`),
   `Measure-Command`, `Trace-Command -Expression`), a hook set on `$ExecutionContext.InvokeCommand` (by
   assignment or its `set_` method, `LocationChangedAction` among them), and code built
   from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
@@ -4566,7 +4671,9 @@ a nasty line against a 200 ms bound;
   ones of several levels, are timed the same, as are `parallel` lines that
   would build megabytes of jobs and the other wrappers that read their words
   as a command (`wsl`, `env -S`, `nix run`, the secret runners), at the
-  length limit.
+  length limit, and PowerShell lines at the length limit that use a name the
+  line sets as an alias, to a hundred commands or to one, in every command
+  after it.
 - **The limits.** (In `tests/limits.rs`, another binary of its own, for the
   same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,
