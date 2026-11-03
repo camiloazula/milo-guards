@@ -113,6 +113,25 @@ fn is_script_block(node: Node<'_>) -> bool {
     }
 }
 
+/// Whether a command's name is a script block written out (`& { … }`,
+/// `. ({ … })`), however the grammar wraps it: its commands are read where
+/// they stand.
+fn names_block(node: Node<'_>) -> bool {
+    let mut node = node;
+    loop {
+        if node.kind() == "script_block_expression" {
+            return true;
+        }
+        if node.named_child_count() != 1 {
+            return false;
+        }
+        match node.named_child(0) {
+            Some(only) => node = only,
+            None => return false,
+        }
+    }
+}
+
 /// Whether `node` is a splat (`@args`), however the grammar wraps it.
 fn is_splat(node: Node<'_>, source: &str) -> bool {
     let mut node = node;
@@ -193,6 +212,10 @@ struct Redirects {
     /// Whether the last word was a redirect operator alone (`1>`), so that
     /// the next argument is the file it writes.
     pending: bool,
+    /// For `Start-Job`, the script blocks it is given, read after the rest of
+    /// the command in the job's own process (see [`Walker::job`]); `None`
+    /// for any other command.
+    job: Option<Vec<usize>>,
 }
 
 /// What a bare word (a generic token) holds of a redirect. The grammar reads
@@ -358,12 +381,22 @@ impl Walker<'_> {
                     self.item = stage;
                     self.split.repeats += 1;
                 }
-                // The block of an event runs later, in this session.
+                // The block of an event, and a breakpoint's action, runs
+                // later, in this session.
                 let later = key
                     .as_deref()
-                    .is_some_and(|key| EVENTS.contains(&key))
+                    .is_some_and(|key| EVENTS.contains(&key) || key == "set-psbreakpoint")
                     .then(|| self.split.begin_later());
-                self.command_children(node, own.clone(), level);
+                let job = key.as_deref() == Some("start-job");
+                // A thread job and a `-Parallel` block run in a runspace of
+                // their own, whose location stacks are empty.
+                let stacks = self
+                    .own_runspace(key.as_deref(), own.clone())
+                    .then(|| self.split.take_locations());
+                self.command_children(node, own.clone(), level, job);
+                if let Some(stacks) = stacks {
+                    self.split.restore_locations(stacks);
+                }
                 if let Some(began) = later {
                     self.split.end_later(began, false);
                 }
@@ -385,6 +418,10 @@ impl Walker<'_> {
             // what it holds again with other values.
             "foreach_statement" | "for_statement" | "while_statement" | "do_statement"
             | "function_statement" => {
+                // A function named as a location cmdlet stands in for it.
+                if node.kind() == "function_statement" && self.names_location(node) {
+                    self.split.lose_locations();
+                }
                 self.split.repeats += 1;
                 self.children(node, stage, level);
                 self.split.repeats -= 1;
@@ -405,11 +442,30 @@ impl Walker<'_> {
                 // them: `effect` cannot say what it does.
                 self.split.opaque();
                 self.dotnet(node);
+                // A hook's block, set by its method, runs later.
+                let later = blocks::sets_hook(node, self.source).then(|| self.split.begin_later());
                 self.children(node, stage, level);
+                if let Some(began) = later {
+                    self.split.end_later(began, false);
+                }
             }
             "assignment_expression" => {
                 blocks::hook(self.split, node, self.source);
+                // `[Environment]::CurrentDirectory = …` moves the process,
+                // whose folder a .NET call and a program the session starts
+                // may take: where the line is, is only known when it runs.
+                if blocks::assigned_member(node, self.source).as_deref() == Some("currentdirectory")
+                {
+                    self.moves_unknown(node);
+                }
+                // A hook's block runs later, when a command is looked up.
+                let later = blocks::assigned_member(node, self.source)
+                    .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
+                    .then(|| self.split.begin_later());
                 self.children(node, stage, level);
+                if let Some(began) = later {
+                    self.split.end_later(began, false);
+                }
             }
             _ => self.children(node, stage, level),
         }
@@ -469,12 +525,14 @@ impl Walker<'_> {
     /// sub-expression in an argument is walked from where the line is, and a
     /// redirect that follows one that moved the line is opened where the line
     /// has gone to, as the session ran the argument before opening the file.
-    fn command_children(&mut self, node: Node<'_>, own: Range<usize>, level: usize) {
+    fn command_children(&mut self, node: Node<'_>, own: Range<usize>, level: usize, job: bool) {
+        let folder = job.then(|| self.job_folder(own.clone()));
         let mut state = Redirects {
             seen: own.end,
             own,
             moved: false,
             pending: false,
+            job: job.then(Vec::new),
         };
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -491,6 +549,166 @@ impl Walker<'_> {
         if state.pending {
             self.unclear_redirect(node);
         }
+        if let (Some(blocks), Some(folder)) = (state.job, folder) {
+            self.job(node, &blocks, folder.as_ref(), level);
+        }
+    }
+
+    /// The folder a `Start-Job` among `own` starts its job in: its
+    /// `-WorkingDirectory`, or where the line is when it names none.
+    fn job_folder(&self, own: Range<usize>) -> Option<Arg> {
+        let unit = self
+            .split
+            .units
+            .get(own)?
+            .iter()
+            .find(|unit| unit.key().as_deref() == Some("start-job"))?;
+        Params::read(&unit.args)
+            .values(&["workingdirectory"])
+            .first()
+            .map(|folder| (*folder).clone())
+    }
+
+    /// The script blocks of a `Start-Job`, the descendants of `node` with
+    /// the ids in `blocks`: they run in a process of its own, which starts
+    /// in `folder` when one is given, so a `cd` in them does not move the
+    /// line. They are read after the rest of the command, as the session
+    /// runs its arguments before the job starts, and together, in the order
+    /// they are written; when one of several moves, which runs first (an
+    /// `-InitializationScript` runs before the block) is not read, and every
+    /// path in them is only known when it runs.
+    fn job(&mut self, node: Node<'_>, blocks: &[usize], folder: Option<&Arg>, level: usize) {
+        let mut found = Vec::new();
+        unit::for_each_node(node, |inner| {
+            if blocks.contains(&inner.id()) {
+                found.push(inner);
+            }
+        });
+        let outer = self.split.dir_snapshot();
+        let began = self.split.begin_later();
+        self.split.apart += 1;
+        // Its location stacks are its own, and empty.
+        self.split.take_locations();
+        if let Some(folder) = folder {
+            self.split.enter(folder, Shell::PowerShell);
+        }
+        for block in &found {
+            self.walk(*block, None, level + 1);
+        }
+        self.split.apart -= 1;
+        if found.len() > 1 && self.split.moved_so_far() != began.moved() {
+            self.split.unplace(began);
+        }
+        self.split.restore_dir(outer);
+    }
+
+    /// Whether a command among `own` named `key` runs its blocks in a
+    /// runspace of its own: `Start-ThreadJob`, and `ForEach-Object
+    /// -Parallel`.
+    fn own_runspace(&self, key: Option<&str>, own: Range<usize>) -> bool {
+        match key {
+            Some("start-threadjob") => true,
+            Some("foreach-object") => self.split.units.get(own).is_some_and(|units| {
+                units
+                    .iter()
+                    .filter(|unit| unit.key().as_deref() == Some("foreach-object"))
+                    .flat_map(|unit| &unit.args)
+                    .filter_map(parameter)
+                    .map(|name| name.trim_end_matches(':').to_ascii_lowercase())
+                    .any(|name| name.len() > 1 && "parallel".starts_with(&name))
+            }),
+            _ => false,
+        }
+    }
+
+    /// Whether a function definition is named as a location cmdlet
+    /// (`function Pop-Location { }`, `function global:popd { }`).
+    fn names_location(&self, node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        let name = node
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "function_name");
+        name.is_some_and(|name| names_location(unit::text(&name, self.source)))
+    }
+
+    /// A move of the session (or of its process) to a place the guard cannot
+    /// read: the line is then only known to be somewhere when it runs. It is
+    /// added as a `Set-Location` there, which the walk follows as it does any.
+    fn moves_unknown(&mut self, node: Node<'_>) {
+        let target = Arg::Unknown(unit::text(&node, self.source).to_string());
+        self.location_unit("Set-Location", vec![target]);
+    }
+
+    /// Add a location cmdlet a .NET call stands for, with `args`.
+    fn location_unit(&mut self, cmdlet: &str, args: Vec<Arg>) {
+        let unit = Unit::new(
+            Shell::PowerShell,
+            Arg::Known(cmdlet.to_string()),
+            args,
+            None,
+        );
+        launch::add(self.split, unit, self.depth);
+    }
+
+    /// A call of a method of the session's paths (`$ExecutionContext
+    /// .SessionState.Path`), or of the process's folder
+    /// (`[IO.Directory]::SetCurrentDirectory`), that moves the line or keeps
+    /// its location stacks: it is the location cmdlet it stands for, with the
+    /// string it is given when that is written out. Called on another object
+    /// (a variable that may hold the paths), the place, or the stack, is only
+    /// known when it runs. True when `method` is one of them.
+    fn location_call(
+        &mut self,
+        method: &str,
+        object: &str,
+        node: Node<'_>,
+        children: &[Node<'_>],
+    ) -> bool {
+        if matches!(method, "setcurrentdirectory" | "set_currentdirectory") {
+            self.moves_unknown(node);
+            return true;
+        }
+        if !matches!(
+            method,
+            "setlocation" | "poplocation" | "pushcurrentlocation" | "setdefaultlocationstack"
+        ) {
+            return false;
+        }
+        let call = unit::text(&node, self.source);
+        let paths = object.ends_with("sessionstate.path");
+        // The string given first, when one is given.
+        let given = blocks::first_argument(children).map(|_| {
+            match blocks::first_string(children).map(|string| self.string(string)) {
+                Some(Arg::Known(text)) if paths && !text.starts_with('-') => Arg::Known(text),
+                _ => Arg::Unknown(call.to_string()),
+            }
+        });
+        let stack = |given: Option<Arg>| {
+            given.map_or_else(Vec::new, |name| {
+                vec![Arg::Known("-StackName".to_string()), name]
+            })
+        };
+        match method {
+            "setlocation" => {
+                let target = given.unwrap_or_else(|| Arg::Unknown(call.to_string()));
+                self.location_unit("Set-Location", vec![target]);
+            }
+            // On another object the stack is not known: popping from it
+            // leaves every stack unknown, and the line only known.
+            _ if !paths => {
+                let unknown = Some(Arg::Unknown(call.to_string()));
+                self.location_unit("Pop-Location", stack(unknown));
+            }
+            "poplocation" => self.location_unit("Pop-Location", stack(given)),
+            "pushcurrentlocation" => self.location_unit("Push-Location", stack(given)),
+            _ => self.location_unit(
+                "Set-Location",
+                stack(Some(
+                    given.unwrap_or_else(|| Arg::Unknown(call.to_string())),
+                )),
+            ),
+        }
+        true
     }
 
     /// A word that may be a redirect, which the guard cannot place.
@@ -539,6 +757,11 @@ impl Walker<'_> {
             self.unclear_redirect(child);
         }
         if kind != "redirection" && !target && !matches!(bare, Bare::Redirect { .. }) {
+            // A job's block is read once the rest of the command is.
+            if let Some(blocks) = state.job.as_mut().filter(|_| is_script_block(child)) {
+                blocks.push(child.id());
+                return;
+            }
             self.walk(child, None, level);
             return;
         }
@@ -684,6 +907,9 @@ impl Walker<'_> {
         let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
         let key = unit.key();
         unit.downloaded = downloads && key.as_deref() == Some("invoke-expression");
+        // A block or a script run by a name only known when it runs (`& $b`)
+        // may move the session; one written out (`& { … }`) is read.
+        unit.relocates = key.is_none() && !names_block(name);
         // The processes a `Stop-Process` is handed by a listing in its own
         // arguments: `-InputObject (Get-Process)`.
         if key.as_deref() == Some("stop-process") {
@@ -1521,6 +1747,9 @@ impl Walker<'_> {
         .iter()
         .any(|kind| object.contains(kind));
         blocks::hook_call(self.split, &method, &children, node, self.source);
+        if self.location_call(&method, &object, node, &children) {
+            return;
+        }
         // A method that stops a process, called on it (`.Kill()`). The
         // array's `.ForEach('Kill')` is a line the grammar does not read.
         if blocks::stops_process(&method) {
@@ -2012,6 +2241,96 @@ impl Param {
             .find(|param| param.name == typed || param.aliases.contains(&typed))
             .or_else(|| all().find(|param| param.starts_with(typed)))
     }
+}
+
+/// The parameters of `Set-Location`, `Push-Location` and `Pop-Location`:
+/// `-StackName` takes a value, which is not the folder.
+pub(crate) const LOCATION: [Param; 4] = [
+    Param::value("path", &[]),
+    Param::value("literalpath", &["pspath", "lp"]),
+    Param::value("stackname", &[]),
+    Param::switch("passthru", &[]),
+];
+
+/// Whether every argument of the location cmdlet `key` binds, so that it
+/// runs: each parameter is its own or a common one, named once, and not a
+/// prefix of more than one; a value parameter has its value; and it is given
+/// no more folders than it takes (`Pop-Location` none, `Push-Location` one,
+/// `Set-Location -StackName` none). One that does not bind stops the cmdlet
+/// before it does anything, and the next statement still runs. A splat
+/// (`@a`) may hold any of them, so it is not known to bind.
+pub(crate) fn location_binds(args: &[Arg], key: &str) -> bool {
+    // `Pop-Location` takes no folder: only `-StackName` and `-PassThru`.
+    let own = if key == "pop-location" {
+        &LOCATION[2..]
+    } else {
+        &LOCATION[..]
+    };
+    let all = || own.iter().chain(COMMON.iter());
+    let mut seen: Vec<&str> = Vec::new();
+    let mut folders = 0;
+    let mut ended = false;
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        if arg.text().starts_with('@') && arg.is_unknown() {
+            return false;
+        }
+        if !ended && arg.known() == Some("--") {
+            ended = true;
+            continue;
+        }
+        let Some(name) = parameter(arg).filter(|_| !ended) else {
+            folders += 1;
+            continue;
+        };
+        let colon = name.ends_with(':');
+        let typed = name.trim_end_matches(':').to_ascii_lowercase();
+        let exact =
+            all().find(|param| param.name == typed || param.aliases.contains(&typed.as_str()));
+        let mut prefixed = all().filter(|param| param.starts_with(&typed));
+        let found = exact.or(match (prefixed.next(), prefixed.next()) {
+            (Some(one), None) => Some(one),
+            _ => None,
+        });
+        let Some(param) = found else {
+            return false;
+        };
+        if seen.contains(&param.name) {
+            return false;
+        }
+        seen.push(param.name);
+        if matches!(param.name, "path" | "literalpath") {
+            folders += 1;
+        }
+        let value = if colon {
+            iter.next()
+        } else if param.value {
+            iter.next_if(|next| parameter(next).is_none())
+        } else {
+            Some(arg)
+        };
+        if value.is_none() {
+            return false;
+        }
+    }
+    let most = usize::from(
+        key == "push-location" || (key == "set-location" && !seen.contains(&"stackname")),
+    );
+    folders <= most
+}
+
+/// Whether a function or an alias named `name` stands in for a location
+/// cmdlet (`Pop-Location`, `popd`, `global:cd`), which then may not run.
+pub(crate) fn names_location(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let bare = ["global:", "script:", "local:", "private:"]
+        .iter()
+        .find_map(|scope| lower.strip_prefix(scope))
+        .unwrap_or(&lower);
+    matches!(
+        canonical(bare),
+        "set-location" | "push-location" | "pop-location"
+    )
 }
 
 /// The parameters every cmdlet takes.

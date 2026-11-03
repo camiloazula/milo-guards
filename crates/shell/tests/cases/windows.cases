@@ -515,3 +515,76 @@ cmd safe | rd /s /q //?/C:/Users/me/dev/repo/x
 cmd finds=delete | rd /s /q \\\\?\\C:\\Users\\me\\dev
 cmd finds=delete | rd /s /q \\\\?\\C:\\Windows
 cmd finds=delete | rd /s /q \\\\?\\C:\\Users\\me\\.ssh
+
+# A cmd path spelled with forward slashes is a path, not a switch: an argument
+# that starts with two separators is a share or a long path, judged as its
+# backslash spelling is.
+cmd finds=delete | del //evil/share/x
+cmd finds=delete | del \\\\evil\\share\\x
+cmd finds=delete | rd /s /q //evil/s
+cmd finds=delete | rd /s /q \\\\evil\\s
+cmd finds=overwrite | copy x //evil/s
+cmd finds=overwrite | copy x \\\\evil\\s
+cmd finds=delete | del /s /q //?/C:/Windows
+cmd finds=delete | del /s /q \\\\?\\C:\\Windows
+cmd finds=delete | del /q //evil
+cmd finds=delete | del /q /\\evil\\s
+cmd finds=overwrite | move x //evil/s
+cmd finds=overwrite | xcopy x //evil/s
+cmd finds=overwrite | robocopy x //evil/s
+cmd finds=wipe_disk | rd /s /q //./PhysicalDrive0
+# What core reads as a device is no switch either.
+cmd finds=wipe_disk | del /dev/sda
+# A run of switches is short names (`/s/q`); longer parts are folders.
+cmd finds=delete | del /evil/share/x
+cmd finds=delete | del /*
+# A switch whose value is a path is judged as a path.
+cmd finds=delete | del /a:C:/Windows
+# A run is split at `/` before each switch's `:value`.
+cmd safe | del /a:h/s/q x
+# A built-in command takes only its own switch names, and cmd never reads a
+# quoted word as a switch: a root-relative folder is a path.
+cmd finds=delete | rd /s /q "/Users"
+cmd finds=delete | del /s /q "/Users"
+cmd finds=delete | rd /s /q "/Windows"
+cmd finds=delete | rd /s /q "/ProgramData"
+cmd finds=delete | rd /s /q "/usr/bin"
+cmd finds=delete | cmd /c "rd /s /q "/Users""
+cmd finds=delete | rd /s /q /Users
+cmd safe | del /ah /s x
+cmd safe | xcopy a b /s /e /y
+# A built-in command ends an argument at `,`, `;` and `=`, and each part is a
+# switch or a path of its own.
+cmd finds=delete | del /q;//evil/s
+cmd finds=delete | del /q,\\\\evil\\s
+# Switches keep their verdicts.
+cmd safe | dir /a:-d /o:n
+cmd safe | del /q build\\x.o
+cmd safe | rd /s /q build
+cmd safe | del /f /s /q /a:h build\\x.o
+cmd safe | copy /y x build\\y
+cmd safe | copy /-y x y
+cmd safe | del /s/q x
+cmd safe | rd /s/q build
+cmd safe | dir /s/b
+cmd safe | robocopy a b /R:3 /W:5 /MT:8
+# A switch's value that is a file is judged: `xcopy /exclude:` reads a list of
+# strings to skip, and is no operand; `robocopy /LOG:` and `/UNILOG:` (`+` to
+# add) write a log, `/SAVE:` writes a job file (`.rcj`), and `/JOB:` copies
+# by one the guard does not read.
+cmd safe | xcopy C:\\Windows\\x /exclude:a.txt
+cmd safe | xcopy a b /exclude:\\\\evil\\s\\x
+cmd finds=overwrite reason="writes to a system folder" | xcopy a C:\\Windows /exclude:list.txt
+cmd finds=overwrite reason="writes a log to a shell startup file" | robocopy a b /LOG:C:\\Users\\me\\.bashrc
+cmd finds=overwrite | robocopy a b /log+:C:/Users/me/x.txt
+cmd finds=overwrite | robocopy a b /UNILOG:C:\\x.txt
+cmd safe | robocopy a b /LOG:build\\log.txt
+cmd finds=overwrite | robocopy a b /SAVE:C:\\x\\job
+cmd safe | robocopy a b /SAVE:job
+cmd finds=unknown | robocopy /JOB:x
+# A log or a job file known only when it runs is a write to a place known
+# only then, and no folder to copy.
+cmd finds=overwrite | robocopy a b /LOG:%X%
+cmd finds=overwrite | robocopy a b /UNILOG+:%X%
+cmd finds=overwrite | robocopy a b "/LOG:%X%"
+cmd finds=overwrite | robocopy a b /SAVE:%X%
