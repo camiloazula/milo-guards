@@ -5,11 +5,14 @@
 //! the item (a listing that shows hidden files hands those on too); a
 //! `-LiteralPath` alias, a splat, a common parameter or a switch never hides
 //! which argument is the item; and `Start-Process` reads its program under
-//! every alias of `-FilePath`. cmd's renames are not provider paths.
+//! every alias of `-FilePath`. A write cmdlet reads its parameters by its
+//! own names, and `--` ends them; a stage that only narrows hands on what
+//! the stage before lists; and `Remove-Item`'s own `-Include` narrows a
+//! wildcard. cmd's renames are not provider paths.
 //!
 //! The lines and their answers are in `tests/cases/powershell_items.cases`;
-//! here are a list of thousands of paths and the timing of a long hidden
-//! listing.
+//! here are a list of thousands of paths, and the timing of a long hidden
+//! listing and of long lists and pipelines of the item cmdlets.
 
 mod common;
 
@@ -63,5 +66,65 @@ fn a_long_hidden_listing_is_read_quickly() {
         );
         let rules = rules(&line, Shell::PowerShell, &windows());
         assert!(!rules.is_empty(), "a long hidden listing is read as safe");
+    }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn long_lists_and_pipelines_of_the_item_cmdlets_are_read_quickly() {
+    // Each item of a list is found by where it sits, a stage is handed the
+    // output of the one it reads once for the line, and the patterns of an
+    // `-Include` are matched a bounded number of times: each grows the work
+    // by a step, not by a scan.
+    let lines = [
+        format!("Set-Content {}~\\.bashrc x", "src\\x,".repeat(2_000)),
+        format!(
+            "Set-Content -Path {}~\\.bashrc -Value x",
+            "src\\x, ".repeat(2_000)
+        ),
+        format!("Set-Content -Value {}y ~\\.bashrc", "x,".repeat(8_000)),
+        format!("Set-Content -Bogus {}~\\.bashrc", "x ".repeat(2_000)),
+        format!(
+            "Get-ChildItem ~ {}| Clear-Content",
+            "| Where-Object x ".repeat(3_000)
+        ),
+        format!(
+            "Get-ChildItem ~ {}| % {{ {}}}",
+            "| ? x ".repeat(2_000),
+            "Remove-Item $_; ".repeat(2_000)
+        ),
+        format!(
+            "Remove-Item * -Include {}.git -Recurse -Force",
+            "a,".repeat(8_000)
+        ),
+        format!(
+            "Remove-Item {}-Include .git -Recurse -Force",
+            "* ".repeat(8_000)
+        ),
+        format!(
+            "Remove-Item {}-Include {}.git -Recurse -Force",
+            (0..3_000)
+                .map(|at| format!("d{at}\\* "))
+                .collect::<Vec<_>>()
+                .concat(),
+            (0..3_000)
+                .map(|at| format!("p{at},"))
+                .collect::<Vec<_>>()
+                .concat()
+        ),
+    ];
+    for line in lines {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let took = took(&line, Shell::PowerShell, &windows());
+        assert!(
+            took < std::time::Duration::from_secs(3),
+            "{} bytes took {took:?}",
+            line.len()
+        );
+        let rules = rules(&line, Shell::PowerShell, &windows());
+        assert!(!rules.is_empty(), "a long line is read as safe: {line:.80}");
     }
 }

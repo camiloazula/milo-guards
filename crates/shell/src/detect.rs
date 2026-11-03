@@ -13,7 +13,8 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::unit::{
-    may_split, operands, plain, unknown_start, Arg, Flagged, Importing, Reads, Scope, Split, Unit,
+    may_split, operands, plain, unknown_start, Arg, Between, Flagged, Importing, Reads, Scope,
+    Split, Unit,
 };
 use crate::{Finding, Rule, Shell};
 use milo_guards_core::Flavour;
@@ -108,7 +109,11 @@ fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
     checker.found.clone_from(&split.findings);
     for unit in &split.units {
         let by_cmdlet = writes_by_cmdlet(unit);
-        for target in written_by(unit) {
+        let handed = || checker.handed_files(unit);
+        let (targets, unnamed) = written_with(unit, Some(&handed));
+        // A copy of items the guard cannot name may be any file.
+        checker.anywhere |= unnamed;
+        for target in targets {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
             // Written where a `cd` that may not have run may have left the
             // line, as for a redirect (see [`Split::unsure_writes`]).
@@ -295,6 +300,10 @@ struct Checker<'a> {
     /// Every unit at each pipeline stage, by its index in the split: a stage
     /// can be a group of several.
     stages: HashMap<(usize, usize), Vec<usize>>,
+    /// For each pipeline stage after the first, the index of the stage whose
+    /// output it is handed (see [`Checker::source_stage`]), worked out once
+    /// for the line.
+    sources: HashMap<(usize, usize), usize>,
     /// Whether the line lists keys in Redis, once worked out: every
     /// `redis-cli del` that is given keys asks, and the answer is the line's.
     scans_keys: Option<bool>,
@@ -327,6 +336,7 @@ impl<'a> Checker<'a> {
             downloaders: HashMap::new(),
             producers: HashMap::new(),
             stages: HashMap::new(),
+            sources: HashMap::new(),
             scans_keys: None,
             data: data::Cache::default(),
             lengths: HashMap::new(),
@@ -358,6 +368,23 @@ impl<'a> Checker<'a> {
                 .push(at);
             let length = checker.lengths.entry(stage.pipeline).or_insert(0);
             *length = (*length).max(stage.index + 1);
+        }
+        // Each stage is handed the output of the one before, or of the one
+        // that stage is handed, when it only passes on some of it.
+        for (&pipeline, &length) in &checker.lengths {
+            for index in 1..length {
+                let before = index - 1;
+                let source = if before > 0 && passes_on(split, &checker.stages, pipeline, before) {
+                    checker
+                        .sources
+                        .get(&(pipeline, before))
+                        .copied()
+                        .unwrap_or(before)
+                } else {
+                    before
+                };
+                checker.sources.insert((pipeline, index), source);
+            }
         }
         checker
     }
@@ -633,10 +660,7 @@ impl Checker<'_> {
         if *arg != Arg::Input {
             return (vec![arg.clone()], false);
         }
-        let stage = unit
-            .stage
-            .filter(|stage| stage.index > 0)
-            .map(|stage| (stage.pipeline, stage.index - 1));
+        let stage = self.source_stage(unit);
         let producer = stage
             .and_then(|stage| self.producers.get(&stage))
             .and_then(|&at| self.split.units.get(at));
@@ -657,6 +681,23 @@ impl Checker<'_> {
             }
         }
         (found, hidden)
+    }
+
+    /// The stage whose output `unit` is handed, as its pipeline and index:
+    /// the one before it, or before the stages between that only hand on
+    /// some of what they are handed, the same objects (`Where-Object`,
+    /// `Sort-Object`, a `Select-Object` that only picks, `Get-Unique`), so
+    /// `Get-ChildItem src | Where-Object { … } | Remove-Item` deletes some of
+    /// what `Get-ChildItem src` lists. `None` for a unit at no stage, or at
+    /// the first.
+    fn source_stage(&self, unit: &Unit) -> Option<(usize, usize)> {
+        let stage = unit.stage.filter(|stage| stage.index > 0)?;
+        let index = self
+            .sources
+            .get(&(stage.pipeline, stage.index))
+            .copied()
+            .unwrap_or(stage.index - 1);
+        Some((stage.pipeline, index))
     }
 
     fn delete(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
@@ -765,13 +806,7 @@ impl Checker<'_> {
             hidden: unit.hidden || hidden,
             ..unit.scope()
         };
-        let item = unit
-            .stage
-            .filter(|stage| stage.index > 0)
-            .and_then(|stage| self.producers.get(&(stage.pipeline, stage.index - 1)))
-            .and_then(|&at| self.split.units.get(at))
-            .and_then(Unit::key)
-            .is_some_and(|key| key.as_str() == "get-item");
+        let item = self.handed_by_get_item(unit);
         found
             .into_iter()
             .filter_map(|arg| {
@@ -788,6 +823,40 @@ impl Checker<'_> {
                 } else {
                     None
                 }
+            })
+            .collect()
+    }
+
+    /// Whether the stage `unit` is handed the output of is `Get-Item`,
+    /// which hands on the items it names, not what is in them.
+    fn handed_by_get_item(&self, unit: &Unit) -> bool {
+        self.source_stage(unit)
+            .and_then(|stage| self.producers.get(&stage))
+            .and_then(|&at| self.split.units.get(at))
+            .and_then(Unit::key)
+            .is_some_and(|key| key.as_str() == "get-item")
+    }
+
+    /// What the stage before hands `unit` on, as files a copy of them
+    /// names: each item `Get-Item` names, and a pattern a listing matches
+    /// by (`Get-ChildItem C:\x\*.ps1`). What else a listing finds is in
+    /// a folder it names, by names only known when it runs.
+    fn handed_files(&self, unit: &Unit) -> Vec<Arg> {
+        let item = self.handed_by_get_item(unit);
+        self.expand(unit, &Arg::Input)
+            .0
+            .into_iter()
+            .map(|arg| match arg {
+                Arg::Known(text)
+                    if !item
+                        && !text
+                            .rsplit(['/', '\\'])
+                            .next()
+                            .is_some_and(glob::has_wildcard) =>
+                {
+                    Arg::Unknown(text)
+                }
+                other => other,
             })
             .collect()
     }
@@ -1499,6 +1568,32 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
     Some(found)
 }
 
+/// Whether the stage at `index` of `pipeline` is one PowerShell command that
+/// hands on only some of the objects it is handed, unchanged:
+/// `Where-Object`, `Sort-Object`, a `Select-Object` that only picks (see
+/// [`Between::select`]) and `Get-Unique` (see [`Checker::source_stage`]).
+fn passes_on(
+    split: &Split,
+    stages: &HashMap<(usize, usize), Vec<usize>>,
+    pipeline: usize,
+    index: usize,
+) -> bool {
+    let Some([only]) = stages.get(&(pipeline, index)).map(Vec::as_slice) else {
+        return false;
+    };
+    let Some(unit) = split.units.get(*only) else {
+        return false;
+    };
+    if unit.shell != Shell::PowerShell {
+        return false;
+    }
+    match unit.key().as_deref() {
+        Some("where-object" | "sort-object" | "sort" | "get-unique" | "gu") => true,
+        Some("select-object" | "select") => Between::select(&unit.args) == Between::Narrows,
+        _ => false,
+    }
+}
+
 /// What a listing of `places` finds, as paths the resolver reads.
 fn found_by(places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
     places
@@ -1674,11 +1769,22 @@ fn unread_target(arg: &Arg, shell: Shell) -> Option<Arg> {
 
 /// The files a unit writes, for matching a script the line then runs.
 pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
+    written_with(unit, None).0
+}
+
+/// [`written_by`], with `handed`, which gives what the stage before hands
+/// `unit` on: a `Copy-Item` or `Move-Item` given no path copies those items
+/// (without it, items only known when it runs). Also whether it writes a
+/// file it does not name: an item handed on that the guard cannot name.
+fn written_with(unit: &Unit, handed: Option<&dyn Fn() -> Vec<Arg>>) -> (Vec<Arg>, bool) {
     let Some(key) = unit.key() else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
+    if matches!(key.as_str(), "copy-item" | "move-item") {
+        return copy_written(unit, handed);
+    }
     let args = unit.args.as_slice();
-    match key.as_str() {
+    let written = match key.as_str() {
         "curl" | "wget" if unit.shell != Shell::PowerShell => downloads_to(&key, args),
         "invoke-webrequest" | "invoke-restmethod" => Params::read(args)
             .values(&["outfile"])
@@ -1689,25 +1795,6 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
             let (sources, destination) = sources_and_destination(args, &COPY_VALUED, unit.shell);
             destination.map_or_else(Vec::new, |destination| into_folder(&destination, &sources))
         }
-        "copy-item" | "move-item" => {
-            let params = Params::read(args);
-            let mut sources = params.values(&["path", "literalpath"]);
-            let mut positional = params.positional.iter().copied();
-            // `Copy-Item a b` is `-Path a -Destination b`: a positional
-            // is the source first, then the destination, each only where
-            // no parameter names it.
-            if sources.is_empty() {
-                sources.extend(positional.next());
-            }
-            let destination = params
-                .values(&["destination"])
-                .first()
-                .copied()
-                .or_else(|| positional.next());
-            destination.map_or_else(Vec::new, |destination| {
-                into_folder(&or_here(destination), &sources)
-            })
-        }
         "tee" if unit.shell != Shell::PowerShell => {
             operands(args, &[]).into_iter().cloned().collect()
         }
@@ -1715,7 +1802,46 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
         "new-item" => new_item_files(args),
         "dd" => dd_outputs(args, unit.shell),
         _ => Vec::new(),
+    };
+    (written, false)
+}
+
+/// The files a `Copy-Item` or `Move-Item` writes, as [`written_with`] reads
+/// them.
+fn copy_written(unit: &Unit, handed: Option<&dyn Fn() -> Vec<Arg>>) -> (Vec<Arg>, bool) {
+    let params = Params::read(&unit.args);
+    let mut sources = files::named_lists(unit, &params, &["path", "literalpath"]);
+    // A list is one position (`Copy-Item a.ps1,b.ps1`).
+    let mut positional = files::positionals(unit, &params).into_iter();
+    // `Copy-Item a b` is `-Path a -Destination b`: a positional is the
+    // source first, then the destination, each only where no parameter
+    // names it.
+    if sources.is_empty() {
+        sources.extend(positional.next().unwrap_or_default());
     }
+    // With no path, the items the stage before hands on.
+    let piped: Vec<Arg> = if sources.is_empty() && unit.stage.is_some_and(|stage| stage.index > 0) {
+        handed.map_or_else(
+            || vec![Arg::Unknown("<input>".to_string())],
+            |handed| handed(),
+        )
+    } else {
+        Vec::new()
+    };
+    sources.extend(piped.iter());
+    // With no destination the item goes to the folder the line is in.
+    let here = Arg::Known(".".to_string());
+    let destination = params
+        .values(&["destination"])
+        .first()
+        .copied()
+        .or_else(|| positional.next().and_then(|list| list.first().copied()))
+        .or_else(|| (!sources.is_empty()).then_some(&here));
+    let unnamed = piped.iter().any(|item| item.known().is_none());
+    let written = destination.map_or_else(Vec::new, |destination| {
+        into_folder(&or_here(destination), &sources)
+    });
+    (written, unnamed)
 }
 
 /// The files `dd` writes: the value of each `of=` operand, and a file only
