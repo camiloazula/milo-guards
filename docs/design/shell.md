@@ -532,8 +532,9 @@ or a function body, which runs again from where the last pass left the line
 `f() { cd .. > x; }; f; f`; in PowerShell `foreach`, `ForEach-Object`, `while`,
 `for` and `function`), and when an earlier `cd` may not have moved the line: it
 ran in a pipeline stage or in the background, on the right of `&&` or `||`, in
-a branch of an `if`, `case` or `switch` or a `try`, on the left of `||`, or
-through a wrapper that runs it as a program or in a shell of its own, such as
+a branch of an `if`, `case` or `switch` or a `try`, on the left of `||` (not
+one whose right side ends the shell, `cd s || exit`: see "A script a line
+writes and then runs" below), or through a wrapper that runs it as a program or in a shell of its own, such as
 `env`, `nohup`, `timeout`, `coproc` or cmd's `start` (`cd sub || cd .. > ../x`,
 `if false; then cd sub; fi; cd .. > ../x`, `env cd sub; cd .. > ../x`; the same
 in PowerShell and cmd). Only a `cd` after one of those is read this way: a
@@ -2138,6 +2139,30 @@ Some risks only show when units are read together.
   its name, as above: a run of a script of that name is `unknown`, and one of
   another name (`echo x > log; cd a; cd b; cd c; cd d; cd e; cd f; ./app`)
   stays safe.
+  An `||` whose right side ends the shell is the exception: in `cd s ||
+  exit` the rest of the line runs only when the left side did not fail, so
+  the `cd` ran, and so did every `cd` on the right of an `&&` before the
+  `||` (`cd a && cd b || exit`). After the list the line is only where the
+  left side took it, for a run of a file and for every other check (where
+  paths are placed, where a redirect opens): `echo x > x.sh; cd s || exit;
+  bash x.sh` and `cd a || exit; make > log; cd ../b || exit; make > log; cd
+  ../c || exit; make > log; cd ../d || exit; ./build.sh` stay safe, while
+  `echo x > x.sh; cd s || exit; bash ../x.sh` is `unknown`. The right side
+  itself still runs where the failed `cd` left the line (`echo x > x.sh; cd
+  s || { bash x.sh; exit; }` is `unknown`). A right side ends the shell when
+  it is the builtin `exit`, alone or last in a `{ …; }` group (in cmd,
+  `exit`, `exit /b`, alone or last in a `( … )` block, which runs in cmd
+  itself). Nothing else does: `true`; `return`, which bash goes on past
+  outside a function (inside one, its `cd` is already one that may not have
+  run); an `exit` with a redirect of its own (`exit 2> /dev/null`: the
+  grammar puts it on the whole list), which does not run when the redirect
+  fails; one in a subshell, a pipeline or the background, which ends only
+  that process; one after the line defines a function of that name, or uses
+  `alias`, `enable` or `disable`; cmd's `exit /?`, which prints its help; and
+  PowerShell's `exit`, which its grammar reads after `||` as a command. An
+  `||` before it in the same list still counts (`true || cd s || exit; bash
+  x.sh` runs where the line began when `true` succeeds), and so does a left
+  side that ends in `|| true`.
   The file may be run as the program itself, not only handed to a shell: a
   program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
   file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x

@@ -73,8 +73,19 @@ impl Walker<'_> {
                 let mut cursor = node.walk();
                 let list = self.split.list_start();
                 let mut at = 0;
+                let mut exit = None;
                 for child in node.children(&mut cursor) {
+                    // When the right side of `||` ends cmd (`cd s || exit`),
+                    // the rest of the line runs only where the left side
+                    // took it.
                     if child.kind() == "||" {
+                        if stage.is_none()
+                            && child
+                                .next_named_sibling()
+                                .is_some_and(|right| self.exits(right))
+                        {
+                            exit = Some(self.split.exits_after());
+                        }
                         self.split.list_or(&list);
                     }
                     if !child.is_named() {
@@ -87,6 +98,9 @@ impl Walker<'_> {
                         let link = self.split.link_start();
                         self.walk(child, stage, level + 1);
                         self.split.link_end(&list, link);
+                        if let Some(exit) = exit.take() {
+                            self.split.exited(exit);
+                        }
                     } else {
                         self.split.list_head(child.kind() == "cond_exec");
                         self.walk(child, stage, level + 1);
@@ -206,6 +220,45 @@ impl Walker<'_> {
         if !remark && text.contains(['&', '|', '<', '>']) {
             self.split
                 .problem(Rule::Unreadable, "cannot be read in full", None);
+        }
+    }
+
+    /// Whether `node`, the right side of an `||`, ends cmd: `exit` (with
+    /// `/b` too, which outside a batch file ends cmd), alone or last in a
+    /// `( … )` block, which runs in cmd itself. Not `exit /?`, which only
+    /// prints its help.
+    fn exits(&self, node: Node<'_>) -> bool {
+        let mut node = node;
+        loop {
+            let mut cursor = node.walk();
+            let children = node.named_children(&mut cursor);
+            match node.kind() {
+                "exit_stmt" => return true,
+                "cmd" => {
+                    let mut name = false;
+                    let mut help = false;
+                    for child in children {
+                        match child.kind() {
+                            "command_name" => {
+                                name = unit::text(&child, self.source).eq_ignore_ascii_case("exit");
+                            }
+                            "argument_list" => {
+                                let mut cursor = child.walk();
+                                help = child
+                                    .named_children(&mut cursor)
+                                    .any(|argument| unit::text(&argument, self.source) == "/?");
+                            }
+                            _ => {}
+                        }
+                    }
+                    return name && !help;
+                }
+                "parenthesized" | "command_sep" => match children.last() {
+                    Some(last) => node = last,
+                    None => return false,
+                },
+                _ => return false,
+            }
         }
     }
 

@@ -123,6 +123,39 @@ posix safe | echo x > log; cd build; make; ./app
 posix safe | echo x > x.sh; cd s; bash t/x.sh
 posix safe | echo x > x.sh; cd ..; bash x.sh
 cmd safe | echo x > x.bat & cd.. & x.bat
+# When the right side of `||` ends the shell (`exit`, alone or last in a
+# group), the rest of the line runs only when the `cd` before it ran: the line
+# goes on only where it went, however many such `cd`s there are. That side
+# itself runs where the `cd` left the line.
+posix safe | echo x > x.sh; cd s || exit; bash x.sh
+posix safe | echo x > x.sh; cd s || exit 1; ./x.sh
+posix safe | echo x > x.sh; cd s || { echo no >&2; exit 1; }; bash x.sh
+posix safe | echo x > x.sh; cd a && cd b || exit; bash ../x.sh
+posix safe | echo x > x.sh; cd s && make || exit; bash x.sh
+posix safe | cd a || exit; make > log; cd ../b || exit; make > log; cd ../c || exit; make > log; cd ../d || exit; ./build.sh
+posix safe | echo x > x.sh; cd a || exit; cd b || exit; cd c || exit; cd d || exit; cd e || exit; cd f || exit; bash x.sh
+cmd safe | echo x > x.bat & cd s || exit & x.bat
+cmd safe | echo x > x.bat & cd s || exit /b 1 & x.bat
+cmd safe | echo x > x.bat & cd s || (echo no & exit) & x.bat
+posix finds=unknown | echo x > x.sh; cd s || exit; bash ../x.sh
+posix finds=unknown | echo x > x.sh; cd s || { bash x.sh; exit; }
+cmd finds=unknown | echo x > s\\x.bat & cd s || exit & x.bat
+# What does not end the shell: `true`, `return` outside a function (bash goes
+# on), `exit` in a subshell, a pipeline or the background, `exit` with a
+# redirect (it does not run when the redirect fails), `exit` once a function
+# of that name is defined, a left side that may have run without the `cd`, and
+# `exit /?` in cmd. PowerShell's grammar reads `exit` after `||` as a command.
+posix finds=unknown | echo x > x.sh; cd s || return; bash x.sh
+posix finds=unknown | echo x > x.sh; cd s || (exit 1); bash x.sh
+posix finds=unknown | echo x > x.sh; cd s || exit | cat; bash x.sh
+posix finds=unknown | echo x > x.sh; cd s || { exit & }; bash x.sh
+posix finds=unknown | echo x > x.sh; cd s || exit 2> /dev/null; bash x.sh
+posix finds=unknown | echo x > x.sh; exit() { :; }; cd s || exit; bash x.sh
+posix finds=unknown | echo x > x.sh; true || cd s || exit; bash x.sh
+posix finds=unknown | echo x > x.sh; cd s || true || exit; bash x.sh
+posix finds=unknown | echo x > x.sh; cd s || exit & bash x.sh
+cmd finds=unknown | echo x > x.bat & cd s || exit /? & x.bat
+powershell finds=unknown | 'x' > x.ps1; cd s || exit; .\\x.ps1
 # Past the most folders the guard keeps for plain `cd`s that may have failed,
 # each file written so far counts as written in every folder by its name: a
 # run of a script of that name is unknown, one of another name stays safe.
