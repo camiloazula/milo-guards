@@ -4,7 +4,7 @@
 //! a setting, an application's own preferences, a user's own services) is
 //! left alone.
 
-mod firewall;
+pub(super) mod firewall;
 
 use super::processes::{is_system_label, is_system_unit};
 use super::Checker;

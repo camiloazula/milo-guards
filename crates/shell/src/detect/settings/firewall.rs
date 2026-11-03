@@ -9,10 +9,10 @@ use crate::launch::is_stdin;
 use crate::unit::{Arg, Unit};
 
 /// The reason of a load that replaces the rules.
-pub(super) const REPLACES: &str = "replaces the firewall's rules";
+pub(in crate::detect) const REPLACES: &str = "replaces the firewall's rules";
 
 /// The reason of a rule that opens the firewall.
-pub(super) const OPENS: &str = "lets everything through the firewall";
+pub(in crate::detect) const OPENS: &str = "lets everything through the firewall";
 
 /// A value given to an option.
 enum Value<'a> {
@@ -43,20 +43,18 @@ impl<'a> Value<'a> {
     }
 }
 
-/// The addresses that match every source or destination.
-const ANYWHERE: [&str; 6] = [
-    "0.0.0.0/0",
-    "0/0",
-    "::/0",
-    "0.0.0.0/0.0.0.0",
-    "any",
-    "anywhere",
-];
-
-/// Whether an address list (`a,b`) matches every address.
+/// Whether an address list (`a,b`) matches every address: `any` or
+/// `anywhere`, or an address whose mask keeps no bit of it, a prefix length
+/// of 0 (`/0`, `/00`) or a mask of zeros (`/0.0.0.0`), whatever the address
+/// before it says (`1.2.3.4/0`, `::0/0`).
 fn anywhere(text: &str) -> bool {
-    text.split(',')
-        .any(|part| ANYWHERE.iter().any(|any| any.eq_ignore_ascii_case(part)))
+    text.split(',').any(|part| {
+        part.eq_ignore_ascii_case("any")
+            || part.eq_ignore_ascii_case("anywhere")
+            || part.rsplit_once('/').is_some_and(|(_, mask)| {
+                mask.chars().all(|c| matches!(c, '0' | '.' | ':')) && mask.contains(['0', ':'])
+            })
+    })
 }
 
 /// Whether a protocol, by name or number, reaches every service: all of
@@ -82,8 +80,9 @@ struct Added<'a> {
 impl<'a> Added<'a> {
     /// Read one option, `name` a long name or a letter, given `value` (the
     /// rest of a bundle, an `=value`, or the next argument, taken only when
-    /// used). Returns whether the value was used.
-    fn option(&mut self, name: &Opt<'_>, value: Value<'a>) -> bool {
+    /// used). Returns how many values it takes: `value` first, then the
+    /// arguments after it.
+    fn option(&mut self, name: &Opt<'_>, value: Value<'a>) -> usize {
         let is = |full: &str, least: usize, letter: Option<char>| match name {
             Opt::Long(long) => is_option(long, full, least),
             Opt::Short(short) => Some(*short) == letter,
@@ -94,8 +93,22 @@ impl<'a> Added<'a> {
             self.target = Some(value);
         } else if is("goto", 2, Some('g')) {
             self.target = Some(Value::Is("goto"));
-        } else if is("source", 2, Some('s')) || is("destination", 3, Some('d')) {
+        } else if is("source", 2, Some('s'))
+            || is("src", 2, None)
+            || is("destination", 3, Some('d'))
+            || is("dst", 2, None)
+        {
             self.narrowed |= !matches!(value, Value::Is(text) if anywhere(text));
+        } else if is("in-interface", 3, Some('i')) || is("out-interface", 2, Some('o')) {
+            // `+` names every interface.
+            self.narrowed |= !matches!(value, Value::Is("+"));
+        } else if is("set-counters", 3, Some('c')) {
+            // Counters to start from, not a match: `-c PKTS BYTES`, or
+            // `-c PKTS,BYTES` in one word.
+            return match value {
+                Value::Is(text) if text.contains(',') => 1,
+                _ => 2,
+            };
         } else if is("protocol", 2, Some('p')) {
             self.narrowed |= !matches!(value, Value::Is(text) if every_service(text));
         } else if is("match", 2, Some('m')) {
@@ -107,7 +120,7 @@ impl<'a> Added<'a> {
             || is("modprobe", 2, Some('M'))
             || is("comment", 3, None)
         {
-            return true;
+            return 1;
         } else if is("verbose", 1, Some('v'))
             || is("numeric", 2, Some('n'))
             || is("exact", 1, Some('x'))
@@ -116,13 +129,13 @@ impl<'a> Added<'a> {
             || is("ipv6", 4, Some('6'))
             || is("wait", 4, Some('w'))
         {
-            return false;
+            return 0;
         } else {
-            // A match (`-i lo`, `--dport 22`), and anything not read.
+            // A match (`--dport 22`, `-f`), and anything not read.
             self.narrowed = true;
-            return matches!(name, Opt::Short('i' | 'o'));
+            return 0;
         }
-        true
+        1
     }
 
     /// Whether the rule lets every packet into the machine or through it.
@@ -147,9 +160,10 @@ enum Opt<'a> {
 
 /// Whether `args`, given to `iptables` (or `ebtables`, `arptables`), add a
 /// rule that ACCEPTs everything on the input or forward chain: with no
-/// match, or only matches of everything (`-s 0.0.0.0/0`, a comment) or of
-/// every service (`-p all`, `-p tcp`). A match only known when it runs is
-/// taken to narrow it, as a rule's other values are.
+/// match, or only matches of everything (`-s 0.0.0.0/0`, `-i +`, a
+/// comment) or of every service (`-p all`, `-p tcp`), and counters to start
+/// from (`-c 0 0`). A match only known when it runs is taken to narrow it,
+/// as a rule's other values are.
 pub(super) fn opens_everything(args: &[Arg]) -> bool {
     let mut rule = Added::default();
     let mut iter = args.iter().peekable();
@@ -174,7 +188,13 @@ pub(super) fn opens_everything(args: &[Arg]) -> bool {
                 Some(value) => Value::Is(value),
                 None => Value::of(iter.peek().copied()),
             };
-            if rule.option(&Opt::Long(name), value) && attached.is_none() {
+            let used = rule.option(&Opt::Long(name), value);
+            let after = if attached.is_some() {
+                used.saturating_sub(1)
+            } else {
+                used
+            };
+            for _ in 0..after {
                 iter.next();
             }
             continue;
@@ -191,8 +211,9 @@ pub(super) fn opens_everything(args: &[Arg]) -> bool {
                 Value::Is(rest)
             };
             let used = rule.option(&Opt::Short(letter), value);
-            if used {
-                if rest.is_empty() {
+            if used > 0 {
+                let after = if rest.is_empty() { used } else { used - 1 };
+                for _ in 0..after {
                     iter.next();
                 }
                 break;
@@ -293,36 +314,184 @@ pub(super) fn zone_opens(args: &[Arg]) -> bool {
     accepts || everyone && trusted
 }
 
-/// Whether an `nft` command line sets a chain's policy to accept (or to a
-/// policy only known when it runs) on a hook that lets things in: the last
-/// hook named before it, unless that is `output` or `postrouting`.
+/// A piece of an `nft` command line, read for the chains it sets.
+#[derive(Clone, Copy)]
+enum Piece<'a> {
+    /// A word: its text, or `None` when it is only known when it runs.
+    Word(Option<&'a str>),
+    /// `{`, which opens a block.
+    Open,
+    /// `}`, which closes one.
+    Close,
+    /// The end of a command (`;`, a newline), which inside a block ends
+    /// one of its statements.
+    End,
+}
+
+/// The pieces of `commands`, a brace a piece of its own wherever it is in a
+/// word (`{policy`, `accept}`).
+fn pieces(commands: &[Vec<NftWord>]) -> Vec<Piece<'_>> {
+    let mut pieces = Vec::new();
+    for command in commands {
+        for word in command {
+            let Some(word) = word else {
+                pieces.push(Piece::Word(None));
+                continue;
+            };
+            let mut rest = word.as_str();
+            while let Some(at) = rest.find(['{', '}']) {
+                if at > 0 {
+                    pieces.push(Piece::Word(Some(&rest[..at])));
+                }
+                pieces.push(if rest[at..].starts_with('{') {
+                    Piece::Open
+                } else {
+                    Piece::Close
+                });
+                rest = &rest[at + 1..];
+            }
+            if !rest.is_empty() {
+                pieces.push(Piece::Word(Some(rest)));
+            }
+        }
+        pieces.push(Piece::End);
+    }
+    pieces
+}
+
+/// Whether an `nft` command line lets everything in: a chain whose policy
+/// is accept, or a rule that accepts everything on the input chain.
 pub(super) fn nft_opens(commands: &[Vec<NftWord>]) -> bool {
-    let words: Vec<Option<&str>> = commands
-        .iter()
-        .flatten()
-        .map(|word| word.as_deref().map(|word| word.trim_matches(['{', '}'])))
-        .filter(|word| *word != Some(""))
-        .collect();
+    commands.iter().any(|command| nft_rule_opens(command)) || policy_opens(&pieces(commands))
+}
+
+/// Whether a chain's policy is set to accept (or to a policy only known
+/// when it runs) on a hook that lets things in: the hook named in the same
+/// chain, unless that is `output` or `postrouting`, and a chain whose type
+/// is not `nat` or `route`, which do not filter. What a chain says ends with
+/// the command it is in, or at the next `chain` word, so a hook of one
+/// chain does not carry over to another.
+fn policy_opens(pieces: &[Piece<'_>]) -> bool {
+    let mut depth = 0_usize;
     let mut hook: Option<Option<&str>> = None;
-    for (at, word) in words.iter().enumerate() {
-        let next = words.get(at + 1).copied();
-        match word {
-            Some("hook") => hook = next,
-            Some("policy") => {
+    let mut kind: Option<Option<&str>> = None;
+    for (at, piece) in pieces.iter().enumerate() {
+        let next = match pieces.get(at + 1) {
+            Some(Piece::Word(word)) => Some(*word),
+            _ => None,
+        };
+        match piece {
+            Piece::Open => depth += 1,
+            Piece::Close => depth = depth.saturating_sub(1),
+            Piece::End if depth > 0 => {}
+            Piece::End | Piece::Word(Some("chain")) => {
+                hook = None;
+                kind = None;
+            }
+            Piece::Word(Some("hook")) => hook = next,
+            Piece::Word(Some("type")) => kind = next,
+            Piece::Word(Some("policy")) => {
                 let accepts = match next {
                     None => false,
                     Some(None) => true,
                     Some(Some(policy)) => policy == "accept",
                 };
                 let leaves = matches!(hook, Some(Some("output" | "postrouting")));
-                if accepts && !leaves {
+                let filters = !matches!(kind, Some(Some("nat" | "route")));
+                if accepts && !leaves && filters {
                     return true;
                 }
             }
-            _ => {}
+            Piece::Word(_) => {}
         }
     }
     false
+}
+
+/// The families `nft` names a table with.
+const NFT_FAMILIES: [&str; 6] = ["ip", "ip6", "inet", "arp", "bridge", "netdev"];
+
+/// Skip the value of a statement's option in `words`: one word, or a
+/// string in double quotes split across words (`comment "let in"`).
+fn skip_value<'a>(words: &mut impl Iterator<Item = Option<&'a str>>) {
+    let Some(Some(first)) = words.next() else {
+        return;
+    };
+    let Some(open) = first.strip_prefix('"') else {
+        return;
+    };
+    if open.ends_with('"') {
+        return;
+    }
+    for word in words.by_ref() {
+        if word.is_some_and(|word| word.ends_with('"')) {
+            return;
+        }
+    }
+}
+
+/// Whether an `nft` command adds a rule that accepts everything on the
+/// input chain: `add`, `insert` or `replace rule [FAMILY] TABLE CHAIN` on a
+/// chain named `input` or `forward` (in any case) or only known when it
+/// runs, whose statements are `accept` and only `counter`, `log`, a
+/// `comment` or an address match of anywhere (`ip saddr 0.0.0.0/0`). Any
+/// other statement narrows it, and so does a word only known when it runs,
+/// as for `iptables`.
+fn nft_rule_opens(command: &[NftWord]) -> bool {
+    let mut words = command.iter().map(Option::as_deref).peekable();
+    if !matches!(words.next(), Some(Some("add" | "insert" | "replace")))
+        || words.next() != Some(Some("rule"))
+    {
+        return false;
+    }
+    if matches!(words.peek(), Some(Some(family)) if NFT_FAMILIES.contains(family)) {
+        words.next();
+    }
+    let into = match (words.next(), words.next()) {
+        (Some(_), Some(None)) => true,
+        (Some(_), Some(Some(chain))) => matches!(chain, "input" | "forward"),
+        _ => false,
+    };
+    if !into {
+        return false;
+    }
+    let mut accepts = false;
+    while let Some(word) = words.next() {
+        match word {
+            // Where the rule goes.
+            Some("handle" | "position" | "index") => {
+                words.next();
+            }
+            Some("accept") => accepts = true,
+            Some("counter") => {
+                while matches!(words.peek(), Some(Some("packets" | "bytes"))) {
+                    words.next();
+                    words.next();
+                }
+            }
+            Some("log") => {
+                while matches!(
+                    words.peek(),
+                    Some(Some(
+                        "prefix" | "level" | "group" | "snaplen" | "queue-threshold" | "flags"
+                    ))
+                ) {
+                    words.next();
+                    skip_value(&mut words);
+                }
+            }
+            Some("comment") => skip_value(&mut words),
+            Some("ip" | "ip6") => {
+                let address = matches!(words.next(), Some(Some("saddr" | "daddr")));
+                let everywhere = matches!(words.next(), Some(Some(text)) if anywhere(text));
+                if !address || !everywhere {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    accepts
 }
 
 /// Whether `ufw` operands (`allow from any`) let everything in: an `allow`
@@ -367,6 +536,56 @@ pub(super) fn ufw_opens(words: &[&Arg]) -> bool {
         }
     }
     extended
+}
+
+/// Whether `netsh advfirewall firewall` operands add a rule that lets
+/// everything in: `add rule` with `dir=in` and `action=allow`, not disabled
+/// (`enable=no`), with nothing to narrow it: no program, no service, port,
+/// address or interface type but `any`, no remote computers or users, no
+/// security asked for, and a protocol that reaches every service. An
+/// operand only known when it runs may narrow it, as for `iptables`.
+pub(in crate::detect) fn netsh_opens(args: &[Arg]) -> bool {
+    let Some(words) = args
+        .iter()
+        .map(|arg| arg.known().map(str::to_ascii_lowercase))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    if !words
+        .windows(2)
+        .any(|pair| pair[0] == "add" && pair[1] == "rule")
+    {
+        return false;
+    }
+    let mut inbound = false;
+    let mut allows = false;
+    for word in &words {
+        let Some((key, value)) = word.split_once('=') else {
+            continue;
+        };
+        let narrows = match key {
+            "dir" => {
+                inbound = value == "in";
+                false
+            }
+            "action" => {
+                allows = value == "allow";
+                false
+            }
+            "enable" => value == "no",
+            "protocol" => !every_service(value),
+            "localport" | "remoteport" | "service" | "interfacetype" => value != "any",
+            "localip" | "remoteip" => !anywhere(value),
+            "security" => value != "notrequired",
+            "program" | "rmtcomputergrp" | "rmtusrgrp" => true,
+            _ => false,
+        };
+        if narrows {
+            return false;
+        }
+    }
+    inbound && allows
 }
 
 /// Whether a ruleset `nft` loads adds nothing: every command lists, and a
@@ -548,14 +767,17 @@ impl Checker<'_> {
     }
 
     /// `iptables-restore` (and its kin) loads the ruleset in a file operand,
-    /// or else its input; `-t` only tests it.
+    /// or else its input; `-t` only tests it, and `-h` and `-V` print its
+    /// help and version.
     pub(super) fn restore_loads(&mut self, at: usize, unit: &Unit) -> bool {
         let args = unit.args.as_slice();
-        let tests = short_options(args, "TWM")
+        let loads_nothing = short_options(args, "TWM")
             .iter()
-            .any(|(letter, _)| *letter == 't')
-            || has_long(args, "test", 2);
-        if tests {
+            .any(|(letter, _)| matches!(letter, 't' | 'h' | 'V'))
+            || has_long(args, "test", 2)
+            || has_long(args, "help", 1)
+            || has_long(args, "version", 4);
+        if loads_nothing {
             return false;
         }
         let files = getopt_operands(args, "TWM", &["table", "wait-interval", "modprobe"]);
