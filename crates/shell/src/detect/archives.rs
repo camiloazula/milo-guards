@@ -11,7 +11,7 @@
 use super::Checker;
 use crate::path::within;
 use crate::powershell::Params;
-use crate::unit::{could_be, may_be_option, may_split, option_start, Arg, Unit};
+use crate::unit::{could_be, may_be_option, may_split, option_start, Arg, Flagged, Unit};
 use crate::{Rule, Shell};
 
 impl Checker<'_> {
@@ -108,11 +108,9 @@ struct Tar {
     unpacks: bool,
     /// Whether `--remove-files` is given to a mode that makes or adds to an
     /// archive (`-c`, `-r`, `-u`), or to one only known when it runs that
-    /// no mode letter rules out. An argument only known when it runs that
-    /// may be `--remove-files` (`$OPTS`, `"--$X"`) may remove them.
-    removes: bool,
-    /// Whether only such an argument removes them.
-    removes_unread: bool,
+    /// no mode letter rules out: `Unread` when only an argument only known
+    /// when it runs may be `--remove-files` (`$OPTS`, `"--$X"`).
+    removes: Flagged,
     /// Whether `-P` (`--absolute-names`) keeps the paths stored in the
     /// archive as they are, absolute and with their `..`.
     absolute: bool,
@@ -143,10 +141,10 @@ impl Tar {
     /// The members `--remove-files` deletes after packing them, and
     /// whether only an argument that may be it does.
     fn removed(self) -> (Vec<Arg>, bool) {
-        if self.removes {
-            (self.members, self.removes_unread)
-        } else {
-            (Vec::new(), false)
+        match self.removes {
+            Flagged::Absent => (Vec::new(), false),
+            Flagged::Unread => (self.members, true),
+            Flagged::Written => (self.members, false),
         }
     }
 }
@@ -321,14 +319,19 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
     // With no mode read, an argument that is only known when it runs may be
     // `-x`, or `-c`.
     let mode_unknown = read.unknown && !read.other_mode && !read.extract;
-    let removes_unread = !read.removes_files
-        && may_be_option(args, shell, |start| {
-            could_be(start, None, Some("remove-files"))
-        });
+    let removes = if read.pack || mode_unknown {
+        Flagged::of(
+            read.removes_files,
+            may_be_option(args, shell, |start| {
+                could_be(start, None, Some("remove-files"))
+            }),
+        )
+    } else {
+        Flagged::Absent
+    };
     Tar {
         unpacks: (read.extract || mode_unknown) && !read.other_mode && !read.to_stdout,
-        removes: (read.removes_files || removes_unread) && (read.pack || mode_unknown),
-        removes_unread,
+        removes,
         absolute: read.absolute,
         folders: read.folders,
         members: read.members,
