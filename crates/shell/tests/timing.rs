@@ -8,7 +8,7 @@ mod noise;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use common::{assert_linear, disagreements, filled, posix};
+use common::{assert_linear, disagreements, filled, posix, took};
 use milo_guards_shell::{classify, effect, Rule, Shell};
 use noise::{lossy, paths_for, Lcg, SHELLS, WIDE_PIECES};
 
@@ -428,6 +428,142 @@ fn cmd_commands_read_again_are_read_in_time() {
         let took = started.elapsed();
         assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
         assert!(!assessment.is_safe(), "{:?}", &line[..40]);
+    }
+}
+
+/// `count` folders, each the folder searched spelled its own way and ending
+/// in `//`, each followed by a space.
+fn distinct_folders(count: usize) -> String {
+    (0..count)
+        .map(|at| format!("s{at}/..// "))
+        .collect::<Vec<_>>()
+        .concat()
+}
+
+/// A line of a shape, and how it is made for a size.
+type Shape = (&'static str, fn(usize) -> String);
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn find_expressions_are_read_in_linear_time() {
+    let _serial = serial();
+    // A `find` expression is read for `.git` and its entries below each
+    // folder searched: its name and path patterns are asked of every name
+    // `.git` holds, and a path pattern again for each folder.
+    let paths = posix();
+    let shapes: [Shape; 11] = [
+        ("names joined by -o", |size| {
+            format!("find . {}-delete", filled("-name HEAD -o ", size, 20))
+        }),
+        ("negations", |size| {
+            format!("find . {}-name HEAD -delete", filled("! ", size, 30))
+        }),
+        ("brackets", |size| {
+            let open = filled("( ", size / 2, 20);
+            format!(
+                "find . {open}-name HEAD{} -delete",
+                " )".repeat(open.len() / 2)
+            )
+        }),
+        ("folders and a path test", |size| {
+            format!("find {}-path '*/HEAD' -delete", filled(". ", size, 30))
+        }),
+        ("folders and path tests", |size| {
+            let half = size / 2;
+            format!(
+                "find {}{}-delete",
+                filled(". ", half, 20),
+                filled("-path '*/x' -o ", half, 20)
+            )
+        }),
+        ("a long name pattern", |size| {
+            format!("find . -name '{}' -delete", filled("*a", size, 30))
+        }),
+        ("a long path pattern", |size| {
+            format!("find . -path '{}' -delete", filled("*a", size, 30))
+        }),
+        ("prunes", |size| {
+            format!(
+                "find . {}-name HEAD -exec rm {{}} +",
+                filled("-name .git -prune -o ", size, 40)
+            )
+        }),
+        ("tests and actions", |size| {
+            format!(
+                "find . {}-delete",
+                filled("-type f -print -mtime 1 , ", size, 20)
+            )
+        }),
+        // A folder ending in `//` spells `.git` three ways, a bracket reads
+        // the pattern twice, and `*?` keeps every position of it live.
+        (
+            "folders spelled three ways and a live path pattern",
+            |size| {
+                let half = size / 2;
+                format!(
+                    "find {}-ipath '{}[Z]' -delete",
+                    filled(".// ", half, 20),
+                    filled("*?", half, 20)
+                )
+            },
+        ),
+        ("distinct folders and a live path pattern", |size| {
+            let half = size / 2;
+            // Each is the folder searched, spelled its own way.
+            let folders = distinct_folders(half / 12);
+            format!(
+                "find {folders}-ipath '{}[Z]' -delete",
+                filled("*?", half, 20)
+            )
+        }),
+    ];
+    for (what, line) in shapes {
+        assert_linear(what, Shell::Posix, &paths, line);
+        assert!(
+            !classify(&line(64 * 1024), Shell::Posix, &paths).is_safe(),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn find_path_tests_over_many_folders_are_read_in_time() {
+    let _serial = serial();
+    // Each of these short lines asks a path pattern of every name `.git`
+    // holds, for each folder searched and each way it spells `.git`: they
+    // took seconds before the work was counted. They take milliseconds; the
+    // bound leaves room for a slower machine.
+    const LIMIT: std::time::Duration = std::time::Duration::from_millis(250);
+    let paths = posix();
+    let live = |pairs: usize| "*?".repeat(pairs);
+    let lines = [
+        format!(
+            "find {}-ipath '{}[Z]' -delete",
+            ".// ".repeat(250),
+            live(120)
+        ),
+        format!(
+            "find {}-ipath '{}[Z]' -delete",
+            distinct_folders(250),
+            live(120)
+        ),
+        format!("find {}-ipath '{}' -delete", ".// ".repeat(120), live(250)),
+        format!("find {}-ipath '{}' -delete", ".// ".repeat(30), live(1000)),
+        // Just inside the work allowed, and just past it.
+        format!("find .// -ipath '{}[Z]' -delete", live(260)),
+        format!("find .// -ipath '{}[Z]' -delete", live(280)),
+        format!("find . -path '{}' -delete", live(2000)),
+    ];
+    for line in lines {
+        let took = took(&line, Shell::Posix, &paths);
+        assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
     }
 }
 

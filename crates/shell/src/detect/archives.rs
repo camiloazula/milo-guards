@@ -17,6 +17,8 @@ use crate::path::within;
 use crate::powershell::Params;
 use crate::unit::{could_be, may_be_option, may_split, option_start, Arg, Flagged, Unit};
 use crate::{Rule, Shell};
+use milo_guards_core::spelling::glob;
+use milo_guards_core::Flavour;
 use std::collections::HashSet;
 
 impl Checker<'_> {
@@ -60,7 +62,7 @@ impl Checker<'_> {
         let args = unit.args.as_slice();
         let ((members, unread), matched) = match key {
             "tar" | "gtar" | "bsdtar" => (tar(args, unit.shell, key).removed(), false),
-            "zip" => (zip(args, unit.shell).removed(), true),
+            "zip" => (zip(args, unit.shell).removed(unit.shell), true),
             "7z" | "7za" | "7zr" | "7zz" => (seven_zip_removes(args, unit.shell), true),
             "rar" => ((rar_removes(args), false), true),
             _ => return,
@@ -803,6 +805,11 @@ struct Zip {
     unread: bool,
     /// The files it adds: see [`zip`].
     members: Vec<Arg>,
+    /// Whether it matches its names in every folder below the working
+    /// directory: every name with `-R` (`--recurse-patterns`), a pattern with
+    /// `-r` (`--recurse-paths`); or an argument only known when it runs may
+    /// ask it to.
+    recurses: Recursion,
     /// The commands `-TT` (`--unzip-command`) gives it to test the archive.
     commands: Vec<Arg>,
 }
@@ -810,9 +817,12 @@ struct Zip {
 impl Zip {
     /// The files `-m` deletes after adding them, and whether only an
     /// argument that may be it does.
-    fn removed(self) -> (Vec<Arg>, bool) {
+    fn removed(self, shell: Shell) -> (Vec<Arg>, bool) {
         if self.moves || self.unread {
-            (self.members, !self.moves)
+            let mut members = self.members;
+            let git = git_reached(&members, self.recurses, shell, false);
+            members.extend(git);
+            (members, !self.moves)
         } else {
             (Vec::new(), false)
         }
@@ -834,6 +844,17 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
     let unread = may_be_option(args, shell, |start| {
         could_be(start, Some('m'), Some("move"))
     });
+    let mut recurses = if may_be_option(args, shell, |start| {
+        could_be(start, Some('R'), Some("recurse-patterns"))
+    }) {
+        Recursion::Every
+    } else if may_be_option(args, shell, |start| {
+        could_be(start, Some('r'), Some("recurse-paths"))
+    }) {
+        Recursion::Patterns
+    } else {
+        Recursion::None
+    };
     let mut moves = false;
     let mut split = Vec::new();
     let mut from_input = false;
@@ -881,6 +902,10 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
             let is = |full: &str| long_option(name, full, 3);
             if is("move") {
                 moves = true;
+            } else if is("recurse-patterns") {
+                recurses = Recursion::Every;
+            } else if is("recurse-paths") {
+                recurses = recurses.max(Recursion::Patterns);
             } else if is("names-stdin") {
                 from_input = true;
             } else if is("update") || is("freshen") || is("filesync") {
@@ -923,6 +948,8 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
             let mut inside = false;
             match letter {
                 'm' => moves = true,
+                'R' => recurses = Recursion::Every,
+                'r' => recurses = recurses.max(Recursion::Patterns),
                 '@' => from_input = true,
                 'u' | 'f' => listed = true,
                 'S' if after_f => listed = true,
@@ -1027,6 +1054,7 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
         moves,
         unread,
         members,
+        recurses,
         commands,
     }
 }
@@ -1058,6 +1086,58 @@ fn readable(arg: &Arg) -> &str {
     }
 }
 
+/// Which names an archiver matches in every folder below the one it is given,
+/// `.git` among them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Recursion {
+    /// None: a name is matched where it is.
+    None,
+    /// Those that hold a wildcard (`zip -r '*.pack'`, `7z a -r`).
+    Patterns,
+    /// Every name (`zip -R HEAD`).
+    Every,
+}
+
+/// The `.git` folders whose entries the archiver may take when it matches the
+/// names of `members` in every folder below, as `recursion` says: a name that
+/// can be one of the entries `.git` holds (`HEAD`, `config`, `*.pack`, see
+/// [`glob::can_match_git_entry`]) finds them inside the `.git` of the folder
+/// the member names (`src/*.pack` looks below `src`). `fold` compares
+/// without case, as 7-Zip does; on Windows a name always does.
+fn git_reached(members: &[Arg], recursion: Recursion, shell: Shell, fold: bool) -> Vec<Arg> {
+    if recursion == Recursion::None {
+        return Vec::new();
+    }
+    let separators: &[char] = if shell == Shell::Posix {
+        &['/']
+    } else {
+        &['/', '\\']
+    };
+    let mut found = Vec::new();
+    for member in members {
+        let Some(text) = member.known() else {
+            continue;
+        };
+        let at = text.rfind(separators).map_or(0, |at| at + 1);
+        let name = &text[at..];
+        if recursion == Recursion::Patterns && !glob::has_wildcard(name) {
+            continue;
+        }
+        let reaches = match (shell, fold) {
+            (Shell::Posix, false) => glob::can_match_git_entry(name, Flavour::Posix),
+            (Shell::Posix, true) => glob::can_match_git_entry_ignoring_case(name),
+            _ => glob::can_match_git_entry(name, Flavour::Windows),
+        };
+        if reaches {
+            let git = Arg::Known(format!("{}.git", &text[..at]));
+            if !found.contains(&git) {
+                found.push(git);
+            }
+        }
+    }
+    found
+}
+
 /// Whether an argument can be nothing but a switch, however it expands: it
 /// is only known when it runs and no letter of its start is plain text that
 /// rules a switch out.
@@ -1083,6 +1163,14 @@ fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
         let start = start.to_ascii_lowercase();
         "-sdel".starts_with(&start) || start.starts_with("-sdel")
     });
+    let mut recurses = if may_be_option(args, shell, |start| {
+        let start = start.to_ascii_lowercase();
+        "-r".starts_with(&start) || start.starts_with("-r")
+    }) {
+        Recursion::Every
+    } else {
+        Recursion::None
+    };
     let mut deletes = false;
     let mut adds = false;
     let mut included = false;
@@ -1092,6 +1180,8 @@ fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
     // the names after it.
     let mut definite = 0;
     let mut members = Vec::new();
+    // The `-i!` patterns, and how each is looked for in the folders below.
+    let mut recursive_members = Vec::new();
     let mut options_done = false;
     for arg in args {
         let start = readable(arg);
@@ -1130,6 +1220,12 @@ fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
             options_done = true;
         } else if text.eq_ignore_ascii_case("-sdel") {
             deletes = true;
+        } else if text.eq_ignore_ascii_case("-r") {
+            recurses = Recursion::Every;
+        } else if text.eq_ignore_ascii_case("-r0") {
+            recurses = Recursion::Patterns;
+        } else if text.eq_ignore_ascii_case("-r-") {
+            recurses = Recursion::None;
         } else if text
             .get(..3)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("-si"))
@@ -1144,7 +1240,16 @@ fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
             included = true;
             let rest = text[2..]
                 .trim_start_matches(|c: char| matches!(c, 'r' | 'R' | '-') || c.is_ascii_digit());
+            // `-ir!` looks for the name in every folder below, and `-ir0!`
+            // for a wildcard.
+            let own = text[2..].len() - rest.len();
+            let recursion = match text[2..2 + own].to_ascii_lowercase().as_str() {
+                "r" => Recursion::Every,
+                "r0" => Recursion::Patterns,
+                _ => Recursion::None,
+            };
             if let Some(pattern) = rest.strip_prefix('!') {
+                recursive_members.push((Arg::Known(pattern.to_string()), recursion));
                 members.push(Arg::Known(pattern.to_string()));
             } else if rest.starts_with('@') {
                 members.push(list());
@@ -1160,6 +1265,20 @@ fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
         members.push(Arg::Known("*".to_string()));
     }
     if (deletes || unread) && adds {
+        let mut git = git_reached(&members, recurses, shell, true);
+        for (pattern, recursion) in &recursive_members {
+            for found in git_reached(
+                std::slice::from_ref(pattern),
+                (*recursion).max(recurses),
+                shell,
+                true,
+            ) {
+                if !git.contains(&found) {
+                    git.push(found);
+                }
+            }
+        }
+        members.extend(git);
         (members, !deletes)
     } else {
         (Vec::new(), false)
