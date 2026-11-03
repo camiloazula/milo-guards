@@ -837,8 +837,15 @@ impl Checker<'_> {
         let folder_for_sure = several
             || text.ends_with(separators)
             || matches!(text.rsplit(separators).next(), Some("." | ".."));
-        self.selinux_landing((shell, scope.dir), (folder, leaves), recursive, destination);
-        for &leaf in leaves {
+        // A copy into the root (`/`) lands in it.
+        let into = if folder.is_empty() {
+            text.get(..1).unwrap_or_default()
+        } else {
+            folder
+        };
+        self.selinux_landing((shell, scope.dir), (into, leaves), recursive, destination);
+        // What a folder's contents replace is read with the folder.
+        for &leaf in leaves.iter().filter(|leaf| **leaf != CONTENTS) {
             let landing = Arg::Known(format!("{folder}/{leaf}"));
             let place = if recursive {
                 self.place(shell, scope, &landing, Access::Item)
@@ -1386,6 +1393,11 @@ fn folder(arg: &Arg) -> Arg {
 
 /// The options of `cp`, `install`, `mv` and `ln` that take a value, which is
 /// not an operand.
+/// The name a copied source lands as when the line shows none of its own:
+/// a folder's contents (`.`, `..`), the home folder and the root. It may
+/// be any name.
+const CONTENTS: &str = ".";
+
 const COPY_VALUED: [&str; 8] = [
     "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
 ];

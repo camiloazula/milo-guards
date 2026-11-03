@@ -1127,8 +1127,13 @@ pub(super) fn is_system_unit(name: &str) -> bool {
 /// not told apart. A brace list the shell expands (`{ufw,nginx}`) is read
 /// as a `*`, which matches all it can expand to. Each name is read once for
 /// the name and its `.service`, and the reading stops when nothing can
-/// match any more, as a line may give thousands of patterns.
+/// match any more, as a line may give thousands of patterns. A pattern
+/// whose reading here may differ from `fnmatch`'s and the shell's is taken
+/// to match any name: see [`may_match_anything`].
 pub(super) fn unit_pattern_matches(pattern: &str, names: &[&str]) -> bool {
+    if may_match_anything(pattern) {
+        return true;
+    }
     let pattern = braces_as_stars(pattern);
     let pattern = pattern.trim_end_matches('/');
     let pattern = pattern.rsplit('/').next().unwrap_or(pattern);
@@ -1145,6 +1150,19 @@ pub(super) fn unit_pattern_matches(pattern: &str, names: &[&str]) -> bool {
         let (as_named, with_suffix) = whole.matches(name, ".service");
         as_named || with_suffix
     })
+}
+
+/// Whether a unit pattern holds what [`wildcard_pieces`] does not read as
+/// `fnmatch` and the shell do, so that it may match a name the pieces do
+/// not: a `\`, which quotes the character after it (`u\fw*` is `ufw*`),
+/// a class, equivalence class or collating symbol in a set (`[[:alpha:]]`,
+/// `[[=u=]]`, `[[.u.]]`), and a set whose first member is `]` (`[]u]`,
+/// `[!]]`, `[^]]`), which the pieces close too early.
+fn may_match_anything(pattern: &str) -> bool {
+    pattern.contains('\\')
+        || ["[:", "[=", "[.", "[]", "[!]", "[^]"]
+            .iter()
+            .any(|piece| pattern.contains(piece))
 }
 
 /// `pattern` with each brace list (`{a,b}`, and any nested in it) as a `*`.

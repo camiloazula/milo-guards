@@ -1934,7 +1934,8 @@ a setting and a user's own settings stay safe. Callers treat the rule as one
 of their strictest, so each family below was added on that test.
 
 - **Security switches.** `spctl --master-disable`, `--global-disable` and
-  `--disable` (Gatekeeper), `spctl kext-consent disable` and `add` (kernel
+  `--disable` (Gatekeeper), `spctl --add` (a rule that lets what it names
+  pass Gatekeeper's check), `spctl kext-consent disable` and `add` (kernel
   extensions load without the user's consent) and `spctl developer-mode
   enable-terminal` (the terminal's programs skip Gatekeeper); `csrutil
   disable`, `authenticated-root disable` and `enable --without …` (System
@@ -1943,14 +1944,19 @@ of their strictest, so each family below was added on that test.
   the program (a redirect, `tee`, `sed -i`, `cp`), a file copied or moved
   into their folder at their name (`cp config /etc/selinux/`, or a name
   that is a pattern or only known when it runs), and a folder copied whole
-  that lands on one of those folders (`cp -r selinux /etc/`); any
-  `setsebool` of a boolean and any `semanage` that adds, deletes or
-  modifies (`-a`, `-d`, `-m`, `-D`, and `module -r`) or `import`s
-  (`SELinux`'s policy; `semanage … -l` and `export` read it); `aa-disable`
+  that lands on one of those folders (`cp -r selinux /etc/`, `cp -r etc /`),
+  a folder's contents among them (`cp -r . /etc/selinux`, whose names may
+  be any); any `setsebool` of a boolean and any `semanage` that adds,
+  deletes or modifies (`-a`, `-d`, `-m`, `-D`, and `module -r`) or
+  `import`s (`-i`, `--input`) (`SELinux`'s policy; `semanage … -l` and
+  `export` read it), and `semodule -i`, `-u`, `-r`, `-d` and `-e`, which
+  `semanage module` runs (`semodule -l` lists); `aa-disable`
   and `aa-complain` of a profile, `aa-teardown`, and `apparmor_parser -R`
   (`--remove`) and `-C` (`--complain`) (AppArmor); `auditctl -D` (every
-  audit rule), `-e` with anything but `1` or `2`, and `-R` (rules from a
-  file the line does not show); `sysctl -w`, a `name=value` operand, `-p`,
+  audit rule), `-e` with anything but `1` or `2`, a rule `-a` or `-A` adds
+  whose action is `never` or whose list is `exclude` (`-a never,task`, in
+  either order), `-d` and `-W` (a rule or a watch deleted), and `-R`
+  (rules from a file the line does not show); `sysctl -w`, a `name=value` operand, `-p`,
   `-f` and `--system` (the kernel's settings, such as
   `kernel.randomize_va_space`); `nvram` that sets, deletes or clears a
   variable (`boot-args`). A value only known when it runs is risky.
@@ -1964,20 +1970,33 @@ of their strictest, so each family below was added on that test.
   `efibootmgr` with any option but `-v`, `-q`, `--help` and `--version` (it
   lists the entries alone; `-B` deletes one, `-o` sets the order, `-n` the next);
   `grub-set-default` and `grub-reboot` (and their `grub2-` names) given an
-  entry. Each is `changes how the computer starts`.
+  entry, and `grub-editenv FILE set` and `unset`, which they run
+  (`saved_entry`, `next_entry`); `bootctl install`, `update`, `remove`,
+  `set-default`, `set-oneshot`, `unlink` and `cleanup`. Each is `changes how
+  the computer starts`; `grub-editenv list`, `bootctl status` and `bootctl
+  list` read.
 - **An option only known when it runs.** Every program these rules read
   takes an argument only known when it runs that may be an option as a
   change: it may be the one that turns a protection off (`spctl $x`,
   `iptables $flag`, `auditctl $flag`, `firewall-cmd $x`, `pfctl $x`,
   `socketfilterfw $x`, `networksetup $x`, `scutil $x`). One that is the
   value of the option before it (`iptables -s $ip`, `pfctl -s $what`,
-  `auditctl -k $key`) is not. `iptables` refuses a second command, so once
-  the line names one (`-A`, `-L`, `-P`) an argument only known when it runs
-  cannot add one (`iptables -A INPUT $x -j DROP` is safe; `iptables -t nat
-  $x` is not). The programs whose command word comes first read one only
-  known when it runs as before (`systemctl $verb x`, `defaults $verb x`),
-  and `systemctl --user` with an argument only known when it runs is read
-  as system-wide, since that argument may be `--system`.
+  `auditctl -k $key`) is not, and only an option known to take a value
+  takes one: never one written with `=` (`firewall-cmd --zone=public $x`)
+  nor a flag (`firewall-cmd --permanent $x`, `scutil --dns $x`,
+  `systemsetup -getremotelogin $x` are risky; `firewall-cmd
+  --get-zone-of-interface $iface` and `networksetup -getinfo $service` are
+  safe). One whose known start is neither empty nor a `-`
+  (`"app-$name.service"`) cannot be an option. `iptables` refuses a second
+  command, so once the line names one (`-A`, `-L`, `-P`) an argument only
+  known when it runs cannot add one (`iptables -A INPUT $x -j DROP` is
+  safe; `iptables -t nat $x` is not); but a rule added with no target may
+  take it from such an argument (`-jACCEPT`), so `iptables -I INPUT $x`
+  lets everything through, as `-j ACCEPT` would. The programs whose
+  command word comes first read one only known when it runs as before
+  (`systemctl $verb x`, `defaults $verb x`), and `systemctl --user` with an
+  argument only known when it runs that may be an option is read as
+  system-wide, since that argument may be `--system`.
 - **The firewall.** `iptables` and `ip6tables`, and `ebtables` and
   `arptables`, which take the same commands (and their `-legacy` and
   `-nft` builds), with `-F`/`--flush` (`ebtables --init-table` too),
@@ -2141,16 +2160,25 @@ of their strictest, so each family below was added on that test.
   same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
   'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
-  is tested against the units that protect the machine and the ones it
-  needs: one that may match a protecting unit (`systemctl stop 'firewall*'`,
-  `'*'`, `'clamd@*'`, `'ufw.*'`) is risky, and so is one given to any other
+  is tested against the units that protect the machine, the slices that
+  hold every system service (`system.slice`, `-.slice`) and the units it
+  needs: one that may match a protecting unit or such a slice
+  (`systemctl stop 'firewall*'`, `'*'`, `'clamd@*'`, `'ufw.*'`,
+  `'*.slice'`) is risky, and so is one given to any other
   service manager (`sv down /etc/service/*`, `cd /etc/service && sv down
   *`), which the shell expands against the files. A unit is matched by its
   name, its name with `.service`, and the name before its instance, without
   case; a `[…]` set counts as any one character and a brace list the shell
-  expands (`{ufw,nginx}`) as a `*`. One that may match a unit the system
-  needs (`'systemd-logi*'`) is `stop_system`, and one that matches neither
-  (`systemctl stop 'docker*'`) is everyday work. For `service name action`, an
+  expands (`{ufw,nginx}`) as a `*`. A pattern whose reading may differ
+  from `fnmatch`'s may match any name: one with a `\` (`'u\fw*'`), a
+  class in a set (`'[[:alpha:]]fw'`, `[[=u=]]`, `[[.u.]]`), or a set whose
+  first member is `]` (`'[]u]fw'`, `'[!]]fw'`). One that may match a unit
+  the system needs (`'systemd-logi*'`), or a unit the sessions, the
+  machines or systemd run in (`user.slice`, `user-1000.slice`,
+  `user@1000.service`, `session-3.scope`, `init.scope`, and a pattern that
+  may match one, as `'user*'` and `'*.scope'`), is `stop_system`; one that
+  matches none (`systemctl stop 'docker*'`) is everyday work. Stopping
+  `system.slice` by its name `stops every system service`. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
