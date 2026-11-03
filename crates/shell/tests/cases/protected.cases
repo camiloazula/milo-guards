@@ -551,7 +551,8 @@ powershell@windows_file finds=overwrite | cp x.yaml conf\\app
 powershell@windows_file finds=overwrite | Copy-Item x.yaml,y.yaml conf\\app
 powershell@windows_file finds=overwrite | Copy-Item -Path x.yaml,y.yaml -Destination conf\\app
 powershell@windows_file finds=delete | Remove-Item y.txt,conf\\app\\x.yaml
-powershell@windows_file finds=delete | Move-Item y,x.yaml conf\\app
+# A list is the sources, one position: the folder after it is no source.
+powershell@windows_file rules=overwrite | Move-Item y,x.yaml conf\\app
 powershell@windows_file finds=overwrite | Copy-Item -Path y.yaml x.yaml conf\\app
 powershell@windows_file finds=overwrite | Copy-Item -LiteralPath y.yaml,x.yaml -Destination conf\\app
 powershell@windows_file finds=overwrite | 'x.yaml' | Copy-Item -Destination conf\\app

@@ -159,6 +159,12 @@ pub(crate) struct Unit {
     /// in step with `args`, and empty for any other unit, or one that
     /// lost them, in which no argument counts as read this way.
     pub(crate) listed: Vec<bool>,
+    /// For a PowerShell unit the walk reads, whether each argument goes on
+    /// the comma list of the one before it (`Set-Content a,b x`: `b`), in
+    /// step with `args`; empty for any other unit. A cmdlet is handed the
+    /// items of a list as one argument, which the words alone cannot show:
+    /// see [`Unit::list`].
+    pub(crate) joined: Vec<bool>,
     /// The values the line gives the variables a program reads as its own
     /// arguments where it runs, by name (see [`Split::argument_variables`]):
     /// `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`, which terraform reads as
@@ -259,10 +265,51 @@ impl Unit {
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
+            joined: Vec::new(),
             argument_variables: Rc::default(),
             depth: 0,
             names: None,
         }
+    }
+
+    /// The comma list `arg`, one of the unit's arguments, starts: `arg`
+    /// and each argument after it that goes on it. `None` when the unit
+    /// does not know its lists: it is not one the walk read, or its
+    /// arguments changed since.
+    pub(crate) fn list<'a>(&'a self, arg: &'a Arg) -> Option<Vec<&'a Arg>> {
+        let at = self.at(arg)?;
+        let mut items = vec![arg];
+        items.extend(
+            self.args[at + 1..]
+                .iter()
+                .zip(&self.joined[at + 1..])
+                .take_while(|(_, joined)| **joined)
+                .map(|(item, _)| item),
+        );
+        Some(items)
+    }
+
+    /// Whether `arg`, one of the unit's arguments, goes on the list of the
+    /// one before it; `None` when the unit does not know its lists (see
+    /// [`Unit::list`]).
+    pub(crate) fn continues(&self, arg: &Arg) -> Option<bool> {
+        self.at(arg).map(|at| self.joined[at])
+    }
+
+    /// Where `arg` is among the unit's arguments, when it is one of them
+    /// and the unit knows its lists.
+    fn at(&self, arg: &Arg) -> Option<usize> {
+        if self.joined.len() != self.args.len() {
+            return None;
+        }
+        // Found by where it sits in memory, so a long list costs one step
+        // for each argument, not one scan.
+        let offset = (std::ptr::from_ref(arg) as usize).checked_sub(self.args.as_ptr() as usize)?;
+        let at = offset / size_of::<Arg>();
+        self.args
+            .get(at)
+            .filter(|other| std::ptr::eq(*other, arg))
+            .map(|_| at)
     }
 
     /// The variables the unit's arguments read: [`Unit::names`] when the

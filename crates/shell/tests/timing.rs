@@ -515,7 +515,8 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // pipeline ending in an error (counted, `MAX_PIPES` in `tangled.rs`,
     // also behind a shift in arithmetic and through compound commands),
     // the readings of `Copy-Item` and `Move-Item` taken pair by pair (now
-    // once for each spelling), a folder one deeper at each `cd` read again
+    // once for each spelling), each path of `New-Item` joined with each item
+    // of a list given to its `-Name` (one name, the list joined), a folder one deeper at each `cd` read again
     // for every path (`MAX_DIR_LEN` in `unit.rs`, which folds a round trip
     // down and back up), PowerShell's children asked one by one for the
     // next, and a long word read back to its start at each `(` (`qualifier`
@@ -546,6 +547,22 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     let rows = [
         (Shell::PowerShell, "Move-Item src\\a ".repeat(2_000)),
         (Shell::PowerShell, "Copy-Item src\\a ".repeat(1_000)),
+        (
+            Shell::PowerShell,
+            format!(
+                "New-Item -Path {}a -Name {}b",
+                "a,".repeat(16_000),
+                "b,".repeat(16_000)
+            ),
+        ),
+        (
+            Shell::PowerShell,
+            format!(
+                "New-Item {}a -Name {}b",
+                "a,".repeat(2_000),
+                "b,".repeat(30_000)
+            ),
+        ),
         (Shell::PowerShell, "${".repeat(10_000)),
         (Shell::PowerShell, fit("${", "echo ", "")),
         (Shell::PowerShell, fit("${", "echo \"", "")),
