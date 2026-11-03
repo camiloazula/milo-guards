@@ -296,7 +296,7 @@ posix finds=unknown | echo 'rm -rf ~' > e.sh; builtin export BASH_ENV[0]=e.sh; b
 # mode, and for an `EXIT` or `RETURN` trap, the assignment outlives that
 # builtin). An `env` command reads the file from the folder the line is in.
 posix safe | echo x > e.sh; export BASH_ENV=e.sh; echo hi; pwd; true
-posix safe | echo x > e.sh; export BASH_ENV=e.sh; cd sub; echo hi; ls
+posix safe | echo x > e.sh; export BASH_ENV=e.sh; cd sub && echo hi && ls
 posix safe | echo x > other.sh; BASH_ENV=e.sh make
 posix safe | echo x > other.sh; export BASH_ENV=e.sh; find . -exec bash -c true \\;
 posix safe | trap 'make' EXIT; export BASH_ENV=e.sh
@@ -308,7 +308,7 @@ posix safe | echo 'echo hi' > e.sh; BASH_ENV=e.sh echo hi; bash -c true
 posix safe | echo 'echo hi' > e.sh; BASH_ENV=e.sh cd sub; bash -c true
 posix safe | echo 'echo hi' > e.sh; BASH_ENV=e.sh :
 posix safe | echo 'echo hi' > other.sh; BASH_ENV=e.sh :; bash -c true
-posix safe | echo x > e.sh; cd sub; env BASH_ENV=e.sh bash -c true
+posix safe | echo x > e.sh; cd sub && env BASH_ENV=e.sh bash -c true
 posix safe | echo x > sub/e.sh; env BASH_ENV=e.sh bash -c true
 posix finds=unknown | echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh bash -c true
 posix finds=unknown | echo 'rm -rf ~' > e.sh && BASH_ENV=e.sh bash -c true
@@ -376,6 +376,13 @@ posix finds=unknown | echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh exec bash -c true
 # An `env` command, from the folder the line is in.
 posix finds=unknown | echo x > e.sh; env BASH_ENV=e.sh bash -c true
 posix finds=unknown | echo x > sub/e.sh; cd sub; env BASH_ENV=e.sh bash -c true
+# A plain `cd` after the write may fail and leave the line where the file is
+# (see write_then_run.cases); after `&&` it ran.
+posix finds=unknown | echo x > e.sh; cd sub; env BASH_ENV=e.sh bash -c true
+posix finds=unknown | echo x > e.sh; export BASH_ENV=e.sh; cd sub; echo hi; ls
+posix finds=unknown | echo x > e.sh; export BASH_ENV=e.sh; cd sub; bash -c true
+posix finds=unknown | echo x > e.sh; cd sub; export BASH_ENV=e.sh; bash -c true
+posix finds=unknown | echo x > e.sh; cd sub; export BASH_ENV=$PWD/e.sh; bash -c true
 
 # A BASH_ENV that names standard input runs the input as a script.
 posix safe | BASH_ENV=/dev/stdin echo done
@@ -412,9 +419,9 @@ posix safe | PS4="+ $HOME $TMPDIR "; set -x; make
 posix safe | PS4="+ $HOME $LINENO "; set -x; make
 posix safe | cd sub; export BASH_ENV=$PWD/e.sh; bash -c true
 # Where a `BASH_ENV` name was assigned.
-posix safe | echo x > e.sh; export BASH_ENV=e.sh; cd sub; bash -c true
-posix safe | echo x > e.sh; cd sub; export BASH_ENV=e.sh; bash -c true
-posix safe | echo x > e.sh; cd sub; export BASH_ENV=$PWD/e.sh; bash -c true
+posix safe | echo x > e.sh; export BASH_ENV=e.sh; cd sub && bash -c true
+posix safe | echo x > e.sh; cd sub && export BASH_ENV=e.sh && bash -c true
+posix safe | echo x > e.sh; cd sub && export BASH_ENV=$PWD/e.sh && bash -c true
 posix safe | echo x > other.sh; export BASH_ENV=$PWD/e.sh; cd sub; bash -c true
 # A `cd` to a name the line wrote out, or no `$PWD` read after it.
 posix safe | cd 'Foo (x86)'; PS4="+ $PWD "; set -x; make
