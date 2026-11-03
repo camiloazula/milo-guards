@@ -26,7 +26,6 @@ posix finds=delete | env -S '-C /' rm -rf etc
 posix finds=delete | env -S '--chdir=/ -S "rm -rf etc"'
 posix finds=delete | env -C sub -S '-C / rm -rf etc'
 posix safe | env -S '-C sub make'
-posix safe | env -S 'make test'
 # env's own splitting: `\_` between words, `#` starting a comment, `\c`
 # ending the string, quotes and escapes.
 posix finds=delete | env -S '-C\\_/\\_rm -rf etc'

@@ -2,6 +2,7 @@
 //! commands and config, awk, expect, `AppleScript`, compiled .NET.
 
 use super::Checker;
+use crate::launch::{git_global, git_long, is_submodule, Global};
 use crate::unit::{has_flag, operands, Arg, Unit};
 use crate::{Rule, Shell};
 
@@ -91,26 +92,11 @@ impl Checker<'_> {
     }
 
     fn git(&mut self, args: &[Arg]) {
-        let mut at = 0;
-        let mut repository = None;
-        let mut configs = Vec::new();
-        while let Some(text) = args.get(at).and_then(Arg::known) {
-            match text {
-                "-C" => {
-                    repository = args.get(at + 1);
-                    at += 2;
-                }
-                "-c" => {
-                    configs.extend(args.get(at + 1).and_then(Arg::known));
-                    at += 2;
-                }
-                "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env" => {
-                    at += 2;
-                }
-                text if text.starts_with('-') => at += 1,
-                _ => break,
-            }
-        }
+        let Global {
+            at,
+            repository,
+            configs,
+        } = git_global(args);
         // A `-c` config value that makes git run a command of its own: an
         // alias body starting `!`, or a program git calls (pager, editor,
         // ssh, hooks).
@@ -142,10 +128,7 @@ impl Checker<'_> {
             "reset" if flag(None, Some("hard")) => {
                 (Rule::GitDiscard, "throws away uncommitted changes")
             }
-            "clean"
-                if (force_needless || flag(Some('f'), Some("force")))
-                    && !flag(Some('n'), Some("dry-run")) =>
-            {
+            "clean" if (force_needless || flag(Some('f'), Some("force"))) && !git_dry_run(rest) => {
                 (Rule::GitDiscard, "deletes untracked files")
             }
             "checkout"
@@ -199,9 +182,11 @@ impl Checker<'_> {
             "reflog" if matches!(first, Some("expire" | "delete")) => {
                 (Rule::GitHistory, "removes what git keeps to undo mistakes")
             }
-            "gc" if rest
-                .iter()
-                .any(|arg| matches!(arg.known(), Some("--prune=now" | "--prune=all"))) =>
+            "gc" if rest.iter().filter_map(Arg::known).any(|text| {
+                text.split_once('=').is_some_and(|(name, value)| {
+                    matches!(value, "now" | "all") && git_long(name, "prune")
+                })
+            }) =>
             {
                 (Rule::GitHistory, "removes what git keeps to undo mistakes")
             }
@@ -220,7 +205,25 @@ impl Checker<'_> {
             "update-ref" if flag(Some('d'), None) => (Rule::GitDiscard, "deletes a ref"),
             // A tag has no reflog to bring it back from.
             "tag" if flag(Some('d'), Some("delete")) => (Rule::GitDiscard, "deletes a tag"),
-            "submodule" if first == Some("deinit") && flag(Some('f'), Some("force")) => {
+            // A tag given again by force moves; where it pointed is gone.
+            "tag"
+                if flag(Some('f'), Some("force"))
+                    && !operands.is_empty()
+                    && !flag(Some('l'), Some("list"))
+                    && !flag(Some('v'), Some("verify")) =>
+            {
+                (Rule::GitDiscard, "moves a tag, losing where it pointed")
+            }
+            sub if is_submodule(sub)
+                && first == Some("update")
+                && flag(Some('f'), Some("force")) =>
+            {
+                (Rule::GitDiscard, "throws away changes in submodules")
+            }
+            sub if is_submodule(sub)
+                && first == Some("deinit")
+                && flag(Some('f'), Some("force")) =>
+            {
                 (Rule::GitDiscard, "throws away a submodule's changes")
             }
             "worktree" if first == Some("remove") && flag(Some('f'), Some("force")) => {
@@ -325,16 +328,51 @@ const EXEC_CONFIG_KEYS: [&str; 11] = [
     "uploadpack.packobjectshook",
 ];
 
-/// A git option: as [`has_flag`], and also a long option abbreviated, as
-/// git accepts (`--ha` is `--hard`); at least two letters.
+/// Whether `git clean` is left a dry run by its options. git reads them in
+/// order, so the last of `-n`, `--dry-run` and `--no-dry-run` wins, each
+/// also given as a prefix (`--dry`, `--no-d`); a prefix of `--no-` names
+/// several options, so git refuses it, and it is read as a dry run off. The
+/// value of `-e`/`--exclude` is not an option: in `-enx` and in `-e -n` the
+/// `n` is a pattern.
+fn git_dry_run(args: &[Arg]) -> bool {
+    let mut dry = false;
+    let mut words = args.iter().filter_map(Arg::known);
+    while let Some(text) = words.next() {
+        if text == "--" {
+            break;
+        }
+        if text.starts_with("--") {
+            if git_long(text, "dry-run") {
+                dry = true;
+            } else if git_long(text, "no-dry-run") {
+                dry = false;
+            } else if !text.contains('=') && git_long(text, "exclude") {
+                words.next();
+            }
+        } else if let Some(bundle) = text.strip_prefix('-') {
+            if !bundle.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                continue;
+            }
+            let (options, pattern) = bundle.split_once('e').unwrap_or((bundle, ""));
+            if options.contains('n') {
+                dry = true;
+            }
+            if bundle.contains('e') && pattern.is_empty() {
+                words.next();
+            }
+        }
+    }
+    dry
+}
+
+/// A git option: as [`has_flag`], and also a long option given as a prefix
+/// of it, as git takes one (`--h` is `--hard`, see [`git_long`]).
 fn git_flag(args: &[Arg], short: Option<char>, long: Option<&str>) -> bool {
     has_flag(args, short, long)
         || long.is_some_and(|long| {
             args.iter()
                 .filter_map(Arg::known)
                 .take_while(|text| *text != "--")
-                .filter_map(|text| text.strip_prefix("--"))
-                .map(|name| name.split('=').next().unwrap_or(name))
-                .any(|name| name.len() >= 2 && long.starts_with(name))
+                .any(|text| git_long(text, long))
         })
 }

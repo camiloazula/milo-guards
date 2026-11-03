@@ -391,8 +391,18 @@ pub(super) fn env_sets(args: &[Arg]) -> Vec<String> {
     let mut names = Vec::new();
     let mut at = 0;
     while let Some(arg) = args.get(at) {
+        // The words of an `env -S` string are read again as `env`'s own,
+        // in its place (see [`env`]).
+        if arg.known().is_some_and(|text| {
+            text.starts_with('-')
+                && matches!(
+                    getopt(text, None, &ENV_OPTIONS).1,
+                    Some(("split-string", _))
+                )
+        }) {
+            break;
+        }
         match arg.known() {
-            Some("-S" | "--split-string") => break,
             Some("-u" | "--unset") => {
                 names.extend(args.get(at + 1).map(|name| name.text().to_string()));
                 at += 2;
@@ -446,6 +456,30 @@ pub(super) fn python_path(args: &[Arg], start: usize) -> Vec<Arg> {
         .filter_map(Arg::known)
         .filter_map(|text| text.strip_prefix("PYTHONPATH="))
         .map(|value| Arg::Known(value.to_string()))
+        .collect()
+}
+
+/// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given by the
+/// wrapper's own arguments, by name, as [`node_options`] reads
+/// `NODE_OPTIONS` (`env TF_CLI_ARGS=-destroy terraform apply`). One only
+/// known when it runs is kept as it is.
+pub(super) fn tf_cli_args(args: &[Arg], start: usize) -> Vec<(String, Arg)> {
+    args.iter()
+        .take(start)
+        .filter_map(|arg| {
+            let (name, value) = match arg {
+                Arg::Known(text) => {
+                    let (name, value) = text.split_once('=')?;
+                    (name, Arg::Known(value.to_string()))
+                }
+                Arg::Unknown(_) | Arg::Template { .. } => {
+                    let (name, _) = arg.text().trim_start_matches(['"', '\'']).split_once('=')?;
+                    (name, arg.clone())
+                }
+                Arg::Input | Arg::Null => return None,
+            };
+            unit::tf_cli_args(name).then(|| (name.to_string(), value))
+        })
         .collect()
 }
 
@@ -810,6 +844,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
+        tf_cli_args: Vec::new(),
         depth: unit.depth,
     }));
     in_folder(folder, launch)
@@ -1482,6 +1517,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
+        tf_cli_args: Vec::new(),
         depth: unit.depth,
     }
 }

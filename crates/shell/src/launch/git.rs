@@ -1,0 +1,152 @@
+//! git's own options, read before its subcommand, and the command
+//! `git submodule foreach` runs in each submodule.
+
+use super::{Launch, Word};
+use crate::unit::Arg;
+use crate::Shell;
+
+/// What git's own options say, before its subcommand.
+pub(crate) struct Global<'a> {
+    /// Where the subcommand is in the arguments.
+    pub(crate) at: usize,
+    /// The folder `-C` moves git to.
+    pub(crate) repository: Option<&'a Arg>,
+    /// The `-c key=value` settings it is given.
+    pub(crate) configs: Vec<&'a str>,
+}
+
+/// Read git's own options, up to its subcommand. They take no abbreviation.
+pub(crate) fn global(args: &[Arg]) -> Global<'_> {
+    let mut at = 0;
+    let mut repository = None;
+    let mut configs = Vec::new();
+    while let Some(text) = args.get(at).and_then(Arg::known) {
+        match text {
+            "-C" => {
+                repository = args.get(at + 1);
+                at += 2;
+            }
+            "-c" => {
+                configs.extend(args.get(at + 1).and_then(Arg::known));
+                at += 2;
+            }
+            "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env"
+            | "--attr-source" => {
+                at += 2;
+            }
+            text if text.starts_with('-') => at += 1,
+            _ => break,
+        }
+    }
+    Global {
+        at,
+        repository,
+        configs,
+    }
+}
+
+/// Whether a git long option `--name` or `--name=value`, as written, is
+/// `long`: git takes any prefix of a long option that names only one, and
+/// refuses a prefix that names several, so a prefix of `long` is `long`
+/// whenever the line runs at all.
+pub(crate) fn is_long(text: &str, long: &str) -> bool {
+    text.strip_prefix("--")
+        .map(|name| name.split_once('=').map_or(name, |(name, _)| name))
+        .is_some_and(|name| !name.is_empty() && long.starts_with(name))
+}
+
+/// Whether a git subcommand is `submodule`, or `submodule--helper`, the
+/// helper it calls, which runs the same commands (`foreach`, `update`,
+/// `deinit`) when called directly.
+pub(crate) fn is_submodule(sub: &str) -> bool {
+    matches!(sub, "submodule" | "submodule--helper")
+}
+
+/// `git submodule foreach`: git runs its command in each submodule, with a
+/// shell. One argument is a shell line (`git submodule foreach 'rm -rf ~'`);
+/// with several, the first is put in a shell line as written and the others
+/// are handed to it as words (`sh -c 'FIRST "$@"' FIRST REST…`), so the
+/// line read is the first as it is and each other quoted. Its options
+/// (`--recursive`, `--quiet`) come before the command; any other word that
+/// starts with a dash is taken as one too, so what follows is still read.
+pub(super) fn launch(args: &[Arg]) -> Launch {
+    let global = global(args);
+    if !args
+        .get(global.at)
+        .and_then(Arg::known)
+        .is_some_and(is_submodule)
+    {
+        return Launch::Itself;
+    }
+    let rest = args.get(global.at + 1..).unwrap_or_default();
+    // `git submodule --quiet foreach`: the options of `submodule` itself.
+    let Some(foreach) = rest
+        .iter()
+        .position(|arg| arg.known().is_none_or(|text| !text.starts_with('-')))
+    else {
+        return Launch::Itself;
+    };
+    if rest.get(foreach).and_then(Arg::known) != Some("foreach") {
+        return Launch::Itself;
+    }
+    let after = rest.get(foreach + 1..).unwrap_or_default();
+    let Some(start) = super::after_options_by(after, |_, _| Word::Flag) else {
+        return Launch::Itself;
+    };
+    let command = after.get(start..).unwrap_or_default();
+    match command {
+        [] => Launch::Itself,
+        [line] => Launch::Elsewhere(Shell::Posix, line.clone()),
+        [first, words @ ..] => {
+            let mut line = first.text().to_string();
+            for word in words {
+                line.push(' ');
+                match word {
+                    Arg::Known(text) => line.push_str(&quoted(text)),
+                    other => line.push_str(other.text()),
+                }
+            }
+            let line = if first.known().is_some() {
+                Arg::Known(line)
+            } else {
+                Arg::Unknown(line)
+            };
+            Launch::Elsewhere(Shell::Posix, line)
+        }
+    }
+}
+
+/// `text` in single quotes, as one word of a POSIX shell line.
+fn quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_prefix_of_a_long_option_is_that_option() {
+        assert!(is_long("--f", "force"));
+        assert!(is_long("--force", "force"));
+        assert!(is_long("--pr=now", "prune"));
+        assert!(!is_long("--", "force"));
+        assert!(!is_long("--=x", "force"));
+        assert!(!is_long("--forced", "force"));
+        assert!(!is_long("-f", "force"));
+        assert!(!is_long("--no-force", "force"));
+    }
+
+    #[test]
+    fn the_submodule_helper_is_a_submodule() {
+        assert!(is_submodule("submodule"));
+        assert!(is_submodule("submodule--helper"));
+        assert!(!is_submodule("submodules"));
+    }
+
+    #[test]
+    fn a_word_is_quoted_whatever_it_holds() {
+        assert_eq!(quoted("a b"), "'a b'");
+        assert_eq!(quoted("it's"), r"'it'\''s'");
+    }
+}

@@ -451,7 +451,7 @@ impl Checker<'_> {
         self.data(at, unit, &key);
         self.resources(unit, &key);
         self.system(unit, &key);
-        self.settings(unit, &key);
+        self.settings(at, unit, &key);
         self.code(unit, &key);
     }
 
@@ -764,6 +764,31 @@ impl Checker<'_> {
         destination: &Arg,
         recursive: bool,
     ) {
+        let mut seen = HashSet::new();
+        let distinct: Vec<&str> = leaves
+            .iter()
+            .map(String::as_str)
+            .filter(|leaf| seen.insert(*leaf))
+            .collect();
+        self.copy_into(
+            shell,
+            scope,
+            (&distinct, leaves.len() > 1),
+            destination,
+            recursive,
+        );
+    }
+
+    /// As [`copy_to`](Self::copy_to), with the names of the files each once,
+    /// and whether there are several files (a name given twice is two).
+    pub(super) fn copy_into(
+        &mut self,
+        shell: Shell,
+        scope: Scope<'_>,
+        (leaves, several): (&[&str], bool),
+        destination: &Arg,
+        recursive: bool,
+    ) {
         let protected = |place: Place| match place {
             Place::Protected(words) => Some(words),
             _ => None,
@@ -795,10 +820,10 @@ impl Checker<'_> {
         let folder = text.trim_end_matches(separators);
         // Several sources, a trailing separator, `.` and `..` can only be a
         // folder (`-t` is made one by `sources_and_destination`).
-        let folder_for_sure = leaves.len() > 1
+        let folder_for_sure = several
             || text.ends_with(separators)
             || matches!(text.rsplit(separators).next(), Some("." | ".."));
-        for leaf in leaves {
+        for &leaf in leaves {
             let landing = Arg::Known(format!("{folder}/{leaf}"));
             let place = if recursive {
                 self.place(shell, scope, &landing, Access::Item)

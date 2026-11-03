@@ -49,6 +49,7 @@ mod path;
 mod posix;
 mod powershell;
 mod startup;
+mod tangled;
 mod unit;
 mod values;
 
@@ -121,7 +122,8 @@ pub enum Rule {
     /// Writes into a file beyond the workspace or a sensitive one.
     Overwrite,
     /// Throws away work git cannot give back: uncommitted changes,
-    /// untracked files, stashes, unmerged branches.
+    /// untracked files, stashes, unmerged branches, tags deleted or moved,
+    /// a submodule's changes.
     GitDiscard,
     /// Rewrites or deletes branches on a remote.
     GitRemote,
