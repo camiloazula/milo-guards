@@ -193,6 +193,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "gps" | "ps" => "get-process",
         "sal" => "set-alias",
         "nal" => "new-alias",
+        "ipal" => "import-alias",
         "nmo" => "new-module",
         "icim" => "invoke-cimmethod",
         "iwmi" => "invoke-wmimethod",
@@ -879,12 +880,7 @@ impl Walker<'_> {
                 Some(text),
             );
         }
-        let mut keys = vec![unit::key(name, Shell::PowerShell)];
-        for command in resolved.commands {
-            let key = unit::key(&command, Shell::PowerShell);
-            if keys.contains(&key) {
-                continue;
-            }
+        for command in &resolved.commands {
             if let Some(first) = self.split.powershell_aliases.reading() {
                 if first {
                     self.split.problem(
@@ -895,8 +891,7 @@ impl Walker<'_> {
                 }
                 break;
             }
-            keys.push(key);
-            readings.push(Arg::Known(command));
+            readings.push(Arg::Known(command.clone()));
         }
         readings
     }
@@ -1493,7 +1488,8 @@ impl Walker<'_> {
     }
 
     /// The aliases a command sets: `Set-Alias` and `New-Alias` (`sal`,
-    /// `nal`), and `Set-Item` (`si`) on paths of the `Alias:` drive. A name
+    /// `nal`), `Set-Item` (`si`) on paths of the `Alias:` drive, and
+    /// `Import-Alias` (`ipal`), whose names are in a file. A name
     /// is `None` when it is only known when it runs: given by a variable or a
     /// splat, or not given at all, as both cmdlets also take their name from
     /// the properties of what the pipeline hands them. The text is the
@@ -1502,10 +1498,18 @@ impl Walker<'_> {
         let Some(key) = self.command_key(node) else {
             return Vec::new();
         };
-        if !matches!(key.as_str(), "set-alias" | "new-alias" | "set-item") {
+        if !matches!(
+            key.as_str(),
+            "set-alias" | "new-alias" | "set-item" | "import-alias"
+        ) {
             return Vec::new();
         }
         let text = unit::text(&node, self.source).to_string();
+        // `Import-Alias` sets every alias in a file, which the line may have
+        // written itself: their names are only known when it runs.
+        if key == "import-alias" {
+            return vec![(None, Stands::Unknown, text)];
+        }
         let bound = self.bound_args(node);
         let splat = node
             .child_by_field_name("command_elements")
@@ -1627,14 +1631,18 @@ impl Walker<'_> {
     /// (a block written out is read where it stands, as the body it is).
     /// With several targets (`$alias:x, $y = 'Remove-Item', 1`) each takes
     /// the value in its place, and the last one what is left, so a target
-    /// whose value cannot be paired so is only known when it runs.
+    /// whose value cannot be paired so is only known when it runs. A target
+    /// may be in parentheses (`($alias:x) = …`). Any other variable of the
+    /// `Alias:` or `Function:` drive on the left side, which the guard does
+    /// not read as a target, is taken to set its name to what is only known
+    /// when it runs.
     fn assigned_name(&self, node: Node<'_>) -> Vec<(Option<String>, Stands, String)> {
-        let (Some(left), Some(value)) = (node.named_child(0), node.child_by_field_name("value"))
+        let (Some(whole), Some(value)) = (node.named_child(0), node.child_by_field_name("value"))
         else {
             return Vec::new();
         };
         let text = unit::text(&node, self.source);
-        let left = assigned_list(left);
+        let left = assigned_list(whole);
         let targets: Vec<Option<Node<'_>>> = match left.kind() {
             "array_literal_expression" if left.named_child_count() > 1 => {
                 let mut cursor = left.walk();
@@ -1662,16 +1670,8 @@ impl Walker<'_> {
             Vec::new()
         };
         let mut found = Vec::new();
-        for (at, target) in targets.into_iter().enumerate() {
-            let Some(target) = target else {
-                continue;
-            };
-            let name = unit::text(&target, self.source).trim().to_ascii_lowercase();
-            let Some(name) = name
-                .strip_prefix("${")
-                .and_then(|rest| rest.strip_suffix('}'))
-                .or_else(|| name.strip_prefix('$'))
-            else {
+        for (at, target) in targets.iter().enumerate() {
+            let Some(name) = target.and_then(|target| variable_name(target, self.source)) else {
                 continue;
             };
             let value = values.get(at).copied();
@@ -1689,6 +1689,28 @@ impl Walker<'_> {
                         text.to_string(),
                     ));
                 }
+            }
+        }
+        // Fail closed on a target the guard does not read as one.
+        for variable in left_variables(whole) {
+            if targets.contains(&Some(variable)) {
+                continue;
+            }
+            let Some(name) = variable_name(variable, self.source) else {
+                continue;
+            };
+            if let Some(alias) = name.strip_prefix("alias:") {
+                found.push((
+                    Some(unscoped(alias).to_string()),
+                    Stands::Unknown,
+                    text.to_string(),
+                ));
+            } else if let Some(function) = name.strip_prefix("function:") {
+                found.push((
+                    Some(unscoped(function).to_string()),
+                    Stands::Function,
+                    text.to_string(),
+                ));
             }
         }
         found
@@ -2974,44 +2996,39 @@ impl Bound {
     }
 }
 
-/// The left side of an assignment inside the nodes the grammar wraps it in:
-/// a variable, a cast of one, or a list of targets.
+/// The left side of an assignment inside the nodes the grammar wraps it in,
+/// parentheses among them: a variable, a cast of one, or a list of targets.
 fn assigned_list(node: Node<'_>) -> Node<'_> {
     let mut node = node;
-    while matches!(
-        node.kind(),
-        "left_assignment_expression"
-            | "logical_expression"
-            | "bitwise_expression"
-            | "comparison_expression"
-            | "additive_expression"
-            | "multiplicative_expression"
-            | "format_expression"
-            | "range_expression"
-            | "array_literal_expression"
-            | "unary_expression"
-    ) && node.named_child_count() == 1
-    {
+    loop {
+        node = blocks::unwrap(node);
+        if !matches!(
+            node.kind(),
+            "left_assignment_expression" | "parenthesized_expression"
+        ) || node.named_child_count() != 1
+        {
+            return node;
+        }
         match node.named_child(0) {
             Some(only) => node = only,
-            None => break,
+            None => return node,
         }
     }
-    node
 }
 
-/// The variable a target of an assignment sets (`$x`, `[string]$x`), when it
-/// is one: not an item or a member of one (`$a[0]`, `$a.b`).
+/// The variable a target of an assignment sets (`$x`, `[string]$x`, `($x)`),
+/// when it is one: not an item or a member of one (`$a[0]`, `$a.b`).
 fn assigned_variable(node: Node<'_>) -> Option<Node<'_>> {
     let mut node = node;
     loop {
+        node = blocks::unwrap(node);
         node = match node.kind() {
             "variable" => return Some(node),
             "cast_expression" => {
                 let last = node.named_child_count().checked_sub(1)?;
                 node.named_child(u32::try_from(last).ok()?)?
             }
-            "unary_expression" | "expression_with_unary_operator" | "array_literal_expression"
+            "expression_with_unary_operator" | "parenthesized_expression"
                 if node.named_child_count() == 1 =>
             {
                 node.named_child(0)?
@@ -3019,6 +3036,41 @@ fn assigned_variable(node: Node<'_>) -> Option<Node<'_>> {
             _ => return None,
         };
     }
+}
+
+/// The variables on the left side of an assignment, past any assignment in
+/// it, which is read on its own; walked without recursion, so a deep tree
+/// cannot overflow the stack.
+fn left_variables(left: Node<'_>) -> Vec<Node<'_>> {
+    let mut found = Vec::new();
+    let mut cursor = left.walk();
+    loop {
+        let node = cursor.node();
+        if node.kind() == "variable" {
+            found.push(node);
+        }
+        if node.kind() != "assignment_expression" && cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return found;
+            }
+        }
+    }
+}
+
+/// A variable's name, in lower case, without its `$` or braces
+/// (`${function:x}` is `function:x`).
+fn variable_name(node: Node<'_>, source: &str) -> Option<String> {
+    let name = unit::text(&node, source).trim().to_ascii_lowercase();
+    name.strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .or_else(|| name.strip_prefix('$'))
+        .map(str::to_string)
 }
 
 /// The alias a path of the `Alias:` drive names (`Alias:x`, `alias:\x`), when

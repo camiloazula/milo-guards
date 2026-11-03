@@ -2,6 +2,12 @@
 //! Remove-Item`, `$function:f = $b`): a command of that name may run what
 //! the name was set to, so it is judged as that too.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::unit;
+use crate::Shell;
+
 /// How many names a line may set before the guard stops reading them: the
 /// line is then unknown, as a command of a name past them is not judged.
 const MAX_SET: usize = 64;
@@ -39,8 +45,9 @@ pub(super) enum Set {
 /// The names a command may stand for, worked out by [`Aliases::resolve`].
 #[derive(Debug, Default)]
 pub(super) struct Resolved {
-    /// The commands it may run, each as written, in the order the line set
-    /// them.
+    /// The commands it may run past the name itself, each as written, in the
+    /// order the line set them: one for each key, and none of the name's own
+    /// key, as that is the command already read.
     pub(super) commands: Vec<String>,
     /// Whether it may run a command only known when it runs.
     pub(super) unknown: bool,
@@ -55,8 +62,13 @@ pub(super) struct Resolved {
 #[derive(Debug, Default)]
 pub(crate) struct Aliases {
     /// Each name (in lower case: PowerShell's names ignore case) with what it
-    /// stands for, each pair once.
-    set: Vec<(String, Stands)>,
+    /// stands for, each pair once, and the key of the command it stands for,
+    /// worked out when it is set.
+    set: Vec<(String, Stands, Option<String>)>,
+    /// What each name a command was named by resolves to, worked out once and
+    /// forgotten when the line sets one more name, so a command costs one
+    /// lookup however many targets its name has.
+    resolved: HashMap<String, Rc<Resolved>>,
     /// How many names were refused for being past [`MAX_SET`].
     refused: usize,
     /// How many readings have been added.
@@ -75,7 +87,7 @@ impl Aliases {
         if self
             .set
             .iter()
-            .any(|(set, was)| *set == name && *was == stands)
+            .any(|(set, was, _)| *set == name && *was == stands)
         {
             return Set::Again;
         }
@@ -85,24 +97,36 @@ impl Aliases {
                 first: self.refused == 1,
             };
         }
-        self.set.push((name, stands));
+        let key = match &stands {
+            Stands::Command(command) => Some(unit::key(command, Shell::PowerShell)),
+            Stands::Unknown | Stands::Function => None,
+        };
+        self.set.push((name, stands, key));
+        self.resolved.clear();
         Set::Noted
     }
 
     /// What a command named `name` may run, past the name itself: every
     /// target the line sets the name to, and, when a target is a name the
     /// line sets too, what that one may run (PowerShell looks an alias up
-    /// again when it runs), each name read once.
-    pub(super) fn resolve(&self, name: &str) -> Resolved {
+    /// again when it runs), each name read once. Worked out once for each
+    /// name, until the line sets one more.
+    pub(super) fn resolve(&mut self, name: &str) -> Rc<Resolved> {
+        let name = name.to_ascii_lowercase();
+        if let Some(resolved) = self.resolved.get(&name) {
+            return Rc::clone(resolved);
+        }
         let mut resolved = Resolved::default();
-        let mut seen = vec![name.to_ascii_lowercase()];
+        let mut keys = vec![unit::key(&name, Shell::PowerShell)];
+        let mut seen = vec![name.clone()];
         let mut next = 0;
-        while let Some(name) = seen.get(next).cloned() {
+        while let Some(from) = seen.get(next).cloned() {
             next += 1;
-            for (_, stands) in self.set.iter().filter(|(set, _)| *set == name) {
+            for (_, stands, key) in self.set.iter().filter(|(set, _, _)| *set == from) {
                 match stands {
                     Stands::Command(command) => {
-                        if !resolved.commands.contains(command) {
+                        if let Some(key) = key.as_ref().filter(|key| !keys.contains(key)) {
+                            keys.push(key.clone());
                             resolved.commands.push(command.clone());
                         }
                         let lower = command.to_ascii_lowercase();
@@ -115,6 +139,8 @@ impl Aliases {
                 }
             }
         }
+        let resolved = Rc::new(resolved);
+        self.resolved.insert(name, Rc::clone(&resolved));
         resolved
     }
 
@@ -151,8 +177,12 @@ mod tests {
         assert_eq!(resolved.commands, ["X", "Remove-Item"]);
         assert!(resolved.unknown);
         assert!(!resolved.function);
-        assert_eq!(aliases.resolve("z").commands, ["z"]);
+        // A target of the name's own key is the command already read.
+        assert!(aliases.resolve("z").commands.is_empty());
         assert!(aliases.resolve("w").commands.is_empty());
+        // Setting one more name is seen by a name resolved before.
+        aliases.set("w", Stands::Command("Stop-Process".into()));
+        assert_eq!(aliases.resolve("W").commands, ["Stop-Process"]);
     }
 
     #[test]

@@ -285,12 +285,30 @@ powershell finds=unknown | $function:x, $y = $b, 1; x
 powershell finds=unknown | $alias:x, $y = $v; x ~
 powershell finds=unknown | $y, $alias:x = 1, 'Remove-Item', 2; x ~
 powershell finds=unknown | $y, $alias:x = 1, $t; x ~
+# A target may be in parentheses; a variable of the `Alias:` or `Function:`
+# drive on the left side that is not read as a target sets its name to what
+# is only known when it runs.
+powershell finds=delete | ($alias:x) = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | ($alias:x, $y) = 'Remove-Item', 1; x -Recurse -Force ~
+powershell finds=delete | (($alias:x)) = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | $y, ($alias:x) = 1, 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | [string]($alias:x) = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=unknown | ($function:x) = $b; x
+powershell finds=unknown | (${function:x}) = $b; x
+powershell finds=unknown | ($alias:x).y = 'Remove-Item'; x ~
+# `Import-Alias` sets every alias in a file, which the line may write itself:
+# their names are only known when it runs.
+powershell finds=unknown reason="sets an alias whose name is only known when it runs" | Import-Alias a.csv; x -Recurse -Force ~
+powershell finds=unknown | ipal a.csv; x -Recurse -Force ~
+powershell finds=unknown | 'x,Remove-Item' | Set-Content a.csv; Import-Alias a.csv; x -Recurse -Force ~
 # Stays safe.
 powershell safe | Set-Alias ll Get-ChildItem; ll
 powershell safe | function foo { Get-Date }; foo
 powershell safe | $function:foo = { Get-Date }; foo
 powershell safe | ${function:foo} = { Get-Date }; foo
 powershell safe | $function:foo, $y = { Get-Date }, 1; foo
+powershell safe | ($function:foo) = { Get-Date }; foo
+powershell safe | ($y) = 1; Get-Date
 powershell safe | Set-Alias -Option ReadOnly,AllScope ll Get-ChildItem; ll
 powershell safe | Set-Alias x Remove-Item
 powershell safe | Set-Alias x Remove-Item; x build

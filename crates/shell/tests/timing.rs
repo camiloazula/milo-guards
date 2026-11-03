@@ -242,9 +242,18 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
         let at = at.to_string();
         many.push_str(&["Set-Alias x t", &at, "; Set-Alias t", &at, " y; "].concat());
     }
-    for line in [
-        fill(many, "x ~; "),
-        fill("Set-Alias x Remove-Item; ".to_string(), "x b; "),
+    // Targets of the name's own key add no reading, so they never run the
+    // bound out: each command must still cost one lookup, not a walk of
+    // every target.
+    let mut same = String::new();
+    for at in 0..64 {
+        same.push_str(&["Set-Alias x C:\\a", &at.to_string(), "\\x.exe; "].concat());
+    }
+    for (line, risky) in [
+        (fill(many, "x ~; "), true),
+        (fill("Set-Alias x Remove-Item; ".to_string(), "x b; "), true),
+        (fill(same.clone(), "x; "), false),
+        (fill(same, "x | x | x | x; "), false),
     ] {
         assert!(line.len() <= 64 * 1024);
         let started = std::time::Instant::now();
@@ -252,12 +261,14 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
         let _ = effect(&line, Shell::PowerShell, &paths);
         let took = started.elapsed();
         assert!(took < LIMIT, "{took:?}");
-        assert!(
-            assessment
-                .findings()
-                .iter()
-                .any(|finding| matches!(finding.rule, Rule::Unreadable | Rule::Unknown)),
-            "{assessment:?}"
-        );
+        if risky {
+            assert!(
+                assessment
+                    .findings()
+                    .iter()
+                    .any(|finding| matches!(finding.rule, Rule::Unreadable | Rule::Unknown)),
+                "{assessment:?}"
+            );
+        }
     }
 }

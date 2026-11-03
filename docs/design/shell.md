@@ -544,7 +544,11 @@ anywhere in it (`Walker::define`, kept in `powershell::Aliases`):
   target takes the value in its place, the last one what is left; a target
   whose value cannot be paired so (the value is not a list written out, or
   its items are not one for each target) is set to something only known
-  when it runs.
+  when it runs. A target may be in parentheses (`($alias:x) = …`,
+  `($alias:x, $y) = …`), as PowerShell takes one; any other variable of the
+  `Alias:` or `Function:` drive on the left side that is not read as a target
+  sets its name to what is only known when it runs, so a spelling the guard
+  does not read fails closed.
   Other writes to the `Alias:` and `Function:` drives (`New-Item`,
   `Set-Content`, a path after `cd Alias:`) are not read as names, and are
   that `overwrite`.
@@ -598,8 +602,11 @@ parent runs: `Get-ChildItem; pwsh -c "Set-Alias Get-ChildItem Get-Date"` is
 - an alias whose name is only known when it runs (`Set-Alias $n Remove-Item`,
   `Set-Alias @p`), or not given at all, as `Set-Alias`, `New-Alias` and
   `Set-Item` also take it from the properties of what the pipeline hands them
-  (`$o | Set-Alias`, `$o | Set-Item`), which may be any command after it:
-  `sets an alias whose name is only known when it runs`.
+  (`$o | Set-Alias`, `$o | Set-Item`), which may be any command after it;
+  and `Import-Alias` (also `ipal`), which sets every alias in a file the line
+  may have written itself (`'x,Remove-Item' | Set-Content a.csv; Import-Alias
+  a.csv; x -Recurse -Force ~`): `sets an alias whose name is only known when
+  it runs`.
 
 A name set to something only known when it runs, with no command of that
 name, is safe: `Set-Alias x $t` alone runs nothing. A line reads at most 64
@@ -608,8 +615,11 @@ it is `unknown` (`sets more aliases and functions than the guard reads`),
 and adds at most 256 readings in all, past which it is `unreadable` (`runs
 commands through more aliases than the guard reads`): each reading is one
 more unit to judge, so the work stays bounded however many times a name is
-used. `Import-Alias`, a module's aliases and functions, and the names a
-profile sets are not read; only what the line itself writes.
+used. What a name stands for is worked out once, with the key of each
+target taken when it is set, so a command of a name costs one lookup however
+many targets of its own key the name has. A module's aliases and functions,
+and the names a profile sets, are not read; only what the line itself
+writes.
 
 ### Values read again as code
 
