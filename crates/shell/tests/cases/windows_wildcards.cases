@@ -331,7 +331,9 @@ cmd safe | del /q /s *.log
 cmd safe | del /s /q src\\HEAD
 cmd safe | del /s /q src\\*.
 cmd safe | del /s /q C:\\Users\\me\\dev\\repo\\src\\HEAD
-cmd safe | cd src & del /s /q HEAD
+cmd safe | cd src && del /s /q HEAD
+# A `cd` that may have failed leaves the line where `.git` is.
+cmd finds=delete | cd src & del /s /q HEAD
 cmd safe | del /q HEAD
 cmd safe | del HEAD
 cmd safe | del /f /q config

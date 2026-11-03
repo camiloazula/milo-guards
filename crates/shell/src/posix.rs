@@ -838,10 +838,16 @@ fn assigned<'t>(
     unit::for_each_node(root, |node| {
         also(node);
         match node.kind() {
-            "variable_assignment" => names.extend(
-                node.child_by_field_name("name")
-                    .map(|name| unit::text(&name, source).to_string()),
-            ),
+            // `cdpath[1]=/` sets `cdpath`.
+            "variable_assignment" => names.extend(node.child_by_field_name("name").map(|name| {
+                let text = unit::text(&name, source);
+                text.split('[').next().unwrap_or(text).to_string()
+            })),
+            // `: ${CDPATH:=/}` sets it when it is empty.
+            "expansion" => names.extend(default_set(unit::text(&node, source))),
+            // `declare -n r=CDPATH` makes `r` a name for another variable,
+            // which an assignment to `r` sets.
+            "declaration_command" => names.extend(named_by_reference(node, source)),
             "unset_command" => {
                 let mut cursor = node.walk();
                 names.extend(
@@ -850,6 +856,7 @@ fn assigned<'t>(
                 );
             }
             _ => {
+                names.extend(set_by_builtin(node, source));
                 let found = loop_variables(node, source);
                 names.extend(found.iter().cloned());
                 looped.extend(found);
@@ -857,6 +864,91 @@ fn assigned<'t>(
         }
     });
     (names, looped)
+}
+
+/// The variable `${NAME:=…}` or `${NAME=…}` sets, from the expansion's text.
+fn default_set(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("${")?;
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let (name, after) = rest.split_at(end);
+    (!name.is_empty() && (after.starts_with(":=") || after.starts_with('=')))
+        .then(|| name.to_string())
+}
+
+/// The variables a nameref declaration (`declare -n r=CDPATH`, `typeset
+/// -n`, `local -n`) makes another name for: the name it is given, and,
+/// when that is only known when it runs, `CDPATH`, which moves a `cd`.
+fn named_by_reference(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut cursor = node.walk();
+    let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+    let nameref = children.iter().any(|child| {
+        let text = unit::text(child, source);
+        child.kind() != "variable_assignment"
+            && text.starts_with('-')
+            && !text.starts_with("--")
+            && text.contains('n')
+    });
+    if !nameref {
+        return Vec::new();
+    }
+    let mut names = vec!["CDPATH".to_string()];
+    for child in children
+        .iter()
+        .filter(|child| child.kind() == "variable_assignment")
+    {
+        if let Some(value) = child.child_by_field_name("value") {
+            let text = unit::text(&value, source).trim_matches(['"', '\'']);
+            names.push(text.split('[').next().unwrap_or(text).to_string());
+        }
+    }
+    names
+}
+
+/// The variables a builtin that is not an assignment sets: `printf -v
+/// NAME`, the array of `mapfile` and `readarray`, and the variable of
+/// `getopts`. Any word that is not an option may be one.
+fn set_by_builtin(node: Node<'_>, source: &str) -> Vec<String> {
+    if node.kind() != "command" {
+        return Vec::new();
+    }
+    let Some(name) = node.child_by_field_name("name") else {
+        return Vec::new();
+    };
+    let program = unit::text(&name, source);
+    let mut cursor = node.walk();
+    let args: Vec<&str> = node
+        .children_by_field_name("argument", &mut cursor)
+        .map(|arg| unit::text(&arg, source).trim_matches(['"', '\'']))
+        .collect();
+    // A name only known when it runs may be `CDPATH`.
+    let bare = |text: &str| {
+        if text.contains(['$', '`']) {
+            "CDPATH".to_string()
+        } else {
+            text.split('[').next().unwrap_or(text).to_string()
+        }
+    };
+    match program {
+        "printf" => {
+            let mut names = Vec::new();
+            for (at, arg) in args.iter().enumerate() {
+                if *arg == "-v" {
+                    names.extend(args.get(at + 1).map(|name| bare(name)));
+                } else if let Some(name) = arg.strip_prefix("-v") {
+                    names.push(bare(name));
+                }
+            }
+            names
+        }
+        "mapfile" | "readarray" | "getopts" => args
+            .iter()
+            .filter(|arg| !arg.starts_with('-'))
+            .map(|arg| bare(arg))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The variable of a `for` statement, or the names a `read` is given.
@@ -964,6 +1056,30 @@ fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
     found
 }
 
+/// The kinds of node that are a statement of their own: the right side of
+/// an `&&` after one runs when it succeeded, whatever a `cd` before it did
+/// (see [`Split::statement`]).
+const STATEMENTS: [&str; 18] = [
+    "command",
+    "redirected_statement",
+    "variable_assignment",
+    "variable_assignments",
+    "declaration_command",
+    "unset_command",
+    "test_command",
+    "negated_command",
+    "list",
+    "pipeline",
+    "subshell",
+    "compound_statement",
+    "if_statement",
+    "case_statement",
+    "while_statement",
+    "for_statement",
+    "c_style_for_statement",
+    "function_definition",
+];
+
 /// Whether `name`, a command's name, is a bare `}`: the reserved word that
 /// closes a group, which the grammar reads as a command when it did not see
 /// the group open (`coproc { ls; }`). A quoted `'}'` is a program's name.
@@ -1019,6 +1135,8 @@ struct Walker<'a> {
 /// shell after the commands before it ran, so from where they left the line.
 struct Tail {
     here: OpensFrom,
+    /// Where the line is then, for a last command that does not move it.
+    now: OpensFrom,
     moved: usize,
     moves: usize,
     first: usize,
@@ -1190,7 +1308,16 @@ impl Walker<'_> {
             return;
         }
         self.split.branches += usize::from(background);
+        // Kept out of `node` too, whose frame is the deepest nesting's.
+        let kind = node.kind();
+        if STATEMENTS.contains(&kind) {
+            self.split.statement();
+        }
         self.node(node, stage, level);
+        // `! cd s && rm -rf ../x` runs `rm` when the `cd` failed.
+        if kind == "negated_command" {
+            self.split.statement();
+        }
         self.split.branches -= usize::from(background);
     }
 
@@ -1514,21 +1641,23 @@ impl Walker<'_> {
             if !child.is_named() {
                 continue;
             }
+            // A `cd` on the right side runs only when the left let it: when
+            // it did not (`cd sub && cd sub2`), the line may still be where
+            // that side began, or where the list did.
+            let link = (at > 0).then(|| self.split.link_start());
             // A redirect on the whole list is opened before its last command
-            // runs, and after the ones before it did.
+            // runs, and after the ones before it did: after `&&`, where a
+            // plain `cd` before it that failed left the line is not one.
             if Some(child.id()) == last {
                 self.tail = Some(Tail {
                     here: self.split.opens_here(),
+                    now: self.split.opens_now(),
                     moved: self.split.moved_so_far(),
                     moves: self.split.moves_so_far(),
                     first: self.split.units.len(),
                 });
             }
-            // A `cd` on the right side runs only when the left let it: when
-            // it did not (`cd sub && cd sub2`), the line may still be where
-            // that side began, or where the list did.
-            if at > 0 {
-                let link = self.split.link_start();
+            if let Some(link) = link {
                 self.walk(child, stage, level + 1);
                 self.split.link_end(&list, link);
                 if let Some(exit) = exit.take() {
@@ -1998,7 +2127,7 @@ impl Walker<'_> {
         // The same for `PYTHONPATH=… python3 -c …`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
-        let terraform = self.split.tf_cli_args.len();
+        let terraform = self.split.argument_variables.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -2025,7 +2154,7 @@ impl Walker<'_> {
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
-        self.split.tf_cli_args.truncate(terraform);
+        self.split.truncate_argument_variables(terraform);
         self.split.unscope_hidden(outer);
     }
 
@@ -2387,29 +2516,29 @@ impl Walker<'_> {
     /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too, and so
     /// is `export TF_CLI_ARGS` (also `declare -x`) of a name the line gave
     /// no value it reads: `read`, `mapfile` or `printf -v` may have set it,
-    /// so what terraform gets is only known when it runs.
+    /// so what terraform gets is only known when it runs. The same for
+    /// `npm_config_call`, the command `npx` runs.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
         // The grammar reads a bare name as a variable, not a word.
         if let Some(name) = Some(word.known().unwrap_or(source))
-            .filter(|name| !name.contains('=') && unit::tf_cli_args(name))
+            .filter(|name| !name.contains('=') && unit::read_as_arguments(name))
         {
             let noted = self
                 .split
-                .tf_cli_args
+                .argument_variables
                 .iter()
                 .any(|(noted, _)| noted == name);
             if !noted {
                 self.split
-                    .tf_cli_args
-                    .push((name.to_string(), Arg::Unknown(source.to_string())));
+                    .note_argument_variable(name.to_string(), Arg::Unknown(source.to_string()));
             }
             return;
         }
         if let Some((name, _)) = source
             .split_once('=')
-            .filter(|(name, _)| unit::tf_cli_args(name))
+            .filter(|(name, _)| unit::read_as_arguments(name))
         {
             let value = match word.known() {
                 Some(text) => Arg::Known(
@@ -2419,7 +2548,7 @@ impl Walker<'_> {
                 ),
                 None => Arg::Unknown(source.to_string()),
             };
-            self.split.tf_cli_args.push((name.to_string(), value));
+            self.split.note_argument_variable(name.to_string(), value);
             return;
         }
         match word.known() {
@@ -2472,14 +2601,14 @@ impl Walker<'_> {
     }
 
     /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
-    /// `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of those
-    /// variables'.
+    /// `TF_CLI_ARGS`, `TF_CLI_ARGS_<command>` or `npm_config_call`, when it
+    /// is one of those variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        let terraform = unit::tf_cli_args(name);
+        let terraform = unit::read_as_arguments(name);
         if name != "NODE_OPTIONS" && name != "PYTHONPATH" && !terraform {
             return;
         }
@@ -2487,7 +2616,7 @@ impl Walker<'_> {
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
         if terraform {
-            self.split.tf_cli_args.push((name.to_string(), value));
+            self.split.note_argument_variable(name.to_string(), value);
         } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
         } else {
@@ -2835,6 +2964,7 @@ impl Walker<'_> {
                     // The last command of a list: after the earlier ones.
                     self.split.opens_before(
                         tail.here.clone(),
+                        tail.now.clone(),
                         tail.first..own.end,
                         tail.moved,
                         tail.moves,
@@ -2843,6 +2973,7 @@ impl Walker<'_> {
                 } else {
                     self.split.opens_before(
                         here.clone(),
+                        OpensFrom::Line,
                         own.clone(),
                         moved_before,
                         moves_before,

@@ -157,7 +157,9 @@ posix effect=reads_workspace | find . -newer src/lib.rs
 posix effect=reads_workspace | find . -samefile Cargo.toml
 # A folder moved into and a `cd` that stays inside.
 posix effect=reads_workspace | cd src && cat main.rs
-posix effect=reads_workspace | cd src; cd ..; ls
+posix effect=reads_workspace | cd src && cd ..; ls
+# When `cd src` failed, `cd ..` leaves the workspace.
+posix effect=reads_beyond | cd src; cd ..; ls
 posix effect=reads_workspace | cd . && ls
 posix effect=reads_workspace | (cd src && ls)
 posix effect=reads_workspace | (cd src && ls); ls
@@ -1292,7 +1294,8 @@ posix@agent effect=reads_workspace | ls -aR | xargs cat
 posix@agent effect=reads_workspace | git ls-files -o | xargs cat
 posix@agent effect=reads_workspace | cd src && cd .. && rg x
 posix@agent effect=reads_workspace | cd src && cd .. && grep -r x
-posix@agent effect=reads_workspace | cd src; rg x ..
+posix@agent effect=reads_workspace | cd src && rg x ..
+posix@agent effect=reads_beyond | cd src; rg x ..
 posix@agent effect=reads_workspace | ls | xargs cat
 # A listing of names below it: the names are the workspace's.
 posix@agent effect=reads_workspace | ls -R

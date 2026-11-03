@@ -66,6 +66,20 @@ impl Walker<'_> {
                 .problem(Rule::Unreadable, "nests too deeply to read", None);
             return;
         }
+        // The right side of an `&&` after a statement runs when it
+        // succeeded, whatever a `cd` before it did (see
+        // [`Split::statement`]).
+        if matches!(
+            node.kind(),
+            "pipe_stmt"
+                | "cond_exec"
+                | "redirect_stmt"
+                | "variable_assignment"
+                | "for_stmt"
+                | "if_stmt"
+        ) {
+            self.split.statement();
+        }
         match node.kind() {
             "cmd" | "call_stmt" => {
                 if !self.statement(node, stage, level) {
@@ -866,7 +880,7 @@ impl Walker<'_> {
         let Some(name) = children
             .iter()
             .find(|child| child.kind() == "variable_name")
-            .and_then(|name| unit::tf_cli_args_folded(unit::text(name, self.source).trim()))
+            .and_then(|name| unit::argument_variable(unit::text(name, self.source).trim()))
         else {
             return;
         };
@@ -894,7 +908,7 @@ impl Walker<'_> {
             None
         };
         let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
-        self.split.tf_cli_args.push((name, value));
+        self.split.note_argument_variable(name, value);
     }
 }
 

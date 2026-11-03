@@ -2860,7 +2860,7 @@ fn apply<'a>(rest: &[Arg], unit: &Unit) -> Say<'a> {
 fn tf_cli_args(unit: &Unit, command: &str) -> (Vec<Arg>, bool) {
     let mut found = Vec::new();
     let mut unread = false;
-    for (name, value) in &unit.tf_cli_args {
+    for (name, value) in unit.argument_variables.iter() {
         let applies = name == "TF_CLI_ARGS" || name.strip_prefix("TF_CLI_ARGS_") == Some(command);
         if !applies {
             continue;

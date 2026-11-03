@@ -47,7 +47,39 @@ pub(super) struct Context<'a> {
     /// the `..` of itself (bash and zsh fall back to the physical path when
     /// the folded folder does not exist, so a target is also listed kept).
     pub(super) cd_target: Cell<bool>,
+    /// What [`place_kind`] answered for each place read so far: a unit is
+    /// read from each folder a `cd` before it may have left the line in,
+    /// and a folder stays one of those for the units after it, so the same
+    /// place is asked for again.
+    pub(super) placed: RefCell<HashMap<PlaceKey, (Kind, Option<Place>)>>,
+    /// Where each folder a `cd` goes into lands, asked once for the same
+    /// reason.
+    pub(super) entered: RefCell<HashMap<PlaceKey, Place>>,
 }
+
+/// Where `target`, a folder a `cd` from `dir` goes into, lands, asked once
+/// for each (see [`Context::entered`]).
+pub(super) fn entered(
+    context: &Context<'_>,
+    shell: Shell,
+    dir: Option<&Arg>,
+    target: &Arg,
+    hidden: bool,
+) -> Place {
+    let key = (shell, dir.cloned(), target.clone(), hidden);
+    if let Some(place) = context.entered.borrow().get(&key) {
+        return *place;
+    }
+    let place = context
+        .resolver
+        .place(dir, target, shell, hidden, Access::Item);
+    context.entered.borrow_mut().insert(key, place);
+    place
+}
+
+/// A place [`place_kind`] reads: the shell, the folder, the argument and
+/// whether hidden names match.
+pub(super) type PlaceKey = (Shell, Option<Arg>, Arg, bool);
 
 /// Whether reading from `arg`, written from `dir`, is a read of a place the
 /// guard can name and that is on this machine. Not when it is known only
@@ -62,11 +94,28 @@ pub(super) fn place_effect(
     arg: &Arg,
     how: Manner,
 ) -> Kind {
-    let (kind, place) = place_kind(context.resolver, shell, dir, arg, how.hidden);
+    let (kind, place) = placed(context, shell, dir, arg, how.hidden);
     if let Some(place) = place {
         context.land(shell, dir, arg, place, how);
     }
     kind
+}
+
+/// As [`place_kind`], asked once for each place (see [`Context::placed`]).
+fn placed(
+    context: &Context<'_>,
+    shell: Shell,
+    dir: Option<&Arg>,
+    arg: &Arg,
+    hidden: bool,
+) -> (Kind, Option<Place>) {
+    let key = (shell, dir.cloned(), arg.clone(), hidden);
+    if let Some(found) = context.placed.borrow().get(&key) {
+        return *found;
+    }
+    let found = place_kind(context.resolver, shell, dir, arg, hidden);
+    context.placed.borrow_mut().insert(key, found);
+    found
 }
 
 /// As [`place_effect`], without saying where the read lands: the answer, and
@@ -137,15 +186,7 @@ pub(super) fn operands(unit: &Unit, key: &str, context: &Context<'_>) -> Kind {
     // A folder `-C` names is judged like a place; where it lands is the
     // repository's, which the folders chained together make.
     for dir in &opened.dirs {
-        if place_kind(
-            context.resolver,
-            unit.shell,
-            unit.dir.as_ref(),
-            dir,
-            unit.hidden,
-        )
-        .0 == Kind::Unknown
-        {
+        if placed(context, unit.shell, unit.dir.as_ref(), dir, unit.hidden).0 == Kind::Unknown {
             effect = Kind::Unknown;
         }
     }
