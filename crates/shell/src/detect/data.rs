@@ -430,6 +430,17 @@ fn view(arg: &Arg) -> Option<(&str, bool)> {
     }
 }
 
+/// Whether `text`, the source of a word only known when it runs, is a quoted
+/// option (`"-c…"`, `"--execute=…"`, and `"/Q…"` for a client whose options
+/// may start with `/`), which the client reads as one whatever it holds.
+fn quoted_option(text: &str, slash: bool) -> bool {
+    let inner = text
+        .strip_prefix("@\"")
+        .or_else(|| text.strip_prefix(['"', '\'']))
+        .map(|inner| inner.trim_start_matches(['\r', '\n']));
+    inner.is_some_and(|inner| inner.starts_with('-') || (slash && inner.starts_with('/')))
+}
+
 /// Whether an expansion in `arg` runs a command, as the parse found it.
 fn runs(arg: &Arg) -> bool {
     matches!(arg, Arg::Template { runs: true, .. })
@@ -573,6 +584,13 @@ impl Client {
                 }
                 continue;
             };
+            // A quoted word only known when it runs that is an option (a
+            // PowerShell `"--execute=… `$x $t"` that is no template) may
+            // carry any statement.
+            if matches!(arg, Arg::Unknown(_)) && !ended && quoted_option(text, self.slash) {
+                found.push(arg.clone());
+                continue;
+            }
             // An operand that is a script the client runs.
             let script = |text: &str| {
                 let lower = text.to_ascii_lowercase();
@@ -951,45 +969,11 @@ fn redis_operands(args: &[Arg]) -> Vec<&Arg> {
     operands
 }
 
-/// Options of the `heroku` CLI that take a value, before or after its
-/// command.
-const HEROKU_VALUES: &[&str] = &["-a", "--app", "-r", "--remote", "-t", "--team", "--confirm"];
-
-/// Options of the `supabase` CLI that take a value.
-const SUPABASE_VALUES: &[&str] = &[
-    "--workdir",
-    "--profile",
-    "-o",
-    "--output",
-    "--network-id",
-    "--dns-resolver",
-    "--db-url",
-];
-
 /// Whether the line asks a tool for its help, and runs nothing else.
 fn asks_help(args: &[Arg]) -> bool {
     args.iter()
         .filter_map(Arg::known)
         .any(|text| matches!(text, "--help" | "-h"))
-}
-
-/// The words of a tool's line that are no option, the values of the options
-/// in `values` (`--app x`) left out. An option written with its value
-/// (`--app=x`) is one word, and an option not in `values` takes none.
-fn operands_of<'a>(args: &'a [Arg], values: &[&str]) -> Vec<&'a Arg> {
-    let mut found = Vec::new();
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.known() {
-            Some(text) if text.starts_with('-') && text.len() > 1 => {
-                if values.contains(&text) {
-                    iter.next();
-                }
-            }
-            _ => found.push(arg),
-        }
-    }
-    found
 }
 
 /// The parameters of `Invoke-Sqlcmd` (the `SqlServer` module's), with
@@ -2174,11 +2158,11 @@ impl Checker<'_> {
                 self.invoke_sqlcmd(at, unit, args);
             }
             "pg_dropcluster" if !asks_help(args) => {
-                let cluster = operands_of(args, &[]).get(1).copied();
+                let cluster = resources::words(args, &[]).get(1).copied();
                 self.add(Rule::DropData, "deletes a database cluster", cluster);
             }
             "heroku" if !asks_help(args) => {
-                let words = operands_of(args, HEROKU_VALUES);
+                let words = resources::words(args, resources::HEROKU_VALUES);
                 if let Some(reset) = words
                     .first()
                     .filter(|word| word.known() == Some("pg:reset"))
@@ -2188,7 +2172,7 @@ impl Checker<'_> {
                 }
             }
             "supabase" if !asks_help(args) => {
-                let words = operands_of(args, SUPABASE_VALUES);
+                let words = resources::words(args, resources::SUPABASE_VALUES);
                 let command: Vec<Option<&str>> =
                     words.iter().take(2).map(|word| word.known()).collect();
                 if command == [Some("db"), Some("reset")] {
@@ -2245,6 +2229,14 @@ impl Checker<'_> {
         }
     }
 
+    /// The arguments of a client as [`Checker::template`] reads each: a
+    /// PowerShell double-quoted word is a template, so that an option and
+    /// its value in one (`"--execute=DROP TABLE $t"`, `"-c$q"`) is read as a
+    /// POSIX shell's is.
+    fn templates(&self, unit: &Unit, args: &[Arg]) -> Vec<Arg> {
+        args.iter().map(|arg| self.template(unit, arg)).collect()
+    }
+
     /// Say what a client's statements do.
     fn judge(&mut self, reading: Reading, target: Option<&Arg>, own: bool) {
         if reading.unreadable {
@@ -2272,7 +2264,8 @@ impl Checker<'_> {
     /// A client of a database server: every database on a server is risky,
     /// since the line cannot tell a scratch one from production.
     fn sql_client(&mut self, at: usize, unit: &Unit, client: &Client, args: &[Arg]) {
-        self.client_given(at, unit, client.statements(args), client.language);
+        let args = self.templates(unit, args);
+        self.client_given(at, unit, client.statements(&args), client.language);
     }
 
     /// What a client of a database server is given, its statements written
@@ -2381,7 +2374,8 @@ impl Checker<'_> {
     /// `Invoke-Sqlcmd`: SQL Server's cmdlet, which runs its `-Query` and its
     /// `-InputFile`.
     fn invoke_sqlcmd(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
-        let given = invoke_sqlcmd_queries(args);
+        let args = self.templates(unit, args);
+        let given = invoke_sqlcmd_queries(&args);
         self.client_given(at, unit, given, Language::Sql(Dialect::SqlServer));
     }
 

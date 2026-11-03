@@ -930,6 +930,41 @@ fn replaces_table(tokens: &[Token], at: usize) -> bool {
         .is_some_and(|token| is_word(Some(token), "TABLE"))
 }
 
+/// Whether the `RESTORE` at `at` writes a backup over a database: `RESTORE
+/// DATABASE` or `RESTORE LOG` with a `FROM` after it.
+fn restores_backup(tokens: &[Token], at: usize) -> bool {
+    matches!(tokens.get(at + 1), Some(Token::Word(w)) if matches!(w.as_str(), "DATABASE" | "LOG"))
+        && tokens
+            .get(at + 2..)
+            .unwrap_or_default()
+            .iter()
+            .any(|token| is_word(Some(token), "FROM"))
+}
+
+/// How a string that is the body of a function or procedure is written.
+enum Prefix {
+    /// `AS '…'`, and `AS E'…'`, whose backslashes escape.
+    Plain,
+    /// `AS U&'…'`, whose backslashes spell characters by their code.
+    Unicode,
+}
+
+/// Whether the string at `at` comes right after `AS`, or after `AS` and the
+/// prefix of a string (`E`, `U&`), as the body of a function does.
+fn body_prefix(tokens: &[Token], at: usize) -> Option<Prefix> {
+    let back = |n: usize| at.checked_sub(n).and_then(|i| tokens.get(i));
+    if is_word(back(1), "AS") || (is_word(back(1), "E") && is_word(back(2), "AS")) {
+        Some(Prefix::Plain)
+    } else if back(1) == Some(&Token::Symbol('&'))
+        && is_word(back(2), "U")
+        && is_word(back(3), "AS")
+    {
+        Some(Prefix::Unicode)
+    } else {
+        None
+    }
+}
+
 /// Whether a `CREATE` statement makes a function or a procedure, whose body
 /// runs when it is called: `FUNCTION` or `PROCEDURE` before its first `(`.
 fn creates_routine(tokens: &[Token]) -> bool {
@@ -966,6 +1001,12 @@ fn dblink_args(tokens: &[Token], from: usize) -> Option<(Vec<&Quote>, usize)> {
     Some((found, i))
 }
 
+/// Whether `name`, in upper case, is one of `dblink`'s functions that run
+/// the SQL they are given.
+fn is_dblink(name: &str) -> bool {
+    matches!(name, "DBLINK" | "DBLINK_EXEC" | "DBLINK_SEND_QUERY")
+}
+
 /// The name of the T-SQL procedures that run the text they are given.
 fn runs_text(name: &str) -> Option<bool> {
     match name {
@@ -991,13 +1032,9 @@ fn dynamic_sql(tokens: &[Token], at: usize, scope: Scope) -> Option<Reading> {
             literal_args(tokens, at + 3, false)
         }
         // PostgreSQL's `dblink`, which runs the SQL it is given in a
-        // database it connects to: `dblink_exec('dbname=x', 'DROP TABLE t')`.
-        Token::Word(word)
-            if matches!(
-                word.as_str(),
-                "DBLINK" | "DBLINK_EXEC" | "DBLINK_SEND_QUERY"
-            ) =>
-        {
+        // database it connects to: `dblink_exec('dbname=x', 'DROP TABLE t')`,
+        // and as a quoted name, `"dblink_exec"(…)`.
+        Token::Word(word) if is_dblink(word) => {
             if tokens.get(at + 1) != Some(&Token::Symbol('(')) {
                 return None;
             }
@@ -1005,7 +1042,15 @@ fn dynamic_sql(tokens: &[Token], at: usize, scope: Scope) -> Option<Reading> {
         }
         Token::Word(word) => literal_args(tokens, at + 1, runs_text(word)?),
         Token::Quoted(quote) if !quote.string => {
-            literal_args(tokens, at + 1, runs_text(&quote.body.to_uppercase())?)
+            let name = quote.body.to_uppercase();
+            if is_dblink(&name) {
+                if tokens.get(at + 1) != Some(&Token::Symbol('(')) {
+                    return None;
+                }
+                dblink_args(tokens, at + 2)
+            } else {
+                literal_args(tokens, at + 1, runs_text(&name)?)
+            }
         }
         _ => return None,
     };
@@ -1063,12 +1108,11 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
                 }
             }
             "REPLACE" if replaces_table(tokens, at) => reading.destroys = true,
-            // SQL Server's `RESTORE DATABASE` and `RESTORE LOG` write a backup
-            // over the database they name (`WITH REPLACE` over any one).
-            "RESTORE" if matches!(tokens.get(at + 1), Some(Token::Word(w)) if matches!(w.as_str(), "DATABASE" | "LOG")) =>
-            {
-                reading.destroys = true;
-            }
+            // SQL Server's `RESTORE DATABASE` and `RESTORE LOG` write the
+            // backup they read `FROM` over the database they name (`WITH
+            // REPLACE` over any one). Without a `FROM` (`WITH RECOVERY`) they
+            // read no backup.
+            "RESTORE" if restores_backup(tokens, at) => reading.destroys = true,
             "ATTACH" if at == 0 => reading.moves = true,
             "XP_CMDSHELL" => reading.program = true,
             "PROGRAM" if is_word(tokens.first(), "COPY") => reading.program = true,
@@ -1101,14 +1145,20 @@ fn statement(tokens: &[Token], scope: Scope) -> Reading {
                         ..scope.within(true)
                     },
                 )),
-                Token::Quoted(quote)
-                    if quote.string
-                        && at
-                            .checked_sub(1)
-                            .is_some_and(|before| is_word(tokens.get(before), "AS")) =>
-                {
-                    reading.merge(read_string(quote, scope.within(true)));
-                }
+                Token::Quoted(quote) if quote.string => match body_prefix(tokens, at) {
+                    Some(Prefix::Plain) => reading.merge(read_string(quote, scope.within(true))),
+                    // A `U&'…'` string spells a character as `\0065`, or
+                    // with the escape its `UESCAPE` names.
+                    Some(Prefix::Unicode)
+                        if quote.body.contains('\\') || is_word(tokens.get(at + 1), "UESCAPE") =>
+                    {
+                        reading.unreadable = true;
+                    }
+                    Some(Prefix::Unicode) => {
+                        reading.merge(read_string(quote, scope.within(true)));
+                    }
+                    None => {}
+                },
                 _ => {}
             }
         }
@@ -1493,12 +1543,32 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
     let mut commands: HashMap<usize, bool> = HashMap::new();
     for (at, token) in tokens.iter().enumerate() {
         let after = tokens.get(at + 1);
-        let called = after == Some(&Js::Symbol('('));
-        let key = after == Some(&Js::Symbol(':'));
-        // A key may be quoted (`{"drop": "users"}`); a call is a name.
-        let name = match token {
-            Js::Name(name) => name,
-            Js::Quoted(name) if key => name,
+        // An operation of a `bulkWrite`, an object in its list.
+        if token == &Js::Symbol('{') && script.in_list(at) {
+            reading.destroys |= script.bulk_deletes_all(at);
+            continue;
+        }
+        // A name is called (`db.dropDatabase()`) or a key (`{drop: 1}`); a
+        // string is a key (`{"drop": 1}`) or a name in brackets that is
+        // called (`db["dropDatabase"]()`). `args` is where what it is called
+        // with starts.
+        let (name, called, key, args) = match token {
+            Js::Name(name) => (
+                name,
+                after == Some(&Js::Symbol('(')),
+                after == Some(&Js::Symbol(':')),
+                at + 2,
+            ),
+            Js::Quoted(name) if after == Some(&Js::Symbol(':')) => (name, false, true, at + 2),
+            Js::Quoted(name)
+                if after == Some(&Js::Symbol(']'))
+                    && tokens.get(at + 2) == Some(&Js::Symbol('('))
+                    && at
+                        .checked_sub(1)
+                        .is_some_and(|before| tokens.get(before) == Some(&Js::Symbol('['))) =>
+            {
+                (name, true, false, at + 3)
+            }
             _ => continue,
         };
         match name.as_str() {
@@ -1511,24 +1581,16 @@ pub(super) fn mongo(text: &str, holes: bool) -> Reading {
                 reading.destroys = true;
             }
             "deleteMany" | "remove" if called => {
-                reading.destroys |= !script.picks(at + 2);
-            }
-            // A `deleteMany` of a `bulkWrite`: `{deleteMany: {filter: {}}}`.
-            "deleteMany" if key => {
-                let filter = match tokens.get(at + 2) {
-                    Some(Js::Symbol('{')) => script.value_of(at + 2, "filter"),
-                    _ => None,
-                };
-                reading.destroys |= !filter.is_some_and(|filter| script.picks(filter));
+                reading.destroys |= !script.picks(args);
             }
             // The `delete` command: `{delete: "users", deletes: [{q: {},
             // limit: 0}]}`.
-            "delete" if key => {
+            "delete" if key && script.is_command(at) => {
                 reading.destroys |= match script.parent.get(at).copied().flatten() {
-                    Some(open) if tokens.get(open) == Some(&Js::Symbol('{')) => *commands
+                    Some(open) => *commands
                         .entry(open)
                         .or_insert_with(|| script.deletes_all(open)),
-                    _ => true,
+                    None => true,
                 };
             }
             // `load("drop.js")` runs the script of a file, which the line
@@ -1608,31 +1670,139 @@ impl Script {
 
     /// Whether the filter that starts at `at` picks documents: an object
     /// written out with a field in it (`{a: 1}`, `{"a.b": 1}`, `{$or: […]}`).
-    /// No filter (`)`), an empty one (`{}`), one spread from a value
-    /// (`{...f}`) and one only known when it runs (`f`, `$F`) pick every
-    /// document there may be.
+    /// No filter (`)`), an empty one (`{}`), one with a spread from a value
+    /// (`{...f}`, `{a: 1, ...f}`, where `f` may hold any field) and one only
+    /// known when it runs (`f`, `$F`) pick every document there may be.
     fn picks(&self, at: usize) -> bool {
         self.tokens.get(at) == Some(&Js::Symbol('{'))
             && matches!(self.tokens.get(at + 1), Some(Js::Name(_) | Js::Quoted(_)))
             && self.tokens.get(at + 2) == Some(&Js::Symbol(':'))
+            && !self.spreads(at)
     }
 
-    /// Where the value of the key `name` starts in the object written from
-    /// `open` (its `{`), when the object has the key itself.
-    fn value_of(&self, open: usize, name: &str) -> Option<usize> {
+    /// The tokens written in the object from `open` (its `{`) at its own
+    /// level, and the bracket that closes it: a bracket in it stands for all
+    /// it holds.
+    fn own(&self, open: usize) -> impl Iterator<Item = usize> + '_ {
         let end = self.past(open);
-        let mut at = open + 1;
-        while at < end {
-            match self.tokens.get(at) {
-                Some(Js::Name(key) | Js::Quoted(key))
-                    if key == name && self.tokens.get(at + 1) == Some(&Js::Symbol(':')) =>
-                {
-                    return Some(at + 2);
-                }
-                _ => at = self.past(at),
+        std::iter::successors(Some(open + 1), move |at| Some(self.past(*at)))
+            .take_while(move |at| *at < end)
+    }
+
+    /// Whether the object from `open` spreads a value at its own level
+    /// (`{a: 1, ...o}`), which may set any key, or replace one written before
+    /// it.
+    fn spreads(&self, open: usize) -> bool {
+        let dot = Some(&Js::Symbol('.'));
+        self.own(open).any(|at| {
+            self.tokens.get(at) == dot
+                && self.tokens.get(at + 1) == dot
+                && self.tokens.get(at + 2) == dot
+        })
+    }
+
+    /// Where the value of the last key `name` written at the own level of
+    /// the object from `open` starts, as JavaScript takes the last of keys of
+    /// the same name. A spread is not looked into.
+    fn key_of(&self, open: usize, name: &str) -> Option<usize> {
+        self.own(open)
+            .filter(|at| {
+                matches!(self.tokens.get(*at), Some(Js::Name(key) | Js::Quoted(key)) if key == name)
+                    && self.tokens.get(at + 1) == Some(&Js::Symbol(':'))
+            })
+            .last()
+            .map(|at| at + 2)
+    }
+
+    /// Where the value of the key `name` of the object from `open` starts,
+    /// when the line shows it: `None` when the object has no such key, or
+    /// spreads a value that may set it.
+    fn value_of(&self, open: usize, name: &str) -> Option<usize> {
+        if self.spreads(open) {
+            return None;
+        }
+        self.key_of(open, name)
+    }
+
+    /// Whether the `{` at `open` is an item of a list (`[{…}, {…}]`), where
+    /// the operations of a `bulkWrite` are.
+    fn in_list(&self, open: usize) -> bool {
+        self.parent
+            .get(open)
+            .copied()
+            .flatten()
+            .is_some_and(|list| self.tokens.get(list) == Some(&Js::Symbol('[')))
+    }
+
+    /// The name of the call whose `(` is at `open`, if a name comes right
+    /// before it.
+    fn call_name(&self, open: usize) -> Option<&str> {
+        if self.tokens.get(open) != Some(&Js::Symbol('(')) {
+            return None;
+        }
+        match self.tokens.get(open.checked_sub(1)?)? {
+            Js::Name(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Whether the operation of a `bulkWrite` written as the object from
+    /// `open` deletes every document there may be: a `deleteMany` whose
+    /// filter picks none (`{deleteMany: {filter: {}}}`, and in the client's
+    /// `bulkWrite` of mongosh 2.3, `{name: "deleteMany", filter: {}}`). An
+    /// operation with a spread that may make it one is read as one.
+    fn bulk_deletes_all(&self, open: usize) -> bool {
+        let named = self.key_of(open, "name");
+        let operation = self.key_of(open, "deleteMany");
+        if self.spreads(open) {
+            return named.is_some() || operation.is_some();
+        }
+        if let Some(operation) = operation {
+            let filter = match self.tokens.get(operation) {
+                Some(Js::Symbol('{')) => self.value_of(operation, "filter"),
+                _ => None,
+            };
+            if !filter.is_some_and(|filter| self.picks(filter)) {
+                return true;
             }
         }
-        None
+        named.is_some_and(
+            |name| matches!(self.tokens.get(name), Some(Js::Quoted(name)) if name == "deleteMany"),
+        ) && !self
+            .value_of(open, "filter")
+            .is_some_and(|filter| self.picks(filter))
+    }
+
+    /// Whether the key `delete` at `at` names the `delete` command, not a
+    /// field: its object is what `runCommand` or `adminCommand` is given, or,
+    /// in an object no other call is given, it is the first key, as a
+    /// command's name is, and its value can be a collection's name.
+    fn is_command(&self, at: usize) -> bool {
+        let Some(open) = self.parent.get(at).copied().flatten() else {
+            return false;
+        };
+        if self.tokens.get(open) != Some(&Js::Symbol('{')) {
+            return false;
+        }
+        let call = self
+            .parent
+            .get(open)
+            .copied()
+            .flatten()
+            .and_then(|outer| self.call_name(outer));
+        if let Some(call) = call {
+            return matches!(call, "runCommand" | "adminCommand");
+        }
+        let literal = |name: &str| {
+            matches!(name, "true" | "false" | "null" | "undefined")
+                || name.starts_with(|c: char| c.is_ascii_digit())
+        };
+        at == open + 1
+            && match self.tokens.get(at + 2) {
+                Some(Js::Quoted(_) | Js::Hole) => true,
+                Some(Js::Name(name)) => !literal(name),
+                _ => false,
+            }
     }
 
     /// Whether the `delete` command written as the object from `open`
@@ -1876,6 +2046,9 @@ mod tests {
             "REPLACE TABLE t AS SELECT 1",
             "RESTORE DATABASE x FROM DISK = 'x.bak' WITH REPLACE",
             "SELECT dblink_exec('dbname=x', 'DROP TABLE t')",
+            "SELECT \"dblink_exec\"('dbname=x', 'DROP TABLE t')",
+            "CREATE FUNCTION f() RETURNS void AS E'DELETE FROM t' LANGUAGE sql",
+            "CREATE FUNCTION f() RETURNS void AS U&'DELETE FROM t' LANGUAGE sql",
         ] {
             assert!(destroys(text), "{text}");
         }
@@ -1907,6 +2080,8 @@ mod tests {
             "CREATE OR REPLACE VIEW v AS SELECT 1",
             "REPLACE INTO t VALUES (1)",
             "RESTORE HEADERONLY FROM DISK = 'x.bak'",
+            "RESTORE DATABASE x WITH RECOVERY",
+            "CREATE FUNCTION f() RETURNS int AS E'SELECT 1' LANGUAGE sql",
             "SELECT dblink_exec('dbname=x', 'INSERT INTO t VALUES (1)')",
             "",
             "   ",
@@ -2026,6 +2201,12 @@ mod tests {
             "db.runCommand({delete: 'users', deletes: [{q: {}, limit: 0}]})",
             "db.runCommand({delete: 'users', deletes: [{q: {a: 1}}, {q: {}}]})",
             "db.runCommand({delete: 'users'})",
+            "db.runCommand({delete: 'users', deletes: [{q: {}, limit: 1, limit: 0}]})",
+            "db.runCommand({delete: 'users', deletes: [{q: {a: 1}, ...o}]})",
+            "db.users.bulkWrite([{deleteMany: {filter: {a: 1}, filter: {}}}])",
+            "db.getMongo().bulkWrite([{namespace: 'a.b', name: 'deleteMany', filter: {}}])",
+            "db['dropAllUsers']()",
+            "db.users['deleteMany']({})",
         ] {
             assert!(mongo(text, false).destroys, "{text}");
         }
@@ -2038,6 +2219,10 @@ mod tests {
             "print('db.dropDatabase()')",
             "db.users.bulkWrite([{deleteMany: {hint: {a: 1}, filter: {a: 1}}}])",
             "db.runCommand({delete: 'users', deletes: [{q: {}, limit: 1}, {q: {a: 1}}]})",
+            "db.users.find({delete: false})",
+            "db.users.insertOne({deleteMany: 1})",
+            "db.getMongo().bulkWrite([{namespace: 'a.b', name: 'deleteMany', filter: {a: 1}}])",
+            "db.users['deleteMany']({a: 1})",
         ] {
             let reading = mongo(text, false);
             assert!(!reading.destroys && !reading.unreadable, "{text}");

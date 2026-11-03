@@ -3209,8 +3209,16 @@ after either is read as a query too; `-InputFile` is a file of statements,
 which runs what the line does not show, as `psql -f` does (`-InputFile nul`
 runs nothing). In PowerShell a parameter word with quotes in
 it (`mysql --execute='DROP TABLE t'`, `psql --command="DROP TABLE t"`) is the
-word with its quotes taken off, as PowerShell hands it to a native program; a
-double-quoted part that holds a `$` is only known when it runs.
+word with its quotes taken off, as PowerShell hands it to a native program. A
+variable or `$(…)` in it, in a double-quoted part or outside quotes
+(`--command="DROP TABLE $t"`, `--command=$q`), is an expansion, read as a
+POSIX shell's in a statement (below); the grammar ends `--execute=$(…)` and
+`--execute=${q}` at the `$`, and the two parts are read as one word. Every
+argument of a client is read so before its options are, so an option and its
+value in one double-quoted word (`mysql "--execute=DROP TABLE $t"`, `psql
+"-c$q"`) is read as the option it is. A quoted option word the guard cannot
+read (one that holds a `$` or backtick as text) is a statement only known
+when it runs, never left out.
 
 **What destroys.**
 
@@ -3265,15 +3273,20 @@ double-quoted part that holds a `$` is only known when it runs.
   like between) and ClickHouse's `REPLACE TABLE` drop the table's rows;
   `REPLACE INTO` adds rows, `CREATE OR REPLACE VIEW` and `FUNCTION` hold no
   data, and `replace(…)` is a function. `RESTORE DATABASE` and `RESTORE LOG`
-  write a backup over the database they name (`WITH REPLACE` over any one);
-  `RESTORE HEADERONLY`, `FILELISTONLY` and `VERIFYONLY` read the backup.
+  with a `FROM` write the backup over the database they name (`WITH REPLACE`
+  over any one); without one (`RESTORE DATABASE x WITH RECOVERY`) they read no
+  backup, and `RESTORE HEADERONLY`, `FILELISTONLY` and `VERIFYONLY` read the
+  backup.
 - **SQL run elsewhere.** PostgreSQL's `dblink_exec`, `dblink` and
   `dblink_send_query` run the SQL they are given in a database they connect
-  to: the string after the connection (or the one string) is read as SQL, and
-  an argument that is not a literal or `true`/`false` is `unknown`. The body of
-  a function or procedure (`CREATE [OR REPLACE] FUNCTION … AS $$ … $$`, or a
-  string after `AS`) is read as the statements it holds, as a `DO` body is:
-  what calls it (a `SELECT f()`, a trigger) need not be on the line.
+  to, named plainly or quoted (`"dblink_exec"(…)`): the string after the
+  connection (or the one string) is read as SQL, and an argument that is not a
+  literal or `true`/`false` is `unknown`. The body of a function or procedure
+  (`CREATE [OR REPLACE] FUNCTION … AS $$ … $$`, or a string after `AS`, also
+  with an `E` or `U&` before it) is read as the statements it holds, as a `DO`
+  body is: what calls it (a `SELECT f()`, a trigger) need not be on the line.
+  A `U&'…'` body that spells a character by its code (`\0065`), or names its
+  own escape, is `unknown`.
 - **Redis.** `FLUSHALL`, `FLUSHDB`, `FUNCTION FLUSH` (every function of the
   server), `SHUTDOWN NOSAVE` (what the server holds and has not saved), an
   `EVAL` whose script calls one or calls
@@ -3284,17 +3297,27 @@ double-quoted part that holds a `$` is only known when it runs.
   deletes one key and is safe. `redis-cli --cluster call HOST:PORT COMMAND…`
   runs the command on every node, and is read as the command.
 - **MongoDB.** `dropDatabase`, `dropCollection`, `drop`, `dropAllUsers` and
-  `dropAllRoles` (as a call or a command key, quoted or not), and the
-  `dropAllUsersFromDatabase` and `dropAllRolesFromDatabase` commands;
-  `deleteMany` and `remove` with a filter that picks every document there may
-  be: none, `{}`, one spread from a value (`{...f}`) or one only known when it
-  runs (`deleteMany(f)`), while an object written out with a field in it
-  (`{a: 1}`) picks. A `deleteMany` of a `bulkWrite` (`{deleteMany: {filter:
-  {}}}`) is read by its `filter`, and the `delete` command
-  (`runCommand({delete: "users", deletes: [{q: {}, limit: 0}]})`) by each of its
-  `deletes`: a `q` that picks every document, without a `limit` of 1, deletes
-  them, and deletes not written out may. `deleteOne` deletes one document, as
-  `redis-cli del k` deletes one key, and is safe.
+  `dropAllRoles` (as a call, `db.dropAllUsers()` or `db["dropAllUsers"]()`, or
+  a command key, quoted or not), and the `dropAllUsersFromDatabase` and
+  `dropAllRolesFromDatabase` commands; `deleteMany` and `remove` with a filter
+  that picks every document there may be: none, `{}`, one with a spread from a
+  value (`{...f}`, `{a: 1, ...f}`, since `f` may hold any field) or one only
+  known when it runs (`deleteMany(f)`), while an object written out with a
+  field in it (`{a: 1}`) picks. An operation in a list, as `bulkWrite` takes
+  them, that is a `deleteMany` (`{deleteMany: {filter: {}}}`, and the
+  client's `bulkWrite` of mongosh 2.3, `{namespace: "app.users", name:
+  "deleteMany", filter: {}}`) is read by its `filter`. The `delete` command
+  (`runCommand({delete: "users", deletes: [{q: {}, limit: 0}]})`) is read by
+  each of its `deletes`: a `q` that picks every document, without a `limit` of
+  1, deletes them, and deletes not written out may. A key is read as
+  JavaScript takes it: of two keys of one name the last counts, and a spread
+  (`...o`) may set any key or replace one before it, so an object with one is
+  not known to pick or to have a `limit` of 1. `delete` is the command when
+  its object is what `runCommand` or `adminCommand` is given, or is its first
+  key with a name for its value in an object no other call is given; a field
+  named `delete` or `deleteMany` (`find({delete: false})`, `insertOne({deleteMany:
+  1})`) is no command. `deleteOne` deletes one document, as `redis-cli del k`
+  deletes one key, and is safe.
 - **The tools.** `dropdb`, `dropuser`, `pg_dropcluster` (a whole cluster, its
   data folder with it), `heroku pg:reset` and `supabase db reset` (which
   empty a hosted or local database and run its migrations again),

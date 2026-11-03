@@ -898,6 +898,7 @@ posix safe | sqlcmd -Q "RESTORE VERIFYONLY FROM DISK = 'x.bak'"
 posix finds=drop_data | sqlcmd -Q "RESTORE DATABASE x FROM DISK = 'x.bak' WITH REPLACE"
 posix finds=drop_data | sqlcmd -Q "RESTORE DATABASE x FROM DISK = 'x.bak'"
 posix finds=drop_data | sqlcmd -Q "RESTORE LOG x FROM DISK = 'x.trn'"
+posix safe | sqlcmd -Q "RESTORE DATABASE x WITH RECOVERY"
 
 # SQL that runs text, or a function whose body deletes.
 posix safe | psql -c "SELECT dblink_exec('dbname=x', 'INSERT INTO t VALUES (1)')"
@@ -914,6 +915,12 @@ posix finds=drop_data | psql -c 'CREATE FUNCTION f() RETURNS void AS $$ DELETE F
 posix finds=drop_data | psql -c 'CREATE OR REPLACE FUNCTION f() RETURNS void AS $f$ BEGIN TRUNCATE t; END $f$ LANGUAGE plpgsql'
 posix finds=drop_data | psql -c 'CREATE PROCEDURE p() AS $$ DROP TABLE t $$ LANGUAGE sql'
 posix finds=drop_data | psql -c "CREATE FUNCTION f() RETURNS void AS 'DELETE FROM t' LANGUAGE sql"
+posix finds=drop_data | psql -c "CREATE FUNCTION f() RETURNS void AS E'DELETE FROM t' LANGUAGE sql"
+posix finds=drop_data | psql -c "CREATE FUNCTION f() RETURNS void AS U&'DELETE FROM t' LANGUAGE sql"
+posix finds=unknown | psql -c "CREATE FUNCTION f() RETURNS void AS U&'d\\0065lete FROM t' LANGUAGE sql"
+posix safe | psql -c "CREATE FUNCTION f() RETURNS int AS E'SELECT 1' LANGUAGE sql"
+posix finds=drop_data | psql -c "SELECT \\"dblink_exec\\"('dbname=x', 'DROP TABLE t')"
+posix safe | psql -c "SELECT \\"dblink_exec\\"('dbname=x', 'INSERT INTO t VALUES (1)')"
 posix finds=unknown | psql -c "SELECT dblink_exec('dbname=x', 'DROP TABLE ' || name) FROM gone"
 posix finds=unknown | psql -c 'CREATE FUNCTION f() RETURNS void AS $$ BEGIN EXECUTE q; END $$ LANGUAGE plpgsql'
 
@@ -940,6 +947,32 @@ posix finds=drop_data | mongosh --eval 'db.users.deleteMany({...f})'
 posix finds=drop_data | mongosh --eval 'db.dropAllUsers()'
 posix finds=drop_data | mongosh --eval 'db.dropAllRoles()'
 posix finds=drop_data | mongosh --eval 'db.runCommand({dropAllUsersFromDatabase: 1})'
+posix safe | mongosh --eval 'db.users.find({delete: false})'
+posix safe | mongosh --eval 'db.users.updateMany({a: 1}, {$set: {delete: true}})'
+posix safe | mongosh --eval 'db.users.insertOne({deleteMany: 1})'
+posix safe | mongosh --eval 'db.users.find({delete: "x"})'
+posix finds=drop_data | mongosh --eval 'db.users.deleteMany({...f, a: 1})'
+posix finds=drop_data | mongosh --eval 'db.runCommand({delete: "users", deletes: [{q: {}, limit: 1, limit: 0}]})'
+posix finds=drop_data | mongosh --eval 'db.runCommand({delete: "users", deletes: [{q: {a: 1}, q: {}, limit: 0}]})'
+posix finds=drop_data | mongosh --eval 'db.runCommand({delete: "users", deletes: [{q: {a: 1}, limit: 0}], deletes: [{q: {}, limit: 0}]})'
+posix finds=drop_data | mongosh --eval 'db.users.bulkWrite([{deleteMany: {filter: {a: 1}, filter: {}}}])'
+posix finds=drop_data | mongosh --eval 'db.users.bulkWrite([{deleteMany: {filter: {a: 1}, ...o}}])'
+posix finds=drop_data | mongosh --eval 'db.users.bulkWrite([{deleteMany: {filter: {a: 1}}, ...o}])'
+posix finds=drop_data | mongosh --eval 'db.runCommand({delete: "users", deletes: [{q: {a: 1}, ...o}]})'
+posix finds=drop_data | mongosh --eval 'db.runCommand({delete: "users", ...o, deletes: [{q: {a: 1}}]})'
+posix finds=drop_data | mongosh --eval 'db.users.deleteMany({a: 1, ...f})'
+posix finds=drop_data | mongosh --eval 'db.adminCommand({ordered: true, delete: "users", deletes: [{q: {}, limit: 0}]})'
+posix finds=drop_data | mongosh --eval 'const c = {delete: "users", deletes: [{q: {}, limit: 0}]}; db.runCommand(c)'
+posix finds=drop_data | mongosh --eval 'const ops = [{deleteMany: {filter: {}}}]; db.users.bulkWrite(ops)'
+posix safe | mongosh --eval 'db.getMongo().bulkWrite([{namespace: "app.users", name: "deleteMany", filter: {a: 1}}])'
+posix safe | mongosh --eval 'db.getMongo().bulkWrite([{namespace: "app.users", name: "insertOne", document: {}}])'
+posix finds=drop_data | mongosh --eval 'db.getMongo().bulkWrite([{namespace: "app.users", name: "deleteMany", filter: {}}])'
+posix finds=drop_data | mongosh --eval 'db.getMongo().bulkWrite([{namespace: "app.users", name: "deleteMany", filter: f}])'
+posix safe | mongosh --eval 'db["users"].find({})'
+posix finds=drop_data | mongosh --eval 'db["dropAllUsers"]()'
+posix finds=drop_data | mongosh --eval 'db.users["deleteMany"]({})'
+posix finds=drop_data | mongosh --eval 'db["dropDatabase"]()'
+posix safe | mongosh --eval 'db.users["deleteMany"]({a: 1})'
 
 # The tools that drop a cluster, and hosted resets.
 posix safe | pg_lsclusters
@@ -1008,6 +1041,17 @@ powershell finds=unknown | psql -c "$q"
 powershell finds=unknown | psql -c "$($q)"
 powershell finds=drop_data | keydb-cli FLUSHALL
 powershell finds=drop_data | clickhouse-client 'DROP TABLE t'
+powershell finds=unknown | mysql --execute=$(gc drop.sql)
+powershell finds=unknown | mysql --execute=${q}
+powershell finds=unknown | psql --command=$q
+powershell finds=drop_data | mysql "--execute=DROP TABLE $t"
+powershell finds=drop_data | psql "-cDROP TABLE $t"
+powershell finds=unknown | psql "-c$q"
+powershell finds=drop_data | psql --command="DROP TABLE $t"
+powershell safe | psql --command="DELETE FROM t WHERE id = $id"
+powershell safe | mysql "--execute=SELECT * FROM t WHERE id = $id"
+powershell finds=unknown | mysql "--execute=DROP `$x TABLE $t"
+powershell finds=drop_data | Invoke-Sqlcmd "-Query" "DROP TABLE $t"
 cmd safe | sqlcmd -S db -Q "SELECT 1"
 cmd safe | sqlcmd -S db -Q "DELETE FROM users WHERE id = 3"
 cmd finds=drop_data | sqlcmd -i schema.sql
