@@ -45,6 +45,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         depth,
         split,
         redirected: None,
+        lost: None,
         last_command: 0..0,
         tail_of: Vec::new(),
         tail: None,
@@ -558,6 +559,63 @@ fn backtick_codes(body: &str, skip: &[Range<usize>], strips: bool) -> Option<Vec
     Some(codes)
 }
 
+/// The words the grammar took into `redirect` that the shell reads as
+/// arguments of the command (see [`Lost`]): after the first file of a file
+/// redirect, which the grammar reads each word after the operator as, and
+/// after the delimiter of a here-document on the line it starts (`rm <<EOF
+/// -rf ~`). None for any other redirect.
+fn lost_in(redirect: Node<'_>) -> Vec<Node<'_>> {
+    let mut cursor = redirect.walk();
+    match redirect.kind() {
+        "file_redirect" => redirect
+            .children_by_field_name("destination", &mut cursor)
+            .skip(1)
+            .collect(),
+        "heredoc_redirect" => {
+            let opened = redirect
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "heredoc_start")
+                .map(|start| start.end_position().row);
+            let mut cursor = redirect.walk();
+            redirect
+                .children_by_field_name("argument", &mut cursor)
+                .filter(|word| opened.is_some_and(|row| word.start_position().row <= row))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `name`, a command's name, holds a wildcard the shell expands
+/// (`./*`, `??`, `[r]m`): one outside quotes, an expansion and a backslash.
+/// The program is then the first name it matches, only known when it runs.
+fn names_by_pattern(name: Node<'_>, source: &str) -> bool {
+    let start = name.start_byte();
+    let mut plain = unit::text(&name, source).as_bytes().to_vec();
+    unit::for_each_node(name, |part| {
+        if part.is_named() && !matches!(part.kind(), "command_name" | "concatenation" | "word") {
+            let from = part.start_byte().saturating_sub(start);
+            let to = part.end_byte().saturating_sub(start).min(plain.len());
+            for byte in plain.get_mut(from..to).unwrap_or_default() {
+                *byte = b'_';
+            }
+        }
+    });
+    let mut escaped = false;
+    let mut unquoted = Vec::with_capacity(plain.len());
+    for byte in plain {
+        if escaped {
+            escaped = false;
+            unquoted.push(b'_');
+        } else if byte == b'\\' {
+            escaped = true;
+        } else {
+            unquoted.push(byte);
+        }
+    }
+    unit::pattern(&String::from_utf8_lossy(&unquoted))
+}
+
 /// The command a redirect after `node` belongs to, when `node` is a list, a
 /// pipeline or a negated command: the grammar puts the redirect on the whole
 /// of it, and the shell on the last command (`a && b < f` redirects `b`).
@@ -618,6 +676,61 @@ fn last_child(node: Node<'_>) -> Option<Node<'_>> {
         .filter(|child| child.kind() != "comment")
         .last();
     last
+}
+
+/// Whether a redirect the grammar holds on a statement whose last command
+/// is the last command of the list `node` is on that command (`a || b 2> e`
+/// is `a || (b 2> e)`).
+fn redirected_last(node: Node<'_>) -> bool {
+    let mut node = node;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "redirected_statement" => {
+                return parent
+                    .child_by_field_name("body")
+                    .is_some_and(|body| body.id() == node.id());
+            }
+            "list" if last_child(parent).is_some_and(|last| last.id() == node.id()) => {
+                node = parent;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether `node` holds a negated command anywhere (`! cd a`, `{ ! cd a; }`,
+/// `cd a && ! cd b`): it succeeds when what it negates fails, so a `cd` in it
+/// may have failed while `node` succeeded.
+fn negates(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    loop {
+        if cursor.node().kind() == "negated_command" {
+            return true;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return false;
+            }
+        }
+    }
+}
+
+/// Whether the argument `text` of `exit` may stand for more than one word,
+/// which zsh refuses with "too many arguments" and goes on past: a glob, `$@`
+/// or `$*`, an array or a brace expansion. `$?` and `${name}` are one word.
+fn many_words(text: &str) -> bool {
+    text.char_indices().any(|(at, c)| match c {
+        '*' | '[' | '@' => true,
+        '?' | '{' => !text[..at].ends_with('$'),
+        _ => false,
+    })
 }
 
 /// The ids of the lists along the last command of `node`: the ones whose
@@ -813,35 +926,6 @@ fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
 /// runs where the expansion was.
 pub(crate) const OPAQUE: &str = "$__v";
 
-/// Whether `command`, a `coproc`, has a redirect in front of the command it
-/// starts (`coproc { 2>/dev/null rm -rf ~; }`, `coproc > out rm -rf ~`). The
-/// grammar takes the words after the redirect's target for more targets, so
-/// the command is not among the arguments and cannot be read.
-fn words_lost_after_redirect(command: Node<'_>) -> bool {
-    let Some(parent) = command
-        .parent()
-        .filter(|parent| parent.kind() == "redirected_statement")
-        .filter(|parent| {
-            parent
-                .child_by_field_name("body")
-                .is_some_and(|body| body.id() == command.id())
-        })
-    else {
-        return false;
-    };
-    let mut cursor = parent.walk();
-    let lost = parent
-        .children_by_field_name("redirect", &mut cursor)
-        .any(|redirect| {
-            let mut cursor = redirect.walk();
-            redirect
-                .children_by_field_name("destination", &mut cursor)
-                .count()
-                > 1
-        });
-    lost
-}
-
 struct Walker<'a> {
     source: &'a str,
     /// Where `source` had a `(D)` glob qualifier taken out (see
@@ -851,6 +935,9 @@ struct Walker<'a> {
     split: &'a mut Split,
     /// The redirects of the statement being walked, for its body command.
     redirected: Option<Redirected>,
+    /// The words the grammar took for more files of the redirects of the
+    /// statement being walked, for the command they are arguments of.
+    lost: Option<Lost>,
     /// The units of the command walked last (not what its arguments run):
     /// read right after a statement's body, it is the body's last command.
     last_command: Range<usize>,
@@ -882,6 +969,21 @@ struct Tail {
     moved: usize,
     moves: usize,
     first: usize,
+}
+
+/// The words after the file of a redirect on a statement (`rm 2>/dev/null
+/// -rf ~`, `command >out rm -rf ~`): the grammar reads every word after the
+/// operator as one more file, and the shell only the first, so the rest are
+/// arguments of the command the redirect is on, after the ones before it.
+struct Lost {
+    /// The node id of that command: the statement's body, or the last
+    /// command of the list, pipeline or negation it is.
+    command: usize,
+    /// The node ids of the redirects the words were taken from.
+    redirects: Vec<usize>,
+    words: Vec<Arg>,
+    /// Whether one of the words had a `(D)` glob qualifier.
+    qualified: bool,
 }
 
 /// The redirects of a statement whose body is a command: the node id of
@@ -1047,12 +1149,7 @@ impl Walker<'_> {
             // `cmd < f`, `cmd > f`, `cmd <<EOF`.
             // The redirects of a command are for its input too: a
             // here-document it reads its code from.
-            "redirected_statement" => {
-                let outer = self.redirected.take();
-                self.redirected = self.redirects(node);
-                self.redirected(node, stage, level);
-                self.redirected = outer;
-            }
+            "redirected_statement" => self.statement(node, stage, level),
             // `GLOBIGNORE=x` on a line of its own, or after `export`: the
             // shell has it from here on.
             "variable_assignment" => {
@@ -1201,6 +1298,7 @@ impl Walker<'_> {
                 self.pipeline_in(node, pipeline, 0, level);
             }
             "file_redirect" => {
+                self.lost_unread(node);
                 self.redirect(node);
                 self.children(node, None, level);
             }
@@ -1242,6 +1340,38 @@ impl Walker<'_> {
         }
     }
 
+    /// A redirected statement, with its redirects and the words they took
+    /// at hand for its body (kept out of `node`, which the walk recurses
+    /// through).
+    fn statement(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let outer = self.redirected.take();
+        let outer_lost = self.lost.take();
+        self.redirected = self.redirects(node);
+        self.lost = self.lost_words(node);
+        self.redirected(node, stage, level);
+        self.redirected = outer;
+        self.lost = outer_lost;
+    }
+
+    /// Words after the file of `redirect` that are no command's arguments
+    /// (see [`Lost`]): the shell refuses the line (`{ ls; } > out rm -rf
+    /// ~`), or reads it in a way the grammar does not show, so they cannot
+    /// be read.
+    fn lost_unread(&mut self, redirect: Node<'_>) {
+        if !lost_in(redirect).is_empty()
+            && !self
+                .lost
+                .as_ref()
+                .is_some_and(|lost| lost.redirects.contains(&redirect.id()))
+        {
+            self.split.problem(
+                Rule::Unreadable,
+                "has words after a redirect that cannot be read",
+                Some(unit::text(&redirect, self.source)),
+            );
+        }
+    }
+
     /// Whether `node` is an `if` that surely runs its one body: its condition
     /// is the command `true` or `:` alone, no `elif` or `else` follows, no
     /// function of that name is defined to stand in for it, and no alias,
@@ -1274,6 +1404,7 @@ impl Walker<'_> {
         let mut cursor = node.walk();
         let list = self.split.list_start();
         let mut at = 0;
+        let mut exit = None;
         let last = self
             .tail_of
             .contains(&node.id())
@@ -1295,8 +1426,28 @@ impl Walker<'_> {
                 _ => stage,
             };
             // The right side of `||` only runs when the left failed: a `cd`
-            // on the left may not have moved the line.
+            // on the left may not have moved the line. When that side ends
+            // the shell (`cd s || exit`), the rest of the line runs only
+            // where the left side took it.
             if child.kind() == "||" {
+                // A redirect the grammar holds on the whole list is on its
+                // last command (`cd s || exit 2> e`).
+                // A left side that may succeed when its `cd` failed (`! cd
+                // s || exit`, or a `cd` the line made a function of) does
+                // not say the `cd` ran.
+                if stage.is_none()
+                    && staged.is_none()
+                    && child
+                        .next_named_sibling()
+                        .is_some_and(|right| self.exits(right))
+                    && !redirected_last(node)
+                    && !child.prev_named_sibling().is_none_or(negates)
+                    && !["cd", "chdir", "pushd", "popd"]
+                        .iter()
+                        .any(|name| self.split.defines_function(name))
+                {
+                    exit = Some(self.split.exits_after());
+                }
                 self.split.list_or(&list);
             }
             if !child.is_named() {
@@ -1319,6 +1470,9 @@ impl Walker<'_> {
                 let link = self.split.link_start();
                 self.walk(child, stage, level + 1);
                 self.split.link_end(&list, link);
+                if let Some(exit) = exit.take() {
+                    self.split.exited(exit);
+                }
             } else {
                 self.split.list_head(heads_list(child));
                 self.walk(child, stage, level + 1);
@@ -1327,6 +1481,48 @@ impl Walker<'_> {
             at += 1;
         }
         self.split.list_end(list);
+    }
+
+    /// Whether `node`, the right side of an `||`, ends the shell: the
+    /// builtin `exit`, alone or last in a `{ …; }` group. Not `return`, which
+    /// bash goes on past outside a function; not an `exit` with a redirect,
+    /// before or after its name, which does not run when the redirect fails;
+    /// not one with more than one argument, which zsh goes on past; not one
+    /// in a subshell, a pipeline or the background, which ends only that
+    /// process; and not after a function of that name, an alias, `enable` or
+    /// `disable` may have changed what the name stands for.
+    fn exits(&self, node: Node<'_>) -> bool {
+        let mut node = node;
+        while node.kind() == "compound_statement" {
+            // `{ …; exit & }` ends only the background process.
+            let Some(last) = last_child(node)
+                .filter(|last| last.next_sibling().is_none_or(|next| next.kind() != "&"))
+            else {
+                return false;
+            };
+            node = last;
+        }
+        let mut cursor = node.walk();
+        let mut arguments = node.children_by_field_name("argument", &mut cursor);
+        let one = arguments
+            .next()
+            .is_none_or(|argument| !many_words(unit::text(&argument, self.source)))
+            && arguments.next().is_none();
+        let mut cursor = node.walk();
+        let redirected = node.named_children(&mut cursor).any(|child| {
+            matches!(
+                child.kind(),
+                "file_redirect" | "heredoc_redirect" | "herestring_redirect"
+            )
+        });
+        node.kind() == "command"
+            && node
+                .child_by_field_name("name")
+                .is_some_and(|name| unit::text(&name, self.source) == "exit")
+            && one
+            && !redirected
+            && !self.split.defines_function("exit")
+            && !self.split.renames_builtins()
     }
 
     /// Note a function definition before its body is read: its name, where
@@ -1553,16 +1749,27 @@ impl Walker<'_> {
         if self.holds_ignore_assignment(node) {
             self.split.hide();
         }
-        let program = self.arg(name);
+        // `./* -rf /`: the shell expands an unquoted wildcard in the
+        // program's name, and the first name it matches is the program.
+        let program = if names_by_pattern(name, self.source) {
+            Arg::Unknown(unit::text(&name, self.source).to_string())
+        } else {
+            self.arg(name)
+        };
         let mut cursor = node.walk();
         let nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
             .collect();
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
-        let qualified = nodes.iter().any(|arg| self.qualified(*arg));
+        let mut qualified = nodes.iter().any(|arg| self.qualified(*arg));
         let mut args = Vec::with_capacity(nodes.len());
         let mut nodes = nodes.into_iter().peekable();
         while let Some(arg) = nodes.next() {
+            // `exec {fd}>out`: a `{NAME}` stuck to a redirect is where bash
+            // puts the descriptor it opens, not an argument.
+            if self.names_descriptor(arg) {
+                continue;
+            }
             // `$"text"` is a locale-translated string: its `$` comes apart
             // from the string, and the word is only known when it runs.
             let translated = !arg.is_named()
@@ -1570,6 +1777,16 @@ impl Walker<'_> {
                 && nodes
                     .peek()
                     .is_some_and(|next| next.start_byte() == arg.end_byte());
+            // `coproc { {rm,-rf,~}; }`: the grammar reads `{ {` as one word
+            // and the rest of the brace list its last `{` opens as the next
+            // one. The shell reads a `{` for the first and the list for the
+            // rest.
+            let opening = arg.kind() == "word"
+                && launch::opens_group(unit::text(&arg, self.source))
+                && nodes.peek().is_some_and(|next| {
+                    next.start_byte() == arg.end_byte()
+                        && crate::path::brace_list(&format!("{{{}", unit::text(next, self.source)))
+                });
             if let (true, Some(string)) = (translated, nodes.peek().copied()) {
                 nodes.next();
                 let word = self
@@ -1577,9 +1794,28 @@ impl Walker<'_> {
                     .get(arg.start_byte()..string.end_byte())
                     .unwrap_or_default();
                 args.push(Arg::Unknown(word.to_string()));
+            } else if let (true, Some(next)) = (opening, nodes.peek().copied()) {
+                nodes.next();
+                let braces = unit::text(&arg, self.source).matches('{').count();
+                args.extend((1..braces).map(|_| Arg::Known("{".to_string())));
+                args.push(match self.arg(next) {
+                    Arg::Known(text) => Arg::Known(format!("{{{text}")),
+                    _ => Arg::Unknown(
+                        self.source
+                            .get(arg.end_byte().saturating_sub(1)..next.end_byte())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                });
             } else {
                 args.push(self.arg(arg));
             }
+        }
+        // `rm 2>/dev/null -rf ~`: the words the grammar took for more files
+        // of a redirect after the command are its arguments.
+        if let Some(lost) = self.lost.as_ref().filter(|lost| lost.command == node.id()) {
+            args.extend(lost.words.iter().cloned());
+            qualified |= lost.qualified;
         }
         // The grammar leaves a `-` that is the last word before a
         // here-document out of the tree (`cat a - <<EOF` has the argument
@@ -1672,13 +1908,6 @@ impl Walker<'_> {
         {
             self.split.hide_functions();
         }
-        if program.known() == Some("coproc") && words_lost_after_redirect(node) {
-            self.split.problem(
-                Rule::Unreadable,
-                "starts a command after a redirect that cannot be read",
-                Some(unit::text(&node, self.source)),
-            );
-        }
         let outer = self.split.scope_hidden(prefixed);
         // `NODE_OPTIONS=… node -e …`: node reads the value as its options.
         // The same for `PYTHONPATH=… python3 -c …`.
@@ -1757,6 +1986,72 @@ impl Walker<'_> {
             body: body.id(),
             inputs,
             from,
+        })
+    }
+
+    /// Whether `word`, an argument, is a `{NAME}` (one word to the
+    /// grammar, or a concatenation) stuck to the redirect operator after it (`exec {fd}>out`, `exec {fd}>&-`): bash opens a
+    /// descriptor and puts its number in `NAME`.
+    fn names_descriptor(&self, word: Node<'_>) -> bool {
+        let text = unit::text(&word, self.source);
+        text.strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+            .is_some_and(|name| {
+                name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            && self
+                .source
+                .get(word.end_byte()..)
+                .is_some_and(|rest| rest.starts_with(['<', '>']))
+    }
+
+    /// The words the grammar took for more files of the redirects of
+    /// `statement` (see [`Lost`]), with the command they are arguments of.
+    /// `None` when there are none, or when the statement's body is a group,
+    /// a loop, a branch or a subshell, which takes no arguments: the
+    /// redirects are then unreadable (see the `file_redirect` arm of
+    /// [`Self::node`]).
+    fn lost_words(&self, statement: Node<'_>) -> Option<Lost> {
+        let mut redirects = Vec::new();
+        let mut nodes = Vec::new();
+        let mut cursor = statement.walk();
+        for redirect in statement.children_by_field_name("redirect", &mut cursor) {
+            // The redirects the grammar holds inside a here-document's
+            // (`cat <<EOF > out -n`) are the command's too.
+            let mut inner = redirect.walk();
+            let held: Vec<Node<'_>> = if redirect.kind() == "heredoc_redirect" {
+                redirect
+                    .children_by_field_name("redirect", &mut inner)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for redirect in std::iter::once(redirect).chain(held) {
+                let lost = lost_in(redirect);
+                if !lost.is_empty() {
+                    redirects.push(redirect.id());
+                    nodes.extend(lost);
+                }
+            }
+        }
+        if redirects.is_empty() {
+            return None;
+        }
+        nodes.sort_by_key(Node::start_byte);
+        let qualified = nodes.iter().any(|word| self.qualified(*word));
+        let words = nodes.iter().map(|word| self.arg(*word)).collect();
+        let body = statement.child_by_field_name("body")?;
+        let command = if body.kind() == "command" {
+            body
+        } else {
+            last_simple(body)?
+        };
+        Some(Lost {
+            command: command.id(),
+            redirects,
+            words,
+            qualified,
         })
     }
 
@@ -2133,6 +2428,7 @@ impl Walker<'_> {
         level: usize,
         from: Option<OpensFrom>,
     ) {
+        self.lost_unread(node);
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
         self.heredoc_backticks(node);
