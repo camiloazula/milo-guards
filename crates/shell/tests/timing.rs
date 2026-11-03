@@ -389,9 +389,13 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // `tangled.rs`). A chain of PowerShell assignments (`$a = $a = … gc
     // .env`), whose value was read again for its variables at each level,
     // took over two seconds in a debug build: each level now reads only its
-    // own nodes (`variables` in `powershell.rs`). A release build reads each in
-    // tens of milliseconds; the bounds leave room for a machine busy with
-    // other work, and for the debug build `just test` runs.
+    // own nodes (`variables` in `powershell.rs`). A path is judged again from
+    // each other folder a `cd` that may have failed or not run may have left
+    // the line in, which made the `cd` rows two to three times slower until a
+    // `cd ..` back from one after `&&` added none and every folder only known
+    // when it runs counted as one (`MAX_ELSEWHERE` in `unit.rs`). A release
+    // build reads each in tens of milliseconds; the bounds leave room for a
+    // machine busy with other work, and for the debug build `just test` runs.
     let limit = if cfg!(debug_assertions) {
         std::time::Duration::from_secs(2)
     } else {
@@ -435,6 +439,8 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("a|a\n|", "", "")),
         (Shell::Posix, fit("cd a; cd ..; ", "", "rm x")),
         (Shell::Posix, fit("cd a; cat b; cd ..; ", "", "rm x")),
+        (Shell::Posix, fit("cd a && cd ..; ", "", "rm x")),
+        (Shell::Posix, fit("x && cd a; cat b > c; ", "", "bash c")),
         (Shell::PowerShell, fit("cd a; cd ..; ", "", "Remove-Item x")),
         (Shell::Posix, fit("echo x | ", "", "|")),
         (Shell::Posix, fit("|", "", "")),

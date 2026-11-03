@@ -480,6 +480,7 @@ impl Walker<'_> {
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
             "pipeline" => {
+                self.split.statement();
                 let list = self.split.list_start();
                 let mut cursor = node.walk();
                 let mut at = 0;
@@ -505,9 +506,14 @@ impl Walker<'_> {
                 self.split.list_end(list);
             }
             "pipeline_chain" => {
+                self.split.statement();
                 let pipeline = self.split.pipeline(stage.or(self.item));
                 let mut cursor = node.walk();
                 let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                // The right side of an `&&` after a chain that is not one
+                // command runs when the chain succeeded, not when a `cd` in
+                // it did (`-not (Set-Location s) && …`).
+                let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
                 for (index, child) in stages.iter().enumerate() {
                     // A value that is piped on (`'DROP TABLE t' | psql`) is
                     // a stage that says it, as `Write-Output` would.
@@ -521,6 +527,9 @@ impl Walker<'_> {
                         _ => Stage { pipeline, index },
                     };
                     self.walk(*child, Some(stage), level + 1);
+                }
+                if !command {
+                    self.split.statement();
                 }
             }
             "command" => {

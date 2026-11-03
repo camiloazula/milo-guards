@@ -384,6 +384,13 @@ impl Resolver {
         {
             return None;
         }
+        // From a folder only known when it runs, a name may be one in the
+        // home directory, which that folder may be.
+        if let Some(home) = in_unknown_folder(dir, arg, shell) {
+            if let Some(words) = self.secret(None, &home, shell, hidden) {
+                return Some(words);
+            }
+        }
         let owned;
         let arg = if dir.is_some() {
             owned = within(dir, arg, shell);
@@ -674,6 +681,21 @@ impl Resolver {
             Start::Unknown => Place::Unknown,
         }
     }
+}
+
+/// `arg`, a plain relative name (see [`plain_relative`]) written from
+/// `dir`, a folder only known when it runs, as that name in the home
+/// directory, which the folder may be: after a `cd` the guard cannot follow
+/// (`cd "$x"`, or more folders than it keeps), `.ssh/id_rsa` may be
+/// `~/.ssh/id_rsa`. `None` when `dir` is known or where the line began, or
+/// `arg` is not such a name; and in cmd, which has no `~`.
+pub(crate) fn in_unknown_folder(dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<Arg> {
+    if shell == Shell::Cmd || dir?.known().is_some() {
+        return None;
+    }
+    let text = arg.known().filter(|text| plain_relative(text, shell))?;
+    let sep = if shell == Shell::Posix { '/' } else { '\\' };
+    Some(Arg::Known(format!("~{sep}{text}")))
 }
 
 /// Whether a path is a name or a few from the working directory and nothing
