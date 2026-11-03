@@ -530,7 +530,7 @@ posix effect=unknown | LESSOPEN='|./x %s' less a
 posix effect=unknown | IFS=: ; ls
 posix effect=unknown | for PATH in ./bin; do ls; done
 posix effect=unknown | for path in ./bin; do ls; done
-posix effect=unknown | alias ls='rm -rf'; ls
+posix effect=changes | alias ls='rm -rf'; ls
 # A function the line calls.
 posix effect=unknown | f() { ls; }; f
 posix effect=unknown | set -e; ls

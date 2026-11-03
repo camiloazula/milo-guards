@@ -267,19 +267,16 @@ fn of_unit(unit: &Unit, findings: &[Finding], resolver: &Resolver) -> UnitExplan
                     Arg::Input => ArgKind::Input,
                     Arg::Null => ArgKind::Unknown,
                 },
-                resolved: arg
-                    .known()
-                    .filter(|_| !option)
-                    .and_then(|_| {
-                        resolved(
-                            arg,
-                            unit.dir.as_ref(),
-                            unit.shell,
-                            unit.hidden,
-                            resolver,
-                            false,
-                        )
-                    }),
+                resolved: arg.known().filter(|_| !option).and_then(|_| {
+                    resolved(
+                        arg,
+                        unit.dir.as_ref(),
+                        unit.shell,
+                        unit.hidden,
+                        resolver,
+                        false,
+                    )
+                }),
             })
             .collect(),
         wrappers: unit.wrappers.clone(),

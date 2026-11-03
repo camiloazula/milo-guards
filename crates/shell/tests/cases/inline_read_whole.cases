@@ -548,9 +548,10 @@ posix finds=unknown | getopts a PATH; python3 -c 'print(1)'
 posix finds=unknown | f() { PATH=.; }; f; python3 -c 'print(1)'
 posix finds=unknown | (PATH=.); python3 -c 'print(1)'
 # A name the line redefines earlier is not the interpreter it shows: an alias
-# is used on a later line once `expand_aliases` is on, and by zsh always.
-posix finds=unknown | shopt -s expand_aliases\nalias python3='rm -rf /home/me'\npython3 -c 'print(1)'
-posix finds=unknown | alias python3='rm -rf /home/me'; python3 -c 'print(1)'
+# is used on a later line once `expand_aliases` is on, and by zsh always. Its
+# value is read as the script a call runs, so a delete in it is found.
+posix finds=delete | shopt -s expand_aliases\nalias python3='rm -rf /home/me'\npython3 -c 'print(1)'
+posix finds=delete | alias python3='rm -rf /home/me'; python3 -c 'print(1)'
 posix finds=unknown | alias node='node --require /tmp/x.js'\nnode -e 'console.log(1)'
 posix finds=unknown | alias ll='ls -l'; python3 -c 'print(1)'
 posix finds=unknown | unalias -a; python3 -c 'print(1)'
