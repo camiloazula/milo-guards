@@ -127,7 +127,8 @@ pub enum Rule {
     /// Writes into a file beyond the workspace or a sensitive one.
     Overwrite,
     /// Throws away work git cannot give back: uncommitted changes,
-    /// untracked files, stashes, unmerged branches.
+    /// untracked files, stashes, unmerged branches, tags deleted or moved,
+    /// a submodule's changes.
     GitDiscard,
     /// Rewrites or deletes branches on a remote.
     GitRemote,

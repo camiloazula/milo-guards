@@ -152,6 +152,10 @@ pub(crate) struct Unit {
     /// in step with `args`, and empty for any other unit, or one that
     /// lost them, in which no argument counts as read this way.
     pub(crate) listed: Vec<bool>,
+    /// The values the line gives `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`
+    /// where it runs, by name (see [`Split::tf_cli_args`]): terraform reads
+    /// them as arguments of its command.
+    pub(crate) tf_cli_args: Vec<(String, Arg)>,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
     /// more for a part of the line the grammar reads again (what follows the
@@ -238,6 +242,7 @@ impl Unit {
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
+            tf_cli_args: Vec::new(),
             depth: 0,
         }
     }
@@ -576,6 +581,24 @@ struct Reaching {
     flagged: bool,
 }
 
+/// Whether terraform reads the variable `name` as arguments of its command:
+/// `TF_CLI_ARGS`, and `TF_CLI_ARGS_<command>` for one command.
+pub(crate) fn tf_cli_args(name: &str) -> bool {
+    name == "TF_CLI_ARGS" || name.starts_with("TF_CLI_ARGS_")
+}
+
+/// The name terraform reads, when `name` is one of [`tf_cli_args`]'s written
+/// in any case, as Windows reads the names of variables
+/// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`).
+pub(crate) fn tf_cli_args_folded(name: &str) -> Option<String> {
+    let upper = name.to_ascii_uppercase();
+    if upper == "TF_CLI_ARGS" {
+        return Some(upper);
+    }
+    let command = upper.strip_prefix("TF_CLI_ARGS_")?;
+    Some(format!("TF_CLI_ARGS_{}", command.to_ascii_lowercase()))
+}
+
 /// Everything a line was split into.
 #[derive(Debug, Default)]
 #[allow(
@@ -739,6 +762,10 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
+    /// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given for
+    /// the program being added, by name, noted as `node_options` is:
+    /// terraform reads them as arguments of its command.
+    pub(crate) tf_cli_args: Vec<(String, Arg)>,
     /// How many assignments and wrappers hand the program being added an
     /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the
     /// interpreter loads what that environment tells it to, which the code
@@ -843,6 +870,10 @@ pub(crate) struct Split {
     moved: usize,
     /// The actions that run later in this shell (a `trap`'s script).
     later: Vec<Later>,
+    /// Where the line was before each folder a wrapper started its program
+    /// in (see [`Self::start_in`]), to put it back once that program is
+    /// read.
+    folders: Vec<Place>,
     /// How much nested script text has been read, in bytes (and one for
     /// each script), and how much of the line has been read again (see
     /// [`read_again`]): a line that makes the same script be read again and
@@ -1198,6 +1229,7 @@ impl Split {
         unit.dir.clone_from(&self.dir);
         unit.elsewhere.clone_from(&self.elsewhere);
         unit.stayed.clone_from(&self.stayed);
+        unit.tf_cli_args.clone_from(&self.tf_cli_args);
         self.last_stayed.clear();
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
@@ -2591,6 +2623,87 @@ impl Split {
         {
             code.dir = Some(moved.clone());
         }
+    }
+
+    /// Start what a wrapper runs in `target`, the folder its own option
+    /// names (`env -C DIR`, `pnpm --dir DIR`, `Start-Process
+    /// -WorkingDirectory DIR`, `start /d DIR`), read as a `shell` path: every
+    /// folder the line may be in moves there, as for a `cd` that ran. The
+    /// wrapper fails rather than run its program anywhere else. The move is
+    /// that program's alone: [`Self::leave_folders`] puts the line back.
+    pub(crate) fn start_in(&mut self, target: &Arg, shell: Shell) {
+        self.folders.push(self.dir_snapshot());
+        if shell == Shell::Cmd {
+            // `start /d` names the whole folder: its drive too, and a network
+            // path is on a drive the line does not name.
+            match target.known() {
+                Some(text) if text.starts_with(r"\\") || text.starts_with("//") => {
+                    self.change_drive(None);
+                }
+                Some(text) => {
+                    if let Some(letter) = crate::path::drive_of(text) {
+                        self.change_drive(Some(letter));
+                    }
+                }
+                None => self.change_drive(None),
+            }
+        }
+        let dir = self.moved_to(self.dir.as_ref(), target, shell);
+        let elsewhere: Vec<Option<Arg>> = self
+            .elsewhere
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        let stayed: Vec<Option<Arg>> = self
+            .stayed
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        // As for a `cd`: the folder holds code when the target does, or when
+        // the folder did and the target was put after it.
+        let target_text = target.known();
+        self.dir_code = match &dir {
+            Arg::Known(text) => {
+                target_text.is_none_or(holds_code)
+                    || (self.dir_code && target_text != Some(text.as_str()))
+            }
+            _ => true,
+        };
+        self.pwd.unplain |= self.dir_code;
+        self.dir = Some(dir);
+        self.set_elsewhere(elsewhere);
+        self.set_stayed(stayed);
+    }
+
+    /// How many folders wrappers have started their programs in and the
+    /// line is still in, to give to [`Self::leave_folders`].
+    pub(crate) fn folders_mark(&self) -> usize {
+        self.folders.len()
+    }
+
+    /// Put the line back where it was before the folders wrappers started
+    /// their programs in since `mark` (see [`Self::start_in`]).
+    pub(crate) fn leave_folders(&mut self, mark: usize) {
+        if mark < self.folders.len() {
+            let mut left = self.folders.split_off(mark);
+            let place = left.swap_remove(0);
+            self.restore_dir(place);
+        }
+    }
+
+    /// Run what comes next from a folder only known when it runs, `why`, as
+    /// a `cd` there would: the script a program runs in a folder of its own
+    /// choosing (`git submodule foreach`). Put back with
+    /// [`Self::restore_dir`] from a [`Self::dir_snapshot`] taken before.
+    pub(crate) fn move_unknown(&mut self, why: &str) {
+        self.moves += 1;
+        self.moved += 1;
+        self.dir = Some(Arg::Unknown(why.to_string()));
+        self.dir_code = true;
+        self.pwd.unplain = true;
+        self.elsewhere.clear();
+        self.stayed.clear();
+        self.last_stayed.clear();
     }
 
     /// Where the line has moved to, to put back after a subshell or a nested

@@ -12,18 +12,25 @@ use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
 
 mod find;
+mod git;
 mod interpreters;
 mod npm;
+mod parallel;
+mod tools;
 mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
+pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
 pub(crate) use interpreters::{
     after_run, code_options, perl_edits, valued_options, BUN_VALUES, DENO_VALUES, INTERPRETERS,
     SHELLS,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
-use wrappers::{cmd, env, env_sets, powershell, rsh, runner, start, start_process, tmux, xargs};
+use wrappers::{
+    cmd, env, env_sets, folder_option, getopt, in_folder, powershell, rsh, runner, start,
+    start_process, tmux, xargs, Getopt,
+};
 pub(crate) use wrappers::{powershell_file, uv_script, RUNNERS};
 
 /// How many wrappers may stand in front of a program before the line is
@@ -36,7 +43,7 @@ const MAX_WRAPPERS: usize = 16;
 const MAX_FORKS: usize = 32;
 
 /// What a program does with the rest of its arguments.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(super) enum Launch {
     /// It is the program the rules judge.
     Itself,
@@ -52,6 +59,9 @@ pub(super) enum Launch {
     Replace(Box<Unit>),
     /// It runs `script` in `shell`.
     Script(Shell, Arg),
+    /// It runs `script` in `shell`, in a folder of its own choosing that
+    /// the line does not say (`git submodule foreach`).
+    Elsewhere(Shell, Arg),
     /// It runs a script given encoded.
     Encoded,
     /// It reads its commands from its input.
@@ -65,17 +75,29 @@ pub(super) enum Launch {
     /// The line reads two ways and each is judged, so the riskier one
     /// counts.
     Either(Box<Launch>, Box<Launch>),
+    /// It does what the inner launch says, started in the folder its own
+    /// option names (`env -C DIR`, `pnpm --dir DIR`, `start /d DIR`): what
+    /// it runs has its relative paths judged from there, and the rest of
+    /// the line from where it was. The folder is read as a path of the
+    /// shell given, or of the line's own shell when none is (`wsl --cd`
+    /// names a folder of its Linux shell).
+    In(Arg, Option<Shell>, Box<Launch>),
 }
 
 pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     let outer = split.scope_hidden(false);
-    // What a wrapper in front of the program sets is the program's only.
+    // What a wrapper in front of the program sets is the program's only,
+    // and so is the folder it starts the program in.
     let options = split.node_options.len();
     let paths = split.python_path.len();
+    let terraform = split.tf_cli_args.len();
     let environment = split.environment;
+    let folders = split.folders_mark();
     add_unit(split, unit, depth);
+    split.leave_folders(folders);
     split.node_options.truncate(options);
     split.python_path.truncate(paths);
+    split.tf_cli_args.truncate(terraform);
     split.environment = environment;
     split.unscope_hidden(outer);
 }
@@ -228,7 +250,15 @@ fn add_launched(
                 split.set(&name);
             }
         }
+        let elsewhere = matches!(launched, Launch::Elsewhere(..));
         match launched {
+            // The wrapper starts what it runs in a folder of its own, and
+            // takes no more of the wrappers left for that.
+            Launch::In(folder, shell, inner) => {
+                split.start_in(&folder, shell.unwrap_or(unit.shell));
+                add_launched(split, unit, depth, wrappers - used, Some(*inner));
+                return;
+            }
             Launch::Either(first, second) => {
                 if !split.fork(MAX_FORKS) {
                     split.problem(
@@ -240,7 +270,11 @@ fn add_launched(
                     return;
                 }
                 let left = wrappers - used;
+                // Each reading starts where the line is: a folder the first
+                // starts its program in is not the second's.
+                let folders = split.folders_mark();
                 add_launched(split, unit.clone(), depth, left, Some(*first));
+                split.leave_folders(folders);
                 add_launched(split, unit, depth, left, Some(*second));
                 return;
             }
@@ -278,6 +312,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
+                split
+                    .tf_cli_args
+                    .extend(wrappers::tf_cli_args(&unit.args, start));
                 // `env BASH_ENV=f bash`: the shell it starts runs `f`.
                 let files = if key == "env" && unit.shell == Shell::Posix {
                     startup::env(split, &unit.args[..start], depth)
@@ -315,6 +352,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
+                split
+                    .tf_cli_args
+                    .extend(wrappers::tf_cli_args(&unit.args, start));
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
@@ -334,7 +374,7 @@ fn add_launched(
                 }
                 unit = *replacement;
             }
-            Launch::Script(shell, script) => {
+            Launch::Script(shell, script) | Launch::Elsewhere(shell, script) => {
                 // A shell started with the option on (`bash -O dotglob -c`,
                 // `zsh -o globdots -c`) runs its script with it on.
                 let starts_hidden = SHELLS.contains(&key.as_str())
@@ -342,6 +382,15 @@ fn add_launched(
                     && dotglob::starts_with(&unit.args);
                 let stage = unit.stage;
                 let inherited = key == "trap" && trap_inherited(&unit.args);
+                // A script `xargs` or `parallel` hands to a shell runs once
+                // for each item it reads, as a loop body runs: its `$1` and
+                // `$@` are a different value each time, only known when it
+                // runs.
+                let per_item = key == "parallel"
+                    || unit
+                        .wrappers
+                        .iter()
+                        .any(|wrapper| matches!(wrapper.as_str(), "xargs" | "parallel"));
                 let shell_at = split.units.len();
                 split.push(unit);
                 // A `trap` action in double quotes is expanded when the trap
@@ -393,6 +442,14 @@ fn add_launched(
                         // PowerShell's `Invoke-Expression` runs its string in
                         // the session, which has one location.
                         let here = key == "eval" || key == "invoke-expression";
+                        split.repeats += usize::from(per_item);
+                        // `git submodule foreach` runs its command in a folder
+                        // the line does not name; the rest of the line is
+                        // where it was.
+                        let outer_dir = elsewhere.then(|| split.dir_snapshot());
+                        if elsewhere {
+                            split.move_unknown("the folder it runs in");
+                        }
                         if key == "alias" {
                             // Each `NAME=VALUE` is a body of its own.
                             let definitions: Vec<(String, String)> = split
@@ -413,6 +470,10 @@ fn add_launched(
                         } else {
                             unit::script_in(split, &text, shell, depth + 1, here);
                         }
+                        if let Some(place) = outer_dir {
+                            split.restore_dir(place);
+                        }
+                        split.repeats -= usize::from(per_item);
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
@@ -589,6 +650,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
+        tf_cli_args: Vec::new(),
         depth,
     }
 }
@@ -597,57 +659,20 @@ fn launch(key: &str, unit: &Unit) -> Launch {
     let args = &unit.args;
     let posix = unit.shell != Shell::Cmd;
     match key {
-        "sudo" | "doas" | "gsudo" | "pkexec" => runs(
-            args,
-            after_options(
-                args,
-                &[
-                    "-u",
-                    "-g",
-                    "-h",
-                    "-p",
-                    "-C",
-                    "-D",
-                    "-r",
-                    "-t",
-                    "-U",
-                    "-T",
-                    "-R",
-                    "--user",
-                    "--group",
-                    "--host",
-                    "--prompt",
-                    "--chdir",
-                    "--role",
-                    "--type",
-                    "--other-user",
-                    "--close-from",
-                    "--command-timeout",
-                ],
-            ),
-        ),
+        // `sudo -D DIR` (`--chdir`) starts the command in `DIR`.
+        "sudo" => sudo(args),
+        "doas" | "gsudo" | "pkexec" => runs(args, after_options(args, SUDO_VALUES)),
         // systemd's own `sudo`, and a command started as a transient unit.
-        "run0" if posix => runs(
-            args,
-            after_options(
+        "run0" if posix => {
+            let start = after_options(args, RUN0_VALUES);
+            started_in(
                 args,
-                &[
-                    "-u",
-                    "-g",
-                    "-D",
-                    "--user",
-                    "--group",
-                    "--chdir",
-                    "--setenv",
-                    "--property",
-                    "--description",
-                    "--slice",
-                    "--unit",
-                    "--nice",
-                    "--machine",
-                ],
-            ),
-        ),
+                start,
+                &["-D", "--chdir"],
+                RUN0_VALUES,
+                runs(args, start),
+            )
+        }
         "systemd-run" if posix => runs(
             args,
             after_options(
@@ -689,7 +714,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         "su" => option_value(args, "-c", "--command").map_or(Launch::Itself, |script| {
             Launch::Script(Shell::Posix, script)
         }),
-        "env" if posix => env(args),
+        "env" if posix => env(unit),
         "nice" if posix => runs(args, after_options(args, &["-n", "--adjustment"])),
         "ionice" if posix => runs(
             args,
@@ -725,6 +750,22 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             }
         }
         "xargs" if posix => xargs(args),
+        "parallel" if posix => parallel::parallel(args),
+        // Tracers and runners that run the program after their options.
+        "strace" if posix => tools::strace(args),
+        "script" if posix => tools::script(args),
+        "ssh-agent" if posix => tools::ssh_agent(args),
+        "chronic" if posix => tools::chronic(args),
+        "launchctl" if posix => tools::launchctl(unit),
+        "lima" if posix => tools::lima(args),
+        "nix" if posix => tools::nix(unit),
+        // Runners that load secrets into the command's environment first.
+        "aws-vault" if posix => tools::aws_vault(args),
+        "doppler" | "infisical" | "op" if posix => tools::secrets_run(key, unit),
+        "direnv" if posix => tools::direnv(args),
+        "dotenv" if posix => tools::dotenv(args),
+        // `wsl` runs its words in a Linux shell, from any shell of Windows.
+        "wsl" => tools::wsl(args),
         // `alias f='cat .env'`: a call of `f` runs the value, read as a
         // script where it is defined, as a function's body is; each
         // `NAME=VALUE` is read apart where the script is.
@@ -863,6 +904,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             runner(key, unit)
         }
         "dx" => runner(key, unit),
+        "git" => git::launch(args),
         "bun" => bun(unit),
         "deno" => deno(unit),
         key if SHELLS.contains(&key) && posix => shell(args),
@@ -898,6 +940,154 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         },
         _ => Launch::Itself,
     }
+}
+
+/// `sudo`: its options, read as `getopt_long` reads them (`-nD DIR`,
+/// `--chd DIR`), then the command, which `-D DIR` (`--chdir`) starts in
+/// `DIR`.
+fn sudo(args: &[Arg]) -> Launch {
+    let Some(start) = after_options_by(args, |text, next| getopt(text, next, &SUDO_OPTIONS).0)
+        .filter(|start| *start < args.len())
+    else {
+        return Launch::Itself;
+    };
+    let own = &args[..start];
+    let mut folder = None;
+    let mut at = 0;
+    while let Some(arg) = own.get(at) {
+        at += match arg.known() {
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                let (word, option) = getopt(text, own.get(at + 1), &SUDO_OPTIONS);
+                if let Some(("chdir", value)) = option {
+                    folder = value;
+                }
+                if matches!(word, Word::Value) {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => 1,
+        };
+    }
+    // The `NAME=value` words after its options set the program's
+    // environment.
+    in_folder(folder, runs(args, Some(after_assignments(args, start))))
+}
+
+/// `sudo`'s options (sudo.ws, `sudo --help`).
+const SUDO_OPTIONS: Getopt = Getopt {
+    short: &[
+        ('C', "close-from"),
+        ('D', "chdir"),
+        ('g', "group"),
+        ('h', "host"),
+        ('p', "prompt"),
+        ('R', "chroot"),
+        ('r', "role"),
+        ('T', "command-timeout"),
+        ('t', "type"),
+        ('U', "other-user"),
+        ('u', "user"),
+    ],
+    long: &[
+        ("askpass", false),
+        ("background", false),
+        ("bell", false),
+        ("chdir", true),
+        ("chroot", true),
+        ("close-from", true),
+        ("command-timeout", true),
+        ("edit", false),
+        ("group", true),
+        ("help", false),
+        ("host", true),
+        ("list", false),
+        ("login", false),
+        ("non-interactive", false),
+        ("other-user", true),
+        ("preserve-env", false),
+        ("preserve-groups", false),
+        ("prompt", true),
+        ("remove-timestamp", false),
+        ("reset-timestamp", false),
+        ("role", true),
+        ("set-home", false),
+        ("shell", false),
+        ("stdin", false),
+        ("type", true),
+        ("user", true),
+        ("validate", false),
+        ("version", false),
+    ],
+};
+
+/// The options of `doas`, `gsudo` and `pkexec` (read as `sudo`'s) that take
+/// the next argument.
+const SUDO_VALUES: &[&str] = &[
+    "-u",
+    "-g",
+    "-h",
+    "-p",
+    "-C",
+    "-D",
+    "-r",
+    "-t",
+    "-U",
+    "-T",
+    "-R",
+    "--user",
+    "--group",
+    "--host",
+    "--prompt",
+    "--chdir",
+    "--role",
+    "--type",
+    "--other-user",
+    "--close-from",
+    "--command-timeout",
+];
+
+/// The options of `run0`, systemd's own `sudo`, that take the next argument.
+const RUN0_VALUES: &[&str] = &[
+    "-u",
+    "-g",
+    "-D",
+    "--user",
+    "--group",
+    "--chdir",
+    "--setenv",
+    "--property",
+    "--description",
+    "--slice",
+    "--unit",
+    "--nice",
+    "--machine",
+];
+
+/// `launch`, which runs the program at `start`, started in the folder the
+/// last of the options `names` among the wrapper's own, before `start`,
+/// gives (`sudo -D DIR`, `--chdir DIR`, `--chdir=DIR`, `-DDIR`); `values`
+/// are the options that take the next argument.
+fn started_in(
+    args: &[Arg],
+    start: Option<usize>,
+    names: &[&str],
+    values: &[&str],
+    launch: Launch,
+) -> Launch {
+    let (Launch::Runs(_), Some(start)) = (&launch, start) else {
+        return launch;
+    };
+    let own = args.get(..start).unwrap_or_default();
+    let folder = folder_option(own, names, true, |text, _| {
+        if values.contains(&text) {
+            Word::Value
+        } else {
+            Word::Flag
+        }
+    });
+    in_folder(folder, launch)
 }
 
 /// Whether another program's output is piped into the unit.
@@ -1056,6 +1246,25 @@ pub(super) fn runs(args: &[Arg], start: Option<usize>) -> Launch {
         .map_or(Launch::Itself, Launch::Runs)
 }
 
+/// The index of the first argument at or after `start` that is not a
+/// `NAME=value` word: sudo sets those in the environment of the program
+/// after them (`sudo TF_CLI_ARGS=-destroy terraform apply`).
+fn after_assignments(args: &[Arg], start: usize) -> usize {
+    let mut at = start;
+    while args.get(at).is_some_and(|arg| {
+        arg.text()
+            .trim_start_matches(['"', '\''])
+            .split_once('=')
+            .is_some_and(|(name, _)| {
+                name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+    }) {
+        at += 1;
+    }
+    at
+}
+
 /// The index of the first argument after a wrapper's options; `values`
 /// names the options that take the next argument as their value.
 pub(super) fn after_options(args: &[Arg], values: &[&str]) -> Option<usize> {
@@ -1101,6 +1310,130 @@ pub(super) fn after_options_by(
         }
     }
     None
+}
+
+/// [`after_options`] for a program that reads its options as `getopt`
+/// does: short letters in a bundle, where a letter of `short` takes the rest
+/// of the bundle or, at its end, the next word (`-fo log`); a long option of
+/// `long` takes the next word unless its value follows `=`.
+pub(super) fn after_getopt(args: &[Arg], short: &str, long: &[&str]) -> Option<usize> {
+    after_options_by(args, |text, _| getopt_word(text, short, long))
+}
+
+/// What the option `text` is among options read as [`after_getopt`] reads
+/// them.
+fn getopt_word(text: &str, short: &str, long: &[&str]) -> Word {
+    if let Some(name) = text.strip_prefix("--") {
+        return if long.contains(&name) {
+            Word::Value
+        } else {
+            Word::Flag
+        };
+    }
+    let bundle = text.strip_prefix('-').unwrap_or(text);
+    for (at, letter) in bundle.char_indices() {
+        if short.contains(letter) {
+            return if at + letter.len_utf8() == bundle.len() {
+                Word::Value
+            } else {
+                Word::Flag
+            };
+        }
+    }
+    Word::Flag
+}
+
+/// The value of the option `letter` (also in a bundle, `-qc CMD`, or
+/// attached, `-cCMD`) or `--name` (also `--name=value`), wherever it stands
+/// before a `--`, as a program that reads its options as `getopt` does finds
+/// it among its operands; `short` and `long` are the other options that take
+/// a value, whose values are skipped.
+pub(super) fn getopt_value(
+    args: &[Arg],
+    letter: Option<char>,
+    name: &str,
+    short: &str,
+    long: &[&str],
+) -> Option<Arg> {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        at += 1;
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        if let Some(option) = text.strip_prefix("--") {
+            let (option, value) = option
+                .split_once('=')
+                .map_or((option, None), |(option, value)| (option, Some(value)));
+            if option == name {
+                return value.map_or_else(
+                    || args.get(at).cloned(),
+                    |value| Some(Arg::Known(value.to_string())),
+                );
+            }
+            if value.is_none() && long.contains(&option) {
+                at += 1;
+            }
+        } else if let Some(bundle) = text.strip_prefix('-') {
+            for (index, found) in bundle.char_indices() {
+                let rest = &bundle[index + found.len_utf8()..];
+                if Some(found) == letter {
+                    return if rest.is_empty() {
+                        args.get(at).cloned()
+                    } else {
+                        Some(Arg::Known(rest.to_string()))
+                    };
+                }
+                if short.contains(found) {
+                    at += usize::from(rest.is_empty());
+                    break;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The index after the subcommand `word`, the first word after the options
+/// of the program (read as [`after_getopt`] reads them).
+pub(super) fn subcommand(args: &[Arg], word: &str, short: &str, long: &[&str]) -> Option<usize> {
+    let at = after_getopt(args, short, long)?;
+    (args.get(at)?.known()? == word).then_some(at + 1)
+}
+
+/// `text` as one word of a POSIX shell line: as it is when the shell would
+/// read it so, in single quotes otherwise. A quoted `~` names the home
+/// directory to the guard as much as a bare one, as every other path it
+/// reads, so quoting never hides one.
+pub(super) fn shell_word(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./~:=@%+,-".contains(c));
+    if plain {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// Arguments made into a POSIX shell line that runs them as they are, each
+/// one word ([`shell_word`]). Unknown when any of them is.
+pub(super) fn shell_words(args: &[Arg]) -> Arg {
+    let line = args
+        .iter()
+        .map(|arg| {
+            arg.known()
+                .map_or_else(|| arg.text().to_string(), shell_word)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if args.iter().all(|arg| arg.known().is_some()) {
+        Arg::Known(line)
+    } else {
+        Arg::Unknown(line)
+    }
 }
 
 /// The value of `short` or `--long` (also `--long=value`).
