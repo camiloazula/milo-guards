@@ -336,14 +336,7 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
             Some(&code),
         ),
         Act::Downloaded(code) => {
-            split.problem(
-                Rule::RunDownloaded,
-                Said::instead(
-                    "runs code it downloads",
-                    "download the code to a file and read it first",
-                ),
-                Some(&code),
-            );
+            split.problem(Rule::RunDownloaded, Said::downloaded_code(), Some(&code));
             split.problem(
                 Rule::Unknown,
                 "runs code the guard does not read",

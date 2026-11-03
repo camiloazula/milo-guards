@@ -7,7 +7,7 @@ use crate::launch::{
 };
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
-use crate::said::{Said, DOWNLOAD_FIRST};
+use crate::said::Said;
 use milo_guards_core::spelling::glob;
 
 use std::borrow::Cow;
@@ -659,11 +659,7 @@ impl Checker<'_> {
         });
         match (reads, downloaded) {
             (Reads::Shell | Reads::Interpreter, true) => {
-                self.add(
-                    Rule::RunDownloaded,
-                    Said::instead("runs a downloaded script", DOWNLOAD_FIRST),
-                    None,
-                );
+                self.add(Rule::RunDownloaded, Said::downloaded_script(), None);
             }
             (Reads::Shell, false) => {
                 self.add(Rule::RunInput, "runs commands read from its input", None);

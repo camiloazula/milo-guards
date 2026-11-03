@@ -143,27 +143,45 @@ impl Checker<'_> {
         // a force says to lease instead, and a lease alone (`git push
         // --force-with-lease`), which rewrites a branch only when nobody
         // pushed to it since, says so. A lease beside anything that forces,
-        // deletes or is only known when it runs is read as a plain force.
+        // deletes or is only known when it runs is read as a plain force,
+        // with no advice: the lease is already written, and leasing a
+        // delete still deletes.
         let push = |maybe: bool| -> Said {
             let forces = flag(Some('f'), Some("force"))
                 || (maybe && unread(Some('f'), Some("force")))
                 || operands.iter().any(|arg| refspec_starts(arg, shell, '+'));
-            let leased = flag(None, Some("force-with-lease"))
+            // Written as the lease, not as `--force`, which git also takes
+            // as a prefix of `--force-with-lease` but reads as itself.
+            let lease = rest
+                .iter()
+                .filter_map(Arg::known)
+                .take_while(|text| *text != "--")
+                .any(|text| text.starts_with("--force-w"));
+            let deletes = flag(None, Some("mirror"))
+                || flag(Some('d'), Some("delete"))
+                || flag(None, Some("prune"))
+                || operands.iter().any(|arg| refspec_starts(arg, shell, ':'));
+            let leased = lease
                 && !unread(Some('f'), Some("force"))
-                && !flag(None, Some("mirror"))
-                && !flag(Some('d'), Some("delete"))
-                && !flag(None, Some("prune"))
-                && operands
-                    .iter()
-                    .all(|arg| arg.known().is_some_and(|text| !text.starts_with(':')));
+                && !deletes
+                && operands.iter().all(|arg| arg.known().is_some());
             if forces {
-                Said::instead(REWRITES, "use `git push --force-with-lease`")
+                if lease || deletes {
+                    REWRITES.into()
+                } else {
+                    Said::instead(REWRITES, "use `git push --force-with-lease`")
+                }
             } else if leased {
                 "rewrites a branch on the remote unless someone pushed since".into()
             } else {
                 REWRITES.into()
             }
         };
+        // Whether git's own options move it to another repository, where a
+        // dry run typed in this folder would list something else.
+        let elsewhere = args[..at].iter().filter_map(Arg::known).any(|text| {
+            text == "-C" || text.starts_with("--git-dir") || text.starts_with("--work-tree")
+        });
         // What the line does with the options it shows, or, with `maybe`,
         // with an argument only known when it runs taken as an option that
         // throws work away.
@@ -186,7 +204,12 @@ impl Checker<'_> {
                         Rule::GitDiscard,
                         Said::instead(
                             "deletes untracked files",
-                            format!("list what would go first (`{}`)", clean_dry_run(rest)),
+                            match clean_dry_run(rest) {
+                                Some(dry) if !elsewhere => {
+                                    format!("list what would go first (`{dry}`)")
+                                }
+                                _ => CLEAN_SAME.to_string(),
+                            },
                         ),
                     )
                 }
@@ -325,6 +348,11 @@ impl Checker<'_> {
 /// What a push that rewrites or deletes says, when nothing better is known.
 const REWRITES: &str = "rewrites or deletes branches on the remote";
 
+/// What to do instead of a `git clean` that deletes, when the dry run
+/// cannot be spelled out from the line: it moves git to another repository,
+/// or an argument that may be an option is only known when it runs.
+const CLEAN_SAME: &str = "list what would go first with `git clean -n` and the same options";
+
 /// What to do instead of throwing changes away.
 const STASH_FIRST: &str = "stash the changes first (`git stash`)";
 
@@ -350,10 +378,13 @@ fn refspec_starts(arg: &Arg, shell: Shell, start: char) -> bool {
 /// `-x` and `-X` it is given, so it lists what the same clean would delete
 /// in its folders and among the ignored files. Its options are read as
 /// [`git_dry_run`] reads them: the value of `-e`/`--exclude` is a pattern.
-fn clean_dry_run(args: &[Arg]) -> String {
+/// `None` when an argument before `--` is only known when it runs, since it
+/// may hold a `-d` or `-x` the dry run would then leave out.
+fn clean_dry_run(args: &[Arg]) -> Option<String> {
     let mut options = String::from("n");
-    let mut words = args.iter().filter_map(Arg::known);
-    while let Some(text) = words.next() {
+    let mut words = args.iter();
+    while let Some(arg) = words.next() {
+        let text = arg.known()?;
         if text == "--" {
             break;
         }
@@ -376,7 +407,7 @@ fn clean_dry_run(args: &[Arg]) -> String {
             }
         }
     }
-    format!("git clean -{options}")
+    Some(format!("git clean -{options}"))
 }
 
 /// Whether awk code runs a command or writes a file: `system`, a single

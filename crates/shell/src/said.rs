@@ -4,9 +4,6 @@
 
 use crate::{Finding, Rule};
 
-/// What a downloaded script run straight away can be turned into.
-pub(crate) const DOWNLOAD_FIRST: &str = "download the script to a file and read it first";
-
 /// What a finding says: the reason, in a few words a permission prompt can
 /// show, and, where there is a real one, what to do instead, in the same
 /// voice (one short sentence, no trailing period). A plain `&str` or
@@ -24,6 +21,24 @@ impl Said {
             reason: reason.into(),
             instead: Some(instead.into()),
         }
+    }
+
+    /// What a downloaded script run straight away says (`curl … | sh`,
+    /// `bash <(curl …)`, `iwr … | iex`), with its way out: every
+    /// `RunDownloaded` finding of a shell line says it, so it is said here.
+    pub(crate) fn downloaded_script() -> Self {
+        Self::instead(
+            "runs a downloaded script",
+            "download the script to a file and read it first",
+        )
+    }
+
+    /// What inline code that runs code it downloads says, with its way out.
+    pub(crate) fn downloaded_code() -> Self {
+        Self::instead(
+            "runs code it downloads",
+            "download the code to a file and read it first",
+        )
     }
 
     /// The finding of `rule` that says this, about `target`.

@@ -513,7 +513,11 @@ fn write_finding(f: &mut fmt::Formatter<'_>, indent: &str, finding: &Finding) ->
     if let Some(target) = &finding.target {
         write!(f, " ({})", Escaped(target))?;
     }
-    writeln!(f)
+    writeln!(f)?;
+    if let Some(instead) = &finding.instead {
+        writeln!(f, "{indent}  instead: {}", Escaped(instead))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

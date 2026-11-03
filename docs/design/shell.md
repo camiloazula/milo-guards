@@ -1776,9 +1776,9 @@ reason with its `instead`.
 | What is found | `instead` |
 | --- | --- |
 | `git reset --hard`; a `checkout`, `restore` or `switch` that throws changes to files away | "stash the changes first (`git stash`)" |
-| `git clean` that deletes | "list what would go first (`git clean -n`)", with the `-d`, `-x` and `-X` it is given after the `n`: `git clean -fdx` gives `git clean -ndx` |
+| `git clean` that deletes | "list what would go first (`git clean -n`)", with the `-d`, `-x` and `-X` it is given after the `n`: `git clean -fdx` gives `git clean -ndx`. Where the dry run cannot be spelled from the line, because git's own options move it to another repository (`-C`, `--git-dir`, `--work-tree`) or an argument before `--` is only known when it runs (`git clean $OPTS`, `-fdx"$X"`), it is said in words: "list what would go first with `git clean -n` and the same options". The advice never quotes the line |
 | `git branch -D` | "use `git branch -d`, which keeps a branch that is not merged" |
-| `git push` that forces (`-f`, `--force`, a `+` refspec) | "use `git push --force-with-lease`" |
+| `git push` that forces (`-f`, `--force`, a `+` refspec), with no lease written and nothing that deletes (`--delete`, `--mirror`, `--prune`, a `:` refspec) | "use `git push --force-with-lease`" |
 | a delete of a place beyond the workspace: the home directory, a top-level or system folder, a folder holding the workspace, anywhere else outside it | "delete inside the workspace, or ask the user" |
 | a downloaded script run (`curl … \| sh`, `bash <(curl …)`, `iwr … \| iex`) | "download the script to a file and read it first" |
 | inline code that runs code it downloads | "download the code to a file and read it first" |
@@ -1797,7 +1797,9 @@ the remote unless someone pushed since`, and no `instead` (with
 `--force`, a `+` or `:` refspec, `--delete`, `--mirror`, `--prune`), an
 argument only known when it runs that may be `--force`, or a refspec only
 known when it runs, it is read as a plain force: `rewrites or deletes
-branches on the remote`.
+branches on the remote`, with no `instead`, since the lease is already
+written. A forced push that also deletes has none either: leasing a delete
+still deletes.
 
 The case files hold every finding's reason and `instead` to one plain
 sentence (`unsaid` in `tests/common/cases.rs`): not empty, on one line, no
@@ -6048,6 +6050,11 @@ U+202A to U+202E and U+2066 to U+2069, a zero-width space, a byte order mark)
 are written as escapes (`\n`, `\u{1b}`, `\u{202e}`), so the text can neither pose
 as a line of the tree, nor reach a terminal as a sequence, nor show in another
 order than it is read. The fields of `Explanation` keep the text raw.
+
+A finding with an `instead` ([What to do instead](#what-to-do-instead)) has
+it on the line below its own, indented one step further (``instead: stash
+the changes first (`git stash`)``), so a person reading the tree sees the way out
+beside the reason.
 
 `classify` is `explain` without the tree: both take their answer from one
 reading of the line (`effect` too, from the same split), so `Explanation::findings`
