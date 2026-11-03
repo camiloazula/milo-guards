@@ -226,7 +226,7 @@ impl Walker<'_> {
     /// Whether `node`, the right side of an `||`, ends cmd: `exit` (with
     /// `/b` too, which outside a batch file ends cmd), alone or last in a
     /// `( … )` block, which runs in cmd itself. Not `exit /?`, which only
-    /// prints its help.
+    /// prints its help, nor any argument with `/?` in it (`exit /b/?`).
     fn exits(&self, node: Node<'_>) -> bool {
         let mut node = node;
         loop {
@@ -244,9 +244,9 @@ impl Walker<'_> {
                             }
                             "argument_list" => {
                                 let mut cursor = child.walk();
-                                help = child
-                                    .named_children(&mut cursor)
-                                    .any(|argument| unit::text(&argument, self.source) == "/?");
+                                help = child.named_children(&mut cursor).any(|argument| {
+                                    unit::text(&argument, self.source).contains("/?")
+                                });
                             }
                             _ => {}
                         }

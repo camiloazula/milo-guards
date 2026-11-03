@@ -534,7 +534,8 @@ or a function body, which runs again from where the last pass left the line
 ran in a pipeline stage or in the background, on the right of `&&` or `||`, in
 a branch of an `if`, `case` or `switch` or a `try`, on the left of `||` (not
 one whose right side ends the shell, `cd s || exit`: see "A script a line
-writes and then runs" below), or through a wrapper that runs it as a program or in a shell of its own, such as
+writes and then runs" below), or through a wrapper that runs it as a program
+or in a shell of its own, such as
 `env`, `nohup`, `timeout`, `coproc` or cmd's `start` (`cd sub || cd .. > ../x`,
 `if false; then cd sub; fi; cd .. > ../x`, `env cd sub; cd .. > ../x`; the same
 in PowerShell and cmd). Only a `cd` after one of those is read this way: a
@@ -2154,15 +2155,23 @@ Some risks only show when units are read together.
   `exit`, `exit /b`, alone or last in a `( … )` block, which runs in cmd
   itself). Nothing else does: `true`; `return`, which bash goes on past
   outside a function (inside one, its `cd` is already one that may not have
-  run); an `exit` with a redirect of its own (`exit 2> /dev/null`: the
-  grammar puts it on the whole list), which does not run when the redirect
-  fails; one in a subshell, a pipeline or the background, which ends only
-  that process; one after the line defines a function of that name, or uses
-  `alias`, `enable` or `disable`; cmd's `exit /?`, which prints its help; and
-  PowerShell's `exit`, which its grammar reads after `||` as a command. An
-  `||` before it in the same list still counts (`true || cd s || exit; bash
-  x.sh` runs where the line began when `true` succeeds), and so does a left
-  side that ends in `|| true`.
+  run); an `exit` with a redirect of its own, before or after its name
+  (`<nofile exit`, `exit <<< x`, `exit 2> /dev/null`: the grammar puts the
+  last on the whole list), which does not run when the redirect fails; one
+  with more than one argument, or one that may expand to more (`exit 1 2`,
+  `exit *`, `exit "$@"`), which zsh goes on past; one in a subshell, a
+  pipeline or the background, which ends only that process; one after the
+  line defines a function of that name, or uses `alias`, `enable` or
+  `disable`; cmd's `exit /?`, or any argument with `/?` in it (`exit /b/?`),
+  which prints its help; and PowerShell's `exit`, which its grammar reads
+  after `||` as a command. Nor is a left side that may succeed when its `cd`
+  failed taken as one whose `cd` ran: one with a `!` anywhere in it (`! cd s
+  || exit`, `{ ! cd s; } || exit`, `cd a && ! cd b || exit`), and any left
+  side once the line defines a function named `cd`, `chdir`, `pushd` or
+  `popd` (`cd() { :; }; cd s || exit`), which may return 0 without moving
+  the line. An `||` before it in the same list still counts (`true || cd s
+  || exit; bash x.sh` runs where the line began when `true` succeeds), and so
+  does a left side that ends in `|| true`.
   The file may be run as the program itself, not only handed to a shell: a
   program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
   file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x
