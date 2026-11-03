@@ -82,8 +82,12 @@ pub(super) fn env(unit: &Unit) -> Launch {
 
 /// `env -S STRING` at `at`, the option and its value taking `used` words:
 /// `env` again, with the words of the string in their place. A string only
-/// known when it runs, or one that cannot be split, runs a command only
-/// known when it runs.
+/// known when it runs, or one with a `${NAME}` that `env` fills in from its
+/// environment, runs a command only known when it runs. A string `env`
+/// refuses to split (another `$`, an escape it does not know, a quote left
+/// open) runs nothing, as `env` stops there; it is still read as the shell
+/// line it looks like, so a line that only differs from a working one by a
+/// typo is not taken as safe.
 fn split_string(
     unit: &Unit,
     at: usize,
@@ -97,11 +101,15 @@ fn split_string(
     let Some(text) = value.known() else {
         return in_folder(folder, Launch::Script(Shell::Posix, value));
     };
-    let Some(words) = env_split(text) else {
-        return in_folder(
-            folder,
-            Launch::Script(Shell::Posix, Arg::Unknown(text.to_string())),
-        );
+    let words = match env_split(text) {
+        Ok(words) => words,
+        Err(Unsplit::Expands) => {
+            return in_folder(
+                folder,
+                Launch::Script(Shell::Posix, Arg::Unknown(text.to_string())),
+            );
+        }
+        Err(Unsplit::Refused) => return in_folder(folder, Launch::Script(Shell::Posix, value)),
     };
     let mut again = unit.clone();
     again.args = unit.args[..at]
@@ -119,16 +127,27 @@ fn split_string(
     Launch::Replace(Box::new(again))
 }
 
+/// Why `env -S` gives no words known before the line runs.
+enum Unsplit {
+    /// The string fills in a variable, `${NAME}`, from `env`'s environment.
+    Expands,
+    /// `env` refuses the string and runs nothing: a `$` not followed by
+    /// `{NAME}`, an escape it does not know, a quote left open.
+    Refused,
+}
+
 /// The words `env -S` splits `text` into: at blanks, with `'…'` and `"…"`
 /// quoting, the escapes of `\`, a `#` that starts a word ending the string,
-/// and `\c` ending it too. `None` when `env` would not split it so: an
-/// expansion (`${X}`, `$X`), an escape it does not know, or a quote left
-/// open.
-fn env_split(text: &str) -> Option<Vec<String>> {
+/// and `\c` ending it too. GNU's and BSD's `env` both refuse a string they
+/// cannot split so, and both fill in `${NAME}` outside single quotes.
+fn env_split(text: &str) -> Result<Vec<String>, Unsplit> {
     let mut words = Vec::new();
     let mut word = String::new();
     // Whether a word has started, though it may be empty (`''`).
     let mut started = false;
+    // Whether a `${NAME}` is filled in, read on to the end all the same:
+    // `env` refuses the whole string for a fault after it too.
+    let mut expands = false;
     let mut quote = None;
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
@@ -145,7 +164,7 @@ fn env_split(text: &str) -> Option<Vec<String>> {
                 started = true;
             }
             (Some(open), c) if c == open => quote = None,
-            (Some('\''), '\\') => match chars.next()? {
+            (Some('\''), '\\') => match chars.next().ok_or(Unsplit::Refused)? {
                 c @ ('\\' | '\'') => word.push(c),
                 c => {
                     word.push('\\');
@@ -153,9 +172,13 @@ fn env_split(text: &str) -> Option<Vec<String>> {
                 }
             },
             (Some('\''), c) => word.push(c),
-            (_, '$') => return None,
+            (_, '$') => {
+                variable(&mut chars)?;
+                expands = true;
+                started = true;
+            }
             (_, '\\') => {
-                let escaped = match chars.next()? {
+                let escaped = match chars.next().ok_or(Unsplit::Refused)? {
                     c @ ('\\' | '\'' | '"' | '#' | '$') => c,
                     '_' if quote.is_none() => {
                         if started {
@@ -171,7 +194,7 @@ fn env_split(text: &str) -> Option<Vec<String>> {
                     'r' => '\r',
                     't' => '\t',
                     'v' => '\u{b}',
-                    _ => return None,
+                    _ => return Err(Unsplit::Refused),
                 };
                 word.push(escaped);
                 started = true;
@@ -183,12 +206,34 @@ fn env_split(text: &str) -> Option<Vec<String>> {
         }
     }
     if quote.is_some() {
-        return None;
+        return Err(Unsplit::Refused);
+    }
+    if expands {
+        return Err(Unsplit::Expands);
     }
     if started {
         words.push(word);
     }
-    Some(words)
+    Ok(words)
+}
+
+/// Reads the `{NAME}` after a `$` in an `env -S` string from `chars`: a
+/// name that starts with a letter or `_` and goes on with letters, digits
+/// and `_`, closed by `}`. Anything else `env` refuses.
+fn variable(chars: &mut std::str::Chars<'_>) -> Result<(), Unsplit> {
+    if chars.next() != Some('{') {
+        return Err(Unsplit::Refused);
+    }
+    let mut first = true;
+    loop {
+        match chars.next() {
+            Some('}') if !first => return Ok(()),
+            Some(c) if c == '_' || c.is_ascii_alphabetic() || (!first && c.is_ascii_digit()) => {
+                first = false;
+            }
+            _ => return Err(Unsplit::Refused),
+        }
+    }
 }
 
 /// How a program that reads its options as GNU `getopt_long` does reads

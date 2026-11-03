@@ -34,9 +34,16 @@ posix finds=delete | env -S '-C / rm -rf etc # a comment'
 posix finds=delete | env -S '-C "/" rm -rf "e\\tc" etc\\c ignored'
 posix safe | env -S "echo 'it\\'s' 'a\\\\nb'"
 posix safe | env -S 'echo "a\\_b\\nc" x'
-# A string env cannot split now runs a command only known when it runs.
+# A `${NAME}` env fills in from its environment runs a command only known
+# when it runs, but not in single quotes or after a backslash.
 posix finds=unknown | env -S '-C ${D} rm -rf build'
-posix finds=unknown | env -S '-C / rm -rf "etc'
+posix finds=unknown | env -S 'rm -rf ${HOME}'
+posix safe | env -S 'echo \\${HOME} "\\${HOME}"'
+# A string env refuses (another `$`, an escape it does not know, a quote
+# left open) runs nothing; it is still read as the shell line it looks like.
+posix finds=unreadable | env -S '-C / rm -rf "etc'
+posix finds=delete | env -S 'rm -rf $HOME'
+posix finds=delete | env -S 'rm -rf ~ \\q'
 # What the wrapper runs reads its code from there too.
 posix finds=delete | env -C ~ python3 -c "import shutil; shutil.rmtree('.ssh')"
 posix safe | env -C sub make

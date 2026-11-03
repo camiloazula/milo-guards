@@ -449,9 +449,12 @@ theirs as `getopt_long` does: in a bundle (`env -iC DIR`, `sudo -nD DIR`),
 with the value joined (`-CDIR`), and a long option by any prefix that names it
 alone (`env --ch DIR`, `sudo --chd DIR`). `env -S STRING` (`--split-string`,
 also `-S'…'`) splits the string into words, as `env` does, and reads them again
-as its own arguments in its place, so `env -S '-C / rm -rf etc'` is `delete`; a
-string it cannot split now (an expansion such as `${D}`, an escape it does not
-know, a quote left open) runs a command only known when it runs. `pwsh` takes
+as its own arguments in its place, so `env -S '-C / rm -rf etc'` is `delete`. A
+`${NAME}` in it, outside single quotes, is filled in from `env`'s environment,
+so the string runs a command only known when it runs. A string `env` refuses
+(any other `$`, an escape it does not know, a quote left open) runs nothing,
+since GNU's and BSD's `env` both stop there; it is still read as the shell line
+it looks like, so `env -S 'rm -rf $HOME'` stays `delete`. `pwsh` takes
 any prefix of `-WorkingDirectory` from `-wo` on, and `-wd`, also joined with a
 colon (`-wo:DIR`). npm's and npx's `--prefix` (`-C`) is read as npm reads its
 options, so `--prefi` too.
