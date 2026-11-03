@@ -860,10 +860,10 @@ impl Walker<'_> {
         let Some(name) = program.known() else {
             return readings;
         };
-        if self.split.aliases.is_empty() || self.split.aliases.exhausted() {
+        if self.split.powershell_aliases.is_empty() || self.split.powershell_aliases.exhausted() {
             return readings;
         }
-        let resolved = self.split.aliases.resolve(name);
+        let resolved = self.split.powershell_aliases.resolve(name);
         let text = unit::text(&node, self.source);
         if resolved.unknown {
             self.split.problem(
@@ -885,7 +885,7 @@ impl Walker<'_> {
             if keys.contains(&key) {
                 continue;
             }
-            if let Some(first) = self.split.aliases.reading() {
+            if let Some(first) = self.split.powershell_aliases.reading() {
                 if first {
                     self.split.problem(
                         Rule::Unreadable,
@@ -1415,7 +1415,7 @@ impl Walker<'_> {
                 );
                 continue;
             };
-            match self.split.aliases.set(&name, stands) {
+            match self.split.powershell_aliases.set(&name, stands) {
                 Set::Noted => {
                     // Only a script the line runs can set a name after a
                     // command of that name was judged: that command may run
