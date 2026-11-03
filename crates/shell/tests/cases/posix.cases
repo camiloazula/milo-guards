@@ -171,6 +171,94 @@ posix finds=git_discard | git submodule --quiet deinit -f sub
 posix finds=git_discard | git submodule deinit --all --force
 posix finds=git_remote | git push --delete origin v1
 posix finds=git_remote | git push origin :refs/tags/v1
+# git takes any prefix of a long option that names one option, so a prefix
+# of one that throws work away is that option; one that names several makes
+# git refuse the line, which then runs nothing.
+posix finds=git_discard | git clean --f
+posix finds=git_discard | git clean -d --fo
+posix finds=git_discard | git reset --h
+posix finds=git_discard | git reset --h HEAD~1
+posix finds=git_discard | git tag --d v1
+posix finds=git_discard | git branch --d --forc x
+posix finds=git_discard | git branch --de -f x
+posix finds=git_discard | git checkout --f main
+posix finds=git_discard | git restore --w x
+posix finds=git_discard | git restore --st --wo x
+posix finds=git_discard | git switch --disc main
+posix finds=git_discard | git submodule deinit --f sub
+posix finds=git_remote | git push --m origin
+posix finds=git_history | git gc --pr=now
+posix finds=git_history | git gc --p=all
+# `git branch --d` is `--delete`, as `-d`: it refuses a branch not merged.
+posix safe | git branch --d merged
+posix safe | git branch -d merged
+posix safe | git clean -n
+posix safe | git clean -f --d
+posix safe | git clean -f --dry
+posix safe | git clean -fn
+posix safe | git clean -f --no-dry-run -n
+# git reads its options in order, so a later `--no-dry-run`, or a prefix of
+# it, turns a dry run off; the value of `-e` is a pattern, not an option.
+posix finds=git_discard | git clean -f -n --no-d
+posix finds=git_discard | git clean -fn --no-dry-run
+posix finds=git_discard | git clean -f --dry-run --no-dry
+posix finds=git_discard | git clean -f -enx
+posix finds=git_discard | git clean -f -e -n
+posix finds=git_discard | git clean -f --exclude -n
+posix finds=git_discard | git clean -f --ex -n
+posix safe | git restore --st x
+posix safe | git gc --pr=1.week.ago
+# A submodule updated by force throws away the changes in its checkout.
+posix finds=git_discard reason="throws away changes in submodules" | git submodule update --force
+posix finds=git_discard | git submodule update -f
+posix finds=git_discard | git submodule update --init --recursive --force
+posix finds=git_discard | git submodule --quiet update --fo
+posix finds=git_discard | git submodule update --checkout -f sub
+# `submodule--helper` is the helper `git submodule` calls; called directly it
+# runs the same commands.
+posix finds=git_discard | git submodule--helper update --force
+posix finds=git_discard | git submodule--helper deinit -f sub
+# A tag given again by force is moved, and a tag has no reflog to bring back
+# where it was.
+posix finds=git_discard reason="moves a tag, losing where it pointed" | git tag -f v1
+posix finds=git_discard | git tag -f v1 HEAD~3
+posix finds=git_discard | git tag --force v1 HEAD~1
+posix finds=git_discard | git tag -fa v1 -m 'release'
+posix finds=git_discard | git tag --forc v1
+posix safe | git tag -a v1 -m 'force'
+posix safe | git tag -l -f
+# What a submodule foreach runs is read, as a nested shell's script: one
+# argument is a shell line, several a command whose first word is a shell
+# line too. It runs in each submodule's folder, which the line does not say.
+posix finds=delete reason="deletes your home directory" | git submodule foreach 'rm -rf ~'
+posix finds=git_discard | git submodule foreach git reset --hard
+posix finds=git_discard | git submodule foreach git clean -fdx
+posix finds=git_discard | git submodule foreach --recursive 'git clean -fdx'
+posix finds=git_discard | git submodule foreach --quiet --recursive git reset --hard
+posix finds=git_discard | git submodule --quiet foreach -q git reset --hard
+posix finds=git_discard | git -C sub submodule foreach 'git stash drop'
+posix finds=delete | git submodule foreach 'cd .. && rm -rf ~'
+posix finds=delete | git submodule foreach rm -rf ~
+posix finds=delete | git submodule foreach 'rm -rf' ~
+posix finds=delete | git submodule foreach 'rm -rf *'
+posix finds=delete | git submodule foreach 'rm -rf $sm_path'
+posix finds=unknown | git submodule foreach "$cmd"
+posix finds=unknown | git submodule foreach 'git -c alias.x=!x x'
+posix finds=unknown | git submodule foreach "rm -rf $x"
+posix finds=overwrite reason="writes to a file only known when it runs" | git submodule foreach 'git log > log.txt'
+posix finds=delete | git submodule foreach 'cd "$toplevel" && rm -rf src'
+posix finds=delete | git submodule--helper foreach 'rm -rf ~'
+posix finds=delete | git submodule--helper foreach --recursive 'rm -rf ~'
+# `--attr-source` takes its value as the next word, so that word is not the
+# subcommand.
+posix finds=delete | git --attr-source HEAD submodule foreach 'rm -rf ~'
+posix finds=git_discard | git --attr-source HEAD reset --hard
+posix safe | git submodule foreach 'cat README.md'
+posix safe | git submodule foreach git status
+posix safe | git submodule foreach 'git status'
+posix safe | git submodule foreach --recursive 'git fetch && git status'
+posix safe | git submodule foreach
+posix safe | git submodule summary
 
 # Permissions, root and the system are risky.
 posix finds=permissions | chmod -R 777 /
@@ -281,6 +369,161 @@ posix finds=delete | watch 'rm -rf ~/x'
 posix finds=delete | find . -exec sh -c 'rm -rf /' \\;
 posix finds=delete | cmd.exe /c "rd /s /q C:\\Users\\me"
 posix finds=delete | powershell.exe -Command "Remove-Item -Recurse -Force ~"
+
+# Wrappers that run their arguments as a command: tracing and running tools,
+# `parallel`, `launchctl`, `wsl`, `lima`, `nix run` and the runners that load
+# secrets first. The command they run is judged.
+posix finds=delete | strace rm -rf ~
+posix finds=delete | strace -f -o trace.log rm -rf ~
+posix finds=delete | strace -fo trace.log rm -rf ~
+posix finds=delete | strace -e trace=file -s 200 rm -rf ~
+posix finds=delete | script -q /dev/null rm -rf /
+posix finds=delete | script -q -t 0 /dev/null rm -rf /
+posix finds=delete | script -qc 'rm -rf ~' /dev/null
+posix finds=delete | script --command='rm -rf ~' /dev/null
+posix finds=delete | ssh-agent rm -rf ~
+posix finds=delete | ssh-agent -t 600 rm -rf ~
+posix finds=delete | chronic rm -rf ~
+posix finds=delete | chronic -ev rm -rf ~
+posix finds=destroy_resources | chronic terraform destroy
+posix finds=delete | parallel rm -rf ::: ~
+posix finds=destroy_resources | parallel docker rm -f ::: web db
+posix finds=delete | parallel -j4 rm -rf {} ::: build ~
+posix finds=delete | parallel 'rm -rf {}' ::: ~
+posix finds=delete | parallel rm -rf {1} ::: ~ ::: a
+posix finds=delete | parallel {1} -rf {2} ::: rm ::: ~
+posix finds=delete | parallel sh -c 'rm -rf {}' ::: ~
+posix finds=delete | parallel -q sh -c 'rm -rf {}' ::: ~
+posix finds=destroy_resources | parallel docker rm -f {} ::: web db
+posix finds=delete | parallel -I @ rm -rf @ ::: ~
+posix finds=delete | parallel -a list.txt rm -rf
+posix finds=delete | parallel rm -rf :::: list.txt
+posix finds=run_input | ls | parallel
+posix finds=unreadable | parallel -n2 rm -rf {1} {2} ::: a ~
+posix finds=unreadable | parallel --frobnicate rm -rf ::: ~
+posix finds=delete | parallel ::: 'rm -rf ~' 'echo hi'
+posix finds=delete | ls ~ | parallel rm -rf
+posix finds=delete | parallel rm -rf {} ::: ~/.ssh/id.pub
+posix finds=delete | parallel rm -rf {//} ::: ~/x
+posix finds=unreadable | parallel rm -rf '{= s/a/b/ =}' ::: ~
+posix finds=unreadable | parallel --colsep , rm -rf ::: a,~
+posix finds=delete | parallel rm -rf ::: $X
+posix finds=unreadable | parallel -I '' rm -rf ::: ~
+posix finds=unreadable | parallel --replace= rm -rf ::: ~
+posix finds=delete | parallel rm -rf {1//} ::: ~/x
+posix finds=delete | parallel rm -rf '{1' ::: ~
+posix finds=delete | launchctl asuser 501 rm -rf /
+posix finds=delete | launchctl bsexec 1 rm -rf /
+posix finds=delete | launchctl submit -l x -- rm -rf ~
+posix finds=delete | launchctl submit -l x -p /bin/rm -- rm -rf ~
+posix finds=delete | wsl rm -rf ~
+posix finds=delete | wsl -- rm -rf /mnt/c/Users/me
+posix finds=delete | wsl -e rm -rf ~
+posix finds=delete | wsl --exec rm -rf ~
+posix finds=delete | wsl -d Ubuntu -u root rm -rf ~
+posix finds=delete | wsl 'rm -rf ~'
+posix finds=delete | wsl ls '&&' rm -rf ~
+posix finds=delete | wsl -e sh -c 'rm -rf ~'
+posix finds=delete | wsl echo 'a;rm -rf ~'
+posix finds=delete | lima rm -rf /
+posix finds=delete | nix run nixpkgs#hello -- rm -rf ~
+posix finds=delete | nix run nixpkgs#bash -- -c 'rm -rf ~'
+posix finds=delete | nix run -- rm -rf ~
+posix finds=delete | nix run . -- rm -rf ~
+posix safe | nix run -- --help
+posix finds=delete | aws-vault exec prod -- rm -rf /
+posix finds=delete | aws-vault exec --duration 1h prod -- rm -rf /
+posix finds=delete | aws-vault exec prod rm -rf /
+posix finds=delete | doppler run -- rm -rf /
+posix finds=delete | doppler run -p app -c dev -- rm -rf /
+posix finds=delete | doppler run --command 'rm -rf /'
+posix finds=delete | op run -- rm -rf /
+posix finds=delete | op run --env-file .env -- rm -rf /
+posix finds=delete | infisical run -- rm -rf /
+posix finds=delete | infisical run --env prod --command 'rm -rf /'
+posix finds=delete | direnv exec . rm -rf /
+posix finds=delete | dotenv -- rm -rf /
+posix finds=delete | dotenv -e .env.prod -- rm -rf /
+posix finds=delete | sudo doppler run -- strace -f chronic rm -rf ~
+posix safe | strace -c ls
+posix safe | strace -p 1234
+posix safe | parallel echo ::: a b
+posix safe | parallel gzip {} ::: a.log b.log
+posix safe | parallel mv {} {.}.bak ::: a.txt
+posix safe | ls | parallel gzip
+posix safe | ls | parallel -j4 'gzip {}'
+posix safe | parallel ::: ls 'echo hi'
+posix safe | wsl ls
+posix safe | wsl --list
+posix safe | wsl -e ls -la
+posix safe | doppler run -- npm test
+posix safe | op run -- npm test
+posix safe | aws-vault exec prod -- aws s3 ls
+posix safe | direnv exec . make
+posix safe | chronic make
+posix safe | ssh-agent make
+posix safe | script -q /dev/null ls
+posix safe | nix run nixpkgs#hello
+posix safe | launchctl asuser 501 ls
+# `wsl ~` starts in the home directory: the `~` is its own, not the program.
+posix finds=delete | wsl ~ rm -rf ~
+posix finds=delete | wsl ~ -- rm -rf ~
+posix finds=delete | wsl ~ -e rm -rf ~
+posix finds=delete | wsl -d Ubuntu ~ rm -rf ~
+posix safe | wsl ~
+# `--detach-on` and FreeBSD's `script -F` take a value.
+posix finds=delete | strace --detach-on execve rm -rf ~
+posix finds=delete | script -F pipe /dev/null rm -rf /
+posix safe | script -F out.log ls
+# A glob filled into a quoted command stays one word of it.
+posix safe | parallel 'cd {} && cargo test' ::: crates/*
+posix safe | parallel 'make -C {}' ::: crates/*
+posix safe | parallel 'cd {} && make' ::: */
+posix safe | parallel 'git -C {} pull' ::: */
+posix safe | parallel 'echo {}' ::: *
+posix safe | parallel -q sh -c 'echo {}' ::: *
+posix safe | parallel --trim lr echo ::: a
+posix finds=delete | parallel --trim lr rm -rf ::: ' /'
+posix finds=delete | parallel --trim=l rm -rf ::: ' /'
+posix finds=unreadable | parallel --trim x rm -rf ::: ' /'
+posix safe | parallel --tmux --total-jobs 4 --group-by 1 echo ::: a
+
+# `env -S` with its string attached, `--split-string=` and its shorter
+# spellings split the string as `env -S STRING`, with the arguments after it.
+posix finds=delete | env -S"rm -rf ~"
+posix finds=delete | env -S'rm -rf ~'
+posix finds=delete | env --split-string='rm -rf ~'
+posix finds=delete | env --split='rm -rf ~'
+posix finds=delete | env -iS'rm -rf ~'
+posix finds=delete | env -S 'rm -rf' ~
+posix finds=delete | env -S'rm -rf' ~
+posix safe | env -S 'make test'
+posix safe | env -S'make test'
+posix finds=delete | env --s 'rm -rf ~'
+posix finds=delete | env -u FOO -S'rm -rf ~'
+posix finds=delete reason="deletes a path only known when it runs" | env -S 'rm -rf' "$X"
+# The words of the string are env's own arguments again: options and
+# assignments first, then the program.
+posix finds=delete | env -S'-i' rm -rf ~
+posix finds=delete | env -S'-i rm -rf ~'
+posix finds=delete | env -S'-u X rm -rf ~'
+posix finds=delete | env -S'-C / rm -rf ./*'
+posix finds=delete | env -S '-i' rm -rf ~
+posix finds=delete | env -S'X=1 rm -rf ~'
+posix safe | env -S'-i make test'
+# env's own escapes are read as env reads them: `\_` between words.
+posix finds=delete | env -S'rm\\_-rf\\_~'
+posix finds=delete | env -S 'rm\\_-rf\\_~'
+# A `${NAME}` env fills in names a program only known when it runs.
+posix finds=unknown | env -S'${CMD} -rf ~'
+
+# The script `xargs` hands to `sh -c` gets its input as `$1` and `$@`, known
+# only when it runs.
+posix finds=destroy_resources | docker ps -aq | xargs -n1 sh -c 'docker rm -f "$1"' _
+posix finds=delete | ls | xargs sh -c 'rm -rf "$@"' sh
+posix finds=delete | ls ~ | xargs -I{} sh -c 'rm -rf "$1"' _ {}
+posix safe | docker ps -aq | xargs -n1 sh -c 'echo "$1"' _
+posix safe | ls | xargs -n1 sh -c 'cd "$1" && make' _
 
 # A trap action is a script that runs later.
 posix safe | trap 'rm -rf build' EXIT

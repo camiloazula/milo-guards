@@ -91,19 +91,58 @@ fn qualifier_char(c: char) -> bool {
 /// is: with `extendedglob` they are operators, and `^x(D)`, `*git~x(D)` and
 /// `.#git(D)` match `.git`, which a guard that reads them as plain text
 /// would not see.
-fn qualifier(word: &str, rest: &[char]) -> Option<usize> {
-    word.chars()
-        .last()
-        .filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
-    if word.contains(['^', '#']) || word.char_indices().any(|(at, c)| c == '~' && at > 0) {
-        return None;
-    }
-    let end = rest.iter().position(|c| *c == ')')?;
+///
+/// `word` gives the last character of the word and whether it holds one of
+/// those operators; it is asked only once `rest` is a qualifier, and kept as
+/// the text grows (see [`Word`]), so a line of many `(` in one long word is
+/// not read back to its start at each.
+fn qualifier(word: impl FnOnce() -> (Option<char>, bool), rest: &[char]) -> Option<usize> {
+    // The body is qualifier characters only, so the scan for its `)` stops
+    // at the first other one.
+    let end = rest.iter().position(|c| !qualifier_char(*c))?;
     let body = &rest[..end];
     let ends = rest
         .get(end + 1)
         .is_none_or(|next| next.is_whitespace() || ";&|)<>".contains(*next));
-    (ends && body.contains(&'D') && body.iter().all(|c| qualifier_char(*c))).then_some(end + 1)
+    if rest[end] != ')' || !ends || !body.contains(&'D') {
+        return None;
+    }
+    let (last, operators) = word();
+    last.filter(|c| !c.is_whitespace() && !"$<>=(;&|{}`!+@)".contains(*c))?;
+    (!operators).then_some(end + 1)
+}
+
+/// The last word of a text that only grows, the part after its last space,
+/// as [`qualifier`] reads it: each part added is looked through once.
+#[derive(Default)]
+struct Word {
+    /// How much of the text has been looked through.
+    seen: usize,
+    /// Whether the word has started (a character after the last space).
+    started: bool,
+    /// Its last character.
+    last: Option<char>,
+    /// Whether it holds `^` or `#`, or a `~` that does not start it.
+    operators: bool,
+}
+
+impl Word {
+    fn of(&mut self, text: &str) -> (Option<char>, bool) {
+        for c in text.get(self.seen..).unwrap_or_default().chars() {
+            if c.is_whitespace() {
+                *self = Self {
+                    last: Some(c),
+                    ..Self::default()
+                };
+            } else {
+                self.operators |= c == '^' || c == '#' || (c == '~' && self.started);
+                self.started = true;
+                self.last = Some(c);
+            }
+        }
+        self.seen = text.len();
+        (self.last.filter(|_| self.started), self.operators)
+    }
 }
 
 /// `text` with each backslash-newline taken out, as the shell does before
@@ -144,6 +183,8 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     // each delimiter, whether `<<-` lets it be indented with tabs, and
     // whether the word had a quote or a backslash (a body fed as it is).
     let mut bodies: Vec<(String, bool, bool)> = Vec::new();
+    // The last word of `joined` (see [`qualifier`]).
+    let mut word = Word::default();
     let mut at = 0;
     while let Some(&c) = chars.get(at) {
         at += 1;
@@ -163,8 +204,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
         // zsh's `(D)` glob qualifier at the end of a word.
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
-            let word = joined.rsplit(char::is_whitespace).next().unwrap_or("");
-            if let Some(length) = qualifier(word, rest) {
+            if let Some(length) = qualifier(|| word.of(&joined), rest) {
                 at += length;
                 marks.push(joined.len());
                 continue;
@@ -1936,6 +1976,7 @@ impl Walker<'_> {
         // The same for `PYTHONPATH=… python3 -c …`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
+        let terraform = self.split.tf_cli_args.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -1956,6 +1997,7 @@ impl Walker<'_> {
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
+        self.split.tf_cli_args.truncate(terraform);
         self.split.unscope_hidden(outer);
     }
 
@@ -2167,10 +2209,44 @@ impl Walker<'_> {
 
     /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
     /// `export NODE_OPTIONS` of a value the line set another way: what node
-    /// gets then is not read.
+    /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too, and so
+    /// is `export TF_CLI_ARGS` (also `declare -x`) of a name the line gave
+    /// no value it reads: `read`, `mapfile` or `printf -v` may have set it,
+    /// so what terraform gets is only known when it runs.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        // The grammar reads a bare name as a variable, not a word.
+        if let Some(name) = Some(word.known().unwrap_or(source))
+            .filter(|name| !name.contains('=') && unit::tf_cli_args(name))
+        {
+            let noted = self
+                .split
+                .tf_cli_args
+                .iter()
+                .any(|(noted, _)| noted == name);
+            if !noted {
+                self.split
+                    .tf_cli_args
+                    .push((name.to_string(), Arg::Unknown(source.to_string())));
+            }
+            return;
+        }
+        if let Some((name, _)) = source
+            .split_once('=')
+            .filter(|(name, _)| unit::tf_cli_args(name))
+        {
+            let value = match word.known() {
+                Some(text) => Arg::Known(
+                    text.split_once('=')
+                        .map_or("", |(_, value)| value)
+                        .to_string(),
+                ),
+                None => Arg::Unknown(source.to_string()),
+            };
+            self.split.tf_cli_args.push((name.to_string(), value));
+            return;
+        }
         match word.known() {
             Some(text) => {
                 if let Some(value) = text.strip_prefix("NODE_OPTIONS=") {
@@ -2217,20 +2293,24 @@ impl Walker<'_> {
         }
     }
 
-    /// Note the value `assignment` gives `NODE_OPTIONS` or `PYTHONPATH`,
-    /// when it is one of those variables'.
+    /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
+    /// `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of those
+    /// variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        if name != "NODE_OPTIONS" && name != "PYTHONPATH" {
+        let terraform = unit::tf_cli_args(name);
+        if name != "NODE_OPTIONS" && name != "PYTHONPATH" && !terraform {
             return;
         }
         let value = assignment
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
-        if name == "PYTHONPATH" {
+        if terraform {
+            self.split.tf_cli_args.push((name.to_string(), value));
+        } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
         } else {
             self.split.node_options.push(value);
