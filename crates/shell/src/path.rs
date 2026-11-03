@@ -7,6 +7,7 @@
 //! provider paths (`HKLM:\Software`, `FileSystem::C:\x`), PowerShell's
 //! `$null`, brace lists, and a `cd` that moved the line.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use milo_guards_core::spelling::glob;
@@ -39,6 +40,9 @@ enum Start<'a> {
     /// A PowerShell drive that is not a disk (`HKLM:`), lower case, and the
     /// path on it.
     Provider(String, &'a str),
+    /// PowerShell's `Temp:` drive, the user's temporary folder (a drive of
+    /// the file system since PowerShell 7.4), and the path on it.
+    Temp(&'a str),
     /// A path on a disk's drive with no separator after the colon (`C:x`,
     /// `C:*`): from that drive's own working directory. The drive letter,
     /// and the path after it.
@@ -89,6 +93,9 @@ fn is_letter(name: &str) -> bool {
 fn start(text: &str, shell: Shell) -> Start<'_> {
     let separators = flavour(shell).separators();
     if let Some((name, rest)) = qualifier(text, shell) {
+        if name.eq_ignore_ascii_case("temp") {
+            return Start::Temp(rest);
+        }
         if !is_letter(name) {
             return Start::Provider(name.to_ascii_lowercase(), rest);
         }
@@ -116,6 +123,34 @@ fn start(text: &str, shell: Shell) -> Start<'_> {
     Start::Plain
 }
 
+/// A path on PowerShell's `Temp:` drive as the part of it below the home
+/// directory: the drive is the user's temporary folder, as `$env:TEMP` is.
+fn in_temp(rest: &str) -> String {
+    format!("\\AppData\\Local\\Temp\\{rest}")
+}
+
+/// What a PowerShell provider's own name (`Environment`,
+/// `Microsoft.PowerShell.Core\Variable`) or a drive of it (`env`,
+/// `variable`, lower case) holds when it is the session's own: its
+/// environment or its variables, the words for which.
+fn session(name: &str) -> Option<Place> {
+    match name {
+        "env" | "environment" => Some(Place::Session("the session's environment")),
+        "variable" => Some(Place::Session("a session variable")),
+        _ => None,
+    }
+}
+
+/// A drive the line makes with `New-PSDrive`: its name, lower case, when it
+/// is written out, and whether its provider is the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Made {
+    /// The drive's name; `None` when it is only known when it runs.
+    pub(crate) name: Option<String>,
+    /// Whether the provider is the registry, written out.
+    pub(crate) registry: bool,
+}
+
 /// The drive letter a working directory is on (`C` for `C:\Users\me`).
 pub(crate) fn drive_of(dir: &str) -> Option<char> {
     let mut chars = dir.chars();
@@ -134,6 +169,11 @@ pub(crate) struct Resolver {
     cwd_drive: Option<char>,
     /// The directories, kept for `effect` only (see [`Resolver::keep`]).
     paths: Option<Paths>,
+    /// The drives the line makes with `New-PSDrive`, by name (lower case),
+    /// each with whether every drive of that name is a registry one.
+    made: HashMap<String, bool>,
+    /// Whether the line makes a drive whose name is only known when it runs.
+    made_unknown: bool,
 }
 
 impl Resolver {
@@ -144,7 +184,46 @@ impl Resolver {
             core,
             cwd_drive: drive_of(&paths.cwd.to_string_lossy()),
             paths: None,
+            made: HashMap::new(),
+            made_unknown: false,
         }
+    }
+
+    /// Read every path on a drive the line makes with `New-PSDrive` as
+    /// that drive's provider (see [`Resolver::made_drive`]).
+    pub(crate) fn made(&mut self, made: &[Made]) {
+        for drive in made {
+            match &drive.name {
+                Some(name) => {
+                    let registry = self.made.entry(name.clone()).or_insert(true);
+                    *registry &= drive.registry;
+                }
+                None => self.made_unknown = true,
+            }
+        }
+    }
+
+    /// Where a PowerShell path on a drive the line makes lands: the
+    /// registry for a registry drive, and only known when it runs for any
+    /// other (a file system drive's root is not followed). Once the line
+    /// makes a drive whose name is only known when it runs, every path on a
+    /// drive is only known then, a disk's included. `None` for a path on no
+    /// such drive.
+    fn made_drive(&self, text: &str, shell: Shell) -> Option<Place> {
+        if shell != Shell::PowerShell || (self.made.is_empty() && !self.made_unknown) {
+            return None;
+        }
+        let (name, _) = qualifier(text, shell)?;
+        if self.made_unknown {
+            return Some(Place::Unknown);
+        }
+        self.made.get(&name.to_ascii_lowercase()).map(|&registry| {
+            if registry {
+                Place::Registry
+            } else {
+                Place::Unknown
+            }
+        })
     }
 
     /// Keep the directories, for what only `effect` asks: whether a path is
@@ -179,11 +258,19 @@ impl Resolver {
         if brace_list(text) {
             return false;
         }
+        if self.made_drive(text, shell).is_some() {
+            return false;
+        }
         let flavour = flavour(shell);
         let folder = pattern_folder(text);
+        let temp;
         let spelling = match start(&folder, shell) {
             Start::Plain => Spelling::Plain(&folder),
             Start::Home(rest) => Spelling::Home(rest),
+            Start::Temp(rest) => {
+                temp = in_temp(rest);
+                Spelling::Home(&temp)
+            }
             _ => return false,
         };
         let Some(key) = self.core.key(spelling, flavour) else {
@@ -215,6 +302,9 @@ impl Resolver {
         if device(text, shell).is_some() {
             return false;
         }
+        if let Some(place) = self.made_drive(text, shell) {
+            return place == Place::Unknown;
+        }
         let flavour = flavour(shell);
         if shell == Shell::PowerShell {
             if let Some((qualifier, rest)) = text.split_once("::") {
@@ -230,6 +320,10 @@ impl Resolver {
             Start::Home(rest) => {
                 self.core
                     .reaches_secret(Spelling::Home(rest), flavour, hidden, deep)
+            }
+            Start::Temp(rest) => {
+                self.core
+                    .reaches_secret(Spelling::Home(&in_temp(rest)), flavour, hidden, deep)
             }
             Start::Provider(..) => false,
             Start::DriveRelative(letter, rest) => {
@@ -258,13 +352,18 @@ impl Resolver {
         }
         let arg = within(dir, arg, shell);
         let text = arg.known()?;
-        if brace_list(text) || device(text, shell).is_some() || glob::has_wildcard(text) {
+        if brace_list(text)
+            || device(text, shell).is_some()
+            || glob::has_wildcard(text)
+            || self.made_drive(text, shell).is_some()
+        {
             return None;
         }
         let flavour = flavour(shell);
         match start(text, shell) {
             Start::Plain => self.core.key(Spelling::Plain(text), flavour),
             Start::Home(rest) => self.core.key(Spelling::Home(rest), flavour),
+            Start::Temp(rest) => self.core.key(Spelling::Home(&in_temp(rest)), flavour),
             Start::Provider(name, rest) => {
                 let parts = milo_guards_core::spelling::parts(rest, flavour).join("/");
                 Some(format!("{name}:|{}", parts.to_ascii_lowercase()))
@@ -299,7 +398,10 @@ impl Resolver {
     }
 
     fn resolved(&self, text: &str, shell: Shell, dots: Dots) -> Option<PathBuf> {
-        if brace_list(text) || device(text, shell).is_some() {
+        if brace_list(text)
+            || device(text, shell).is_some()
+            || self.made_drive(text, shell).is_some()
+        {
             return None;
         }
         let flavour = flavour(shell);
@@ -320,6 +422,7 @@ impl Resolver {
         match start(text, shell) {
             Start::Plain => make(Spelling::Plain(text)),
             Start::Home(rest) => make(Spelling::Home(rest)),
+            Start::Temp(rest) => make(Spelling::Home(&in_temp(rest))),
             // cmd's working directory for that drive is not shown.
             Start::DriveRelative(..) if shell == Shell::Cmd => None,
             Start::DriveRelative(letter, rest) => self
@@ -443,9 +546,17 @@ impl Resolver {
                     .flatten();
             }
         }
+        if self.made_drive(text, shell).is_some() {
+            return None;
+        }
+        let temp;
         let spelling = match start(text, shell) {
             Start::Plain => Spelling::Plain(text),
             Start::Home(rest) => Spelling::Home(rest),
+            Start::Temp(rest) => {
+                temp = in_temp(rest);
+                Spelling::Home(&temp)
+            }
             Start::DriveRelative(letter, rest) => Spelling::Plain(self.on_cwd_drive(letter, rest)?),
             Start::Provider(..) | Start::Unknown => return None,
         };
@@ -558,9 +669,13 @@ impl Resolver {
         if matches!(arg, Arg::Null) {
             return Place::Null;
         }
+        // On a drive the line makes, a device name is an item's name there.
+        let made = dir
+            .and_then(Arg::known)
+            .is_some_and(|dir| self.made_drive(dir, shell).is_some());
         if let Some(device) = arg
             .known()
-            .filter(|_| device_in_any_folder(dir, shell, access))
+            .filter(|_| !made && device_in_any_folder(dir, shell, access))
             .and_then(|text| device(text, shell))
         {
             return device;
@@ -595,7 +710,10 @@ impl Resolver {
         hidden: bool,
         below: bool,
     ) -> Option<&'static str> {
-        if brace_list(text) || device(text, shell).is_some() {
+        if brace_list(text)
+            || device(text, shell).is_some()
+            || self.made_drive(text, shell).is_some()
+        {
             return None;
         }
         if shell == Shell::PowerShell {
@@ -618,6 +736,7 @@ impl Resolver {
         match start(text, shell) {
             Start::Plain => ask(Spelling::Plain(text)),
             Start::Home(rest) => ask(Spelling::Home(rest)),
+            Start::Temp(rest) => ask(Spelling::Home(&in_temp(rest))),
             Start::DriveRelative(letter, rest) => {
                 ask(Spelling::Plain(self.on_cwd_drive(letter, rest)?))
             }
@@ -642,6 +761,9 @@ impl Resolver {
         if let Some(device) = device(text, shell) {
             return device;
         }
+        if let Some(place) = self.made_drive(text, shell) {
+            return place;
+        }
         // `Microsoft.PowerShell.Core\FileSystem::C:\x`: a provider-qualified
         // path is the provider's own path.
         if shell == Shell::PowerShell {
@@ -654,7 +776,7 @@ impl Resolver {
                 return match provider.as_str() {
                     "filesystem" => self.place_of(rest, shell, hidden, holding),
                     "registry" => Place::Registry,
-                    _ => Place::Outside,
+                    other => session(other).unwrap_or(Place::Outside),
                 };
             }
         }
@@ -662,8 +784,12 @@ impl Resolver {
         match start(text, shell) {
             Start::Plain => place_core(Spelling::Plain(text), flavour),
             Start::Home(rest) => place_core(Spelling::Home(rest), flavour),
+            Start::Temp(rest) => place_core(Spelling::Home(&in_temp(rest)), flavour),
             Start::Provider(name, _) if REGISTRY.contains(&name.as_str()) => Place::Registry,
-            Start::Provider(..) => Place::Outside,
+            // `Env:` and `Variable:` are the session's own; `Alias:` and
+            // `Function:` change what a later command runs, and any other
+            // provider's items are beyond the workspace.
+            Start::Provider(name, _) => session(&name).unwrap_or(Place::Outside),
             // cmd keeps a working directory for every drive and the line
             // never shows where each is, so `C:x` is a place only known when
             // it runs, whichever drive the line is on. Read from the line's
@@ -947,7 +1073,10 @@ fn home(text: &str) -> bool {
 fn file_system_folder(dir: &Arg) -> bool {
     match root_of(dir) {
         Root::Plain | Root::Share(_) => true,
-        Root::Drive(drive) => is_letter(drive.trim_end_matches(':')),
+        Root::Drive(drive) => {
+            let name = drive.trim_end_matches(':');
+            is_letter(name) || name.eq_ignore_ascii_case("temp")
+        }
         Root::Unknown => false,
     }
 }

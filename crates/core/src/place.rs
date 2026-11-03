@@ -13,6 +13,12 @@ pub enum Place {
     },
     /// A device that discards or echoes (`/dev/null`, `NUL`).
     Null,
+    /// What lives only as long as the shell session and changes nothing on
+    /// the disk: PowerShell's `Env:` and `Variable:` drives, which hold the
+    /// session's environment and variables, as `$env:FOO = 'bar'` sets them.
+    /// The words name which. The resolver never answers it, since no file
+    /// path is one; a guard that reads such paths names it.
+    Session(&'static str),
     /// A workspace folder itself (`exact`), or a folder holding one.
     Workspace {
         /// The workspace folder itself, not a folder holding it.
@@ -73,7 +79,7 @@ impl Place {
     pub fn harmless(self) -> bool {
         matches!(
             self,
-            Self::Inside | Self::Temp { exact: false } | Self::Null
+            Self::Inside | Self::Temp { exact: false } | Self::Null | Self::Session(_)
         )
     }
 
@@ -89,7 +95,10 @@ impl Place {
             Self::Workspace { exact: false } => "a folder holding the workspace",
             Self::Home { exact: true } => "your home directory",
             Self::Home { exact: false } => "a folder holding your home directory",
-            Self::Top(words) | Self::Sensitive(words, _) | Self::Protected(words) => words,
+            Self::Top(words)
+            | Self::Sensitive(words, _)
+            | Self::Protected(words)
+            | Self::Session(words) => words,
             Self::Registry => "the registry",
             Self::Disk => "a disk",
             Self::Outside => "a path outside the workspace",
@@ -107,6 +116,7 @@ mod tests {
         assert!(Place::Inside.harmless());
         assert!(Place::Temp { exact: false }.harmless());
         assert!(Place::Null.harmless());
+        assert!(Place::Session("the session's environment").harmless());
         for place in [
             Place::Temp { exact: true },
             Place::Workspace { exact: true },
@@ -134,6 +144,10 @@ mod tests {
             (Place::Temp { exact: true }, "a temporary folder"),
             (Place::Temp { exact: false }, "a temporary file"),
             (Place::Null, "nothing"),
+            (
+                Place::Session("the session's environment"),
+                "the session's environment",
+            ),
             (Place::Workspace { exact: true }, "the whole workspace"),
             (
                 Place::Workspace { exact: false },

@@ -695,7 +695,8 @@ powershell finds=system_settings | Remove-Item -Recurse -Force HKLM:*
 powershell finds=system_settings | Remove-Item -Recurse -Force HKCU:\\*
 powershell finds=system_settings | Remove-Item -Recurse hklm:Software*
 powershell finds=delete | Remove-Item -Recurse Cert:*
-powershell finds=delete | Remove-Item -Recurse Env:*
+powershell finds=delete | Remove-Item -Recurse Function:*
+powershell safe | Remove-Item -Recurse Env:*
 powershell finds=system_settings | Get-ChildItem HKCU:*.x | Remove-Item -Recurse
 powershell finds=delete | Get-ChildItem Cert:* | Remove-Item
 

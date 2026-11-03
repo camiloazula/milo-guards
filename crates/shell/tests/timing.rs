@@ -855,6 +855,88 @@ fn distinct_assignments() -> String {
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
+fn drives_devices_and_session_places_are_read_in_linear_time() {
+    let _serial = serial();
+    // Each drive the line makes is looked up by name, a word on a session
+    // drive is read once, a variable a program reads as its arguments is
+    // noted once for a value only known when it runs, and a path past
+    // `/dev/fd` is walked once.
+    let windows = common::windows();
+    let distinct = |each: fn(usize) -> String| {
+        move |size: usize| {
+            let mut line = String::new();
+            for at in 0.. {
+                let next = each(at);
+                if line.len() + next.len() > size {
+                    break;
+                }
+                line.push_str(&next);
+            }
+            line
+        }
+    };
+    assert_linear(
+        "New-PSDrive d<n> …; Remove-Item d<n>:\\x",
+        Shell::PowerShell,
+        &windows,
+        distinct(|at| format!("New-PSDrive d{at} Registry HKCU:\\; Remove-Item d{at}:\\x; ")),
+    );
+    assert_linear(
+        "Set-Item Env:x<n> 1; Remove-Item $env:TEMP\\x",
+        Shell::PowerShell,
+        &windows,
+        distinct(|at| format!("Set-Item Env:x{at} 1; Remove-Item -Recurse \"$env:TEMP\\x\"; ")),
+    );
+    for (what, head, part) in [
+        ("Set-Item Env:$n x …", "", "Set-Item Env:$n x; "),
+        ("Set-Item Env:* x …", "", "Set-Item Env:* x; "),
+        ("cd Env:; Set-Item $n x …", "cd Env:; ", "Set-Item $n x; "),
+        ("Rename-Item Env:* a …", "", "Rename-Item Env:* a; "),
+        (
+            "Rename-Item Env:* npm_config_call …",
+            "",
+            "Rename-Item Env:* npm_config_call; ",
+        ),
+        (
+            "Set-Item Env`:TEMP x …",
+            "",
+            "Set-Item Env`:TEMP x; Remove-Item \"$env:TEMP\\x\"; ",
+        ),
+    ] {
+        assert_linear(what, Shell::PowerShell, &windows, |size| {
+            format!("{head}{}", filled(part, size, head.len()))
+        });
+    }
+    assert_linear(
+        "Remove-Item Temp:\\x …",
+        Shell::PowerShell,
+        &windows,
+        |size| filled("Remove-Item Temp:\\x\\NUL; ", size, 0),
+    );
+    assert_linear(
+        "echo x > /dev/fd/../fd/…",
+        Shell::Posix,
+        &posix(),
+        |size| {
+            format!(
+                "echo x > /dev/fd/{}1",
+                filled("../fd/", size, "echo x > /dev/fd/1".len())
+            )
+        },
+    );
+    assert_linear(
+        "echo x > /dev/fd/../cwd/../stdout; …",
+        Shell::Posix,
+        &posix(),
+        |size| filled("echo x > /dev/fd/../cwd/../stdout; ", size, 0),
+    );
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn values_only_known_when_they_run_are_read_in_linear_time() {
     let _serial = serial();
     // Each value only known when it runs is read once: as an output of

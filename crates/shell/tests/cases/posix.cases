@@ -739,8 +739,8 @@ posix finds=delete | trap 'shopt -s dotglob' DEBUG; rm -rf *git
 posix@macos safe | echo x > /dev/fd/2
 posix@macos safe | cat /dev/fd/0
 posix@macos safe | echo x > /dev/./null
-posix@macos safe | echo x > /dev/fd/../null
-posix@macos safe | echo x > /dev/fd/../../dev/null
+posix@macos finds=overwrite | echo x > /dev/fd/../null
+posix@macos finds=overwrite | echo x > /dev/fd/../../dev/null
 posix@macos safe | echo x > /dev/fd/3
 posix@macos finds=delete | rm -rf /dev/fd/../../Users/me
 posix@macos finds=delete | cd /dev/fd/../.. && rm -rf Users

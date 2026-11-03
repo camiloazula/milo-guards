@@ -90,7 +90,12 @@ too, not only the workspace's `.git` (`vendor/x/.git/hooks/pre-commit`). A hook
 is a program git runs later, so its reason says what it is: `writes to a git
 hook, which runs code`; the rest of `.git` is `writes to the repository's
 history`. A write to a device that is not safe (`/dev/fd/3` is any file the
-process has open) is `write_outside`.
+process has open) is `write_outside`. A path that goes on past `/dev/fd`
+(`/dev/fd/../cwd/../stdout`: on Linux `/dev/fd/..` is `/proc/self`) lands
+where only the system knows, so it is `unreadable` unless where its spelling
+lands is worse (see [Core](core.md#what-core-judges)). The names Windows keeps
+for a device (`NUL`, `AUX`, `COM1`...) and `\\.\NUL` are devices in any
+folder.
 
 A write to a workspace's own file that a tool runs on its own is
 `write_sensitive` too, at any depth: `.vscode/tasks.json`, `.envrc`,

@@ -75,8 +75,6 @@ powershell finds=delete | Rename-Item ~\\.ssh\\id_rsa key
 powershell finds=delete | Rename-Item $p y
 powershell finds=overwrite | Rename-Item -Path src\\a -NewName ..\\..\\b
 powershell finds=delete | cd C:\\Users\\me; Rename-Item x y
-powershell finds=overwrite | Set-Item Env:FOO bar
-powershell finds=overwrite | Clear-Item Variable:x
 powershell finds=delete | Get-ChildItem ~ | Rename-Item -NewName x
 powershell finds=delete | Get-ChildItem ~ | ForEach-Object { Rename-Item $_.FullName -NewName x }
 powershell finds=delete | Get-ChildItem .. | Rename-Item -NewName x
@@ -151,7 +149,7 @@ powershell finds=overwrite | Set-Item src\\a, D:\\data\\x
 powershell finds=overwrite | Set-Item src\\a, $p
 powershell finds=overwrite | si src\\a, $p
 powershell finds=overwrite | Set-Item src\\a, ..
-powershell finds=overwrite | Set-Item src\\a, Env:PATH
+powershell safe | Set-Item src\\a, Env:PATH
 powershell finds=overwrite | Set-Item src\\a C:\\Users\\other\\x
 
 # `Move-Item` judges every source of a list.
@@ -584,3 +582,105 @@ powershell finds=delete | Remove-Item * -Include * -Recurse
 powershell@on_d finds=delete | Remove-Item C:* -Include *.tmp -Recurse
 powershell finds=delete | Remove-Item FileSystem::C:\\Windows\\* -Include *.tmp
 powershell finds=system_settings | Remove-Item HKCU:\\Software\\* -Include x -Recurse
+
+# The `Env:` and `Variable:` drives hold the session's environment and
+# variables, as `$env:FOO = 'bar'` sets them: a change there is the
+# session's own. `Alias:` and `Function:` change what a later command runs,
+# so they stay risky.
+powershell safe | Set-Item Env:RUST_LOG debug
+powershell safe | Set-Item Env:FOO bar
+powershell safe | Set-Item -Path Env:PATH -Value "$env:PATH;C:\\tools"
+powershell safe | Remove-Item Env:FOO
+powershell safe | Remove-Item env:\\FOO
+powershell safe | New-Item -Path Env:FOO -Value bar
+powershell safe | Set-Content Env:FOO bar
+powershell safe | Rename-Item Env:FOO BAR
+powershell safe | Remove-Item Environment::FOO
+powershell safe | Remove-Item Microsoft.PowerShell.Core\\Environment::FOO
+powershell safe | cd Env:; Remove-Item FOO
+powershell safe | Set-Item -Path Variable:ErrorActionPreference -Value Stop
+powershell safe | Clear-Item Variable:x
+powershell safe | Remove-Item Variable:x
+powershell safe | Remove-Item Variable::x
+powershell finds=overwrite | Set-Item Alias:ls Remove-Item
+powershell finds=delete | Remove-Item Alias:ls
+powershell finds=delete | Remove-Item Function:prompt
+powershell finds=delete | Remove-Item Cert:\\CurrentUser\\My\\x
+# On those drives the place after the item is its value, as `-Value` is,
+# and no path.
+powershell safe | Set-Item Env:FOO $x
+powershell safe | Set-Item Env:JAVA_HOME 'C:\\Program Files\\Java'
+powershell safe | Set-Item Env:Path "$env:Path;C:\\tools"
+powershell finds=overwrite | Set-Item -Path Env:FOO, ~\\x -Value 1
+# A change to the environment or a variable that names a place makes it a
+# place only known when it runs, as `$env:TEMP = …` does.
+powershell finds=delete | Set-Item -Path Env:TEMP -Value C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Remove-Item Env:TEMP; Remove-Item -Recurse "$env:TEMP\\x"
+powershell finds=delete | Rename-Item Env:FOO TEMP; Remove-Item -Recurse "$env:TEMP\\x"
+powershell finds=delete | cd Env:; Set-Item TEMP C:\\Users\\me; cd C:\\Users\\me\\dev\\repo; Remove-Item -Recurse "$env:TEMP\\x"
+powershell finds=delete | Set-Item Env:TE* C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\x"
+powershell finds=delete | Remove-Item -Recurse "$env:TEMP\\x"; Set-Item -Path Env:TEMP -Value C:\\Users\\me
+powershell finds=delete | Set-Item -Path Variable:HOME -Value C:\\Windows -Force; Remove-Item -Recurse "$HOME\\dev\\repo\\build"
+powershell safe | Remove-Item -Recurse "$env:TEMP\\x"
+# The item is read as PowerShell reads it: escaped, quoted or in a
+# here-string, by an alias the line sets, or handed on by a listing.
+powershell finds=delete | Set-Item Env`:TEMP -Value ~; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Content Env`:TEMP C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Content "Env`:TEMP" C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Content @'\nEnv:TEMP\n'@ C:\\Users\\me; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Item Variable`:HOME C:\\Windows -Force; Remove-Item -Recurse "$HOME\\dev\\repo\\build"
+powershell finds=delete | Set-Alias x Set-Item; x Env:TEMP ~; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Get-ChildItem Env:TE* | Remove-Item; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | New-Item -Path Env: -Name TEMP -Value ~; Remove-Item -Recurse "$env:TEMP\\.ssh"
+powershell finds=delete | Set-Item "Env:$n" ~; Remove-Item -Recurse "$env:TEMP\\x"
+# A cmd the line starts is handed the session's environment.
+powershell finds=delete | Set-Item -Path Env:TEMP -Value C:\\Users\\me; cmd /c "rd /s /q %TEMP%\\.ssh"
+powershell finds=delete | Set-Content Env:TEMP C:\\Users\\me; cmd /c "rd /s /q %TEMP%\\.ssh"
+powershell finds=delete | Set-Item -Path Env:TEMP -Value C:\\Users\\me; Start-Process cmd "/c rd /s /q %TEMP%\\.ssh"
+powershell finds=delete | Set-Item -Path Env:CD -Value C:\\Users\\me; cmd /c "rd /s /q %CD%\\.ssh"
+powershell finds=delete | $env:TEMP = 'C:\\Users\\me'; cmd /c "rd /s /q %TEMP%\\.ssh"
+powershell safe | cmd /c "rd /s /q %TEMP%\\x"
+# A read of the drives, or a change of another item, changes no place.
+powershell safe | if (Test-Path Env:CI) { $c = 1 }; Remove-Item -Recurse -Force "$env:TEMP\\build"
+powershell safe | Get-ChildItem Env:; Remove-Item -Recurse "$env:TEMP\\x"
+powershell safe | Get-Content Env:PATH; New-Item -ItemType Directory "$env:LOCALAPPDATA\\Temp\\x"
+powershell safe | Get-ChildItem Variable:; Remove-Item -Recurse "$HOME\\dev\\repo\\build"
+powershell safe | Remove-Item Env:FOO; Remove-Item -Recurse "$env:TEMP\\x"
+powershell safe | Set-Item Env:FOO $x; Remove-Item -Recurse "$env:TEMP\\x"
+powershell finds=delete | Set-Item Env:T[E]MP ~; Remove-Item -Recurse "$env:TEMP\\x"
+# So does one a program reads as its arguments or its command: by a pattern,
+# by the new name of a rename, or by a plain name after a `cd` to `Env:`.
+powershell safe | Set-Item Env:FOO x; npx
+powershell finds=unknown | Set-Item Env:npm_config_* x; npx
+powershell finds=unknown | Rename-Item Env:FOO npm_config_call; npx
+powershell finds=unknown | cd Env:; Set-Item npm_config_call x; npx
+powershell finds=unknown | cd Env:; Set-Item ZIPOPT -Value '-m'; zip -qr x.zip src
+
+# `Temp:` is the user's temporary folder, a drive of the file system.
+powershell safe | Remove-Item Temp:\\scratch -Recurse
+powershell safe | Remove-Item temp:/scratch -Recurse
+powershell safe | cd Temp:; Remove-Item NUL
+powershell safe | cd Temp:; Remove-Item scratch -Recurse
+powershell safe | Set-Content Temp:\\x.txt hi
+powershell safe | python x.py > Temp:\\out.txt
+powershell finds=delete reason="deletes a temporary folder" | Remove-Item Temp:\\ -Recurse
+powershell finds=delete | Remove-Item Temp: -Recurse
+powershell finds=delete | Remove-Item Temp:\\..\\..\\x -Recurse
+powershell finds=delete | cd Temp:; Remove-Item ..\\..\\x -Recurse
+powershell finds=delete | cd Temp:\\..; Remove-Item x -Recurse
+powershell finds=delete | cd Temp:; Remove-Item ~\\x -Recurse
+
+# A drive `New-PSDrive` makes is read as its provider: the registry is a
+# system setting, and any other provider's path is only known when it runs.
+powershell finds=system_settings | New-PSDrive -Name Q -PSProvider Registry -Root HKLM:\\SOFTWARE; Remove-Item Q:\\Microsoft -Recurse
+powershell finds=system_settings | New-PSDrive Q Registry HKLM:\\SOFTWARE; Set-Item Q:\\x 1
+powershell finds=system_settings | New-PSDrive -PSProvider Microsoft.PowerShell.Core\\Registry -Name sw -Root HKCU:\\Software; Remove-Item sw:\\x -Recurse
+powershell finds=system_settings | ndr -n Q -psp Registry -r HKLM:\\SOFTWARE; Remove-Item Q:\\x
+powershell finds=system_settings | Remove-Item Q:\\x; New-PSDrive -Name Q -PSProvider Registry -Root HKLM:\\SOFTWARE
+powershell finds=delete reason="deletes a path only known when it runs" | New-PSDrive -Name W -PSProvider FileSystem -Root C:\\Users\\me\\dev\\repo; Remove-Item W:\\x
+powershell finds=delete | New-PSDrive -Name C -PSProvider FileSystem -Root C:\\Windows; Remove-Item C:\\Users\\me\\dev\\repo\\x
+powershell finds=delete | New-PSDrive -Name E -PSProvider Environment -Root ''; Remove-Item E:\\x
+powershell finds=delete | New-PSDrive -Name Q -PSProvider $p -Root HKLM:\\SOFTWARE; Remove-Item Q:\\x
+powershell finds=delete | New-PSDrive -Name $n -PSProvider Registry -Root HKLM:\\SOFTWARE; Remove-Item C:\\Users\\me\\dev\\repo\\x
+powershell safe | New-PSDrive -Name Q -PSProvider Registry -Root HKLM:\\SOFTWARE; Get-ChildItem Q:\\
+powershell safe | New-PSDrive -Name Q -PSProvider Registry -Root HKLM:\\SOFTWARE; Remove-Item src\\x

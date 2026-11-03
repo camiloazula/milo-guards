@@ -257,6 +257,7 @@ impl Reading {
             effect,
         );
         let mut resolver = path::Resolver::new(paths);
+        resolver.made(&split.drives);
         if effect {
             resolver.keep(paths);
         }

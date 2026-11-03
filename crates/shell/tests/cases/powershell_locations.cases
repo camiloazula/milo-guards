@@ -24,9 +24,10 @@ powershell finds=overwrite | Copy-Item src\\x my-drive:y
 powershell finds=delete | Rename-Item my_drive:x y
 powershell finds=delete | cd C:\\Users\\me; Remove-Item -Recurse my_drive:*
 powershell finds=delete | cd src; Remove-Item -Recurse my_drive:*
-# A drive made with such a name and entered.
-powershell finds=delete | New-PSDrive -Name my_reg -PSProvider Registry -Root HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; cd my_reg:; Remove-Item NUL -Recurse
-powershell finds=delete | New-PSDrive -Name my-reg -PSProvider Registry -Root HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; cd my-reg:; Remove-Item NUL -Recurse
+# A drive made with such a name and entered: a registry drive is the
+# registry.
+powershell finds=system_settings | New-PSDrive -Name my_reg -PSProvider Registry -Root HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; cd my_reg:; Remove-Item NUL -Recurse
+powershell finds=system_settings | New-PSDrive -Name my-reg -PSProvider Registry -Root HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; cd my-reg:; Remove-Item NUL -Recurse
 powershell finds=overwrite | New-PSDrive -Name my_fn -PSProvider Function -Root \\; cd my_fn:; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
 
 # A name with a separator, a wildcard or a dot is not a drive: a stream of a
@@ -100,13 +101,14 @@ powershell finds=delete | cd $dir; rm -r -fo CON
 powershell finds=delete | cd $dir; Remove-Item -LiteralPath NUL -Recurse
 powershell finds=overwrite | cd $key; Clear-Item NUL
 powershell finds=overwrite | cd $key; Move-ItemProperty NUL CON -Name x
-# The providers that are not the registry.
-powershell finds=delete | cd Env:; Remove-Item NUL
-powershell finds=delete | cd Variable:; Remove-Item NUL
+# The providers that are not the registry. In `Env:` and `Variable:` an
+# item is the session's own.
+powershell safe | cd Env:; Remove-Item NUL
+powershell safe | cd Variable:; Remove-Item NUL
 powershell finds=delete | cd Function:; Remove-Item CON
 powershell finds=delete | cd Cert:\\CurrentUser\\My; Remove-Item NUL
-powershell finds=overwrite | cd Env:; Set-Item NUL -Value x
-powershell finds=overwrite | cd Variable:; Set-Item NUL -Value x
+powershell safe | cd Env:; Set-Item NUL -Value x
+powershell safe | cd Variable:; Set-Item NUL -Value x
 powershell finds=overwrite | cd 1:; Set-Item NUL -Value 1
 powershell finds=overwrite | cd Function:; Set-Item NUL -Value 'Remove-Item ~ -Recurse'; NUL
 powershell finds=overwrite | cd Alias:; Set-Item NUL -Value Remove-Item
@@ -123,7 +125,7 @@ powershell safe | cd C:\\other; Copy-Item x NUL
 powershell finds=overwrite | cd Function:; Set-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
 powershell finds=overwrite | cd Alias:; Set-Content NUL Remove-Item; NUL -Recurse -Force ~
 powershell finds=overwrite | cd Function:; Add-Content NUL 'Remove-Item -Recurse -Force ~'; NUL
-powershell finds=overwrite | cd Env:; Clear-Content NUL
+powershell safe | cd Env:; Clear-Content NUL
 powershell finds=system_settings | cd HKCU:\\Software\\Foo; Copy-Item Bar NUL -Recurse
 powershell finds=system_settings | cd HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion; Copy-Item -Path HKCU:\\Software\\Evil -Destination NUL -Recurse -Force
 powershell finds=overwrite | cd $key; Copy-Item x NUL -Recurse
