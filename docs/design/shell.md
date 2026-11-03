@@ -261,7 +261,13 @@ and its findings are the line's, since the shell runs it as the same user.
   order: source then action for `Register-EngineEvent`; object, event, source
   then action for `Register-ObjectEvent`; class or query, source then action
   for `Register-WmiEvent` and `Register-CimIndicationEvent`.
-  `Register-ObjectEvent $timer Elapsed`, with no action, is safe.
+  `Register-ObjectEvent $timer Elapsed`, with no action, is safe. The
+  `-Action` block of `Set-PSBreakpoint`, which runs when the breakpoint is
+  hit, and a block set as a hook of `$ExecutionContext.InvokeCommand`
+  (`CommandNotFoundAction`, `PreCommandLookupAction`,
+  `PostCommandLookupAction`, `LocationChangedAction`, by assignment or by
+  its `set_` method), which runs when a command is looked up or the location
+  changes, run later the same way.
 - cmd has nothing like it.
 - **`PS4` and `BASH_ENV`** in a POSIX shell. bash expands the value of `PS4`
   (with `$(…)`, backticks and `$((…))`) every time `set -x` prints a trace
@@ -408,7 +414,9 @@ line leaves things, whichever is more conservative and needs the least state:
 A `cd` (or `pushd`, or `Set-Location`) moves the rest of the line. A later
 relative path is judged from where it moved to. A `cd` inside a subshell or a
 nested script in a process of its own does not reach the rest of the line;
-`eval` runs in this shell, so its `cd` does; in a pipeline only zsh runs the
+`eval` runs in this shell, so its `cd` does, and so does the `cd` in a string
+PowerShell's `Invoke-Expression` runs (`iex 'cd C:\Windows'`), since the session
+has one location; in a pipeline only zsh runs the
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
@@ -545,6 +553,64 @@ line is, as before.
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.
 
+A PowerShell session has one location, whatever scope a block runs in, and
+some of what moves it is not a `cd` the line shows. Then the place, and every
+relative or rooted path after it, is only known when it runs: a script block or
+a script run by a name only known when it runs (`& $b`, `. $b`, `&
+(Get-Command f)`; a block written out, `& { … }`, is read where it stands), an
+`Invoke-Expression` of a string not written out (`iex $s`, `iex "cd $d"`, a
+download), and the process's own folder set by
+`[Environment]::CurrentDirectory = …` or `[IO.Directory]::SetCurrentDirectory`,
+which a .NET call and a program the session starts may take. A method of
+`$ExecutionContext.SessionState.Path` is the cmdlet it stands for, read with
+the string it is given: `SetLocation('C:\Windows')` is `Set-Location
+C:\Windows`, `PushCurrentLocation`, `PopLocation` and `SetDefaultLocationStack`
+the stack steps below. Called on anything else (a variable that may hold the
+paths) the place, and the stack, are only known when it runs.
+
+`Set-Location`, `Push-Location` and `Pop-Location` are read by their own
+parameters, so the value of `-StackName` is not the folder: `Push-Location
+-StackName s C:\Windows` goes to `C:\Windows`. `Push-Location` with no path
+saves where the line is and stays there, and `Set-Location -StackName s` only
+picks the stack the others use when not given one. The line keeps the folders
+`Push-Location` saved, on each stack by name, so a `Pop-Location` goes back to
+the last one saved on its stack, and to every other folder the line may have
+been in then: `Push-Location src; Pop-Location; Remove-Item -Recurse build`
+deletes `<cwd>\build`. Only a step the line is certain to take, in order, is
+kept. After one that may not run or may run again (in a branch, a loop, a
+function body, on the right of `&&` or `||`, behind a wrapper, or in an action
+that runs later), after a block or a script the guard does not read that may
+move the line (`& $b`, `iex $s`), which may save or take a folder too, and
+after a `Pop-Location` of a stack the line did not fill,
+which holds what the session saved before the line, or of a stack only known
+when it runs, a `Pop-Location` goes to a place only known when it runs.
+The same holds after a location cmdlet in a later stage of a pipeline, which
+runs once for each item and may take its folder and its stack from each
+(`Import-Csv s.csv | Pop-Location`); after one given an argument that does not
+bind (`Pop-Location -WhatIf`, `Pop-Location x`, `Push-Location -Foo x`, an
+unknown or ambiguous parameter, a value parameter with no value, more folders
+than it takes, or a splat), which stops it before it does anything; and once
+the line defines a function or sets an alias named as one of them
+(`function Pop-Location { }`, `Set-Alias popd Get-Date`), or an alias whose
+name is only known when it runs (`Set-Alias $n …`, `Import-Alias`), which may
+stand in for it. A process or a runspace of its own (a job's block, a thread
+job's, a `ForEach-Object -Parallel` block, a nested `pwsh -Command`) starts
+with empty stacks, so a `Pop-Location` there takes nothing the line saved and
+goes to a place only known when it runs (`Push-Location C:\Windows; Start-Job
+{ Pop-Location; Remove-Item -Recurse System32 }` deletes
+`C:\Windows\System32`), and the line's stacks are as they were after it.
+
+The blocks of `Start-Job` run in a process of their own, so a `cd` in them does
+not move the line. They start in its `-WorkingDirectory`, joined to where the
+line is (`Start-Job -WorkingDirectory ~ { Remove-Item -Recurse .\build }` deletes
+`~\build`), and where the line is when it names none, as PowerShell 7 starts
+them; Windows PowerShell 5.1 starts such a job in `~\Documents`, which the guard
+does not read. They are read after the
+rest of the command, whose arguments and redirects the session runs before the
+job starts. When a job has more than one block and one of them moves, which
+runs first (`-InitializationScript` runs before the block, wherever it is
+written) is not read, and every path in them is only known when it runs.
+
 In a POSIX shell `pushd` has options before its folder, as `cd` has, and none
 of them is the folder: `-L` and `-P` are skipped (`pushd -P ~/.ssh && cat
 id_rsa` reads `~/.ssh/id_rsa`, a secret, like `cd -P ~/.ssh`), and `-n` changes
@@ -576,9 +642,13 @@ that one path, so a `..` in the name is applied and a device path (`NUL`, `CON`)
 is never the item itself. `$null` is the null value in any provider.
 
 In PowerShell a rooted path with no drive (`\x`, `/x`, as in `cd \`) is on the
-drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
-`HKCU:\x`, and after `cd Function:` it is `Function:\x`; it is on the file
-system only when the folder before it is (a disk, or no earlier `cd` at all).
+drive or share of the folder before it, so after `cd HKCU:\Software\Foo` it is
+`HKCU:\x`, after `cd Function:` it is `Function:\x`, and after `cd
+\\server\share\x` it is `\\server\share\x` (`\\?\UNC\server\share\x` and
+`\\?\C:\x` are read for the share and the drive they name; another `\\?\` or
+`\\.\` folder has no root the guard reads, so the path is only known when it
+runs); it is on the file system only when the folder before it is (a disk, a
+share, or no earlier `cd` at all).
 When that folder is only known when it runs, or is a provider path with no drive (`Registry::HKEY_CURRENT_USER\...`),
 so is the rooted path. `~` is the home of the provider the folder is in, and
 only the file system has one: after a `cd` to the registry, `Function:`, a
@@ -1421,7 +1491,11 @@ a path.
   listed, their short forms and the hex shapes are tried, so a pattern that
   fits some other branch name (`dev`) is not told.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
-  own path.
+  own path. A relative one (`FileSystem::x`,
+  `Microsoft.PowerShell.Core\FileSystem::x`) is from the folder the line is in,
+  as a plain one is (`cd C:\Windows; Remove-Item -Recurse FileSystem::System32`
+  deletes `C:\Windows\System32`); after a `cd` to another provider, or to a
+  place only known when it runs, it is only known when it runs.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
 - `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `

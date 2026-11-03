@@ -290,7 +290,9 @@ fn add_launched(
                         // `eval` runs in this shell: a `cd` in it moves the rest
                         // of the line. In a pipeline only zsh's last stage
                         // does, but as for a `cd` the guard counts any stage.
-                        let here = key == "eval";
+                        // PowerShell's `Invoke-Expression` runs its string in
+                        // the session, which has one location.
+                        let here = key == "eval" || key == "invoke-expression";
                         unit::script_in(split, &text, shell, depth + 1, here);
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
@@ -449,6 +451,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         startup,
         repeated: false,
         downloaded: false,
+        relocates: false,
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
