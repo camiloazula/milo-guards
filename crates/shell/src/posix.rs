@@ -1657,9 +1657,10 @@ impl Walker<'_> {
         }
         let outer = self.split.scope_hidden(prefixed);
         // `NODE_OPTIONS=… node -e …`: node reads the value as its options.
-        // The same for `PYTHONPATH=… python3 -c …`.
+        // The same for `PYTHONPATH=… python3 -c …` and `ZIPOPT=… zip`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
+        let zip = self.split.zip_options.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -1680,6 +1681,7 @@ impl Walker<'_> {
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
+        self.split.zip_options.truncate(zip);
         self.split.unscope_hidden(outer);
     }
 
@@ -1839,6 +1841,10 @@ impl Walker<'_> {
                     self.split.python_path.push(Arg::Known(value.to_string()));
                 } else if text == "PYTHONPATH" {
                     self.split.python_path.push(Arg::Unknown(text.to_string()));
+                } else if let Some(value) = text.strip_prefix("ZIPOPT=") {
+                    self.split.zip_options.push(Arg::Known(value.to_string()));
+                } else if text == "ZIPOPT" {
+                    self.split.zip_options.push(Arg::Unknown(text.to_string()));
                 }
             }
             None if source.starts_with("NODE_OPTIONS") => {
@@ -1849,6 +1855,11 @@ impl Walker<'_> {
             None if source.starts_with("PYTHONPATH") => {
                 self.split
                     .python_path
+                    .push(Arg::Unknown(source.to_string()));
+            }
+            None if source.starts_with("ZIPOPT") => {
+                self.split
+                    .zip_options
                     .push(Arg::Unknown(source.to_string()));
             }
             None => {}
@@ -1875,23 +1886,23 @@ impl Walker<'_> {
         }
     }
 
-    /// Note the value `assignment` gives `NODE_OPTIONS` or `PYTHONPATH`,
-    /// when it is one of those variables'.
+    /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH` or
+    /// `ZIPOPT`, when it is one of those variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        if name != "NODE_OPTIONS" && name != "PYTHONPATH" {
+        if !matches!(name, "NODE_OPTIONS" | "PYTHONPATH" | "ZIPOPT") {
             return;
         }
         let value = assignment
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
-        if name == "PYTHONPATH" {
-            self.split.python_path.push(value);
-        } else {
-            self.split.node_options.push(value);
+        match name {
+            "PYTHONPATH" => self.split.python_path.push(value),
+            "ZIPOPT" => self.split.zip_options.push(value),
+            _ => self.split.node_options.push(value),
         }
     }
 

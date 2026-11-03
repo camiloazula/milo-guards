@@ -128,6 +128,17 @@ pub(super) fn python_path(args: &[Arg], start: usize) -> Vec<Arg> {
         .collect()
 }
 
+/// The values `ZIPOPT` is given by the wrapper's own arguments, as
+/// [`node_options`] reads `NODE_OPTIONS`.
+pub(super) fn zip_options(args: &[Arg], start: usize) -> Vec<Arg> {
+    args.iter()
+        .take(start)
+        .filter_map(Arg::known)
+        .filter_map(|text| text.strip_prefix("ZIPOPT="))
+        .map(|value| Arg::Known(value.to_string()))
+        .collect()
+}
+
 /// `xargs`: its options, then the program its input is handed to.
 pub(super) fn xargs(args: &[Arg]) -> Launch {
     let mut replace = None;

@@ -689,6 +689,9 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
+    /// The values `ZIPOPT` is given for the program being added, noted as
+    /// `node_options` is: `zip` reads them as options before its own.
+    pub(crate) zip_options: Vec<Arg>,
     /// How many assignments and wrappers hand the program being added an
     /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the
     /// interpreter loads what that environment tells it to, which the code

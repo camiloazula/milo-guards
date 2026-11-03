@@ -55,6 +55,9 @@ pub(super) enum Launch {
     Encoded,
     /// It reads its commands from its input.
     Reads(Reads),
+    /// It is the program the rules judge, and it runs each of these
+    /// commands through `shell` besides (`tar --to-command`, `zip -TT`).
+    Commands(Shell, Vec<Arg>),
     /// It runs `code`, given inline, in `language`.
     Inline(Language, Code),
     /// It runs a script it downloads.
@@ -71,10 +74,12 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     // What a wrapper in front of the program sets is the program's only.
     let options = split.node_options.len();
     let paths = split.python_path.len();
+    let zip = split.zip_options.len();
     let environment = split.environment;
     add_unit(split, unit, depth);
     split.node_options.truncate(options);
     split.python_path.truncate(paths);
+    split.zip_options.truncate(zip);
     split.environment = environment;
     split.unscope_hidden(outer);
 }
@@ -165,6 +170,10 @@ fn add_launched(
                 split.set(&name);
             }
         }
+        // `ZIPOPT=-m zip …`: zip reads its options from there first.
+        if key == "zip" && unit.shell == Shell::Posix && !split.zip_options.is_empty() {
+            zip_options(split, &mut unit);
+        }
         match given.take().unwrap_or_else(|| launch(&key, &unit)) {
             Launch::Either(first, second) => {
                 if !split.fork(MAX_FORKS) {
@@ -202,6 +211,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
+                split
+                    .zip_options
+                    .extend(wrappers::zip_options(&unit.args, start));
                 // `env BASH_ENV=f bash`: the shell it starts runs `f`.
                 let files = if key == "env" && unit.shell == Shell::Posix {
                     startup::env(split, &unit.args[..start], depth)
@@ -224,6 +236,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
+                split
+                    .zip_options
+                    .extend(wrappers::zip_options(&unit.args, start));
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
@@ -316,6 +331,31 @@ fn add_launched(
                 }
                 return;
             }
+            Launch::Commands(shell, commands) => {
+                let at = split.units.len();
+                split.push(unit);
+                for command in commands {
+                    let Arg::Known(text) = command else {
+                        split.problem(
+                            Rule::Unknown,
+                            "runs a command only known when it runs",
+                            Some(command.text()),
+                        );
+                        continue;
+                    };
+                    // Each runs in a shell of its own, which a `GLOBIGNORE`
+                    // in front of the program hands the option to.
+                    let outer = split.hidden_snapshot();
+                    if split.scoped_hidden() {
+                        split.hide_for_script();
+                    }
+                    let first = split.units.len();
+                    unit::script_in(split, &text, shell, depth + 1, false);
+                    split.nest(at..at + 1, first..split.units.len());
+                    split.restore_hidden(outer);
+                }
+                return;
+            }
             Launch::Inline(language, code) => {
                 // The paths in the code are read as POSIX ones, and a command it
                 // runs as a POSIX shell line: on Windows they are neither.
@@ -382,6 +422,28 @@ fn add_launched(
         None,
     );
     split.push(unit);
+}
+
+/// Put the options `ZIPOPT` gives in front of `zip`'s own, as it reads
+/// them: split at white space. A value only known when it runs may hold any
+/// option, `-m` among them.
+fn zip_options(split: &mut Split, unit: &mut Unit) {
+    let mut words = Vec::new();
+    for value in split.zip_options.clone() {
+        match value {
+            Arg::Known(text) => words.extend(
+                text.split_whitespace()
+                    .map(|word| Arg::Known(word.to_string())),
+            ),
+            other => split.problem(
+                Rule::Unknown,
+                "gives zip options only known when it runs",
+                Some(other.text()),
+            ),
+        }
+    }
+    words.append(&mut unit.args);
+    unit.args = words;
 }
 
 /// Say what the options of the wrapper `key`, the arguments before the
@@ -678,6 +740,18 @@ fn launch(key: &str, unit: &Unit) -> Launch {
             runner(key, unit)
         }
         "dx" => runner(key, unit),
+        // An archiver that runs commands through a shell besides: `/bin/sh`
+        // on a POSIX system, and `cmd` on Windows.
+        "tar" | "gtar" | "bsdtar" | "zip" => {
+            let commands = crate::detect::archive_commands(key, args, unit.shell);
+            if commands.is_empty() {
+                Launch::Itself
+            } else if unit.shell == Shell::Posix {
+                Launch::Commands(Shell::Posix, commands)
+            } else {
+                Launch::Commands(Shell::Cmd, commands)
+            }
+        }
         "bun" => bun(unit),
         "deno" => deno(unit),
         key if SHELLS.contains(&key) && posix => shell(args),
