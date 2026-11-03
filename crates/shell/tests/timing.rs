@@ -734,6 +734,49 @@ fn values_only_known_when_they_run_are_read_in_linear_time() {
 }
 
 #[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() {
+    let _serial = serial();
+    // Each unit and redirect of a loop with a `cd`, or of a function body a
+    // `cd` comes after, is judged once more from a folder only known when it
+    // runs, however many loops and bodies it is nested in.
+    let (shell, paths) = (Shell::Posix, posix());
+    for (what, part, tail) in [
+        (
+            "for … cd …; done…",
+            "for i in 1 2; do rm -rf b > o; cd x; done; ",
+            "",
+        ),
+        ("f() { … }…; cd /", "f() { rm -rf b > o; }; ", "cd /"),
+        (
+            "f() { … cd …; }; f…",
+            "f() { rm -rf b > o; cd x; }; f; ",
+            "",
+        ),
+    ] {
+        assert_linear(what, shell, &paths, |size| {
+            format!("{}{tail}", filled(part, size, tail.len()))
+        });
+    }
+    for (what, open, close) in [
+        ("while x; do … (100 deep)", "while x; do ", "done; "),
+        ("f() { f() { … (100 deep)", "f() { ", "}; "),
+    ] {
+        let (open, close) = (open.repeat(100), close.repeat(100));
+        assert_linear(what, shell, &paths, |size| {
+            let slack = open.len() + close.len() + 6;
+            format!(
+                "{open}{}cd /; {close}",
+                filled("rm -rf b > o < i; ", size, slack)
+            )
+        });
+    }
+}
+
+#[test]
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only this test times it, to catch a stall"

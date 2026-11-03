@@ -583,6 +583,7 @@ impl Walker<'_> {
                 if each {
                     self.item = stage;
                     self.split.repeats += 1;
+                    self.split.begin_body();
                 }
                 // The block of an event, and a breakpoint's action, runs
                 // later, in this session.
@@ -609,6 +610,7 @@ impl Walker<'_> {
                 }
                 self.item = outer;
                 if each {
+                    self.split.end_body(false);
                     self.split.repeats -= 1;
                 }
                 // What a sub-expression in its arguments runs is handed to it.
@@ -640,7 +642,9 @@ impl Walker<'_> {
                     self.split.lose_locations();
                 }
                 self.split.repeats += 1;
+                self.split.begin_body();
                 self.children(node, stage, level);
+                self.split.end_body(node.kind() == "function_statement");
                 self.split.repeats -= 1;
             }
             // What a condition guards, or a `try` may stop short of, may not
@@ -725,6 +729,7 @@ impl Walker<'_> {
     /// [`Self::walk`], which nests as deep as the tree, stays small.)
     fn foreach(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.repeats += 1;
+        self.split.begin_body();
         let mut names = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -743,6 +748,7 @@ impl Walker<'_> {
                 }
             }
         }
+        self.split.end_body(false);
         self.split.repeats -= 1;
     }
 
@@ -753,6 +759,7 @@ impl Walker<'_> {
     fn switch(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.branches += 1;
         self.split.repeats += 1;
+        self.split.begin_body();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             let first = self.split.units.len();
@@ -766,6 +773,7 @@ impl Walker<'_> {
                 self.hold(&["_".to_string(), "psitem".to_string()], first, uses);
             }
         }
+        self.split.end_body(false);
         self.split.repeats -= 1;
         self.split.branches -= 1;
     }

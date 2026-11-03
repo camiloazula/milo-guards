@@ -189,7 +189,9 @@ impl Walker<'_> {
             // `for %%i in (…) do …`: what it does runs once for each item.
             "for_stmt" => {
                 self.split.repeats += 1;
+                self.split.begin_body();
                 self.children(node, stage, level);
+                self.split.end_body(false);
                 self.split.repeats -= 1;
             }
             // What a condition guards may not run.

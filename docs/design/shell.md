@@ -718,6 +718,36 @@ and its findings are the line's, since the shell runs it as the same user.
   Invoke-Command`), and a block a variable holds that the line uses later
   (see [What cannot be read is risky](#what-cannot-be-read-is-risky)).
 - cmd has nothing like it.
+- **Function bodies and loops.** A function body runs where the line is when
+  it is called, after its definition, not where it is written, and each pass
+  of a loop after the first starts where the last pass left the line. zsh
+  runs a function named `TRAP` and a signal (`TRAPEXIT`, `TRAPZERR`,
+  `TRAPINT`, `TRAPDEBUG`, …) when the signal comes, with no call on the line:
+  `TRAPEXIT() { rm -rf build; }; cd /` deletes `/build` when the shell exits.
+  So a `cd` anywhere in a loop (in this shell: one in a subshell moves no
+  later pass), or anywhere from the start of a function body on (in the body,
+  which a second call starts from, or later in the line, a subshell's and a
+  nested script's too, since a call may be there), makes the relative paths of
+  every command and redirect in it known only when they run: `f() { rm -rf
+  build; }; cd /; f`, `for i in 1 2; do rm -rf build; cd /; done`, `f() { rm
+  -rf build; cd /; }; f; f` and `for i in 1 2; do echo x > out.txt; cd /;
+  done` are a `delete` or an `overwrite` of a path only known when it runs.
+  Unlike an action read later, each command and redirect is still judged from
+  where the walk has it too, so what that finds stands (`for i in 1 2; do cat
+  ../../.ssh/id_rsa; cd sub; done` reads a key). A path the line names the
+  same wherever it is (`/tmp/build`, `~/build`) is judged as written. The
+  same holds for PowerShell's `function`, `foreach`, `for`, `while`, `do`,
+  `switch` and `ForEach-Object` blocks, and for cmd's `for`. A redirect
+  written on a function's definition (`f() { … } > log`) is not the body's:
+  it is opened at each call, which is placed as in "Where a line is" below.
+  `f() { rm -rf build; }; f`, `cd src; f() { rm -rf build; }; f`, `for i in
+  1 2; do rm -rf build; done` and `for d in */; do (cd "$d" && make); done`
+  stay as they were. Each command and redirect is judged once more however
+  many loops and bodies hold it, so a line of them is read in time that grows
+  with its length. A read from a folder only known when it runs is not a
+  finding of its own, as for any path only known when it runs, so `for i in 1
+  2; do cat id_rsa; cd ~/.ssh; done` is not a `read_secret`; `effect` says
+  `unknown` for it.
 - **`PS4` and `BASH_ENV`** in a POSIX shell. bash expands the value of `PS4`
   (with `$(…)`, backticks and `$((…))`) every time `set -x` prints a trace
   line, and the value of `BASH_ENV` once when a non-interactive bash starts,
@@ -1333,7 +1363,10 @@ either can make the line risky. It is not certain when the `cd` is in a loop
 or a function body, which runs again from where the last pass left the line
 (`for i in 1 2; do cd .. > x; done` writes `<cwd>/../x` on the second pass;
 `f() { cd .. > x; }; f; f`; in PowerShell `foreach`, `ForEach-Object`, `while`,
-`for` and `function`), and when an earlier `cd` may not have moved the line: it
+`for` and `function`; a third pass starts further on, so a loop with a `cd`
+also places it from a folder only known when it runs, as in "Function bodies
+and loops" above: `for i in 1 2; do cd sub > out.txt; done` is an
+`overwrite` of a file only known when it runs), and when an earlier `cd` may not have moved the line: it
 ran in a pipeline stage or in the background, on the right of `&&` or `||`, in
 a branch of an `if`, `case` or `switch` or a `try`, on the left of `||` (not
 one whose right side ends the shell, `cd s || exit`: see "A script a line
@@ -5717,7 +5750,9 @@ are each held to the bound;
   as a command (`wsl`, `env -S`, `nix run`, the secret runners), at the
   length limit, and PowerShell lines at the length limit that use a name the
   line sets as an alias, to a hundred commands or to one, in every command
-  after it.
+  after it. Loops with a `cd`, and function bodies a `cd` comes after, are
+  held to linear time: one after another, and a hundred deep around a long
+  body.
 - **The limits.** (In `tests/limits.rs`, another binary of its own, for the
   same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,

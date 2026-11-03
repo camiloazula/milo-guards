@@ -124,6 +124,12 @@ pub(crate) struct Unit {
     /// in more folders than the guard follows (see [`Split::adrift`]): it
     /// may then be in a folder only known when it runs.
     pub(crate) adrift: bool,
+    /// Whether it sits in a loop or a function body that may run it again
+    /// from another folder (see [`Split::end_body`]): a pass of the loop
+    /// after the first starts where the last left the line, and a call
+    /// where the line is when it is made. Its paths are judged from a folder
+    /// only known when it runs too (see [`Unit::again`]).
+    pub(crate) rerun: bool,
     /// Whether an earlier unit in the line turned on a shell option that
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
@@ -250,6 +256,7 @@ impl Unit {
             elsewhere: Vec::new(),
             stayed: Vec::new(),
             adrift: false,
+            rerun: false,
             hidden: false,
             startup: Rc::default(),
             repeated: false,
@@ -289,15 +296,44 @@ impl Unit {
     /// Every other folder the line may be in when this unit runs, besides
     /// [`Self::dir`], each once: where a `cd` before it that may not have run
     /// ([`Self::elsewhere`]) or may have failed ([`Self::stayed`]) left the
-    /// line, and a folder only known when it runs past the most the guard
-    /// follows. Its paths are judged from each of them too.
+    /// line, a folder only known when it runs past the most the guard
+    /// follows, and the one a loop or a function body may run it again from
+    /// ([`Self::again`]). Its paths are judged from each of them too.
     pub(crate) fn others(&self) -> Vec<Option<Arg>> {
+        let mut folders = self.moved_off();
+        if let Some(again) = self.again_from(&folders) {
+            folders.push(Some(again));
+        }
+        folders
+    }
+
+    /// [`Self::others`] but [`Self::again`]: the folders a `cd` before it
+    /// that may not have run or may have failed left the line in.
+    pub(crate) fn moved_off(&self) -> Vec<Option<Arg>> {
         others(
             self.dir.as_ref(),
             &self.elsewhere,
             &self.stayed,
             self.adrift,
         )
+    }
+
+    /// The folder only known when it runs that a loop or a function body
+    /// may run it again from (see [`Self::rerun`]), unless the unit is
+    /// judged from one already.
+    pub(crate) fn again(&self) -> Option<Arg> {
+        self.again_from(&self.moved_off())
+    }
+
+    /// [`Self::again`], given what [`Self::moved_off`] gives.
+    fn again_from(&self, moved_off: &[Option<Arg>]) -> Option<Arg> {
+        let again = Arg::Unknown(AGAIN.to_string());
+        (self.rerun
+            && !same_folder(self.dir.as_ref(), Some(&again))
+            && !moved_off
+                .iter()
+                .any(|folder| same_folder(folder.as_ref(), Some(&again))))
+        .then_some(again)
     }
 
     /// This unit as it runs with the line in `dir`, one of
@@ -310,6 +346,7 @@ impl Unit {
             elsewhere: Vec::new(),
             stayed: Vec::new(),
             adrift: false,
+            rerun: false,
             ..self.clone()
         }
     }
@@ -1121,6 +1158,16 @@ pub(crate) struct Split {
     moved: usize,
     /// The actions that run later in this shell (a `trap`'s script).
     later: Vec<Later>,
+    /// For each loop and function body the walk is reading, where it began
+    /// (see [`Split::end_body`]).
+    bodies_began: Vec<BodyStart>,
+    /// Each function body read, with how many `cd`s the walk had read when
+    /// it began: once the line is read, a body a `cd` came after runs from
+    /// a folder only known when it runs (see [`Split::settle_bodies`]).
+    function_runs: Vec<(Body, usize)>,
+    /// The loops and function bodies that may run again from a folder only
+    /// known when it runs (see [`Split::settle_bodies`]).
+    reruns: Vec<Body>,
     /// Where the line was before each folder a wrapper started its program
     /// in (see [`Self::start_in`]), to put it back once that program is
     /// read.
@@ -1296,6 +1343,30 @@ impl Began {
     pub(crate) fn moved(&self) -> usize {
         self.moved
     }
+}
+
+/// Where the walk was when a loop or a function body began: how much of
+/// the line it had read, and how many `cd`s this shell had run, and the
+/// walk had read.
+#[derive(Debug)]
+struct BodyStart {
+    units: usize,
+    writes: usize,
+    reads: usize,
+    moves: usize,
+    moved: usize,
+    /// Where the body's own redirects end and the ones written on a
+    /// function's definition begin, once the walk is there.
+    redirects: Option<(usize, usize)>,
+}
+
+/// What the walk added while it read a loop or a function body: its units
+/// and its redirects' writes and reads.
+#[derive(Debug)]
+struct Body {
+    units: Range<usize>,
+    writes: Range<usize>,
+    reads: Range<usize>,
 }
 
 /// Where a command moved the line to, set aside while what the shell
@@ -3081,6 +3152,105 @@ impl Split {
         }
     }
 
+    /// Note where a loop or a function body begins, which the walk is about
+    /// to read in place (see [`Self::end_body`]). Kept off the frame of the
+    /// walk, which the deepest nesting recurses through.
+    #[inline(never)]
+    pub(crate) fn begin_body(&mut self) {
+        self.bodies_began.push(BodyStart {
+            units: self.units.len(),
+            writes: self.writes.len(),
+            reads: self.reads.len(),
+            moves: self.moves,
+            moved: self.moved,
+            redirects: None,
+        });
+    }
+
+    /// Note that the redirects written on the definition of the function
+    /// whose body was read last come next: each is opened where a call is
+    /// made, which [`Self::defined`] works out, so they are not the body's.
+    pub(crate) fn definition_redirects(&mut self) {
+        let (writes, reads) = (self.writes.len(), self.reads.len());
+        if let Some(start) = self.bodies_began.last_mut() {
+            start.redirects.get_or_insert((writes, reads));
+        }
+    }
+
+    /// Note that the loop or the function body begun last has been read in
+    /// place. Each pass of a loop after the first starts where the last left
+    /// the line, so after a `cd` this shell runs anywhere in the loop, each
+    /// path of the loop is judged from a folder only known when it runs as
+    /// well. A function body runs where it is called, after its definition,
+    /// so the same holds for its paths when a `cd` is read anywhere from the
+    /// start of the body on: in the body itself, which a second call starts
+    /// from, or later in the line, a subshell's too, which may call it. It
+    /// is the rule of an action that runs later, but each path is judged
+    /// from where the walk has it too (see [`Self::settle_bodies`]).
+    #[inline(never)]
+    pub(crate) fn end_body(&mut self, function: bool) {
+        let Some(start) = self.bodies_began.pop() else {
+            return;
+        };
+        let (writes, reads) = start
+            .redirects
+            .unwrap_or((self.writes.len(), self.reads.len()));
+        let body = Body {
+            units: start.units..self.units.len(),
+            writes: start.writes..writes,
+            reads: start.reads..reads,
+        };
+        if function {
+            self.function_runs.push((body, start.moved));
+        } else if self.moves != start.moves {
+            self.reruns.push(body);
+        }
+    }
+
+    /// After the whole line is read, and the bodies' hidden names settled:
+    /// each unit of a loop or a function body that may run again from a
+    /// folder only known when it runs (see [`Self::end_body`]) is judged
+    /// from there too (see [`Unit::rerun`]), and each of its redirects is
+    /// made from there as well, once for each file. The bodies nest, so
+    /// their ranges are joined first and each unit and redirect is read once.
+    fn settle_bodies(&mut self) {
+        for (body, moved) in std::mem::take(&mut self.function_runs) {
+            if self.moved != moved {
+                self.reruns.push(body);
+            }
+        }
+        let reruns = std::mem::take(&mut self.reruns);
+        let again = Some(Arg::Unknown(AGAIN.to_string()));
+        for at in joined(reruns.iter().map(|body| body.units.clone())) {
+            if let Some(unit) = self.units.get_mut(at) {
+                unit.rerun = true;
+            }
+        }
+        let mut seen = HashSet::new();
+        let writes: Vec<Write> = joined(reruns.iter().map(|body| body.writes.clone()))
+            .filter_map(|at| self.writes.get(at))
+            .filter(|write| !same_folder(write.dir.as_ref(), again.as_ref()))
+            .filter(|write| seen.insert((write.shell, write.target.clone(), write.hidden)))
+            .map(|write| Write {
+                dir: again.clone(),
+                also: false,
+                ..write.clone()
+            })
+            .collect();
+        self.writes.extend(writes);
+        seen.clear();
+        let reads: Vec<Read> = joined(reruns.iter().map(|body| body.reads.clone()))
+            .filter_map(|at| self.reads.get(at))
+            .filter(|read| !same_folder(read.dir.as_ref(), again.as_ref()))
+            .filter(|read| seen.insert((read.shell, read.target.clone(), read.hidden)))
+            .map(|read| Read {
+                dir: again.clone(),
+                ..read.clone()
+            })
+            .collect();
+        self.reads.extend(reads);
+    }
+
     /// Note that the action which began at `began` has been read. It runs
     /// after the rest of the line, or between its commands, in this shell: if
     /// the line moves with a `cd` after it, where its relative paths land is
@@ -3609,6 +3779,24 @@ fn others(
     folders
 }
 
+/// Every index in `ranges`, each once and in order, however they overlap.
+fn joined(ranges: impl Iterator<Item = Range<usize>>) -> impl Iterator<Item = usize> {
+    let mut ranges: Vec<Range<usize>> = ranges.filter(|range| !range.is_empty()).collect();
+    ranges.sort_by_key(|range| range.start);
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged.into_iter().flatten()
+}
+
+/// Where a pass of a loop or a call of a function before a unit may have
+/// left the line (see [`Unit::again`]).
+const AGAIN: &str = "where a pass or a call before it left the line";
+
 /// Whether `a` and `b` are the same folder to judge a path from: the same
 /// one, or two only known when they run, from which every relative path is
 /// only known when it runs too, whatever their text says.
@@ -4059,6 +4247,7 @@ pub(crate) fn split(
     }
     split.hide_bodies();
     split.settle_later();
+    split.settle_bodies();
     split.settle_functions();
     split.settle_pwd();
     split

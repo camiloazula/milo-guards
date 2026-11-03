@@ -679,6 +679,40 @@ posix finds=delete | trap 'cd /' EXIT; rm -rf out
 # An absolute path is the same wherever the line has moved.
 posix finds=delete | trap 'rm -rf /' EXIT; cd src
 posix finds=delete | trap 'rm -rf ~' EXIT; cd src
+# A function body runs where it is called, and each pass of a loop after the
+# first where the last pass left the line, so they are judged as a trap
+# action is: a `cd` anywhere in a loop, or anywhere from the start of a
+# function body on (a second call starts where the first left the line, and
+# a subshell's `cd` counts, as a call may be in it), makes their relative
+# paths known only when they run. zsh runs a `TRAP*` function when its
+# signal comes, without a call.
+posix finds=delete reason="deletes a path only known when it runs" | f() { rm -rf build; }; cd /; f
+posix finds=delete reason="deletes a path only known when it runs" | for i in 1 2; do rm -rf build; cd /; done
+posix finds=delete reason="deletes a path only known when it runs" | TRAPEXIT() { rm -rf build; }; cd /
+posix finds=delete | TRAPZERR() { rm -rf build; }; (cd /; false)
+posix finds=delete | function f { rm -rf build; }; cd /; f
+posix finds=delete | f() { rm -rf build; }; (cd /; f)
+posix finds=delete | f() { rm -rf build; cd /; }; f; f
+posix finds=delete | f() { rm -rf ./build; }; cd src; f
+posix finds=delete | for i in 1 2; do rm -rf build; cd ..; done
+posix finds=delete | while true; do rm -rf build; cd /; done
+posix finds=delete | until false; do rm -rf build; cd /; done
+posix finds=delete | for ((i = 0; i < 2; i++)); do rm -rf build; cd /; done
+posix finds=delete | select x in a b; do rm -rf build; cd /; done
+posix finds=delete | for i in 1 2; do for j in 1; do rm -rf build; done; cd /; done
+posix finds=overwrite | for i in 1 2; do echo x > out.txt; cd /; done
+posix finds=overwrite | f() { echo x > out.txt; }; cd /; f
+# What a body finds from where it is written still stands.
+posix finds=read_secret | for i in 1 2; do cat ../../.ssh/id_rsa; cd sub; done
+posix finds=delete reason="deletes a path outside the workspace" | for i in 1 2; do rm -rf ~/build; cd /; done
+# Without a `cd` in the loop, or after the function's body, a body runs where
+# it is written; a `cd` in a subshell in a loop does not move the next pass.
+posix safe | f() { rm -rf build; }; f
+posix safe | cd src; f() { rm -rf build; }; f
+posix safe | for i in 1 2; do rm -rf build; done
+posix safe | for d in */; do (cd "$d" && make); done
+posix safe | for i in 1 2; do rm -rf /tmp/build; cd /; done
+posix finds=delete reason="deletes a path only known when it runs" | for d in a b; do rm -rf "$d/out"; done
 # The action runs with the options the line ends with.
 posix safe | trap 'rm -rf *git' EXIT
 posix safe | trap 'shopt -u dotglob; rm -rf *git' EXIT

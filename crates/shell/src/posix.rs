@@ -1481,6 +1481,9 @@ impl Walker<'_> {
                 self.split.bodies += usize::from(body);
                 self.split.repeats += usize::from(body);
                 let start = (self.split.units.len(), self.split.reads.len());
+                if body {
+                    self.split.begin_body();
+                }
                 if let Some(function) = &function {
                     let here = function.here.clone();
                     self.function_children(node, stage, level, &here);
@@ -1491,6 +1494,9 @@ impl Walker<'_> {
                 }
                 if node.kind() == "for_statement" {
                     self.bind_loop(node, start);
+                }
+                if body {
+                    self.split.end_body(function.is_some());
                 }
                 self.function_end(function);
                 // A function defined here may stand for a program of the same
@@ -1829,6 +1835,9 @@ impl Walker<'_> {
         for (at, child) in all.iter().enumerate() {
             if !child.is_named() {
                 continue;
+            }
+            if matches!(child.kind(), "file_redirect" | "heredoc_redirect") {
+                self.split.definition_redirects();
             }
             match child.kind() {
                 "file_redirect" => self.walk_redirect_from(*child, stage, level, from.clone()),
