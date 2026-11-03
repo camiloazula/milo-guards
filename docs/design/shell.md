@@ -550,7 +550,11 @@ bash `echo "hi"; rm -rf ~`, a `Delete`, where cmd's own quotes would give
 and hands on the words it made (`uv run`, `npx`, `pnpm dlx`, `npm exec`,
 `wsl`, `git submodule foreach`), and `start` hands the program it starts the
 text after its title. A word that holds a variable only known when it runs
-keeps its quotes, so `docker rm -f "%IDS%"` is one name. A shell built on
+keeps its quotes, but cmd puts the value in before the program splits the
+text, so a value that holds a `"` ends them: `docker rm -f "%IDS%"` may name
+several containers, and `git push "%F%" origin main` may hand git `--force`
+(see [Values only known when they run](#values-only-known-when-they-run)).
+A shell built on
 Cygwin or MSYS2 also reads single quotes; a script that opens one and does
 not close it in the C runtime's word is unreadable as POSIX, and so risky.
 `cmd` itself is given the text as it is, quotes and all, with cmd's rule for
@@ -4363,8 +4367,8 @@ variables that start with a prefix (`"${!p@}"`, but not `"${!p*}"`), but not
 `"$name"`, nor a quoted variable after a plain head (`app-"$ENV"` is one word,
 `app-$ENV` may be several); in PowerShell any variable except `$env:` and a
 splat (`@ids`), since an array handed to a program is one argument per element,
-but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`, which is
-expanded as text. A POSIX word also splits when an unquoted `$` follows a
+but not a quoted `"$ids"`; in cmd a `%IDS%` or `!IDS!`, quoted or not, which
+is expanded as text before the program splits its command line. A POSIX word also splits when an unquoted `$` follows a
 quoted head (`"$a"$b`) and when it holds an unquoted brace list or sequence
 (`web{1,2}`, `{web,db}`, `web{1..3}`); a brace list in a word the parser has
 already unquoted counts as bare. A command in a loop or a function body runs
