@@ -1,6 +1,6 @@
 # Guidelines
 
-`milo-local-guards` is a set of guards for AI agents working on your own
+`milo-guards` is a set of guards for AI agents working on your own
 machine, written in Rust. A guard reads what an agent is about to do and says
 whether it is safe to do without asking, or risky and why. Guards are built
 for small local models: offline, deterministic, no model calls.
@@ -35,7 +35,7 @@ that guards build on, and the front door:
 - `crates/secrets` (`milo-guards-secrets`) - the secrets guard, `find`. It reads
   a text with a table of credential shapes and returns what it holds and where,
   masked, never the secret. [Its design](docs/design/secrets.md).
-- `crates/guards` (`milo-local-guards`) - the one crate a caller depends on.
+- `crates/guards` (`milo-guards`) - the one crate a caller depends on.
   It re-exports each guard behind a feature; `secrets` is the one that is off by
   default.
 

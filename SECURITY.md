@@ -5,7 +5,7 @@
 Please do not open a public issue for a security problem. Report it
 privately through GitHub's vulnerability reporting for this repository:
 
-https://github.com/camiloazula/milo-local-guards/security/advisories/new
+https://github.com/camiloazula/milo-guards/security/advisories/new
 
 You will get an acknowledgement within a few days. Once a fix is ready it
 is merged with a note that credits the reporter, unless they prefer

@@ -575,7 +575,7 @@ fn is_guard_package(package: &str) -> bool {
     (package.starts_with("milo-guards-")
         && package != "milo-guards-core"
         && !is_reader_package(package))
-        || package == "milo-local-guards"
+        || package == "milo-guards"
 }
 
 /// Why `dep`, declared by crate `owner`, is another guard or the front door
@@ -826,7 +826,7 @@ fn package_path_and_workspace_are_read_in_every_form() {
 [dependencies]
 a = { package = \"milo-guards-shell\", version = \"1\" }
 b = { path = \"../shell\" } # comment with path = \"nope\"
-c.package = \"milo-local-guards\"
+c.package = \"milo-guards\"
 d.path = \"../guards\"
 e = { workspace = true }
 f = { features = [\"path\"], version = \"1\" }
@@ -852,7 +852,7 @@ path = \"../../crates/shell/\"
         [
             ("a", Some("milo-guards-shell"), None, false),
             ("b", None, Some("../shell"), false),
-            ("c", Some("milo-local-guards"), None, false),
+            ("c", Some("milo-guards"), None, false),
             ("d", None, Some("../guards"), false),
             ("e", None, None, true),
             ("f", None, None, false),
@@ -876,12 +876,12 @@ sneaky = { package = \"milo-guards-shell\", path = \"crates/shell\" }
     let wrong = |manifest: &str| wrong_dependencies("files", manifest, root, &folders);
     for dep in [
         "milo-guards-shell.workspace = true",
-        "milo-local-guards = \"1\"",
+        "milo-guards = \"1\"",
         "renamed = { package = \"milo-guards-shell\", version = \"1\" }",
         "renamed = { path = \"../shell\" }",
         "renamed = { path = \"../../crates/guards/\" }",
         "sneaky.workspace = true",
-        "other = { git = \"https://example.com/x\", package = \"milo-local-guards\" }",
+        "other = { git = \"https://example.com/x\", package = \"milo-guards\" }",
     ] {
         assert_eq!(wrong(&format!("[dependencies]\n{dep}\n")).len(), 1, "{dep}");
         assert_eq!(
@@ -948,7 +948,7 @@ sneaky = { package = \"milo-guards-code\", path = \"crates/code\" }
     assert!(wrong_dependencies("code", parsers, root, &folders).is_empty());
     for dep in [
         "milo-guards-shell.workspace = true",
-        "milo-local-guards = \"1\"",
+        "milo-guards = \"1\"",
         "renamed = { path = \"../shell\" }",
         "renamed = { package = \"milo-guards-shell\", version = \"1\" }",
         "renamed = { path = \"../files\" }",

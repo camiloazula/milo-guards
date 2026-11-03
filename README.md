@@ -1,4 +1,4 @@
-# milo-local-guards
+# milo-guards
 
 Guards for AI agents working on your own machine. Each guard reads what an
 agent is about to do and says whether it is safe to do without asking, or
@@ -62,20 +62,20 @@ More guards will sit beside them.
 
 ## Use
 
-Depend on `milo-local-guards` by git. The `shell`, `file`, `url` and `code` features are
+Depend on `milo-guards` by git. The `shell`, `file`, `url` and `code` features are
 on by default; `secrets` is opt in, because most callers want the others and not a table of
 patterns in their binary.
 
 ```toml
 [dependencies]
-milo-local-guards = { git = "https://github.com/camiloazula/milo-local-guards", rev = "<commit>" }
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", rev = "<commit>" }
 # With the secrets guard as well:
-# milo-local-guards = { git = "…", rev = "<commit>", features = ["secrets"] }
+# milo-guards = { git = "…", rev = "<commit>", features = ["secrets"] }
 ```
 
 ```rust
-use milo_local_guards::shell::{classify, Shell};
-use milo_local_guards::Paths;
+use milo_guards::shell::{classify, Shell};
+use milo_guards::Paths;
 
 // Where the agent is: its working directory, your home, its workspace folders.
 let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
@@ -90,7 +90,7 @@ for finding in assessment.findings() {
 }
 
 // The same places judge a read or a write of one path through a file API.
-use milo_local_guards::file::{judge, Access};
+use milo_guards::file::{judge, Access};
 
 assert!(judge(Access::Write, "src/main.rs", &paths).is_safe());
 

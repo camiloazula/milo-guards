@@ -23,9 +23,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use format::Word;
-use milo_local_guards::file::{self, Access};
-use milo_local_guards::shell::{self, Shell};
-use milo_local_guards::Paths;
+use milo_guards::file::{self, Access};
+use milo_guards::shell::{self, Shell};
+use milo_guards::Paths;
 
 /// The fields of a `paths` line that name a path.
 const PATH_FIELDS: [&str; 5] = ["cwd", "home", "workspace", "folder", "file"];

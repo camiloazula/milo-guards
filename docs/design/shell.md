@@ -3293,7 +3293,7 @@ cargo run -p milo-guards-shell --example explain -- \
 ```
 
 `--shell` is `posix` (the default), `powershell` or `cmd`; `--workspace` can be
-repeated. A caller gets `explain` as `milo_local_guards::shell::explain`
+repeated. A caller gets `explain` as `milo_guards::shell::explain`
 through the front door, which has no logic and no example of its own.
 
 ## Tests

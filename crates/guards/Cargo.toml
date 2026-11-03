@@ -1,6 +1,6 @@
 [package]
 publish = false
-name = "milo-local-guards"
+name = "milo-guards"
 description = "Guards for AI coding agents on your own machine: each reads what an agent is about to do and says whether it is safe without asking, or risky and why."
 version.workspace = true
 authors.workspace = true
