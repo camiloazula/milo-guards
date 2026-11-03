@@ -584,6 +584,11 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         "xargs" if posix => xargs(args),
         // `busybox rm …` runs its applet: the applet is the program.
         "busybox" if posix => runs(args, after_options(args, &[])),
+        // `xtables-nft-multi iptables -F` runs the firewall program it names,
+        // as busybox runs its applet.
+        "xtables-nft-multi" | "xtables-legacy-multi" | "xtables-multi" if posix => {
+            runs(args, Some(0))
+        }
         // fish chains commands with `; and cmd`, `; or cmd` and `not cmd`;
         // read with the POSIX grammar, the word is the program and the
         // command its arguments. A POSIX program with one of these names is

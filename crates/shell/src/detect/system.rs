@@ -211,7 +211,10 @@ impl Checker<'_> {
             "netsh" => {
                 let words = lower_words(args);
                 let firewall = words.iter().any(|word| word.contains("firewall"));
-                if firewall
+                // `advfirewall import` replaces the whole policy with a file's.
+                if firewall && words.iter().any(|word| word == "import") {
+                    self.add(Rule::SystemSettings, "replaces the firewall's rules", None);
+                } else if firewall
                     && words
                         .iter()
                         .any(|word| matches!(word.as_str(), "off" | "disable" | "reset" | "delete"))

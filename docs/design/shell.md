@@ -76,7 +76,10 @@ Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
 `Start-Process`, `start`. `sudo rm` is `rm`, run as root. So do the words that
 run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
-`noglob -- rm` runs a program named `--`), and `coproc`.
+`noglob -- rm` runs a program named `--`), and `coproc`. `busybox` and the
+multi-call firewall programs `xtables-nft-multi`, `xtables-legacy-multi` and
+`xtables-multi` run the program they name (`xtables-nft-multi iptables -F`
+is `iptables -F`).
 
 **Package runners** come off too, with each runner's own options skipped:
 `npx`, `npm exec`, `pnpm dlx` (also `pnpx` and `pnx`, its aliases), `pnpm exec`,
@@ -1153,8 +1156,10 @@ of their strictest, so each family below was added on that test.
   value only known when it runs is risky. `spctl --master-enable`, `csrutil
   status`, `setenforce 1`, `getenforce`, `nvram -p` and reading the files are
   safe.
-- **The firewall.** `iptables` and `ip6tables` (and their `-legacy` and
-  `-nft` builds) with `-F`/`--flush`, `-X`/`--delete-chain` or a default
+- **The firewall.** `iptables` and `ip6tables`, and `ebtables` and
+  `arptables`, which take the same commands (and their `-legacy` and
+  `-nft` builds), with `-F`/`--flush` (`ebtables --init-table` too),
+  `-X`/`--delete-chain` or a default
   policy of ACCEPT (`-P chain ACCEPT`, `--policy`) for `INPUT`, `FORWARD` or
   a chain only known when it runs; the chain may be attached (`-PINPUT`,
   `-nPINPUT`, `--policy=INPUT`), and then the policy is the next argument.
@@ -1176,11 +1181,64 @@ of their strictest, so each family below was added on that test.
   which may be abbreviated (`-F a`) and attached (`-Fa`, `-qFrules`), or
   with a modifier only known when it runs; `socketfilterfw --setglobalstate
   off`. Adding or deleting one rule, `-P chain DROP`, listing, `ufw allow`,
-  `ufw enable` and `firewall-cmd --panic-off` are safe. Loading a ruleset
-  from a file (`iptables-restore`, `nft -f`, `pfctl -f`) is not read: the
-  file's content is not in the line. Long options may be abbreviated as
-  `getopt_long` programs take them (`iptables --fl`), and `firewall-cmd`
-  takes any unique prefix too (`--set-default=trusted`).
+  `ufw enable` and `firewall-cmd --panic-off` are safe. Long options may be
+  abbreviated as `getopt_long` programs take them (`iptables --fl`), and
+  `firewall-cmd` takes any unique prefix too (`--set-default=trusted`).
+- **A ruleset loaded whole** replaces the firewall's rules (`replaces the
+  firewall's rules`): `nft -f FILE` and `nft -i`, `iptables-restore`,
+  `ip6tables-restore`, `ebtables-restore` and `arptables-restore` (and their
+  `-legacy` and `-nft` builds) given a file operand or reading their input,
+  `pfctl -f` and `netsh advfirewall import`. A file is not read, its content
+  is not in the line, so a load of one is risky. A load from the input is
+  read when the line shows all of it: a here-string or here-document of
+  plain text, or a stage before it whose programs are all `echo`, `printf`
+  or a `cat` that passes on plain text fed to it, read as the database
+  clients read theirs (`drop_data`). It stays safe only when the text adds
+  nothing: for `nft`, commands that all `list` (a `#` that starts a word
+  comments out the rest of a line that has no quote in it); for a restore,
+  blank and comment lines only, since a table named in it, even with no
+  rule, is flushed. A file redirected onto it (`iptables-restore <
+  rules.v4`), a text only known when it runs, any other program before it
+  (`cat rules.nft | nft -f -`, `curl … | iptables-restore`), and an input
+  the line does not show at all (`iptables-restore` alone, whose input
+  comes from outside the line) are risky. pf replaces its rules with
+  whatever it loads, an empty file included, so every `pfctl -f` is
+  risky. A load that only checks is safe: `pfctl -n`, `nft -c`/`--check`
+  and `iptables-restore -t`/`--test`. `iptables-restore-translate` and
+  `iptables-save` load nothing.
+- **A rule that lets everything in** opens the firewall as an ACCEPT
+  policy does (`lets everything through the firewall`). For `iptables` (and
+  `ebtables`, `arptables`): a rule added with `-A`, `-I` or `-R` to `INPUT`,
+  `FORWARD` or a chain only known when it runs, whose target (`-j`) is
+  `ACCEPT` (in any case) or only known when it runs, and that matches
+  everything: no match at all, or only a source or destination of anywhere
+  (`0.0.0.0/0`, `0/0`, `::/0`), a protocol that reaches every service
+  (`all`, `0`, `tcp`, `udp`) or `-m comment`. Any other match (`-i lo`,
+  `--dport 22`, `-m conntrack`, `-p icmp`, `!`) narrows the rule, and so
+  does an argument only known when it runs (`-s $ip`), as for the other
+  values of a rule; `-D`, `-C`, `-g` and `OUTPUT` are not read. For
+  `firewall-cmd`: a zone or policy whose target is set to `ACCEPT` or a
+  target only known when it runs (`--set-target`), and a source of anywhere
+  or one only known when it runs (`--add-source`) added to the `trusted`
+  zone or a zone only known when it runs; a source added to another zone,
+  or to the default zone (no `--zone`), only moves it between zones. For
+  `nft`: `policy accept` (or a policy only known when it runs) in a chain
+  whose hook, the last one named before it, is not `output` or
+  `postrouting`. For `ufw`: `allow` (also after `insert N`, `prepend` or
+  `route`) with `from` or `to` and nothing but `in`, a `from` and `to` of
+  anywhere (`any`, `0.0.0.0/0`, `::/0`) or only known when it runs, `proto`
+  of every service or only known when it runs, `log` and `comment`; a port,
+  an interface, an application or `out` narrows it (`ufw allow 22`, `ufw
+  allow from any to any port 22`). `iptables -A INPUT -j ACCEPT` was safe
+  before, read as a rule after others that may drop; with a policy of DROP
+  and no rule after it that drops, it opens the machine, so it is risky.
+- **firewalld's direct interface** hands iptables its arguments:
+  `firewall-cmd --direct --passthrough FAMILY ARGS` (and
+  `--add-passthrough`) is read as `iptables ARGS` whatever the family
+  (`ipv4`, `ipv6`, `eb`), and `--direct --add-rule FAMILY TABLE CHAIN
+  PRIORITY ARGS` as `iptables -t TABLE -I CHAIN ARGS`: `firewall-cmd
+  --direct --passthrough ipv4 -F` is risky, `--passthrough ipv4 -L` is
+  safe.
 - **Services the system runs.** `systemctl disable` and `mask`, unless
   `--user` is the last of `--user`, `--system` and `--global`; `launchctl bootout`,
   `unload`, `remove` and `disable`. The one thing read as the workspace's own

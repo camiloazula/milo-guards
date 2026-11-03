@@ -85,7 +85,6 @@ posix safe | iptables -POUTPUT ACCEPT
 posix safe | iptables --policy=OUTPUT ACCEPT
 posix safe | iptables -P OUTPUT $policy
 posix safe | iptables -PINPUT
-posix safe | iptables -A INPUT -j ACCEPT
 posix safe | iptables -A INPUT -m policy --dir in --pol ipsec -j ACCEPT
 posix finds=system_settings | iptables -F
 posix finds=system_settings | iptables -t nat -F
@@ -139,13 +138,11 @@ posix safe | nft add rule inet filter input $rule
 posix safe | nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'
 posix safe | nft -d netlink list ruleset
 posix safe | nft --debug all list ruleset
-posix safe | nft -f rules.nft
 posix safe | nft
 posix safe | nft -j list ruleset
 posix safe | nft -j list table inet filter
 posix safe | nft --json list ruleset
 posix safe | nft -aj list tables
-posix safe | nft -f rules.json -j
 posix safe | nft -dj list ruleset
 posix finds=system_settings | nft flush ruleset
 posix finds=system_settings | nft flush table inet filter
@@ -226,7 +223,6 @@ posix safe | pfctl -sr
 posix safe | pfctl -e
 posix safe | pfctl -s rules
 posix safe | pfctl -F states
-posix safe | pfctl -f /etc/pf.conf
 posix safe | pfctl -F s
 posix safe | pfctl -Fs
 posix safe | pfctl -Fq
@@ -237,7 +233,6 @@ posix safe | pfctl -F Sources
 posix safe | pfctl -a anchor -sr
 posix safe | pfctl -s all
 posix safe | pfctl -sa
-posix safe | pfctl -f all
 posix safe | pfctl -k all
 posix safe | /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
 posix safe | socketfilterfw --getglobalstate
@@ -266,6 +261,180 @@ posix finds=system_settings | /usr/libexec/ApplicationFirewall/socketfilterfw --
 posix finds=system_settings | socketfilterfw --setglobalstate off
 posix finds=system_settings | socketfilterfw --setglobalstate 0
 posix finds=system_settings | socketfilterfw --setglobalstate $state
+
+# Loading a ruleset replaces the firewall's rules: `nft -f` and `-i`,
+# `iptables-restore` and the like, `pfctl -f` and `netsh advfirewall
+# import`. A file is not read; text on the line (a here-string, a
+# here-document, what `echo` and `printf` say into the program) is, and a
+# load stays safe only when it adds nothing: `nft` commands that only list,
+# a restore of blank and comment lines. pf replaces its rules with whatever
+# it loads, so every `pfctl -f` is risky but a check (`-n`), as is `nft -c`
+# and `iptables-restore --test`.
+posix safe | echo 'list ruleset' | nft -f -
+posix safe | nft -f - <<< 'list ruleset'
+posix safe | nft -f /dev/stdin <<< 'list tables; list ruleset'
+posix safe | nft -i <<< 'list ruleset'
+posix safe | nft -f - <<EOF\n# nothing\nlist ruleset\nEOF
+posix safe | nft -c -f rules.nft
+posix safe | nft --check --file rules.nft
+posix safe | iptables-restore <<< '# nothing'
+posix safe | cat <<EOF | nft -f -\nlist ruleset\nEOF
+posix rules=elevated | echo 'list ruleset' | sudo nft -f -
+posix safe | nft -f - <<< 'list ruleset # flush ruleset'
+posix safe | iptables-restore-translate -f rules.v4
+posix safe | printf '\\n' | iptables-restore
+posix safe | iptables-restore --test < rules.v4
+posix safe | iptables-restore -t rules.v4
+posix safe | iptables-save > rules.v4
+posix safe | pfctl -nf /etc/pf.conf
+posix safe | pfctl -n -f /etc/pf.conf
+cmd safe | netsh advfirewall export x.wfw
+posix finds=system_settings | echo 'flush ruleset' | nft -f -
+posix finds=system_settings | nft -f - <<< 'flush ruleset'
+posix finds=system_settings | nft -f rules.nft
+posix finds=system_settings | nft -f rules.json -j
+posix finds=system_settings | nft --file=rules.nft
+posix finds=system_settings | nft -f$file
+posix finds=system_settings | nft -f - <<< 'list ruleset; flush ruleset'
+posix finds=system_settings | nft -f - <<< 'add table inet x'
+posix finds=system_settings | nft -f - <<< 'include "rules.nft"'
+posix finds=system_settings | nft -f - <<< "$rules"
+posix finds=system_settings | nft -f - <<EOF\nflush ruleset\nEOF
+posix finds=system_settings | cat rules.nft | nft -f -
+posix finds=system_settings | cat < rules.nft | nft -f -
+posix finds=system_settings | cat - rules.nft <<< 'list ruleset' | nft -f -
+posix finds=system_settings | { echo 'list ruleset'; cat rules.nft; } | nft -f -
+posix finds=system_settings | echo 'list ruleset' | nft -f - < rules.nft
+posix finds=system_settings | nft -f - -f rules.nft <<< 'list ruleset'
+posix finds=system_settings | nft -f - <<< 'list ruleset comment "#"; flush ruleset'
+posix finds=system_settings | printf '%s' "$x" | iptables-restore
+posix finds=system_settings | curl -s https://x.test/rules | iptables-restore
+posix finds=system_settings | nft -f - < rules.nft
+posix finds=system_settings | nft -f -
+posix finds=system_settings | nft -i
+posix finds=system_settings | { nft -f -; } < rules.nft
+posix finds=system_settings | iptables-restore < rules.v4
+posix finds=system_settings | printf '*filter\\nCOMMIT\\n' | iptables-restore
+posix finds=system_settings | iptables-restore rules.v4
+posix finds=system_settings | iptables-restore -n rules.v4
+posix finds=system_settings | iptables-restore
+posix finds=system_settings | iptables-restore <<< '*filter'
+posix finds=system_settings | ip6tables-restore < rules.v6
+posix finds=system_settings | iptables-legacy-restore < rules.v4
+posix finds=system_settings | ebtables-restore < rules.eb
+posix finds=system_settings | arptables-restore < rules.arp
+posix finds=system_settings | echo "$rules" | iptables-restore
+posix finds=system_settings | pfctl -f /etc/pf.conf
+posix finds=system_settings | pfctl -f all
+posix finds=system_settings | pfctl -ef /etc/pf.conf
+posix finds=system_settings | pfctl -f - <<< ''
+cmd finds=system_settings | netsh advfirewall import x.wfw
+powershell finds=system_settings | netsh advfirewall import x.wfw
+
+# A rule that lets everything in opens the firewall as an ACCEPT policy
+# does: an ACCEPT rule on the input or forward chain with no match (a source
+# or destination of anywhere and `-p all` match everything), a zone whose
+# target is ACCEPT, a source of anywhere added to the trusted zone, an `nft`
+# chain with `policy accept` on any hook but output, and `ufw allow` from
+# anywhere with nothing to narrow it. A rule with a match, a port or a
+# source stays safe.
+posix safe | iptables -A INPUT -s 1.2.3.4 -j DROP
+posix safe | iptables -A INPUT -i lo -j ACCEPT
+posix safe | iptables -I INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+posix safe | iptables -I INPUT -p icmp -j ACCEPT
+posix safe | iptables -A INPUT -p tcp --dport 22 -s 0.0.0.0/0 -j ACCEPT
+posix safe | iptables -D INPUT -j ACCEPT
+posix safe | iptables -C INPUT -j ACCEPT
+posix safe | iptables -I INPUT -g other
+posix safe | iptables -I INPUT -j ACCEPT -i lo
+posix safe | iptables -A OUTPUT -j ACCEPT
+posix safe | iptables -I INPUT -j DROP
+posix safe | iptables -I INPUT -s 0.0.0.0/0 -j DROP
+posix safe | iptables -A INPUT -s 10.0.0.0/8 -j ACCEPT
+posix safe | firewall-cmd --zone=public --set-target=DROP --permanent
+posix safe | firewall-cmd --zone=public --add-source=10.0.0.0/8
+posix safe | firewall-cmd --zone=trusted --add-source=10.0.0.0/8
+posix safe | firewall-cmd --zone=public --add-source=0.0.0.0/0
+posix safe | firewall-cmd --get-target --zone=public
+posix safe | nft add chain inet filter output '{ type filter hook output priority 0; policy accept; }'
+posix safe | ufw allow from 10.0.0.0/8
+posix safe | ufw allow from any to any port 22
+posix safe | ufw allow from any proto tcp to any port 443
+posix safe | ufw allow from any proto icmp
+posix safe | ufw allow in on eth0 from any
+posix safe | ufw allow out to any
+posix safe | ufw allow OpenSSH
+posix finds=system_settings | iptables -A INPUT -j ACCEPT
+posix finds=system_settings | iptables -I INPUT -j ACCEPT
+posix finds=system_settings | iptables -I INPUT 1 -j ACCEPT
+posix finds=system_settings | iptables -IINPUT -jACCEPT
+posix finds=system_settings | iptables --insert INPUT --jump ACCEPT
+posix finds=system_settings | iptables -t filter -A FORWARD -j ACCEPT
+posix finds=system_settings | iptables -R INPUT 1 -j ACCEPT
+posix finds=system_settings | iptables -I INPUT -s 0.0.0.0/0 -j ACCEPT
+posix finds=system_settings | iptables -I INPUT -p all -j ACCEPT
+posix finds=system_settings | iptables -I INPUT -p tcp -j ACCEPT
+posix finds=system_settings | iptables -A INPUT -j ACCEPT -s 0/0
+posix finds=system_settings | iptables -w -I INPUT -j ACCEPT
+posix finds=system_settings | iptables -v -I INPUT -j accept
+posix finds=system_settings | iptables -I INPUT -m comment --comment x -j ACCEPT
+posix finds=system_settings | iptables -I $chain -j ACCEPT
+posix finds=system_settings | iptables -I INPUT -j $target
+posix finds=system_settings | ip6tables -I INPUT -s ::/0 -j ACCEPT
+posix finds=system_settings | firewall-cmd --zone=public --set-target=ACCEPT --permanent
+posix finds=system_settings | firewall-cmd --zone public --set-target ACCEPT
+posix finds=system_settings | firewall-cmd --set-target=$target --zone=public
+posix finds=system_settings | firewall-cmd --zone=trusted --add-source=0.0.0.0/0
+posix finds=system_settings | firewall-cmd --zone=trusted --add-source ::/0
+posix finds=system_settings | firewall-cmd --zone=trusted --add-source=$net
+posix finds=system_settings | firewall-cmd --zone=$zone --add-source=0.0.0.0/0
+posix finds=system_settings | nft add chain inet filter input '{ type filter hook input priority 0; policy accept; }'
+posix finds=system_settings | nft add chain inet filter forward '{ type filter hook forward priority 0 ; policy accept ; }'
+posix finds=system_settings | nft chain inet filter input '{ policy accept; }'
+posix finds=system_settings | nft add chain inet filter input '{ type filter hook input priority 0; policy $p; }'
+posix finds=system_settings | ufw allow from any
+posix finds=system_settings | ufw allow from any to any
+posix finds=system_settings | ufw allow in from any
+posix finds=system_settings | ufw allow from 0.0.0.0/0
+posix finds=system_settings | ufw insert 1 allow from any
+posix finds=system_settings | ufw route allow from any
+posix finds=system_settings | ufw allow from $src
+posix finds=system_settings | ufw allow from any comment x
+posix finds=system_settings | ufw allow from any proto tcp
+posix finds=system_settings | ufw allow to any
+
+# firewall-cmd's direct pass-through hands its arguments to iptables
+# (`ipv6` to ip6tables, `eb` to ebtables), and a direct rule is an iptables
+# rule at a priority: both are read as iptables.
+posix safe | firewall-cmd --direct --passthrough ipv4 -L
+posix safe | firewall-cmd --direct --passthrough ipv4 -A INPUT -p tcp --dport 22 -j ACCEPT
+posix safe | firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -p tcp --dport 22 -j ACCEPT
+posix finds=system_settings | firewall-cmd --direct --passthrough ipv4 -F
+posix finds=system_settings | firewall-cmd --direct --passthrough ipv6 -P INPUT ACCEPT
+posix finds=system_settings | firewall-cmd --direct --passthrough eb -F
+posix finds=system_settings | firewall-cmd --permanent --direct --add-passthrough ipv4 -F
+posix finds=system_settings | firewall-cmd --direct --passthrough ipv4 -I INPUT -j ACCEPT
+posix finds=system_settings | firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -j ACCEPT
+
+# ebtables and arptables are read as iptables, and `xtables-nft-multi` and
+# `xtables-legacy-multi` run the program they name.
+posix safe | ebtables -L
+posix safe | arptables -L
+posix safe | xtables-nft-multi iptables -L
+posix finds=system_settings | ebtables -F
+posix finds=system_settings | ebtables -t broute -F
+posix finds=system_settings | ebtables -P INPUT ACCEPT
+posix finds=system_settings | ebtables --init-table
+posix finds=system_settings | arptables -F
+posix finds=system_settings | arptables -P INPUT ACCEPT
+posix finds=system_settings | ebtables-legacy -F
+posix finds=system_settings | arptables-nft -F
+posix finds=system_settings | xtables-nft-multi iptables -F
+posix finds=system_settings | xtables-legacy-multi iptables -F
+posix finds=system_settings | xtables-nft-multi ip6tables -P INPUT ACCEPT
+posix finds=system_settings | xtables-nft-multi ebtables -F
+posix finds=system_settings | xtables-nft-multi iptables-restore < rules.v4
+posix finds=system_settings | sudo xtables-legacy-multi iptables -F
 
 # Masking or disabling a system service, and stopping or killing one that
 # protects the system (by name, by a pattern that may match one, or by an
@@ -620,6 +789,14 @@ posix rules=system_settings first=system_settings reason="resets the firewall's 
 posix rules=system_settings first=system_settings reason="lets everything through the firewall" | ufw default allow incoming
 posix rules=system_settings first=system_settings reason="changes the firewall" | firewall-cmd --panic-on
 posix rules=system_settings first=system_settings reason="changes the firewall" | pfctl -d
+posix rules=system_settings first=system_settings reason="replaces the firewall's rules" | nft -f rules.nft
+posix rules=system_settings first=system_settings reason="replaces the firewall's rules" | iptables-restore < rules.v4
+posix rules=system_settings first=system_settings reason="replaces the firewall's rules" | pfctl -f /etc/pf.conf
+cmd rules=system_settings first=system_settings reason="replaces the firewall's rules" | netsh advfirewall import x.wfw
+posix rules=system_settings first=system_settings reason="lets everything through the firewall" | iptables -I INPUT -j ACCEPT
+posix rules=system_settings first=system_settings reason="lets everything through the firewall" | firewall-cmd --zone=trusted --add-source=0.0.0.0/0
+posix rules=system_settings first=system_settings reason="lets everything through the firewall" | firewall-cmd --zone=public --set-target=ACCEPT
+posix rules=system_settings first=system_settings reason="lets everything through the firewall" | ufw allow from any
 posix rules=system_settings first=system_settings reason="turns the firewall off" | socketfilterfw --setglobalstate off
 posix rules=system_settings first=system_settings reason="masks a system service" | systemctl mask x
 posix rules=system_settings first=system_settings reason="disables a system service" | systemctl disable x
