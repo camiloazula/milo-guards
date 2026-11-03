@@ -1646,7 +1646,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk; `dd` writes to a file only known when it runs ([below](#values-only-known-when-they-run)). |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder, or to the absolute paths stored in it (`tar -xP`). |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder, or to the absolute paths stored in it (`tar -xP`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -4308,14 +4308,13 @@ when it runs, never left out.
   command (`.sh`, `.sy` and `.syst` are `.shell` and `.system`, `.op` is
   `.open`, `.rea` is `.read`, `.res` is `.restore`), so a name counts as every
   command it starts: `.shell`, `.system`, `.open`, `.attach`, `.read`,
-  `.output`, `.once`, `.import`, `.restore`, `.backup` and `.save`.
-  `.backup ?DB? FILE` and `.save ?OPTIONS? FILE` replace the file they are
-  given, whatever database they copy from and `-readonly` or not, so the last
-  word is judged like any file: in the workspace, a temporary directory or
-  memory it is safe, anywhere else it is `drop_data`. The names are the
-  shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
-  not them, and `.bail` is another command). `VACUUM INTO` and `.clone`
-  refuse a file that exists and are safe.
+  `.output`, `.once`, `.import`, `.restore`, `.backup`, `.save`, `.clone`,
+  `.cd`, `.load`, `.excel`, `.log`, `.trace` and `.archive`. `.backup ?DB?
+  FILE` and `.save ?OPTIONS? FILE` replace the file they are given, whatever
+  database they copy from and `-readonly` or not: a write of the last word
+  (see "Files a client writes and programs it runs" below). The names are
+  the shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
+  not them, and `.bail` is another command).
 - **Replacing a table.** `CREATE OR REPLACE TABLE` (with `TEMPORARY` or the
   like between) and ClickHouse's `REPLACE TABLE` drop the table's rows;
   `REPLACE INTO` adds rows, `CREATE OR REPLACE VIEW` and `FUNCTION` hold no
@@ -4415,10 +4414,12 @@ command that ends at the end of its line or at the next backslash outside a
 quote, which starts the next command (or is `\\`, and the SQL goes on after
 it): `SELECT 1 \g out.txt \\ DROP TABLE t` drops the table, and `\set x 1 \!
 touch f` runs `touch`. A here-document whose first line starts with a
-backslash is read from that line. `\gexec` and
+backslash is read from that line. `\!` is the one command that does not end
+at a backslash: it hands the whole rest of its line to the shell. `\gexec` and
 `\gset` run or keep text the line does not show, so they are `unknown`; `\!`,
 a backtick in an argument, `\copy … program`, and `\o`, `\g`, `\gx` or `\w`
-followed by `|` run a program. A statement the reader has to guess at is
+followed by `|` run a program (see "Files a client
+writes and programs it runs" below). A statement the reader has to guess at is
 `unknown`, never safe: a string, a comment or a `$$` string that is never
 closed.
 
@@ -4463,12 +4464,113 @@ the reader would take it for an expansion that hides what follows. On cmd an
 expansion in a double-quoted word (`%id%`) is not read as a word, so any
 statement with one is `unknown` (`psql -c "DROP TABLE t; %x%"` is `unknown`,
 not `drop_data`); a single-quoted PowerShell word has none. A client command that runs a
-program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
-`.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`,
-and `system` in `mysql` (it is no command of another client: ClickHouse's
-`SYSTEM FLUSH LOGS` is a statement).
+program the text does not show is `unknown` too (see "Files a client writes
+and programs it runs" below).
 A script a Redis client runs (`EVAL`, `EVALSHA`, `FCALL`) that is only known
 when it runs is `unknown` too.
+
+**Files a client writes and programs it runs.** A client does more than
+change the database: its commands and some statements write a file the
+text names, or run a program. Each is read from the text as the client reads
+it, and judged by the rule that judges the same act on the line itself, never
+by matching the text:
+
+- **A file it writes** is a write, judged as a redirect's is, from the folder
+  the client runs in: a startup file, a protected path or a place beyond the
+  workspace is `overwrite`, a file in the workspace or a temporary folder is
+  the agent's own. That is `psql`'s `\o` (`\out`), `\g` and `\gx` (after their
+  `(…)` options), `\w` (`\write`), `\s`, `\lo_export OID FILE` and `\copy … to
+  FILE` (the first `to` outside parentheses; `stdout`, `pstdout` and `program`
+  are no file, and `\copy … from` reads); `.output` and `.once` (the last word
+  that is no option), `.log` and `.trace` (not `stdout`, `stderr`, `on` or
+  `off`), `.backup`, `.save` and `.clone` in `sqlite3` and `duckdb`; `mysql`'s
+  `tee` and `\T`; `sqlcmd`'s `:out`, `:error` and `:perftrace` (not `stdout`
+  or `stderr`); `cqlsh`'s `CAPTURE 'FILE'`; the statements `COPY … TO 'FILE'`
+  (not `TO STDOUT`, nor `DuckDB`'s `COPY FROM DATABASE a TO b`), `SELECT …
+  INTO OUTFILE` and `INTO DUMPFILE`, `VACUUM INTO`, `DuckDB`'s `EXPORT
+  DATABASE ['db' TO] 'DIR'` (a folder written into), `PostgreSQL`'s
+  `lo_export(OID, 'FILE')` and `sqlite3`'s `writefile('FILE', …)`, its name a
+  quoted identifier too (`"writefile"`, `` `writefile` ``, `[writefile]`, in
+  any case, as `sqlite3` takes it); and the options that send the output to a
+  file, `psql -o` (`--output`) and `-L` (`--log-file`), `mysql --tee` and
+  `sqlcmd -o`. A server writes `COPY … TO`, `lo_export` and `INTO OUTFILE`
+  where it runs, which may be this machine, so they are read as writes here
+  too. `.archive` writes the files an archive holds by the names in it, or an
+  archive of them, so it is `unknown`. After a `\cd` or a `.cd` the client is
+  in a folder the line does not say, and a relative file is placed from there,
+  as after a `cd` to a folder only known when it runs. A name with a shell
+  expansion in it, or a statement's file that is not a plain string (`VACUUM
+  INTO printf(…)`, `COPY t TO E'…'` or `U&'…'`, whose escapes the server
+  decodes, `lo_export(1, '/a' || 'b')`), is only known when it runs:
+  `unknown`. So is a word the client changes before it opens the file (see
+  "Each client's words" below). A file written by a client in a container or
+  on another machine is not on this machine and is not judged, but a database
+  `.backup` or `.save` replaces there is not the agent's own: `drop_data`.
+- **A program it runs with a command line the text shows** is that line, split
+  by the POSIX grammar and judged by every rule as a line of its own, as `sh
+  -c` is: `psql`'s and `mysql`'s `\!`, `mysql`'s `system` and `pager` (`\P`),
+  `sqlcmd`'s `!!` and `:!!` at the start of a line, `.shell` and `.system`
+  (the words joined with spaces, a word with a space in quotes, as `sqlite3`
+  makes the line), `sqlite3`'s `edit(TEXT, 'EDITOR')`, the value `\setenv`
+  gives `EDITOR`, `PSQL_EDITOR`, `VISUAL`, `PAGER`, `PSQL_PAGER`,
+  `PSQL_WATCH_PAGER` or `SHELL`, the same variables given to `psql` by the
+  line (`PAGER=CMD psql`, `env PAGER=CMD psql`, `export PAGER=CMD`), and
+  `mysql --pager=CMD`. An empty value turns the pager or editor off and runs
+  nothing. Such a value is judged as the program it names, whether or not a
+  command that runs it follows: `\setenv SHELL /bin/sh` is read as the shell a
+  bare `\!` would start, which reads its input (`run_input`). The legacy
+  `mongo` shell's `runProgram`, `run`, `runMongoProgram`,
+  `runNonMongoProgram`, `startMongoProgram` and their kin run a program with
+  the words they are given, with no shell: given only strings, they are that
+  program and its words. So `psql -c '\! rm -rf ~'` deletes the home
+  directory, and `psql -c '\! ls'` is as safe as `ls`. The programs run where
+  the client runs, so a program is read only for a client on this machine, in
+  a POSIX shell, that runs where the line started and has not moved (`\cd`,
+  `.cd`) or set the environment of what it runs (`\setenv` of any other
+  variable); any other is `unknown`. A line is read for at most 16 such
+  programs and 64 KB of their text, at most four programs deep (a program that
+  starts a client that runs a program), and a read keeps at most 32 files and
+  32 programs: past any of them the program is `unknown`.
+- **A program the text does not show** is `unknown`, with the reason `runs a
+  program from a database client`: a `\!`, `system` or `pager` with no command
+  line (a shell, or the pager the environment names), one with a shell
+  expansion in it, a backtick in another `psql` command, `COPY … PROGRAM`,
+  `\copy … program`, `xp_cmdshell`, a command that writes to or reads from a
+  pipe (`\o |cmd`, `\g |cmd`, `.output |cmd`, `.read |cmd`, `.import |cmd`),
+  which hands the program text the guard does not read, a library loaded into
+  the client (`.load`, `load_extension(…)`), the editor or spreadsheet `.once
+  -e`, `.once -x` and `.excel` open, `edit(…)` with no editor or one not
+  written out, `mysql --pager` with no value (the pager the environment
+  names), a `DuckDB` extension installed or loaded (`INSTALL x`, `FORCE
+  INSTALL x`, `LOAD x`, `LOAD 'FILE'`), and in `mongosh` and `mongo`: a
+  `require(…)` or `import(…)` of any module but the few that cannot write a
+  file or run a program (`assert`, `buffer`, `crypto`, `events`, `path`,
+  `punycode`, `querystring`, `string_decoder`, `url` and `util`, `node:`
+  before them or not), or of one only known when it runs; `require`, `import`,
+  `load`, `runProgram` and its kin named as a value but not called (`const r =
+  require`); `runProgram(…)` given anything but strings; and, however they are
+  used, `process`, `eval`, `Function`, `constructor`, `globalThis`, `global`
+  and the legacy shell's file functions (`removeFile`, `copyFile`,
+  `writeFile`, `appendFile`, `mkdir`, `cd`, `resetDbpath`, `copyDbpath`). A
+  name that is a key of an object (`{process: 1}`) is none of them. `system`
+  is no command of another client: ClickHouse's `SYSTEM FLUSH LOGS` is a
+  statement. `mysql` reads `system`, `pager` and `tee` where a statement
+  starts, to the end of the line, and what follows a `;` on it is read as SQL
+  too, so that neither reading hides the other.
+- **Each client's words.** A command's words are split as its client splits
+  them, and a word the client changes before it uses it is not what the line
+  says, so a file or a program in it is `unknown`. `sqlite3` and `duckdb`
+  start a quoted word only at a `'` or `"` that starts it, double nothing, and
+  decode escapes inside `"…"` (`"\176"` is `~`) but not inside `'…'`, where a
+  backslash is itself: `.shell 'echo\' ; rm -rf ~` runs `rm`, and a word with
+  a backslash inside `"…"` is `unknown`. They read only so many words of a
+  command and drop the rest, so a command of 50 words or more is `unknown`
+  too. `psql` fills in its variables outside quotes (`:f`, `:'f'`, `:"f"`,
+  `:{?f}`, set by `-v` or `\set`) and decodes escapes inside `'…'` (`'\176'`,
+  `'\x7e'`); `\!` takes its line as it is, and `\copy`'s words, which `psql`
+  does not fill in, are read with the same caution. `sqlcmd` fills in
+  `$(NAME)` (from `-v`, `:setvar` or the environment) anywhere in a command, a
+  `!!` line too.
 
 **A file in the workspace is the agent's own.** `sqlite3` and `duckdb` on a
 database file are judged like any file: inside the workspace or a temporary
