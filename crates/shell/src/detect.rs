@@ -109,7 +109,11 @@ fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
     checker.found.clone_from(&split.findings);
     for unit in &split.units {
         let by_cmdlet = writes_by_cmdlet(unit);
-        for target in written_by(unit) {
+        let handed = || checker.handed_files(unit);
+        let (targets, unnamed) = written_with(unit, Some(&handed));
+        // A copy of items the guard cannot name may be any file.
+        checker.anywhere |= unnamed;
+        for target in targets {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
             // Written where a `cd` that may not have run may have left the
             // line, as for a redirect (see [`Split::unsure_writes`]).
@@ -802,12 +806,7 @@ impl Checker<'_> {
             hidden: unit.hidden || hidden,
             ..unit.scope()
         };
-        let item = self
-            .source_stage(unit)
-            .and_then(|stage| self.producers.get(&stage))
-            .and_then(|&at| self.split.units.get(at))
-            .and_then(Unit::key)
-            .is_some_and(|key| key.as_str() == "get-item");
+        let item = self.handed_by_get_item(unit);
         found
             .into_iter()
             .filter_map(|arg| {
@@ -824,6 +823,40 @@ impl Checker<'_> {
                 } else {
                     None
                 }
+            })
+            .collect()
+    }
+
+    /// Whether the stage `unit` is handed the output of is `Get-Item`,
+    /// which hands on the items it names, not what is in them.
+    fn handed_by_get_item(&self, unit: &Unit) -> bool {
+        self.source_stage(unit)
+            .and_then(|stage| self.producers.get(&stage))
+            .and_then(|&at| self.split.units.get(at))
+            .and_then(Unit::key)
+            .is_some_and(|key| key.as_str() == "get-item")
+    }
+
+    /// What the stage before hands `unit` on, as files a copy of them
+    /// names: each item `Get-Item` names, and a pattern a listing matches
+    /// by (`Get-ChildItem C:\x\*.ps1`). What else a listing finds is in
+    /// a folder it names, by names only known when it runs.
+    fn handed_files(&self, unit: &Unit) -> Vec<Arg> {
+        let item = self.handed_by_get_item(unit);
+        self.expand(unit, &Arg::Input)
+            .0
+            .into_iter()
+            .map(|arg| match arg {
+                Arg::Known(text)
+                    if !item
+                        && !text
+                            .rsplit(['/', '\\'])
+                            .next()
+                            .is_some_and(glob::has_wildcard) =>
+                {
+                    Arg::Unknown(text)
+                }
+                other => other,
             })
             .collect()
     }
@@ -1732,11 +1765,22 @@ fn unread_target(arg: &Arg, shell: Shell) -> Option<Arg> {
 
 /// The files a unit writes, for matching a script the line then runs.
 pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
+    written_with(unit, None).0
+}
+
+/// [`written_by`], with `handed`, which gives what the stage before hands
+/// `unit` on: a `Copy-Item` or `Move-Item` given no path copies those items
+/// (without it, items only known when it runs). Also whether it writes a
+/// file it does not name: an item handed on that the guard cannot name.
+fn written_with(unit: &Unit, handed: Option<&dyn Fn() -> Vec<Arg>>) -> (Vec<Arg>, bool) {
     let Some(key) = unit.key() else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
+    if matches!(key.as_str(), "copy-item" | "move-item") {
+        return copy_written(unit, handed);
+    }
     let args = unit.args.as_slice();
-    match key.as_str() {
+    let written = match key.as_str() {
         "curl" | "wget" if unit.shell != Shell::PowerShell => downloads_to(&key, args),
         "invoke-webrequest" | "invoke-restmethod" => Params::read(args)
             .values(&["outfile"])
@@ -1747,28 +1791,6 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
             let (sources, destination) = sources_and_destination(args, &COPY_VALUED, unit.shell);
             destination.map_or_else(Vec::new, |destination| into_folder(&destination, &sources))
         }
-        "copy-item" | "move-item" => {
-            let params = Params::read(args);
-            let mut sources = params.values(&["path", "literalpath"]);
-            let mut positional = params.positional.iter().copied();
-            // `Copy-Item a b` is `-Path a -Destination b`: a positional
-            // is the source first, then the destination, each only where
-            // no parameter names it.
-            if sources.is_empty() {
-                sources.extend(positional.next());
-            }
-            // With no destination the item goes to the folder the line is in.
-            let here = Arg::Known(".".to_string());
-            let destination = params
-                .values(&["destination"])
-                .first()
-                .copied()
-                .or_else(|| positional.next())
-                .or_else(|| (!sources.is_empty()).then_some(&here));
-            destination.map_or_else(Vec::new, |destination| {
-                into_folder(&or_here(destination), &sources)
-            })
-        }
         "tee" if unit.shell != Shell::PowerShell => {
             operands(args, &[]).into_iter().cloned().collect()
         }
@@ -1776,7 +1798,46 @@ pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
         "new-item" => new_item_files(args),
         "dd" => dd_outputs(args, unit.shell),
         _ => Vec::new(),
+    };
+    (written, false)
+}
+
+/// The files a `Copy-Item` or `Move-Item` writes, as [`written_with`] reads
+/// them.
+fn copy_written(unit: &Unit, handed: Option<&dyn Fn() -> Vec<Arg>>) -> (Vec<Arg>, bool) {
+    let params = Params::read(&unit.args);
+    let mut sources = files::named_lists(unit, &params, &["path", "literalpath"]);
+    // A list is one position (`Copy-Item a.ps1,b.ps1`).
+    let mut positional = files::positionals(unit, &params).into_iter();
+    // `Copy-Item a b` is `-Path a -Destination b`: a positional is the
+    // source first, then the destination, each only where no parameter
+    // names it.
+    if sources.is_empty() {
+        sources.extend(positional.next().unwrap_or_default());
     }
+    // With no path, the items the stage before hands on.
+    let piped: Vec<Arg> = if sources.is_empty() && unit.stage.is_some_and(|stage| stage.index > 0) {
+        handed.map_or_else(
+            || vec![Arg::Unknown("<input>".to_string())],
+            |handed| handed(),
+        )
+    } else {
+        Vec::new()
+    };
+    sources.extend(piped.iter());
+    // With no destination the item goes to the folder the line is in.
+    let here = Arg::Known(".".to_string());
+    let destination = params
+        .values(&["destination"])
+        .first()
+        .copied()
+        .or_else(|| positional.next().and_then(|list| list.first().copied()))
+        .or_else(|| (!sources.is_empty()).then_some(&here));
+    let unnamed = piped.iter().any(|item| item.known().is_none());
+    let written = destination.map_or_else(Vec::new, |destination| {
+        into_folder(&or_here(destination), &sources)
+    });
+    (written, unnamed)
 }
 
 /// The files `dd` writes: the value of each `of=` operand, and a file only

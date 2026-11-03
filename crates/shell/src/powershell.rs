@@ -1338,6 +1338,9 @@ impl Walker<'_> {
         let mut dangling: Option<(usize, usize, usize)> = None;
         // Where the element before ends, when no separator follows it.
         let mut last_end: Option<usize> = None;
+        // Whether the element before is an argument, not a parameter: a word
+        // that starts with a comma goes on its list.
+        let mut after_argument = false;
         let native = !program_key.as_deref().is_some_and(is_cmdlet);
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
@@ -1448,14 +1451,27 @@ impl Walker<'_> {
                         let joined = last_end
                             .and_then(|end| self.source.get(end..element.start_byte()))
                             .is_some_and(|between| between.trim() == ",");
-                        self.push_element(
-                            &mut args,
-                            &mut shapes,
-                            element,
-                            program_key.as_deref(),
-                            joined,
-                        );
+                        // `x ,~` and `,~`: a comma after a space is the
+                        // start of the grammar's next word, but it puts the
+                        // word on the list of the argument before, or starts
+                        // a list of one, and is not part of it.
+                        let item = source.trim_start_matches(',');
+                        if element.kind() == "generic_token" && item.len() < source.len() {
+                            args.push(comma_item(item, source));
+                            shapes.push(self.shape(element, after_argument));
+                        } else {
+                            self.push_element(
+                                &mut args,
+                                &mut shapes,
+                                element,
+                                program_key.as_deref(),
+                                joined,
+                            );
+                        }
                     }
+                }
+                if !matches!(element.kind(), "command_argument_sep" | "comment") {
+                    after_argument = !matches!(element.kind(), "command_parameter" | "redirection");
                 }
                 last_end = (element.kind() != "command_argument_sep").then(|| element.end_byte());
             }
@@ -3684,6 +3700,17 @@ fn bare_expansion(source: &str) -> Option<bool> {
     found
 }
 
+/// The item of a word the grammar reads with the comma before it (`,~`):
+/// the rest of the word, read as a bare word is, and only known when it
+/// runs when it is anything but plain text (`,'~'`, `,$h`), or nothing.
+fn comma_item(item: &str, source: &str) -> Arg {
+    if item.is_empty() || item.contains(['\'', '"', '$', '(', ')', '{', '}', '@']) {
+        Arg::Unknown(source.to_string())
+    } else {
+        Arg::Known(unescape(item))
+    }
+}
+
 fn unescape(text: &str) -> String {
     let mut value = String::with_capacity(text.len());
     let mut chars = text.chars();
@@ -4046,7 +4073,7 @@ const VALUES: [&str; 46] = [
 const LISTING_VALUES: [&str; 2] = ["attributes", "depth"];
 
 /// The value parameters of the `-ItemProperty` cmdlets alone.
-const PROPERTY_VALUES: [&str; 2] = ["type", "propertytype"];
+const PROPERTY_VALUES: [&str; 3] = ["type", "propertytype", "newname"];
 
 /// A cmdlet's arguments read as PowerShell reads them.
 #[derive(Debug, Default)]
@@ -4093,7 +4120,8 @@ impl<'a> Params<'a> {
     }
 
     /// The arguments of an `-ItemProperty` cmdlet, whose `-Type` (an alias of
-    /// `-PropertyType`) and `-PropertyType` take a value.
+    /// `-PropertyType`), `-PropertyType` and `-NewName` (`Rename-ItemProperty`'s)
+    /// take a value.
     pub(crate) fn read_property(args: &'a [Arg]) -> Self {
         Self::read_with(args, &[], &PROPERTY_VALUES)
     }
@@ -4394,6 +4422,26 @@ pub(crate) const NEW_ITEM: [Param; 8] = [
     Param::value("value", &["target"]),
     Param::value("credential", &[]),
     Param::switch("force", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `ForEach-Object`, whose process blocks, or member
+/// name and its arguments, are also taken by position. `-Args` is
+/// `-ArgumentList`.
+pub(crate) const FOREACH_OBJECT: [Param; 14] = [
+    Param::value("membername", &[]),
+    Param::value("argumentlist", &["args"]),
+    Param::value("process", &[]),
+    Param::value("begin", &[]),
+    Param::value("end", &[]),
+    Param::value("remainingscripts", &[]),
+    Param::value("inputobject", &[]),
+    Param::value("parallel", &[]),
+    Param::value("throttlelimit", &[]),
+    Param::value("timeoutseconds", &[]),
+    Param::switch("asjob", &[]),
+    Param::switch("usenewrunspace", &[]),
     Param::switch("whatif", &["wi"]),
     Param::switch("confirm", &["cf"]),
 ];

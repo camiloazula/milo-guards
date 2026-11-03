@@ -61,8 +61,10 @@ impl Checker<'_> {
                 }
             }
             "set-acl" => {
+                // `-InputObject` is the item itself, given as an object:
+                // its permissions change as a path's do.
                 let params = Params::cmdlet(args, &SET_ACL);
-                let targets = item_paths(unit, &params, &["path", "literalpath"]);
+                let targets = item_paths(unit, &params, &["path", "literalpath", "inputobject"]);
                 let targets = self.listed_paths(unit, targets);
                 self.permissions(
                     unit,

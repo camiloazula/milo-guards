@@ -7,7 +7,7 @@ use super::{
 use crate::launch::{find_targets, find_unread_primary, perl_edits};
 use crate::path::{Access, Place};
 use crate::powershell::{
-    Param, Params, CLEAR_CONTENT, NEW_ITEM, OUT_FILE, SET_CONTENT, TEE_OBJECT,
+    Param, Params, CLEAR_CONTENT, FOREACH_OBJECT, NEW_ITEM, OUT_FILE, SET_CONTENT, TEE_OBJECT,
 };
 use crate::unit::{
     could_be, flagged, has_flag, has_switch, may_be_option, operands, operands_split, plain,
@@ -140,9 +140,15 @@ impl Checker<'_> {
                     .cloned()
                     .collect();
                 let operands = builtin(key, &kept);
-                let operands: Vec<&Arg> = operands.iter().collect();
+                let mut operands: Vec<&Arg> = operands.iter().collect();
                 if key == "move" && operands.len() >= 2 {
                     self.move_away(unit, &operands[..operands.len() - 1], "moves");
+                }
+                // `copy` and `xcopy` given only a source copy it into the
+                // folder the line is in.
+                let here = Arg::Known(".".to_string());
+                if key != "move" && operands.len() == 1 {
+                    operands.push(&here);
                 }
                 if operands.len() >= 2 {
                     if let Some(destination) = operands.last() {
@@ -480,12 +486,19 @@ impl Checker<'_> {
                     }
                     // The item is `Path\Name`, with any `..` in the name
                     // applied, so a device path is never the item itself.
-                    let names = named_lists(unit, &params, &["name"]);
-                    if !names.is_empty() {
-                        targets = targets
-                            .iter()
-                            .flat_map(|path| names.iter().map(|name| item_path(path, name)))
-                            .collect();
+                    // `-Name` is one name: a list given to it is joined
+                    // into one, with a space between the items.
+                    // Every path with a long name is more text than the line
+                    // holds: past that, the item is a path only known when
+                    // it runs.
+                    if let Some(name) = params.values(&["name"]).first() {
+                        let name = one_name(unit, name);
+                        targets = if targets.len().saturating_mul(name.text().len()) > MAX_ITEM_TEXT
+                        {
+                            vec![Arg::Unknown(name.text().to_string())]
+                        } else {
+                            targets.iter().map(|path| item_path(path, &name)).collect()
+                        };
                     }
                 }
                 let kind = params.values(&["itemtype"]);
@@ -500,13 +513,23 @@ impl Checker<'_> {
                         self.write_as(shell, unit.scope(), target, verb, access);
                     }
                 }
-                // A link reaches what it names, as `ln` does.
-                let link = kind.is_some_and(|kind| {
-                    let kind = kind.to_ascii_lowercase();
-                    ["s", "h", "j"].iter().any(|first| kind.starts_with(first))
+                // A link reaches what it names, as `ln` does. A type only
+                // known when it runs may be a link's. With no `-Value`, the
+                // target is what the stage before hands on.
+                let link = params.values(&["itemtype"]).first().is_some_and(|kind| {
+                    kind.known().is_none_or(|kind| {
+                        let kind = kind.to_ascii_lowercase();
+                        ["s", "h", "j"].iter().any(|first| kind.starts_with(first))
+                    })
                 });
                 if key == "new-item" && link {
-                    for value in params.values(&["value"]) {
+                    let values = params.values(&["value"]);
+                    let handed = if values.is_empty() && from_pipe(unit) {
+                        self.listed_paths(unit, Vec::new())
+                    } else {
+                        values.into_iter().cloned().collect()
+                    };
+                    for value in &handed {
                         self.links_to(shell, unit.scope(), value);
                     }
                 }
@@ -645,14 +668,12 @@ fn content_params(key: &str) -> &'static [Param] {
     }
 }
 
-/// Each value of the parameters `names` (as [`Params::cmdlet`] resolved
-/// them), with the rest of the comma list it starts (`-Path a,b`).
+/// Each value of the parameters `names` (see [`Params::values`]), with the
+/// rest of the comma list it starts (`-Path a,b`).
 pub(super) fn named_lists<'a>(unit: &'a Unit, params: &Params<'a>, names: &[&str]) -> Vec<&'a Arg> {
     params
-        .named
-        .iter()
-        .filter(|(name, _)| names.contains(&name.as_str()))
-        .filter_map(|(_, value)| *value)
+        .values(names)
+        .into_iter()
         .flat_map(|value| unit.list(value).unwrap_or_else(|| vec![value]))
         .collect()
 }
@@ -667,7 +688,7 @@ pub(super) fn free<'a>(unit: &'a Unit, params: &Params<'a>) -> Vec<&'a Arg> {
 /// The arguments no parameter takes, by position: each a list, with the rest
 /// of it (see [`free`]), or each alone when the unit does not know its
 /// lists.
-fn positionals<'a>(unit: &'a Unit, params: &Params<'a>) -> Vec<Vec<&'a Arg>> {
+pub(super) fn positionals<'a>(unit: &'a Unit, params: &Params<'a>) -> Vec<Vec<&'a Arg>> {
     params
         .positional
         .iter()
@@ -770,6 +791,33 @@ fn dedup(items: Vec<&Arg>) -> Vec<&Arg> {
 
 /// The path of the item `New-Item -Path PATH -Name NAME` makes: `PATH\NAME`,
 /// only known when either is.
+/// The most text the items `New-Item` makes, each path with its name, are
+/// read for: the length of a line.
+const MAX_ITEM_TEXT: usize = 64 * 1024;
+
+/// The one name a `[string]` parameter is given by `value`: the value, or
+/// the items of the list it starts joined by a space, as PowerShell makes a
+/// list into text (`-Name a,b` is `a b`); only known when it runs when an
+/// item is.
+fn one_name(unit: &Unit, value: &Arg) -> Arg {
+    match unit.list(value) {
+        Some(items) if items.len() > 1 => {
+            let known: Option<Vec<&str>> = items.iter().map(|item| item.known()).collect();
+            let text = items
+                .iter()
+                .map(|item| item.text())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if known.is_some() {
+                Arg::Known(text)
+            } else {
+                Arg::Unknown(text)
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
 fn item_path(path: &Arg, name: &Arg) -> Arg {
     match (path, name) {
         (Arg::Known(path), Arg::Known(name)) => {
@@ -1188,19 +1236,23 @@ impl Checker<'_> {
         let args = unit.args.as_slice();
         let shell = unit.shell;
         let params = Params::read(args);
-        let paths = params.values(&["path", "literalpath"]);
+        // A list is one argument, the items of one position (`Copy-Item
+        // a.dll,b.dll` copies both, to no destination).
+        let paths = named_lists(unit, &params, &["path", "literalpath"]);
+        let positions = positionals(unit, &params);
         let recursive = key == "copy-item"
             && params
                 .named
                 .iter()
                 .any(|(name, _)| "recurse".starts_with(name.as_str()));
         let mut operands = paths.clone();
-        operands.extend(params.positional.iter().copied());
+        operands.extend(positions.iter().flatten().copied());
         let here = Arg::Known(".".to_string());
         // With no destination, by name or by position, the item goes to the
         // folder the line is in (`Copy-Item C:\x\a.txt`); a splat may hold
         // one.
-        let alone = operands.len() <= paths.len().max(1)
+        let taken = usize::from(paths.is_empty());
+        let alone = positions.len() <= taken
             && !splatted(args)
             && (!operands.is_empty() || from_pipe(unit));
         let destination = params
@@ -1242,7 +1294,13 @@ impl Checker<'_> {
             self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
             return;
         }
-        let first = paths.len().max(1);
+        // The operands that are sources whatever the reading: the paths
+        // named, or the first position.
+        let first = if paths.is_empty() {
+            positions.first().map_or(1, Vec::len)
+        } else {
+            paths.len()
+        };
         if key == "move-item" {
             // Each operand is a source of some reading when there are two
             // readings or more, and with one, all but its destination are.
@@ -1310,7 +1368,7 @@ impl Checker<'_> {
     /// write cmdlet given no path is. `Delete` and `MoveTo` are judged where
     /// the member is read.
     fn file_method(&mut self, unit: &Unit) {
-        let params = Params::read(&unit.args);
+        let params = Params::cmdlet(&unit.args, &FOREACH_OBJECT);
         let mut words = params.positional.iter().copied();
         let named = params.values(&["membername"]);
         let Some(method) = named.first().copied().or_else(|| words.next()) else {

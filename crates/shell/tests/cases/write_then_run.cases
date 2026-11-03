@@ -564,6 +564,13 @@ powershell finds=unknown | Set-Content sub\\*.ps1 x; .\\sub\\i.ps1
 powershell finds=unknown | Set-Content *.ps1 x; pwsh -File i.ps1
 powershell finds=unknown | Set-Content *.ps1 x; .\\i
 powershell finds=unknown | Copy-Item src\\* dest\\; .\\dest\\x.ps1
+# A copy given no path or destination writes what the stage before lists
+# into the folder the line is in.
+powershell finds=unknown | Get-Item C:\\x\\e.ps1 | Copy-Item; .\\e.ps1
+powershell finds=unknown | Get-ChildItem C:\\x | Copy-Item; .\\e.ps1
+powershell finds=unknown | Get-Item C:\\x\\e.ps1 | Move-Item -Destination .; .\\e.ps1
+powershell safe | Get-Item C:\\x\\e.ps1 | Copy-Item; .\\b.ps1
+powershell finds=unknown | Set-Content x ,b.ps1 y; .\\b.ps1
 
 # A name only known when it runs, after the first in a list or as the value,
 # is a file that cannot be placed: the line writes any file.

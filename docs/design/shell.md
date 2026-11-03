@@ -2841,30 +2841,47 @@ a path.
   x,C:\Windows $a`), and a list given to another parameter (`-Value x,y`,
   `-Include *.tmp,*.log`) is that parameter's, not a path: `Set-Content
   -Value x,y ~\.bashrc` writes `~\.bashrc`, and `Set-Content a.txt,b.txt x`
-  stays safe. `--` ends the parameters: the words after it are positionals,
+  stays safe. A comma after a space is the start of the grammar's next word
+  (`,~`), but it puts that word on the list of the argument before, or
+  starts a list of one, and is not part of it: `Remove-Item x ,~ -Recurse`
+  deletes your home directory, as `Remove-Item ,~ -Recurse` does; a word
+  after such a comma that is anything but plain text (`,'~'`, `,$h`) is
+  only known when it runs. `--` ends the parameters: the words after it are positionals,
   and `--` is no path (`Set-Content -- C:\Windows\x.dll x`, `'x' | Out-File
   -- C:\Windows\x`, `Start-Process -- cmd "/c rd /s /q C:\"`). A splat
   (`@p`) may bind the path, so it is a path only known when it runs:
   `Set-Content x @p` is `overwrite`, even when the line sets `$p` to a table
   it shows. With no path, `Set-Content`, `Add-Content`, `Clear-Content`,
-  `New-Item`, `Set-Acl` and the `-ItemProperty` cmdlets work on what the
+  `New-Item`, `Set-Acl` (whose `-InputObject` is the item itself, as a path
+  is) and the `-ItemProperty` cmdlets work on what the
   stage before hands on, as the item cmdlets do (`Get-Item ~\.bashrc |
   Clear-Content`, `Get-ChildItem -File ~ | Clear-Content`, `Get-Item HKCU:\x
   | Set-ItemProperty -Name a -Value b`); `Get-ChildItem | Clear-Content`
   works inside the workspace and stays safe, and `Get-Item src\a.txt |
-  Set-ItemProperty -Name IsReadOnly -Value $true` too. `Out-File` and
+  Set-ItemProperty -Name IsReadOnly -Value $true` too; `Rename-ItemProperty`'s
+  `-NewName` takes a value, so it is never read as the path. `Out-File` and
   `Tee-Object` take no path from the pipeline. `ForEach-Object` calling a
   file's `CopyTo` or `MoveTo` by name writes to the file its argument names
-  (`Get-ChildItem | % CopyTo C:\x`), and `Open` or `OpenWrite` may write each
+  (`Get-ChildItem | % CopyTo C:\x`, and `-Args`, the other name of
+  `-ArgumentList`, is read by the cmdlet's own parameters), and `Open` or `OpenWrite` may write each
   item it is handed (`Get-ChildItem ~ | % Open Truncate`); `Delete` and
   `MoveTo` are `delete` wherever they are called. `Copy-Item` and `Move-Item`
   with no destination, by name or by position, copy into the folder the line
   is in: `cd C:\Windows\System32; Copy-Item C:\x\evil.dll` writes to a
   system folder, while `Copy-Item C:\x\a.txt` from the workspace stays safe.
-  `New-Item -ItemType SymbolicLink`, `Junction` or `HardLink` (`-Type` too)
-  links to its `-Value`, or `-Target`, its other name, read as `mklink`'s
-  target is: `New-Item -ItemType Junction -Path j -Target C:\Windows` links
-  to a system folder, and `-Target .\src` stays safe.
+  A list is one position, the sources, so its last item is no destination
+  (`cd C:\Windows; Copy-Item a.dll,b.dll` copies both into a system folder);
+  cmd's `copy` and `xcopy` given one operand copy into the folder the line
+  is in too. `New-Item -ItemType SymbolicLink`, `Junction` or `HardLink`
+  (`-Type` too), or a type only known when it runs, links to its `-Value`,
+  or `-Target`, its other name, read as `mklink`'s target is: `New-Item
+  -ItemType Junction -Path j -Target C:\Windows` links to a system folder,
+  and `-Target .\src` stays safe. With no `-Value`, a link's target is what
+  the stage before hands on (`Get-Item C:\Windows | New-Item -ItemType
+  Junction -Path j`). `-Name` is one name: a list given to it is joined into
+  one, as PowerShell makes a list into text (`-Name a,b` is `a b`), and
+  every path with that name is the item; when that is more text than a line
+  holds, the item is a path only known when it runs.
 - **A stage that only narrows hands on what the stage before lists.**
   `Where-Object`, `Sort-Object`, a `Select-Object` that only picks (no
   `-ExpandProperty` and no calculated property, read as for stopping
@@ -3904,8 +3921,11 @@ Some risks only show when units are read together.
   `'x' | Out-File i.ps1`, `Tee-Object`, `New-Item i.ps1 -Value x` (with
   `-Name`, the name inside the folder), and the aliases, and the destination
   of `Copy-Item a b` and `Move-Item a b` (with none, the folder the line is
-  in). Each is a write of that file, so
-  `Set-Content i.ps1 x; .\i.ps1` is `unknown` as the `-Path` form is. The
+  in; a list is the sources, one position; with no path, what the stage
+  before hands on: what `Get-Item` names, or, for what a listing finds, any
+  file, so `Get-Item C:\x\e.ps1 | Copy-Item; .\e.ps1` is `unknown`). Each
+  is a write of that file, so `Set-Content i.ps1 x; .\i.ps1` is `unknown` as
+  the `-Path` form is. The
   parser hands a list of paths (`a.ps1,b.ps1`) over as separate words, which
   cannot be told from a file and its value, so every other operand the guard
   can read counts as a file too (`Set-Content notes.txt x.ps1; .\x.ps1` is
