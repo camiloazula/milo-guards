@@ -73,7 +73,9 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
 ### Wrappers and scripts
 
 Wrappers come off: `sudo`, `env`, `nice`, `timeout`, `xargs`, `find -exec`,
-`Start-Process`, `start`. `sudo rm` is `rm`, run as root. So do the words that
+`Start-Process`, `start`. `sudo rm` is `rm`, run as root. A wrapper's option
+that starts the program in another folder (`env -C`, `start /d`) is followed
+(see [Where a line is](#where-a-line-is)). So do the words that
 run the command after them in a POSIX shell: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`.
@@ -418,6 +420,25 @@ overwrite of a file only known when it runs. `$null` is the device only in
 PowerShell, and only as the null value itself. In a POSIX shell it is the variable
 `null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
 is a file name like any other, joined to where the `cd` went.
+
+A wrapper or a runner that starts its command in a folder of its own option
+moves that command, and only it: its relative paths, the script it runs and
+the code it is given are judged from that folder, as after a `cd` that ran,
+and the rest of the line from where it was (`env -C / true; rm -rf etc` is
+safe). The options read so are `env -C DIR` (also `-CDIR`, `-iC DIR` and
+`--chdir`), `sudo -D` and `run0 -D` (`--chdir`), npm's and npx's `--prefix`
+(`-C`, read as npm reads its options, so `--prefi` too) for what `npm exec`
+runs, pnpm's `-C` and `--dir`, yarn's and bun's `--cwd`, uv's `--directory`,
+PowerShell's `Start-Process -WorkingDirectory` and `pwsh` or `powershell
+-WorkingDirectory` (`-wd`, `-wd:DIR`) for the script given with `-Command`,
+and cmd's `start /d DIR` (`/dDIR`), which names the drive too: `env -C ~ rm -rf
+.ssh`, `pnpm --dir ~ exec rimraf .ssh` and `start /d C:\Windows cmd /c rd /s
+/q System32` are `delete`, `env -C sub make` and `start /d build cmd /c del
+x.obj` are safe. When one is given more than once, the last counts. A folder
+only known when it runs makes the command's relative paths known only when
+they run. `uv run --project DIR` finds its project in `DIR`, and whether it
+runs the command there too has changed between versions of uv, so the
+command is judged from both folders.
 
 A redirect on a `cd` (`chdir`, `pushd`, `Set-Location`) is opened before the
 command runs, so its file is placed from the folder the command starts in, not

@@ -4,8 +4,8 @@
 
 use std::rc::Rc;
 
-use super::interpreters::{reads_input, DENO_VALUES};
-use super::npm::{call_script, npm_word, npx_start, NPM_VALUES};
+use super::interpreters::{reads_input, BUN_VALUES, DENO_VALUES};
+use super::npm::{call_script, npm_word, npx_start, prefix_folder, NPM_VALUES};
 use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
 use crate::powershell::Params;
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
@@ -42,26 +42,119 @@ pub(super) fn rsh(args: &[Arg]) -> Option<Arg> {
 }
 
 /// `env`: assignments and options, then the program; `-S` splits a string
-/// into the command.
+/// into the command. `-C DIR` (`--chdir`) starts it in `DIR`.
 pub(super) fn env(args: &[Arg]) -> Launch {
+    let mut folder = None;
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         match arg.known() {
             Some("-S" | "--split-string") => {
                 return args.get(at + 1).map_or(Launch::Itself, |script| {
-                    Launch::Script(Shell::Posix, script.clone())
+                    in_folder(folder, Launch::Script(Shell::Posix, script.clone()))
                 });
             }
-            Some("-u" | "--unset" | "-C" | "--chdir") => at += 2,
+            Some("--chdir") => {
+                folder = args.get(at + 1).cloned();
+                at += 2;
+            }
+            Some("-u" | "--unset") => at += 2,
+            Some(text) if text.starts_with("--chdir=") => {
+                folder = Some(Arg::Known(text["--chdir=".len()..].to_string()));
+                at += 1;
+            }
             Some(text)
                 if text.starts_with('-') || (text.contains('=') && !text.starts_with('=')) =>
             {
-                at += 1;
+                // `-C DIR`, also at the end of a bundle of flags (`-iC DIR`)
+                // or with the folder joined to it (`-CDIR`).
+                match env_chdir(text) {
+                    Some("") => {
+                        folder = args.get(at + 1).cloned();
+                        at += 2;
+                    }
+                    Some(dir) => {
+                        folder = Some(Arg::Known(dir.to_string()));
+                        at += 1;
+                    }
+                    None => at += 1,
+                }
             }
-            _ => return Launch::Runs(at),
+            _ => return in_folder(folder, Launch::Runs(at)),
         }
     }
     Launch::Itself
+}
+
+/// The folder `env`'s short option `-C` is given in the word `text`: `-C`
+/// alone, or after the flags that take nothing (`-iC`), gives `""`, the
+/// folder being the next word; `-CDIR` gives `DIR`. `None` when the word
+/// holds no `-C`.
+fn env_chdir(text: &str) -> Option<&str> {
+    let bundle = text
+        .strip_prefix('-')
+        .filter(|rest| !rest.starts_with('-'))?;
+    let flags = bundle.trim_start_matches(['i', '0', 'v']);
+    flags.strip_prefix('C')
+}
+
+/// `launch`, started in `folder` when there is one (see [`Launch::In`]).
+pub(super) fn in_folder(folder: Option<Arg>, launch: Launch) -> Launch {
+    match folder {
+        Some(folder) => Launch::In(folder, Box::new(launch)),
+        None => launch,
+    }
+}
+
+/// The folder the last of the options `names` gives among `args`, a
+/// wrapper's own options before what it runs, each other option read as
+/// `read` says (see [`Word`]): `--dir DIR` and `--dir=DIR` for a long name,
+/// `-C DIR` for a short one, and also `-CDIR` when `joined`. The words that
+/// do not start with a dash (a subcommand, `exec`) are passed over.
+pub(super) fn folder_option(
+    args: &[Arg],
+    names: &[&str],
+    joined: bool,
+    read: impl Fn(&str, Option<&Arg>) -> Word,
+) -> Option<Arg> {
+    let mut folder = None;
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        let Some(text) = arg.known() else {
+            at += 1;
+            continue;
+        };
+        if text == "--" {
+            break;
+        }
+        if names.contains(&text) {
+            folder = args.get(at + 1).cloned();
+            at += 2;
+            continue;
+        }
+        let attached = names.iter().find_map(|name| {
+            if name.starts_with("--") {
+                text.strip_prefix(name)?.strip_prefix('=')
+            } else if joined && name.len() == 2 {
+                text.strip_prefix(name).filter(|rest| !rest.is_empty())
+            } else {
+                None
+            }
+        });
+        if let Some(value) = attached {
+            folder = Some(Arg::Known(value.to_string()));
+            at += 1;
+            continue;
+        }
+        at += if text.len() > 1 && text.starts_with('-') {
+            match read(text, args.get(at + 1)) {
+                Word::Flag | Word::Operand => 1,
+                Word::Value => 2,
+            }
+        } else {
+            1
+        };
+    }
+    folder
 }
 
 /// The variables `env` sets (`X=1`) or unsets (`-u X`) for the program it
@@ -236,11 +329,14 @@ pub(super) fn cmd(args: &[Arg]) -> Launch {
 /// argument that is not a parameter) runs the rest; `-EncodedCommand` runs
 /// what cannot be read; `-File` runs a script file; with none of them it
 /// reads commands from its input.
+/// `-WorkingDirectory` (`-wd`) starts the script in a folder of its own.
 pub(super) fn powershell(args: &[Arg]) -> Launch {
-    match powershell_entry(args) {
+    let (entry, folder) = powershell_entry(args);
+    match entry {
+        Entry::Launch(launch @ Launch::Script(..)) => in_folder(folder, launch),
         Entry::Launch(launch) => launch,
         Entry::File(_) => Launch::Itself,
-        Entry::Rest(rest, _) => Launch::Script(Shell::PowerShell, join(rest)),
+        Entry::Rest(rest, _) => in_folder(folder, Launch::Script(Shell::PowerShell, join(rest))),
     }
 }
 
@@ -249,7 +345,7 @@ pub(super) fn powershell(args: &[Arg]) -> Launch {
 /// runs as a file and Windows PowerShell as a command). `None` when it is not
 /// known now, or no file is run.
 pub(crate) fn powershell_file(args: &[Arg]) -> Option<Arg> {
-    match powershell_entry(args) {
+    match powershell_entry(args).0 {
         Entry::File(file) => Some(file),
         Entry::Rest([first, ..], moved) => first.known().map(|file| file_arg(file, moved)),
         Entry::Launch(_) | Entry::Rest(..) => None,
@@ -267,7 +363,15 @@ enum Entry<'a> {
     Rest(&'a [Arg], bool),
 }
 
-fn powershell_entry(args: &[Arg]) -> Entry<'_> {
+/// [`Entry`], with the folder `-WorkingDirectory` (`-wd`) names, the last
+/// one given before the entry.
+fn powershell_entry(args: &[Arg]) -> (Entry<'_>, Option<Arg>) {
+    let mut folder = None;
+    let entry = powershell_entry_in(args, &mut folder);
+    (entry, folder)
+}
+
+fn powershell_entry_in<'a>(args: &'a [Arg], folder: &mut Option<Arg>) -> Entry<'a> {
     let mut at = 0;
     // Whether `-WorkingDirectory` has moved the folder a file is read from.
     let mut moved = false;
@@ -283,6 +387,13 @@ fn powershell_entry(args: &[Arg]) -> Entry<'_> {
             let param = param.to_ascii_lowercase();
             if !value.is_empty() && !param.is_empty() && "file".starts_with(&param) {
                 return Entry::File(file_arg(value, moved));
+            }
+            // `-wd:DIR`.
+            if !value.is_empty() && matches!(param.as_str(), "workingdirectory" | "wd") {
+                *folder = Some(Arg::Known(value.to_string()));
+                moved = true;
+                at += 1;
+                continue;
             }
         }
         let name = name.trim_end_matches(':').to_ascii_lowercase();
@@ -344,7 +455,10 @@ fn powershell_entry(args: &[Arg]) -> Entry<'_> {
                 | "settingsfile"
                 | "custompipename"
         ) {
-            moved |= matches!(name.as_str(), "workingdirectory" | "wd");
+            if matches!(name.as_str(), "workingdirectory" | "wd") {
+                moved = true;
+                *folder = args.get(at + 1).cloned();
+            }
             at += 2;
         } else {
             at += 1;
@@ -399,7 +513,12 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
     }) {
         wrappers.push("runas".to_string());
     }
-    Launch::Replace(Box::new(Unit {
+    // `-WorkingDirectory` starts the program in a folder of its own.
+    let folder = params
+        .values(&["workingdirectory"])
+        .last()
+        .map(|folder| (*folder).clone());
+    let launch = Launch::Replace(Box::new(Unit {
         shell: unit.shell,
         program: program.clone(),
         args,
@@ -418,11 +537,14 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         unread_item: false,
         listed: Vec::new(),
         depth: unit.depth,
-    }))
+    }));
+    in_folder(folder, launch)
 }
 
-/// cmd's `start`: a quoted title first, its `/` options, then the program.
+/// cmd's `start`: a quoted title first, its `/` options, then the program,
+/// which `/d DIR` (also `/dDIR`) starts in `DIR`.
 pub(super) fn start(args: &[Arg]) -> Launch {
+    let mut folder = None;
     let mut at = 0;
     if args
         .first()
@@ -433,9 +555,17 @@ pub(super) fn start(args: &[Arg]) -> Launch {
     }
     while let Some(arg) = args.get(at) {
         match arg.known().map(str::to_ascii_lowercase) {
-            Some(text) if matches!(text.as_str(), "/d" | "/affinity" | "/node") => at += 2,
+            Some(text) if text == "/d" => {
+                folder = args.get(at + 1).cloned();
+                at += 2;
+            }
+            Some(text) if matches!(text.as_str(), "/affinity" | "/node") => at += 2,
+            Some(text) if text.starts_with("/d") => {
+                folder = arg.known().map(|text| Arg::Known(text[2..].to_string()));
+                at += 1;
+            }
             Some(text) if text.starts_with('/') => at += 1,
-            _ => return Launch::Runs(at),
+            _ => return in_folder(folder, Launch::Runs(at)),
         }
     }
     Launch::Itself
@@ -728,19 +858,63 @@ impl Opts {
             Opts::List(values) => after_options(args, values),
             Opts::Npx => npx_start(args),
             Opts::Npm => after_options_by(args, npm_word),
-            Opts::Pnpm => after_options_by(args, |text, _| {
-                // `-w` is `--workspace-root` for pnpm, not npm's `--workspace`.
-                let npm = text
-                    .strip_prefix("--")
-                    .is_some_and(|key| key != "workspace" && NPM_VALUES.contains(&key));
-                if npm || PNPM_VALUES.contains(&text) {
-                    Word::Value
-                } else {
-                    Word::Flag
-                }
-            }),
+            Opts::Pnpm => after_options_by(args, |text, _| pnpm_word(text)),
         }
     }
+}
+
+/// How `pnpm` reads one word that starts with a dash: the options it lists,
+/// and npm's settings, take the next word.
+fn pnpm_word(text: &str) -> Word {
+    // `-w` is `--workspace-root` for pnpm, not npm's `--workspace`.
+    let npm = text
+        .strip_prefix("--")
+        .is_some_and(|key| key != "workspace" && NPM_VALUES.contains(&key));
+    if npm || PNPM_VALUES.contains(&text) {
+        Word::Value
+    } else {
+        Word::Flag
+    }
+}
+
+/// `launch`, which the runner `key` runs from its arguments `args`, with
+/// the program (or the script) at `end`, started in the folder the runner's
+/// own options before it name: npm's `--prefix` (`-C`), pnpm's `--dir`
+/// (`-C`), yarn's and bun's `--cwd`, uv's `--directory`. `uv run --project
+/// DIR` finds its project in `DIR` and, by the uv in use, may run the
+/// command there or where the line is, so both are judged.
+pub(super) fn runner_in(key: &str, args: &[Arg], end: usize, launch: Launch) -> Launch {
+    let own = args.get(..end).unwrap_or_default();
+    let listed = |names: &[&str], values: &[&str]| {
+        folder_option(own, names, false, |text, _| {
+            if values.contains(&text) {
+                Word::Value
+            } else {
+                Word::Flag
+            }
+        })
+    };
+    let launch = match key {
+        "uv" => match listed(&["--project"], UV_VALUES) {
+            Some(project) => Launch::Either(
+                Box::new(Launch::In(project, Box::new(launch.clone()))),
+                Box::new(launch),
+            ),
+            None => launch,
+        },
+        _ => launch,
+    };
+    let folder = match key {
+        "npx" | "npm" => prefix_folder(own, key == "npx"),
+        "pnpm" | "pnpx" | "pnx" => {
+            folder_option(own, &["-C", "--dir"], false, |text, _| pnpm_word(text))
+        }
+        "yarn" => listed(&["--cwd"], YARN_VALUES),
+        "bun" => listed(&["--cwd"], &BUN_VALUES),
+        "uv" | "uvx" => listed(&["--directory"], UV_VALUES),
+        _ => None,
+    };
+    in_folder(folder, launch)
 }
 
 /// Where the program of a package runner starts: the words that lead to it
@@ -818,11 +992,21 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
                     .is_some_and(|name| DELETERS.contains(&name))
             })
         }),
+        // `x` after bun's options, which may take a value (`bun --cwd DIR
+        // x`), or as the first word with no dash, as bun finds its
+        // subcommand (`bun -F x echo` runs `bunx echo`).
         "bun" => locate(
             args,
-            &[(Opts::List(&[]), &["x"])],
+            &[(Opts::List(&BUN_VALUES), &["x"])],
             Opts::List(&BUN_X_VALUES),
-        ),
+        )
+        .or_else(|| {
+            locate(
+                args,
+                &[(Opts::List(&[]), &["x"])],
+                Opts::List(&BUN_X_VALUES),
+            )
+        }),
         "deno" => locate(
             args,
             &[(Opts::List(&DENO_VALUES), &["x"])],
@@ -847,9 +1031,8 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
     let Some((from, program)) = found else {
         return Launch::Itself;
     };
-    let own = args
-        .get(from..program.unwrap_or(args.len()))
-        .unwrap_or_default();
+    let end = program.unwrap_or(args.len());
+    let own = args.get(from..end).unwrap_or_default();
     // A script handed to npm or pnpm runs in the system shell: cmd on
     // Windows, whichever shell the line is for.
     let shell = if unit.shell == Shell::Posix {
@@ -868,7 +1051,7 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
                 own
             };
             if let Some(script) = call_script(options, key == "npx") {
-                return Launch::Script(shell, script);
+                return runner_in(key, args, end, Launch::Script(shell, script));
             }
         }
         // pnpm reads its options wherever they stand: `pnpm -c exec 'cmd'`
@@ -881,20 +1064,30 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
             ) =>
         {
             if let Some(program) = program {
-                return Launch::Script(shell, join(&args[program..]));
+                return runner_in(
+                    key,
+                    args,
+                    end,
+                    Launch::Script(shell, join(&args[program..])),
+                );
             }
         }
         // `yarn exec` runs its arguments as a script, in yarn's own shell.
         "yarn" if from > 0 && args[from - 1].known() == Some("exec") => {
             if let Some(program) = program {
-                return Launch::Script(shell, join(&args[program..]));
+                return runner_in(
+                    key,
+                    args,
+                    end,
+                    Launch::Script(shell, join(&args[program..])),
+                );
             }
         }
         // `uv run file.py` and `uv run --script file` run Python on the file,
         // and `uv run -` on its input: read like `python file`.
         "uv" if program.is_some() && uv_script(args).is_some() => return Launch::Itself,
         "uv" if program.is_some_and(|at| reads_input(&args[at])) && uv_run(args).is_some() => {
-            return Launch::Reads(Reads::Interpreter);
+            return runner_in(key, args, end, Launch::Reads(Reads::Interpreter));
         }
         _ => {}
     }
@@ -910,7 +1103,7 @@ pub(super) fn runner(key: &str, unit: &Unit) -> Launch {
             run.args.remove(at);
         }
     }
-    Launch::Replace(Box::new(run))
+    runner_in(key, args, end, Launch::Replace(Box::new(run)))
 }
 
 /// `uv run`: its options, then the command (also after `uv`'s own options).

@@ -1,0 +1,89 @@
+# The folder a wrapper or a runner starts its command in, by an option of its
+# own: the command's relative paths are judged from there, and the rest of the
+# line from where it was. The format is in CONTRIBUTING.md.
+
+# `env -C` and `--chdir`.
+posix finds=delete | env -C / rm -rf etc
+posix finds=delete | env --chdir=/ rm -rf etc
+posix finds=delete | env -C ~ rm -rf .ssh
+posix finds=delete | env --chdir ~ rm -rf .ssh
+posix finds=delete | env -iC / rm -rf etc
+posix finds=delete | env -C/ rm -rf etc
+posix finds=delete | env -C / -S 'rm -rf etc'
+# What the wrapper runs reads its code from there too.
+posix finds=delete | env -C ~ python3 -c "import shutil; shutil.rmtree('.ssh')"
+posix safe | env -C sub make
+posix safe | env -C sub rm -rf build
+
+# `sudo -D` and `run0 -D` (`--chdir`).
+posix finds=delete | sudo -D / rm -rf etc
+posix finds=delete | sudo --chdir=/ rm -rf etc
+posix finds=delete | run0 --chdir / rm -rf etc
+posix rules=elevated | sudo -D sub make
+
+# pnpm's `-C` and `--dir`.
+posix finds=delete | pnpm -C / exec rimraf etc
+posix finds=delete | pnpm --dir ~ exec rimraf .ssh
+posix finds=delete | pnpm --dir=/ exec rimraf etc
+posix safe | pnpm -C packages/web exec vitest
+posix safe | pnpm -C packages/web exec rimraf dist
+
+# uv's `--directory`, and `--project` for `uv run`.
+posix finds=delete | uv --directory ~ run rm -rf .ssh
+posix finds=delete | uv run --project / rm -rf etc
+posix finds=delete | uv run --directory=/ rm -rf etc
+# `--project` finds the project there; whether the command runs there too
+# depends on the uv in use, so it is judged from both folders.
+posix finds=delete | uv run --project /tmp/p rm -rf ~/work/repo/.git
+posix finds=delete | uv run --project /tmp/p rm -rf .git
+posix finds=delete | uv --directory / run --project home/me rm -rf .ssh
+posix safe | uv --directory sub run pytest
+posix safe | uv run --project sub pytest
+
+# bun's and yarn's `--cwd`.
+posix finds=delete | bun --cwd=~ run rm -rf .config
+posix finds=delete | bun --cwd ~ x rimraf .config
+posix finds=delete | bun --cwd ~ x rimraf /
+posix finds=delete | yarn --cwd ~ exec rm -rf .config
+posix finds=delete | yarn --cwd=/ dlx rimraf etc
+posix safe | yarn --cwd web build
+posix safe | yarn --cwd web exec rm -rf dist
+
+# npm's `--prefix` for `exec`.
+posix finds=delete | npm --prefix ~ exec rimraf .ssh
+posix finds=delete | npm exec --prefix=/ -- rimraf etc
+posix finds=delete | npm -C ~ exec rimraf .ssh
+posix finds=delete | npm --prefi ~ exec rimraf .ssh
+posix finds=delete | npx --prefix ~ rimraf .ssh
+posix finds=delete | npx --prefix=/ rimraf etc
+posix finds=delete | npm --prefix ~ exec -c 'rm -rf .ssh'
+posix safe | npm --prefix web exec vitest
+
+# PowerShell: `Start-Process -WorkingDirectory`, and the folder `pwsh` and
+# `powershell` start in.
+powershell finds=delete | Start-Process cmd -WorkingDirectory C:\\Windows -ArgumentList '/c rd /s /q System32'
+powershell finds=delete | pwsh -WorkingDirectory C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | powershell -wd C:\\Windows -Command "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh -wd:C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | Start-Process -FilePath pwsh -WorkingDirectory C:\\Windows -ArgumentList '-c','Remove-Item System32 -Recurse'
+powershell finds=delete | Start-Process cmd -wo C:\\Windows -ArgumentList '/c rd /s /q System32'
+powershell safe | Start-Process cmd -WorkingDirectory build -ArgumentList '/c del x.obj'
+powershell safe | pwsh -WorkingDirectory build -c "Remove-Item obj -Recurse"
+
+# cmd's `start /d`.
+cmd finds=delete | start /d C:\\Windows cmd /c rd /s /q System32
+cmd finds=delete | start /dC:\\Windows cmd /c rd /s /q System32
+cmd finds=delete | start "" /d C:\\Windows cmd /c rd /s /q System32
+cmd safe | start /d build cmd /c del x.obj
+
+# The move holds for that command only: the rest of the line is judged from
+# where it was.
+posix safe | env -C / true; rm -rf etc
+posix safe | pnpm -C ~ exec ls && rimraf .ssh
+cmd safe | start /d C:\\Windows cmd /c dir & rd /s /q build
+
+# A folder only known when it runs makes the command's relative paths known
+# only when they run.
+posix finds=delete reason="deletes a path only known when it runs" | env -C "$D" rm -rf build
+posix finds=delete reason="deletes a path only known when it runs" | pnpm --dir "$D" exec rimraf build
+powershell finds=delete reason="deletes a path only known when it runs" | Start-Process cmd -WorkingDirectory $d -ArgumentList '/c rd /s /q build'
