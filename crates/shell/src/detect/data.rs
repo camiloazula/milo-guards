@@ -430,7 +430,7 @@ fn attached(rest: &str, holes: bool, runs: bool) -> Arg {
     if holes {
         Arg::Template {
             text: rest.to_string(),
-            source: rest.to_string(),
+            source: rest.into(),
             runs,
         }
     } else {

@@ -25,8 +25,11 @@ pub(crate) enum Arg {
     Template {
         /// The text, with each expansion as written.
         text: String,
-        /// The argument as written, quotes and all.
-        source: String,
+        /// The argument as written, quotes and all. A boxed `str`, not a
+        /// `String`, so that with `runs` an `Arg` stays the size of two
+        /// strings: the walk of a deeply nested line holds many on the
+        /// stack, and a bigger one overflows it before the depth limit.
+        source: Box<str>,
         /// Whether an expansion in it runs a command (`$(…)`, a backtick):
         /// it prints what it likes, where a variable stands for a value.
         runs: bool,
@@ -58,7 +61,8 @@ impl Arg {
     /// The value, or the source text of what is only known when it runs.
     pub(crate) fn text(&self) -> &str {
         match self {
-            Self::Known(text) | Self::Unknown(text) | Self::Template { source: text, .. } => text,
+            Self::Known(text) | Self::Unknown(text) => text,
+            Self::Template { source, .. } => source,
             Self::Input => "<input>",
             Self::Null => "$null",
         }

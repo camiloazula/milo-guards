@@ -850,7 +850,8 @@ fn computed(arg: &Arg, unit: &Unit, split: &Split) -> bool {
         // The null value is no word, and holds no list.
         Arg::Null => false,
         Arg::Unknown(_) | Arg::Template { .. } if unit.repeated => true,
-        Arg::Unknown(text) | Arg::Template { source: text, .. } => {
+        Arg::Unknown(_) | Arg::Template { .. } => {
+            let text = arg.text();
             text.contains("$(")
                 || text.contains('`')
                 || text.contains("<(")

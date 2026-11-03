@@ -2929,7 +2929,7 @@ impl Walker<'_> {
                 if partial {
                     Arg::Template {
                         text: template,
-                        source: source.to_string(),
+                        source: source.into(),
                         runs,
                     }
                 } else {
@@ -2997,7 +2997,7 @@ impl Walker<'_> {
         if partial {
             Arg::Template {
                 text: template,
-                source: source.to_string(),
+                source: source.into(),
                 runs,
             }
         } else {
@@ -3072,7 +3072,7 @@ fn heredoc_fed(raw: &str, strips: bool, quoted: bool, runs: bool) -> Arg {
         (true, true) => Arg::Unknown(raw.to_string()),
         (false, true) => Arg::Template {
             text,
-            source: raw.to_string(),
+            source: raw.into(),
             runs,
         },
         (_, false) => Arg::Known(text),
