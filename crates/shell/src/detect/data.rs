@@ -46,9 +46,8 @@ struct Client {
     short_file: &'static str,
     /// Long options whose value is a file of statements (`--file`).
     long_file: &'static [&'static str],
-    /// Whether an operand that ends in `.js` is a script the client runs
-    /// (`mongosh db drop.js`).
-    scripts: bool,
+    /// What a word that is no option and no option's value is.
+    operands: Operands,
     /// The options whose value is never a word that starts with `-`: without
     /// a value they stand alone, as `mongosh -p` does (it prompts for the
     /// password), and the word is an option of its own.
@@ -59,6 +58,18 @@ struct Client {
     slash: bool,
     /// What the statement is written in.
     language: Language,
+}
+
+/// What a client makes of a word that is no option and no option's value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operands {
+    /// Nothing it runs: a database, a user.
+    Other,
+    /// One that ends in `.js` is a script it runs (`mongosh db drop.js`).
+    Scripts,
+    /// Each is a statement (`clickhouse-client 'SELECT 1'`, and after `-n`,
+    /// which takes no value).
+    Statements,
 }
 
 /// Which options of a client take no value from a word that starts with `-`.
@@ -131,10 +142,10 @@ const PSQL: Client = Client {
     long_exits: &["command"],
     short_file: "f",
     long_file: &["file"],
-    scripts: false,
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::Postgres),
 };
 
@@ -215,10 +226,10 @@ const MYSQL: Client = Client {
     long_exits: &["execute"],
     short_file: "",
     long_file: &[],
-    scripts: false,
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::MySql),
 };
 
@@ -261,10 +272,10 @@ const CLICKHOUSE: Client = Client {
     long_exits: &["query"],
     short_file: "",
     long_file: &["queries-file"],
-    scripts: false,
     loose: Loose::Only(&["password"]),
     bundles: true,
     slash: false,
+    operands: Operands::Statements,
     language: Language::Sql(Dialect::ClickHouse),
 };
 
@@ -286,10 +297,10 @@ const SQLCMD: Client = Client {
     long_exits: &["query"],
     short_file: "i",
     long_file: &["input-file"],
-    scripts: false,
     loose: Loose::No,
     bundles: false,
     slash: true,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::SqlServer),
 };
 
@@ -327,10 +338,10 @@ const CQLSH: Client = Client {
     long_exits: &["execute"],
     short_file: "f",
     long_file: &["file"],
-    scripts: false,
     loose: Loose::No,
     bundles: true,
     slash: false,
+    operands: Operands::Other,
     language: Language::Sql(Dialect::Cql),
 };
 
@@ -383,10 +394,10 @@ const MONGO: Client = Client {
     long_exits: &[],
     short_file: "f",
     long_file: &["file"],
-    scripts: true,
     loose: Loose::Every,
     bundles: true,
     slash: false,
+    operands: Operands::Scripts,
     language: Language::Mongo,
 };
 
@@ -417,6 +428,17 @@ fn view(arg: &Arg) -> Option<(&str, bool)> {
         Arg::Unknown(text) => Some((text, true)),
         Arg::Input | Arg::Null => None,
     }
+}
+
+/// Whether `text`, the source of a word only known when it runs, is a quoted
+/// option (`"-c…"`, `"--execute=…"`, and `"/Q…"` for a client whose options
+/// may start with `/`), which the client reads as one whatever it holds.
+fn quoted_option(text: &str, slash: bool) -> bool {
+    let inner = text
+        .strip_prefix("@\"")
+        .or_else(|| text.strip_prefix(['"', '\'']))
+        .map(|inner| inner.trim_start_matches(['\r', '\n']));
+    inner.is_some_and(|inner| inner.starts_with('-') || (slash && inner.starts_with('/')))
 }
 
 /// Whether an expansion in `arg` runs a command, as the parse found it.
@@ -556,18 +578,31 @@ impl Client {
         let mut ended = false;
         while let Some(arg) = iter.next() {
             let Some((text, holes)) = view(arg) else {
+                // What `xargs` hands on is an operand only known when it runs.
+                if self.operands == Operands::Statements && matches!(arg, Arg::Input) {
+                    found.push(arg.clone());
+                }
                 continue;
             };
+            // A quoted word only known when it runs that is an option (a
+            // PowerShell `"--execute=… `$x $t"` that is no template) may
+            // carry any statement.
+            if matches!(arg, Arg::Unknown(_)) && !ended && quoted_option(text, self.slash) {
+                found.push(arg.clone());
+                continue;
+            }
             // An operand that is a script the client runs.
             let script = |text: &str| {
                 let lower = text.to_ascii_lowercase();
-                self.scripts
+                self.operands == Operands::Scripts
                     && [".js", ".mjs", ".cjs"]
                         .iter()
                         .any(|end| lower.ends_with(end))
             };
             if ended || text == "--" {
-                if ended && script(text) {
+                if ended && self.operands == Operands::Statements {
+                    found.push(arg.clone());
+                } else if ended && script(text) {
                     files.push(arg.clone());
                 }
                 ended = true;
@@ -593,9 +628,14 @@ impl Client {
                     self.statement_value(&mut iter, found);
                 } else if long == Long::File {
                     files.extend(Self::value(&mut iter, loose).cloned());
-                } else if long != Long::Flag {
+                } else if long == Long::Value
+                    || (long == Long::Loose && self.operands != Operands::Statements)
+                {
                     Self::value(&mut iter, long == Long::Loose);
                 }
+                // An optional value is left where it is read as an operand
+                // too: `clickhouse-client --password 'DROP TABLE t'` may run
+                // the statement.
                 continue;
             }
             let rest = match text.strip_prefix('-') {
@@ -609,6 +649,10 @@ impl Client {
                         continue;
                     }
                 },
+                None if self.operands == Operands::Statements => {
+                    found.push(arg.clone());
+                    continue;
+                }
                 None => {
                     if script(text) {
                         files.push(arg.clone());
@@ -648,11 +692,6 @@ impl Client {
             }
         }
         given
-    }
-
-    /// What the statement `arg` does.
-    fn read(&self, arg: &Arg) -> Reading {
-        read_text(self.language, arg)
     }
 }
 
@@ -928,6 +967,128 @@ fn redis_operands(args: &[Arg]) -> Vec<&Arg> {
         operands.drain(..operands.len().min(2));
     }
     operands
+}
+
+/// Whether the line asks a tool for its help, and runs nothing else.
+fn asks_help(args: &[Arg]) -> bool {
+    args.iter()
+        .filter_map(Arg::known)
+        .any(|text| matches!(text, "--help" | "-h"))
+}
+
+/// The parameters of `Invoke-Sqlcmd` (the `SqlServer` module's), with
+/// whether each takes a value, and the common parameters: a switch read as
+/// taking one would hide the query after it.
+const INVOKE_SQLCMD: &[(&str, bool)] = &[
+    ("query", true),
+    ("inputfile", true),
+    ("serverinstance", true),
+    ("database", true),
+    ("username", true),
+    ("password", true),
+    ("credential", true),
+    ("accesstoken", true),
+    ("connectionstring", true),
+    ("connectiontimeout", true),
+    ("querytimeout", true),
+    ("variable", true),
+    ("applicationintent", true),
+    ("applicationname", true),
+    ("encrypt", true),
+    ("errorlevel", true),
+    ("severitylevel", true),
+    ("failoverpartner", true),
+    ("hostnameincertificate", true),
+    ("maxbinarylength", true),
+    ("maxcharlength", true),
+    ("newpassword", true),
+    ("outputas", true),
+    ("as", true),
+    ("outputsqlerrors", true),
+    ("statisticsvariable", true),
+    ("abortonerror", false),
+    ("dedicatedadministratorconnection", false),
+    ("disablecommands", false),
+    ("disablevariables", false),
+    ("encryptconnection", false),
+    ("ignoreprovidercontext", false),
+    ("includesqlusererrors", false),
+    ("keepnullcharsinresults", false),
+    ("multisubnetfailover", false),
+    ("suppressprovidercontextwarning", false),
+    ("trustservercertificate", false),
+    ("verbose", false),
+    ("vb", false),
+    ("debug", false),
+    ("db", false),
+    ("erroraction", true),
+    ("ea", true),
+    ("warningaction", true),
+    ("wa", true),
+    ("informationaction", true),
+    ("infa", true),
+    ("ia", true),
+    ("progressaction", true),
+    ("proga", true),
+    ("errorvariable", true),
+    ("ev", true),
+    ("warningvariable", true),
+    ("wv", true),
+    ("informationvariable", true),
+    ("iv", true),
+    ("outvariable", true),
+    ("ov", true),
+    ("outbuffer", true),
+    ("ob", true),
+    ("pipelinevariable", true),
+    ("pv", true),
+];
+
+/// The queries an `Invoke-Sqlcmd` line gives: the value of `-Query`, and
+/// every argument no parameter takes, since the query is its first
+/// positional parameter; and the file of `-InputFile`. A parameter is any
+/// start of one name, in any case; one that starts several names is refused
+/// by PowerShell, and one that names none takes no value, so the argument
+/// after either is read as a query too.
+fn invoke_sqlcmd_queries(args: &[Arg]) -> Given {
+    let mut given = Given::default();
+    let found = &mut given.statements;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let name = arg
+            .known()
+            .and_then(|text| text.strip_prefix('-'))
+            .filter(|name| name.starts_with(|c: char| c.is_ascii_alphabetic()));
+        let Some(name) = name else {
+            if !matches!(arg, Arg::Null) {
+                found.push(arg.clone());
+            }
+            continue;
+        };
+        let colon = name.ends_with(':');
+        let typed = name.trim_end_matches(':').to_ascii_lowercase();
+        let exact = INVOKE_SQLCMD.iter().find(|(full, _)| *full == typed);
+        let mut starts = INVOKE_SQLCMD
+            .iter()
+            .filter(|(full, _)| full.starts_with(&typed));
+        let named = exact.or_else(|| match (starts.next(), starts.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        });
+        match named {
+            Some(("query", _)) => found.extend(iter.next().cloned()),
+            Some(("inputfile", _)) => given.files.extend(iter.next().cloned()),
+            Some((_, true)) => {
+                iter.next();
+            }
+            // `-Name:value` takes the value whatever the name is.
+            _ if colon => {
+                iter.next();
+            }
+            _ => {}
+        }
+    }
+    given
 }
 
 /// How many readings of what a program says are kept: as written, and as
@@ -1992,7 +2153,36 @@ impl Checker<'_> {
                 let found = embedded(args, &DUCKDB);
                 self.embedded_client(at, unit, &found, Dialect::DuckDb);
             }
-            "redis-cli" => self.redis(at, unit.shell, args),
+            "redis-cli" | "valkey-cli" | "keydb-cli" => self.redis(at, unit.shell, args),
+            "invoke-sqlcmd" if unit.shell == Shell::PowerShell => {
+                self.invoke_sqlcmd(at, unit, args);
+            }
+            "pg_dropcluster" if !asks_help(args) => {
+                let cluster = resources::words(args, &[]).get(1).copied();
+                self.add(Rule::DropData, "deletes a database cluster", cluster);
+            }
+            "heroku" if !asks_help(args) => {
+                let words = resources::words(args, resources::HEROKU_VALUES);
+                if let Some(reset) = words
+                    .first()
+                    .filter(|word| word.known() == Some("pg:reset"))
+                {
+                    let database = words.get(1).copied().or(Some(*reset));
+                    self.add(Rule::DropData, "deletes data in a database", database);
+                }
+            }
+            "supabase" if !asks_help(args) => {
+                let words = resources::words(args, resources::SUPABASE_VALUES);
+                let command: Vec<Option<&str>> =
+                    words.iter().take(2).map(|word| word.known()).collect();
+                if command == [Some("db"), Some("reset")] {
+                    self.add(
+                        Rule::DropData,
+                        "deletes data in a database",
+                        words.get(1).copied(),
+                    );
+                }
+            }
             "dropdb" | "dropuser" => {
                 let help = args
                     .iter()
@@ -2026,6 +2216,27 @@ impl Checker<'_> {
         }
     }
 
+    /// A statement as a reader of its text takes it: a PowerShell
+    /// double-quoted string whose expansions are only known when it runs is
+    /// read as a template, as a POSIX one is (`psql -c "… WHERE id = $id"`).
+    fn template(&self, unit: &Unit, statement: &Arg) -> Arg {
+        match statement {
+            Arg::Unknown(source) if unit.shell == Shell::PowerShell => self
+                .split
+                .template(source)
+                .unwrap_or_else(|| statement.clone()),
+            _ => statement.clone(),
+        }
+    }
+
+    /// The arguments of a client as [`Checker::template`] reads each: a
+    /// PowerShell double-quoted word is a template, so that an option and
+    /// its value in one (`"--execute=DROP TABLE $t"`, `"-c$q"`) is read as a
+    /// POSIX shell's is.
+    fn templates(&self, unit: &Unit, args: &[Arg]) -> Vec<Arg> {
+        args.iter().map(|arg| self.template(unit, arg)).collect()
+    }
+
     /// Say what a client's statements do.
     fn judge(&mut self, reading: Reading, target: Option<&Arg>, own: bool) {
         if reading.unreadable {
@@ -2053,8 +2264,18 @@ impl Checker<'_> {
     /// A client of a database server: every database on a server is risky,
     /// since the line cannot tell a scratch one from production.
     fn sql_client(&mut self, at: usize, unit: &Unit, client: &Client, args: &[Arg]) {
-        let given = client.statements(args);
-        let mut statements = given.statements;
+        let args = self.templates(unit, args);
+        self.client_given(at, unit, client.statements(&args), client.language);
+    }
+
+    /// What a client of a database server is given, its statements written
+    /// in `language`, and what it reads from its input.
+    fn client_given(&mut self, at: usize, unit: &Unit, given: Given, language: Language) {
+        let mut statements: Vec<Arg> = given
+            .statements
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
         for file in given
             .files
             .iter()
@@ -2067,7 +2288,7 @@ impl Checker<'_> {
         // it is given is its input (`-f -`).
         if given.exits && !given.files.iter().any(is_stdin) {
             for statement in &statements {
-                let reading = client.read(statement);
+                let reading = read_text(language, statement);
                 self.judge(reading, Some(statement), false);
             }
             return;
@@ -2076,7 +2297,7 @@ impl Checker<'_> {
         let up = self.upstream(at);
         statements.extend(up.texts);
         for statement in &statements {
-            let reading = client.read(statement);
+            let reading = read_text(language, statement);
             self.judge(reading, Some(statement), false);
         }
         if up.unseen {
@@ -2085,11 +2306,11 @@ impl Checker<'_> {
         // What the stage before it says is judged once: every client of the
         // same language finds the same.
         for key in up.stages {
-            if !self.data.judged.insert((key, client.language)) {
+            if !self.data.judged.insert((key, language)) {
                 continue;
             }
             let said = self.stage_said(key);
-            let readings = self.stage_readings(key, client.language);
+            let readings = self.stage_readings(key, language);
             for (statement, reading) in said.iter().zip(readings.iter()) {
                 self.judge(*reading, Some(statement), false);
             }
@@ -2150,10 +2371,22 @@ impl Checker<'_> {
         }
     }
 
+    /// `Invoke-Sqlcmd`: SQL Server's cmdlet, which runs its `-Query` and its
+    /// `-InputFile`.
+    fn invoke_sqlcmd(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
+        let args = self.templates(unit, args);
+        let given = invoke_sqlcmd_queries(&args);
+        self.client_given(at, unit, given, Language::Sql(Dialect::SqlServer));
+    }
+
     /// `sqlite3` and `duckdb`: a database in a file is the agent's own when
     /// the file is in the workspace, judged like any file.
     fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>, dialect: Dialect) {
-        let mut statements = found.statements.clone();
+        let mut statements: Vec<Arg> = found
+            .statements
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
         statements.extend(self.split.fed_to(at).cloned());
         let up = self.upstream(at);
         statements.extend(up.texts);
@@ -2296,7 +2529,10 @@ impl Checker<'_> {
     /// `scan`.
     fn scans_keys(&self) -> bool {
         self.split.units.iter().any(|unit| {
-            unit.key().as_deref() == Some("redis-cli") && {
+            matches!(
+                unit.key().as_deref(),
+                Some("redis-cli" | "valkey-cli" | "keydb-cli")
+            ) && {
                 let operands = redis_operands(&unit.args);
                 unit.args.iter().any(|arg| arg.known() == Some("--scan"))
                     || operands

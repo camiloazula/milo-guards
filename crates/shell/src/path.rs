@@ -384,6 +384,13 @@ impl Resolver {
         {
             return None;
         }
+        // From a folder only known when it runs, a name may be one in the
+        // home directory, which that folder may be.
+        if let Some(home) = in_unknown_folder(dir, arg, shell) {
+            if let Some(words) = self.secret(None, &home, shell, hidden) {
+                return Some(words);
+            }
+        }
         let owned;
         let arg = if dir.is_some() {
             owned = within(dir, arg, shell);
@@ -676,6 +683,21 @@ impl Resolver {
     }
 }
 
+/// `arg`, a plain relative name (see [`plain_relative`]) written from
+/// `dir`, a folder only known when it runs, as that name in the home
+/// directory, which the folder may be: after a `cd` the guard cannot follow
+/// (`cd "$x"`, or more folders than it keeps), `.ssh/id_rsa` may be
+/// `~/.ssh/id_rsa`. `None` when `dir` is known or where the line began, or
+/// `arg` is not such a name; and in cmd, which has no `~`.
+pub(crate) fn in_unknown_folder(dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<Arg> {
+    if shell == Shell::Cmd || dir?.known().is_some() {
+        return None;
+    }
+    let text = arg.known().filter(|text| plain_relative(text, shell))?;
+    let sep = if shell == Shell::Posix { '/' } else { '\\' };
+    Some(Arg::Known(format!("~{sep}{text}")))
+}
+
 /// Whether a path is a name or a few from the working directory and nothing
 /// else: plain characters, no `..`, no `~`, no drive, no variable, no root. In
 /// a workspace that holds no key it lands in the workspace.
@@ -796,6 +818,12 @@ fn is_device(arg: &Arg, shell: Shell) -> bool {
         || arg
             .known()
             .is_some_and(|text| device(text, shell).is_some())
+}
+
+/// Whether `text` names a device that holds nothing to read: the null
+/// device, or in Windows the console (`NUL`, `/dev/null`, `CON`).
+pub(crate) fn null_device(text: &str, shell: Shell) -> bool {
+    device(text, shell) == Some(Place::Null)
 }
 
 /// A device a path names, by its spelling: the core's.

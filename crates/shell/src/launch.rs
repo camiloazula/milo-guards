@@ -7,6 +7,7 @@
 use std::rc::Rc;
 
 use crate::dotglob;
+use crate::extended;
 use crate::inline::{self, Code, Language};
 use crate::powershell::Params;
 use crate::startup;
@@ -196,6 +197,27 @@ fn loads_foreign(key: &str, unit: &Unit, split: &Split) -> bool {
     }
 }
 
+/// Add `unit`, and each of `others` as another reading of it: the same
+/// command with its words read as zsh reads them with `extendedglob` on.
+/// Each is judged, so the riskier counts; each is a fork, as
+/// [`Launch::Either`] makes, so a line past [`MAX_FORKS`] of them is
+/// unreadable.
+pub(crate) fn add_either(split: &mut Split, unit: Unit, others: Vec<Unit>, depth: usize) {
+    let program = unit.program.text().to_string();
+    add(split, unit, depth);
+    for other in others {
+        if !split.fork(MAX_FORKS) {
+            split.problem(
+                Rule::Unreadable,
+                "reads in too many ways to judge each",
+                Some(&program),
+            );
+            return;
+        }
+        add(split, other, depth);
+    }
+}
+
 fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
     add_launched(split, unit, depth, MAX_WRAPPERS, None);
 }
@@ -251,7 +273,8 @@ fn add_launched(
         // What the line sets for the program where it runs, which a runner
         // reads (`npm_config_call='…' npx`).
         unit.argument_variables = Rc::clone(&split.argument_variables);
-        let launched = given.take().unwrap_or_else(|| launch(&key, &unit));
+        let input = fed(&unit) || split.inherits_input > 0;
+        let launched = given.take().unwrap_or_else(|| launch(&key, &unit, input));
         // The command `npm_config_call` sets runs once for each `npx`: its
         // readings are bounded as a line's own text is.
         if let Launch::Script(_, script) = &launched {
@@ -304,6 +327,15 @@ fn add_launched(
                 return;
             }
             Launch::Itself => {
+                // `coproc NAME {` with the group's commands on the lines
+                // after it runs nothing of its own: what runs is read there,
+                // and the `}` that closes the group is taken off by the walk.
+                if key == "coproc" && unit.shell == Shell::Posix && unit.wrappers.is_empty() {
+                    if let Some(groups) = coproc_opens_only(&unit.args) {
+                        split.coproc_groups += groups;
+                        return;
+                    }
+                }
                 // What `find` picks is handed to the programs its `-exec` runs.
                 let first = split.units.len();
                 if key == "find" && unit.shell == Shell::Posix {
@@ -318,6 +350,9 @@ fn add_launched(
             Launch::Runs(start) => {
                 note_wrapper(split, &key, &unit, start);
                 let own = unit.args.get(..start).unwrap_or_default();
+                if key == "coproc" && unit.shell == Shell::Posix {
+                    split.coproc_groups += coproc_groups(own);
+                }
                 split.environment += usize::from(sets_environment(&key, own));
                 split
                     .node_options
@@ -393,7 +428,14 @@ fn add_launched(
                 let starts_hidden = SHELLS.contains(&key.as_str())
                     && shell == Shell::Posix
                     && dotglob::starts_with(&unit.args);
+                // And `zsh -o extendedglob -c` with zsh's extended patterns.
+                let starts_extended = SHELLS.contains(&key.as_str())
+                    && shell == Shell::Posix
+                    && extended::starts_with(&unit.args);
                 let stage = unit.stage;
+                // A shell handed a file or a pipe on its input hands it on
+                // to what its script runs (`cmd /c python < x.py`).
+                let hands_input = key != "trap" && fed(&unit);
                 let inherited = key == "trap" && trap_inherited(&unit.args);
                 // A script `xargs` or `parallel` hands to a shell runs once
                 // for each item it reads, as a loop body runs: its `$1` and
@@ -439,6 +481,9 @@ fn add_launched(
                         if starts_hidden || split.scoped_hidden() {
                             split.hide_for_script();
                         }
+                        if starts_extended {
+                            split.extend_glob();
+                        }
                         // A `trap`'s script runs later: when the line ends,
                         // or between its commands. It is a body, judged with
                         // the option on if the line ever turns it on, and
@@ -455,6 +500,7 @@ fn add_launched(
                         // PowerShell's `Invoke-Expression` runs its string in
                         // the session, which has one location.
                         let here = key == "eval" || key == "invoke-expression";
+                        split.inherits_input += usize::from(hands_input);
                         split.repeats += usize::from(per_item);
                         // `git submodule foreach` runs its command in a folder
                         // the line does not name; the rest of the line is
@@ -487,6 +533,7 @@ fn add_launched(
                             split.restore_dir(place);
                         }
                         split.repeats -= usize::from(per_item);
+                        split.inherits_input -= usize::from(hands_input);
                         // What the script runs, it runs for the shell that started it.
                         split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
                         if let Some(began) = later {
@@ -624,6 +671,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         stdin,
         startup,
         depth,
+        names,
         ..
     } = unit;
     let mut rest = args.into_iter().skip(start);
@@ -655,6 +703,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         dir: None,
         elsewhere: Vec::new(),
         stayed: Vec::new(),
+        adrift: false,
         hidden: false,
         startup,
         repeated: false,
@@ -665,10 +714,13 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         listed: Vec::new(),
         argument_variables: Rc::default(),
         depth,
+        names,
     }
 }
 
-fn launch(key: &str, unit: &Unit) -> Launch {
+/// `input` is whether the program is handed an input of its own: a pipe, a
+/// file, or what the shell whose script runs it was handed (see [`fed`]).
+fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
     let args = &unit.args;
     let posix = unit.shell != Shell::Cmd;
     match key {
@@ -932,18 +984,20 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         }
         "dx" => runner(key, unit),
         "git" => git::launch(args),
-        "bun" => bun(unit),
-        "deno" => deno(unit),
-        key if SHELLS.contains(&key) && posix => shell(args),
+        "bun" => bun(unit, input),
+        "deno" => deno(unit, input),
+        // In every shell: a cmd line starts bash and its kin as the others
+        // do (`bash -c "rm -rf /"`).
+        key if SHELLS.contains(&key) => shell(args),
         // Also under cmd and PowerShell: the code they are given is not
         // read there, which comes back as `unknown`. A line with nothing to
         // run (`python --version`, a bare `python`) reads its input only
         // where it did before: under any but cmd, and anywhere when
-        // something is piped into it.
+        // something is piped into it or a file is redirected onto it.
         key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => {
-            interpreter(key, args, posix || piped(unit))
+            interpreter(key, args, posix || input)
         }
-        "cmd" => cmd(args),
+        "cmd" => cmd(args, unit.shell),
         "powershell" | "pwsh" => powershell(args),
         "invoke-expression" if unit.shell == Shell::PowerShell && unit.downloaded => {
             Launch::Downloaded
@@ -1122,6 +1176,13 @@ fn piped(unit: &Unit) -> bool {
     unit.stage.is_some_and(|stage| stage.index > 0)
 }
 
+/// Whether the unit is handed an input of its own: another program's output
+/// piped into it, or a file, a here-document or a here-string redirected
+/// onto it (`python < x.py`).
+fn fed(unit: &Unit) -> bool {
+    piped(unit) || unit.stdin.is_some()
+}
+
 /// What `coproc` runs: the first word past an optional name, the `{` words
 /// that open a group (`coproc NAME { { cmd; }; }`), and what stands before a
 /// command (`NAME=value` words, `!`). A loop, a conditional or a function
@@ -1129,14 +1190,27 @@ fn piped(unit: &Unit) -> bool {
 /// pieces by the grammar, its body behind the program `do`, so it is not
 /// read.
 pub(super) fn coproc(args: &[Arg]) -> Launch {
+    command_after(args, coproc_name(args), false)
+}
+
+/// How many words name a `coproc` (`coproc NAME { … }`): one or none. A
+/// name stands before a group or a compound command; before a simple
+/// command the first word is the program.
+fn coproc_name(args: &[Arg]) -> usize {
     let word = |at: usize| args.get(at).and_then(Arg::known);
     let opens = |at: usize| word(at).is_some_and(opens_group);
     let compound = |at: usize| word(at).is_some_and(|text| COMPOUND.contains(&text));
     let stuck = |at: usize| word(at).is_some_and(stuck_group);
-    // A name stands before a group or a compound command; before a simple
-    // command the first word is the program.
-    let at = usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)));
-    command_after(args, at, false)
+    usize::from(!opens(0) && !stuck(0) && (opens(1) || stuck(1) || compound(1)))
+}
+
+/// How many groups a `coproc` opens when its words past the name are only
+/// `{` words, the group's commands on the lines after it (`coproc NAME {`,
+/// a newline, `ls`): `None` when it has other words, or none.
+fn coproc_opens_only(args: &[Arg]) -> Option<usize> {
+    let rest = args.get(coproc_name(args)..).unwrap_or_default();
+    (!rest.is_empty() && rest.iter().all(|arg| arg.known().is_some_and(opens_group)))
+        .then(|| coproc_groups(rest))
 }
 
 /// What runs after a word that starts a command of its own (`coproc`,
@@ -1161,6 +1235,16 @@ fn command_after(args: &[Arg], mut at: usize, repeat: bool) -> Launch {
     } else {
         runs(args, Some(at))
     }
+}
+
+/// How many groups the words before what a `coproc` runs open: each `{`
+/// of the words [`coproc`] steps over (`{ {` is one word, two groups).
+fn coproc_groups(own: &[Arg]) -> usize {
+    own.iter()
+        .filter_map(Arg::known)
+        .filter(|text| opens_group(text))
+        .map(|text| text.matches('{').count())
+        .sum()
 }
 
 /// Whether `key` is a word that starts a command of its own, which the

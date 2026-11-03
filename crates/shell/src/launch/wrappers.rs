@@ -581,8 +581,17 @@ pub(super) fn tmux(args: &[Arg]) -> Launch {
 }
 
 /// `cmd /c …` or `cmd /k …` runs the rest of the line in cmd; without
-/// either, cmd reads commands from its input.
-pub(super) fn cmd(args: &[Arg]) -> Launch {
+/// either, cmd reads commands from its input. A line that is not cmd's hands
+/// cmd its words as one command line (see [`command_line`]), which cmd reads
+/// by its own rules.
+pub(super) fn cmd(args: &[Arg], shell: Shell) -> Launch {
+    let line;
+    let args = if shell == Shell::Cmd {
+        args
+    } else {
+        line = command_line(args, shell);
+        line.as_slice()
+    };
     for (at, arg) in args.iter().enumerate() {
         let Some(text) = arg.known() else { continue };
         let lower = text.to_ascii_lowercase();
@@ -605,6 +614,73 @@ pub(super) fn cmd(args: &[Arg]) -> Launch {
     } else {
         Launch::Itself
     }
+}
+
+/// The words `args` as `cmd` reads them when a PowerShell or POSIX line
+/// starts it: the shell builds one command line, putting a word that holds
+/// white space in double quotes, and cmd splits it again, keeping the
+/// quotes, by its own rule for those around the command after `/c` (see
+/// [`native::words`]). So `cmd /c bash -c "rm -rf ~"` runs `bash -c "rm -rf
+/// ~"` from any shell, not `bash -c rm -rf ~`. PowerShell quotes a word with
+/// white space outside the quotes it holds and leaves those as they are (as
+/// it does for `cmd.exe` in every mode of passing arguments); a POSIX shell
+/// on Windows (Cygwin, MSYS2) quotes one with white space or a quote, and
+/// puts `\` before each quote in it, as the C runtime reads them. A word only
+/// known when it runs stays one, where it stands.
+fn command_line(args: &[Arg], shell: Shell) -> Vec<Arg> {
+    let mut words = Vec::new();
+    let mut line: Vec<String> = Vec::new();
+    for arg in args {
+        if let Some(text) = arg.known() {
+            line.push(quoted_for_cmd(text, shell));
+            continue;
+        }
+        let split = native::words("cmd", &words, &line.join(" "));
+        words.extend(split.into_iter().map(Arg::Known));
+        line.clear();
+        words.push(arg.clone());
+    }
+    let split = native::words("cmd", &words, &line.join(" "));
+    words.extend(split.into_iter().map(Arg::Known));
+    words
+}
+
+/// `word` as `shell` writes it on the command line it hands `cmd` (see
+/// [`command_line`]).
+fn quoted_for_cmd(word: &str, shell: Shell) -> String {
+    let powershell = shell == Shell::PowerShell;
+    let mut inside = false;
+    let quote = word.is_empty()
+        || word.chars().any(|c| {
+            if c == '"' {
+                inside = !inside;
+                !powershell
+            } else {
+                c.is_whitespace() && !(powershell && inside)
+            }
+        });
+    if !quote {
+        return word.to_string();
+    }
+    if powershell {
+        return format!("\"{word}\"");
+    }
+    // The C runtime's escapes: the backslashes before a quote doubled and
+    // one more for the quote, and those at the end doubled before the
+    // closing quote.
+    let mut text = String::with_capacity(word.len() + 2);
+    text.push('"');
+    let mut backslashes = 0;
+    for c in word.chars() {
+        if c == '"' {
+            text.extend(std::iter::repeat_n('\\', backslashes + 1));
+        }
+        backslashes = if c == '\\' { backslashes + 1 } else { 0 };
+        text.push(c);
+    }
+    text.extend(std::iter::repeat_n('\\', backslashes));
+    text.push('"');
+    text
 }
 
 /// `powershell` and `pwsh`: `-Command` (or, in Windows PowerShell, a first
@@ -837,6 +913,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         dir: None,
         elsewhere: Vec::new(),
         stayed: Vec::new(),
+        adrift: false,
         hidden: false,
         startup: Rc::default(),
         repeated: false,
@@ -847,6 +924,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         listed: Vec::new(),
         argument_variables: Rc::default(),
         depth: unit.depth,
+        names: unit.names.clone(),
     }));
     in_folder(folder, launch)
 }
@@ -1749,6 +1827,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         dir: None,
         elsewhere: Vec::new(),
         stayed: Vec::new(),
+        adrift: false,
         hidden: false,
         startup: Rc::clone(&unit.startup),
         repeated: false,
@@ -1759,6 +1838,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         listed: Vec::new(),
         argument_variables: Rc::default(),
         depth: unit.depth,
+        names: unit.names.clone(),
     }
 }
 
