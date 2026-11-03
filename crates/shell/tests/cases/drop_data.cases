@@ -1118,6 +1118,88 @@ posix finds=unknown | psql -c '\\setenv LD_PRELOAD /tmp/x.so' -c '\\! ls'
 posix finds=unknown | docker exec db psql -c '\\! ls'
 posix finds=unknown | ssh db "sqlite3 x.db '.shell ls'"
 powershell finds=unknown | psql -c '\\! dir'
+# Each client reads its commands' words its own way, and what it fills in or
+# decodes is not what the line says. `sqlite3` decodes escapes in `"…"`, and
+# a backslash in `'…'` is itself.
+posix finds=unknown | sqlite3 x.db '.shell rm -rf "\\176"'
+posix finds=delete | sqlite3 x.db ".shell 'echo\\\\' ; rm -rf ~ #'"
+posix finds=unknown | sqlite3 x.db '.output "\\056\\056/\\056\\056/\\056bashrc"'
+posix finds=unknown | sqlite3 x.db '.backup "\\056\\056/\\056\\056/\\056bashrc"'
+# `psql` fills in its variables outside quotes, and decodes escapes in `'…'`.
+posix finds=unknown | psql -v f=/home/me/.bashrc -c '\\o :f'
+posix finds=unknown | psql -c '\\set f /home/me/.bashrc' -c '\\o :f'
+posix finds=unknown | psql -c "\\o :'f'"
+posix finds=unknown | psql <<'EOF'\n\\o '\\176/.bashrc'\nEOF
+posix finds=unknown | psql <<'EOF'\n\\o '\\056\\056/\\056\\056/\\056bashrc'\nEOF
+posix finds=unknown | psql -c "\\setenv PAGER 'rm -rf \\176'"
+posix finds=unknown | psql -v p='rm -rf ~' -c '\\setenv PAGER :p'
+posix safe | psql -v x=1 -c '\\echo :x'
+posix safe | psql -c "\\setenv PAGER ''"
+# `sqlcmd` fills in `$(NAME)` before it opens the file or runs the line.
+posix finds=unknown | echo ':out $(HOME)/.bashrc' | sqlcmd
+posix finds=unknown | sqlcmd <<'EOF'\n:setvar F /home/me/.bashrc\n:out $(F)\nEOF
+posix finds=unknown | echo '!! rm -rf $(D)' | sqlcmd
+# A function named by a quoted identifier, in any case.
+posix finds=overwrite | sqlite3 x.db "SELECT \\"writefile\\"('/home/me/.bashrc','x')"
+posix finds=overwrite | sqlite3 x.db "SELECT \\"WriteFile\\"('/home/me/.bashrc','x')"
+posix finds=overwrite | sqlite3 x.db <<'EOF'\nSELECT `writefile`('/home/me/.bashrc','x');\nEOF
+posix finds=unknown | sqlite3 x.db "SELECT [load_extension]('./x')"
+posix finds=delete | sqlite3 x.db "SELECT \\"edit\\"('x','rm -rf ~')"
+# A module that may write files or run programs, one only known when it
+# runs, `require` and `import` named but not called, a process, and code run
+# from text.
+posix finds=unknown | mongosh --eval "import('child_process')"
+posix finds=unknown | mongosh --eval "const r = require; r('child_process')"
+posix finds=unknown | mongosh --eval "process.binding('spawn_sync')"
+posix finds=unknown | mongosh --eval "require('worker_threads')"
+posix finds=unknown | mongosh --eval "require('vm')"
+posix finds=unknown | mongosh --eval "require('fs').writeFileSync('/home/me/.bashrc', 'x')"
+posix finds=unknown | mongosh --eval "require('fs').rmSync('/home/me', {recursive: true})"
+posix finds=unknown | mongosh --eval "(1 ? require : 0)('child_process')"
+posix finds=unknown | mongo --eval "var p = runProgram; p('rm','-rf','/home/me')"
+posix finds=unknown | mongo --eval 'eval("runProgram(1)")'
+posix finds=unknown | mongo --eval "new Function('return 1')()"
+posix finds=unknown | mongo --eval "removeFile('/home/me')"
+posix safe | mongosh --eval "require('node:util')"
+posix safe | mongosh --eval "db.users.find({process: 1})"
+# A `DuckDB` extension is native code the client loads.
+posix finds=unknown reason="runs a program from a database client" | duckdb -c "INSTALL x FROM 'https://x.test'"
+posix finds=unknown | duckdb -c 'LOAD x'
+posix finds=unknown | duckdb -c 'FORCE INSTALL x'
+posix finds=unknown | duckdb -c "LOAD '/tmp/x.duckdb_extension'"
+# `.log` and `.trace` write their file; `.archive` writes what an archive
+# holds, by the names in it.
+posix finds=overwrite | sqlite3 x.db '.log /home/me/.bashrc'
+posix finds=overwrite | sqlite3 x.db '.trace /home/me/.bashrc'
+posix finds=overwrite | sqlite3 x.db '.trace --stmt /home/me/.bashrc'
+posix safe | sqlite3 x.db '.log stderr'
+posix safe | sqlite3 x.db '.trace off'
+posix safe | sqlite3 x.db '.log out.log'
+posix finds=unknown | sqlite3 x.db '.archive -x -C /home/me -f a.zip'
+posix finds=unknown | sqlite3 x.db '.ar -cf /home/me/.bashrc x'
+# `COPY … TO` a string the server decodes, or anything but a string.
+posix finds=unknown | psql -c "COPY t (a) TO E'/home/me/.bashrc'"
+posix finds=unknown | psql -c "COPY t TO U&'/home/me/.bashrc'"
+posix finds=unknown | psql -c 'COPY t TO $$/home/me/.bashrc$$'
+# The server's `lo_export` writes its file, as `COPY … TO` does.
+posix finds=overwrite | psql -c "SELECT lo_export(1, '/home/me/.bashrc')"
+posix finds=unknown | psql -c "SELECT lo_export(1, '/home/' || 'me')"
+posix safe | psql -c "SELECT lo_export(t.oid, 'out.bin') FROM t"
+# A pager the options or the environment name, and `cqlsh`'s `CAPTURE`.
+posix finds=delete | mysql --pager='rm -rf ~' -e 'SELECT 1'
+posix finds=unknown | mysql --pager -e 'SELECT 1'
+posix safe | mysql --pager=less -e 'SELECT 1'
+posix safe | mysql --no-pager -e 'SELECT 1'
+posix finds=delete | PAGER='rm -rf ~' psql -c 'SELECT 1'
+posix finds=delete | env PSQL_PAGER='rm -rf ~' psql -c 'SELECT 1'
+posix finds=delete | export EDITOR='rm -rf ~'; psql -c 'SELECT 1'
+posix finds=unknown | PAGER="$p" psql -c 'SELECT 1'
+posix safe | PAGER=less psql -c 'SELECT 1'
+posix safe | PAGER= psql -c 'SELECT 1'
+posix safe | PAGER='rm -rf ~' mysql -e 'SELECT 1'
+posix finds=overwrite | cqlsh -e "CAPTURE '/home/me/.bashrc'"
+posix safe | cqlsh -e "CAPTURE 'out.txt'"
+posix safe | cqlsh -e 'CAPTURE OFF'
 # A file written in a container is not on this machine; a database it
 # replaces there is not the agent's own.
 posix safe | docker exec db psql -c '\\o /root/.bashrc'

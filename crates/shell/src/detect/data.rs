@@ -56,6 +56,10 @@ struct Client {
     short_output: &'static str,
     /// Long options whose value is a file the client writes (`--output`).
     long_output: &'static [&'static str],
+    /// Long options whose value, attached with `=`, is a command line the
+    /// client runs (`mysql --pager=less`); with none, it runs the one the
+    /// environment names.
+    long_program: &'static [&'static str],
     /// What a word that is no option and no option's value is.
     operands: Operands,
     /// The options whose value is never a word that starts with `-`: without
@@ -154,6 +158,7 @@ const PSQL: Client = Client {
     long_file: &["file"],
     short_output: "oL",
     long_output: &["output", "log-file"],
+    long_program: &[],
     loose: Loose::No,
     bundles: true,
     slash: false,
@@ -227,6 +232,7 @@ const MYSQL: Client = Client {
         "silent",
         "ssl",
         "unbuffered",
+        "pager",
         "verbose",
         "version",
         "vertical",
@@ -240,6 +246,7 @@ const MYSQL: Client = Client {
     long_file: &[],
     short_output: "",
     long_output: &["tee"],
+    long_program: &["pager"],
     loose: Loose::No,
     bundles: true,
     slash: false,
@@ -288,6 +295,7 @@ const CLICKHOUSE: Client = Client {
     long_file: &["queries-file"],
     short_output: "",
     long_output: &[],
+    long_program: &[],
     loose: Loose::Only(&["password"]),
     bundles: true,
     slash: false,
@@ -315,6 +323,7 @@ const SQLCMD: Client = Client {
     long_file: &["input-file"],
     short_output: "o",
     long_output: &[],
+    long_program: &[],
     loose: Loose::No,
     bundles: false,
     slash: true,
@@ -358,6 +367,7 @@ const CQLSH: Client = Client {
     long_file: &["file"],
     short_output: "",
     long_output: &[],
+    long_program: &[],
     loose: Loose::No,
     bundles: true,
     slash: false,
@@ -416,6 +426,7 @@ const MONGO: Client = Client {
     long_file: &["file"],
     short_output: "",
     long_output: &[],
+    long_program: &[],
     loose: Loose::Every,
     bundles: true,
     slash: false,
@@ -504,6 +515,9 @@ struct Given {
     exits: bool,
     /// The files its options tell it to write its output to (`psql -o`).
     outputs: Vec<Arg>,
+    /// The command lines its options tell it to run (`mysql --pager=less`),
+    /// or `None` for one the environment names (`mysql --pager`).
+    programs: Vec<Option<Arg>>,
 }
 
 /// What a long option of a client does with what follows it.
@@ -515,6 +529,8 @@ enum Long {
     File,
     /// Its value is a file it writes.
     Output,
+    /// Its value, attached with `=`, is a command line it runs.
+    Program,
     /// It takes a value.
     Value,
     /// It takes a value, but not from a word that starts with `-`.
@@ -564,6 +580,8 @@ impl Client {
             Long::File
         } else if self.long_output.contains(&option) {
             Long::Output
+        } else if self.long_program.contains(&option) {
+            Long::Program
         } else if self.long_values.contains(&option) {
             match self.loose {
                 Loose::Every => Long::Loose,
@@ -651,8 +669,11 @@ impl Client {
                         Long::Statement => found.push(carry(value, holes, arg)),
                         Long::File => files.push(carry(value, holes, arg)),
                         Long::Output => given.outputs.push(carry(value, holes, arg)),
+                        Long::Program => given.programs.push(Some(carry(value, holes, arg))),
                         Long::Value | Long::Loose | Long::Flag => {}
                     }
+                } else if long == Long::Program {
+                    given.programs.push(None);
                 } else if long == Long::Statement {
                     self.statement_value(&mut iter, found);
                 } else if long == Long::File {
@@ -750,6 +771,16 @@ fn read_text(language: Language, arg: &Arg) -> Reading {
         reading.merge(Reading::UNREADABLE);
     }
     reading
+}
+
+/// Note the command line `value` a client runs: the line when it is
+/// written out, and a program the line does not show when it is not, or is
+/// `None` (the one the environment names).
+fn run_value(acts: &mut Reading, value: Option<&Arg>) {
+    match value.and_then(Arg::known) {
+        Some(line) if !line.trim().is_empty() => acts.run(Program::Line(line.to_string())),
+        _ => acts.program = true,
+    }
 }
 
 /// What the file a `SQLite`-style client opens is: the agent's own, or not.
@@ -2363,6 +2394,21 @@ impl Checker<'_> {
         // What every statement writes and runs, gathered so that a `\cd` or
         // a `\setenv` in one counts for the others.
         let mut acts = Reading::default();
+        // The command lines its options and its environment tell it to run:
+        // `mysql --pager=CMD`, and `PAGER=CMD psql` as `\setenv PAGER CMD`.
+        for program in &given.programs {
+            run_value(&mut acts, program.as_ref());
+        }
+        if language == Language::Sql(Dialect::Postgres) {
+            for (name, value) in unit.argument_variables.iter() {
+                if crate::unit::PSQL_PROGRAMS.contains(&name.as_str()) {
+                    // An empty value turns the pager or editor off.
+                    if value.known() != Some("") {
+                        run_value(&mut acts, Some(value));
+                    }
+                }
+            }
+        }
         // A client given a statement that it runs and then exits (`psql -c`,
         // `mysql -e`) does not read its input, unless a file of statements
         // it is given is its input (`-f -`).

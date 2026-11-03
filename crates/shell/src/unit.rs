@@ -161,8 +161,8 @@ pub(crate) struct Unit {
     /// The values the line gives the variables a program reads as its own
     /// arguments where it runs, by name (see [`Split::argument_variables`]):
     /// `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`, which terraform reads as
-    /// arguments of its command, and `npm_config_call`, the command `npx`
-    /// runs. Shared with the line's, so a long value is not copied for
+    /// arguments of its command, `npm_config_call`, the command `npx`
+    /// runs, and the editor, pager and shell `psql` runs (`PAGER`). Shared with the line's, so a long value is not copied for
     /// each program.
     pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many levels deep the script it came from is nested: `0` for the
@@ -755,11 +755,24 @@ pub(crate) fn npm_call(name: &str) -> bool {
     name.eq_ignore_ascii_case("npm_config_call")
 }
 
-/// Whether a program reads the variable `name` as arguments of its own:
-/// terraform's [`tf_cli_args`], and npm's [`npm_call`]. The line's values
+/// The variables whose value `psql` runs as a command line: the editor of
+/// `\e`, the pager of a long result, and the shell of a bare `\!`.
+pub(crate) const PSQL_PROGRAMS: [&str; 7] = [
+    "EDITOR",
+    "PSQL_EDITOR",
+    "VISUAL",
+    "PAGER",
+    "PSQL_PAGER",
+    "PSQL_WATCH_PAGER",
+    "SHELL",
+];
+
+/// Whether a program reads the variable `name` as arguments or a command
+/// line of its own: terraform's [`tf_cli_args`], npm's [`npm_call`], and the
+/// editor, pager and shell `psql` runs ([`PSQL_PROGRAMS`]). The line's values
 /// of these are noted where it sets them (see [`Split::argument_variables`]).
 pub(crate) fn read_as_arguments(name: &str) -> bool {
-    tf_cli_args(name) || npm_call(name)
+    tf_cli_args(name) || npm_call(name) || PSQL_PROGRAMS.contains(&name)
 }
 
 /// The name a program reads, when `name` is one of [`read_as_arguments`]'s
@@ -962,8 +975,9 @@ pub(crate) struct Split {
     /// The values the variables of [`read_as_arguments`] are given for the
     /// program being added, by name, noted as `node_options` is: terraform
     /// reads `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` as arguments of its
-    /// command, and npm reads `npm_config_call` as the command `npx` and
-    /// `npm exec` run. Each unit shares the list (see
+    /// command, npm reads `npm_config_call` as the command `npx` and `npm
+    /// exec` run, and `psql` runs `PAGER`, `EDITOR` and the like as command
+    /// lines. Each unit shares the list (see
     /// [`Split::note_argument_variable`]).
     pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many assignments and wrappers hand the program being added an
