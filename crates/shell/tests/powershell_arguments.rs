@@ -3,7 +3,9 @@
 //! or in one handed on through `cmd /c` or `bash -c`) and the same escape in
 //! a path, which is still the place it names; the character a backtick names
 //! in an expandable string; each argument of `Write-Output` sent as a line;
-//! and a value piped into a client, which says what it is.
+//! a value piped into a client, which says what it is; the text after
+//! `--%`, an unquoted `$null`, the spaces, quotes and dashes PowerShell reads
+//! as ASCII ones, and the parameters and `-ArgumentList` of `Start-Process`.
 //!
 //! The lines and their answers are in `tests/cases/powershell_arguments.cases`.
 
