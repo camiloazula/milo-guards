@@ -1,0 +1,821 @@
+# A package runner (`npx`, `npm exec`, `pnpm`, `pnpx`, `yarn`, `bunx`, `bun`,
+# `deno`, `dx`, `uv`, `uvx`, `pipx`) runs the program it names, so that
+# program is judged, past every option of the runner that takes a value;
+# `bun` and `deno` run code given inline or read from their input; a script a
+# runner runs may be one the same line writes; and on Windows the script
+# given to npm or pnpm runs in cmd. The format is in CONTRIBUTING.md.
+
+# A package runner is judged by the program it runs. What a runner starts is
+# a program, never a builtin of the shell: a `cd` it runs does not move the
+# line.
+posix safe | npx rimraf dist
+posix safe | npx -y create-vite@latest my-site
+posix safe | uvx ruff check .
+posix safe | uvx ruff@0.5.0 check .
+posix safe | npx --yes prettier --write .
+posix safe | npm exec -- prettier --check .
+posix safe | npm exec --package=typescript tsc
+posix safe | npm install
+posix safe | npm run build
+posix safe | pnpm dlx create-next-app my-app
+posix safe | pnpm exec tsc --noEmit
+posix safe | pnpm install
+posix safe | yarn dlx -p typescript tsc --version
+posix safe | yarn exec tsc
+posix safe | yarn install
+posix safe | bunx prettier --check .
+posix safe | bun x vite build
+posix safe | bun run build
+posix safe | uv tool run ruff check .
+posix safe | uv run pytest
+posix safe | uv sync
+posix safe | pipx run black --check .
+posix safe | pipx list
+posix safe | uvx --from httpie http example.org
+posix safe | npx -p typescript tsc --version
+posix safe | npx rimraf node_modules
+posix safe | pnpm rimraf dist
+posix safe | yarn rimraf dist
+posix safe | bunx rimraf ./build
+posix safe | npx del-cli dist
+posix safe | npx del --dry-run /
+posix safe | npx
+posix safe | uvx
+posix safe | npm exec
+posix safe | bun
+posix safe | bun --version
+posix safe | bun test
+posix safe | bun build ./index.ts --outdir out
+posix safe | bun run script.ts
+posix safe | bun script.ts
+posix safe | bun run -- script.ts
+posix safe | deno fmt
+posix safe | deno task build
+posix safe | deno run npm:vite build
+posix safe | deno main.ts
+# Only del and del-cli have a dry run, and it is spelt out.
+posix safe | npx del-cli --dry-run /
+posix safe | del --dry-run /
+# `npx` hands the `--` on, so `sh` is given `--` and then reads a script file
+# called `-c`; the same after a `--` before `sh`.
+posix safe | npx sh -- -c 'rm -rf ~'
+posix safe | npm exec -- sh -- -c 'rm -rf ~'
+posix safe | npm exec stub -- --flag
+# npm's call script, and a `-c` after the program, which is the program's
+# own.
+posix safe | npx -yc 'echo hi'
+posix safe | npm exec -yc 'echo hi'
+posix safe | npm -c 'echo hi' exec
+posix safe | npx --c 'echo hi'
+posix safe | npx prettier -c .
+posix safe | npm exec prettier -- -c .
+posix safe | npx -y prettier -c .
+# pnpm's shell mode before `exec`.
+posix safe | pnpm -r exec tsc
+posix safe | pnpm -c exec 'echo hi'
+# `pnpx` and `pnx` are `pnpm dlx`.
+posix safe | pnpx create-vite my-site
+posix safe | pnpx rimraf dist
+posix safe | pnx rimraf dist
+posix safe | pnpx -p typescript tsc --version
+posix safe | pnpx --version
+posix safe | pnpx cd ~ && ls
+posix safe | pnx cd / && ls
+# A bare pnpm name runs a script or else the program: read as `pnpm exec
+# NAME`, unless NAME is a command of pnpm ("If there is no script with the
+# specified name, then pnpm will execute the command as a shell script").
+posix safe | pnpm lint
+posix safe | pnpm dev
+posix safe | pnpm build
+posix safe | pnpm test
+posix safe | pnpm start
+posix safe | pnpm format --check
+posix safe | pnpm --filter app lint
+posix safe | pnpm -r build
+posix safe | pnpm rm lodash
+posix safe | pnpm remove lodash
+posix safe | pnpm uninstall lodash
+posix safe | pnpm un lodash
+posix safe | pnpm add lodash
+posix safe | pnpm i
+posix safe | pnpm up
+posix safe | pnpm update
+posix safe | pnpm ls
+posix safe | pnpm list
+posix safe | pnpm env use --global lts
+posix safe | pnpm store prune
+posix safe | pnpm run build
+posix safe | pnpm view react version
+posix safe | pnpm --version
+posix safe | pnpm echo hi
+# `recursive`, `multi` and `m` are pnpm's own spellings of `-r`
+# (pnpm.io/cli/recursive): `pnpm recursive exec` is `pnpm -r exec`.
+posix safe | pnpm recursive exec tsc
+posix safe | pnpm m exec tsc --noEmit
+posix safe | pnpm multi exec -- tsc
+posix safe | pnpm recursive install
+posix safe | pnpm m run build
+posix safe | pnpm multi test
+posix safe | pnpm recursive
+posix safe | pnpm recursive lint
+posix safe | pnpm recursive exec
+posix safe | pnpm exec m x
+# `yarn exec` runs its arguments as a script; `yarn run` starts a delete tool
+# of the project like yarn does.
+posix safe | yarn exec tsc --noEmit
+posix safe | yarn exec 'echo hi'
+posix safe | yarn exec 'tsc & babel src --out-dir lib'
+posix safe | yarn run rimraf dist
+posix safe | yarn run build
+posix safe | yarn run clean
+posix safe | yarn run --silent build
+# bun starts a delete tool of the project by its name.
+posix safe | bun rimraf dist
+posix safe | bun run rimraf dist
+posix safe | bun run clean
+# `bun exec` runs its arguments as a shell script.
+posix safe | bun exec 'echo hi'
+posix safe | bun exec
+posix safe | bun --cwd x exec 'echo hi'
+# `bun run` starts any program on the path that is no file. Names of
+# scripts: unknown programs.
+posix safe | bun run dev
+posix safe | bun run start
+posix safe | bun run test
+posix safe | bun run lint
+posix safe | bun run format
+posix safe | bun run deploy
+posix safe | bun run typecheck
+posix safe | bun run test:unit
+posix safe | bun run build -- --watch
+posix safe | bun --hot run dev
+posix safe | bun run --silent build
+posix safe | bun run --bun dev
+posix safe | bun run --filter app build
+# Files.
+posix safe | bun run ./build.ts
+posix safe | bun run src/main
+posix safe | bun run echo.sh
+# Known programs that only read.
+posix safe | bun run echo X
+posix safe | bun run ls
+posix safe | bun run git status
+# `bun <name>` runs only scripts and local bins.
+posix safe | bun build
+posix safe | bun sh -c 'rm -rf ~'
+posix safe | bun rm -rf ~
+# bun picks its subcommand before any option reads a value, so
+# `bun -F x echo RAN` runs `bunx echo RAN`, and `bun --title repl` opens the
+# REPL.
+posix safe | bun -F x echo RAN
+posix safe | bun --filter x echo RAN
+posix safe | bun --cwd app run build
+posix safe | bun -F app run build
+posix safe | bun --filter app test
+posix safe | bun -c x vite build
+# deno runs a script when it is given no subcommand; `deno x` and `dx` are
+# package runners; its help and version flags only print.
+posix safe | deno npm:vite build
+posix safe | deno -A main.ts
+posix safe | deno watch main.ts
+posix safe | deno watch --allow-all main.ts
+posix safe | deno x prettier --check .
+posix safe | dx prettier --check .
+posix safe | deno x -y prettier .
+posix safe | deno x npm:prettier .
+posix safe | dx
+posix safe | deno x
+posix safe | dx -p typescript tsc --version
+posix safe | deno -v
+posix safe | deno --help=full
+posix safe | deno --help=unstable
+# A plain `cd` still moves the shell.
+posix safe | cd src && rm -f target/x.o
+posix safe | npx prettier --write src && ls
+
+posix finds=delete | bunx rimraf /
+posix finds=delete | pnpm dlx rimraf ~
+posix finds=delete | npx rimraf ~
+posix finds=delete | npx rimraf@5 ~
+posix finds=delete | npx -y rimraf ~
+posix finds=delete | npx --yes rimraf -- ~
+posix finds=delete | npx rimraf --glob ~/*
+posix finds=delete | npx -- rimraf ~
+posix finds=delete | npx -p rimraf rimraf ~
+posix finds=delete | npx --package=rimraf rimraf ~
+posix finds=delete | npx --package rimraf rimraf ~
+posix finds=delete | npx -y -p rimraf@5 rimraf ~
+posix finds=delete | npx @scope/rimraf@1 ~
+posix finds=delete | npm exec rimraf ~
+posix finds=delete | npm exec -- rimraf ~
+posix finds=delete | npm exec --package rimraf -- rimraf ~
+posix finds=delete | npm x rimraf ~
+posix finds=delete | pnpm exec rimraf ~
+posix finds=delete | pnpm dlx -p rimraf rimraf ~
+posix finds=delete | pnpm -C app exec rimraf ~
+posix finds=delete | pnpm --filter app exec rimraf ~
+posix finds=delete | yarn dlx rimraf ~
+posix finds=delete | yarn exec rimraf ~
+posix finds=delete | yarn dlx -p rimraf rimraf ~
+posix finds=delete | pnpm rimraf ~
+posix finds=delete | yarn rimraf ~
+posix finds=delete | bunx rimraf ~
+posix finds=delete | bunx --bun rimraf ~
+posix finds=delete | bunx -p rimraf rimraf ~
+posix finds=delete | bun x rimraf ~
+posix finds=delete | uvx --from pkg rimraf ~
+posix finds=delete | uv tool run rimraf ~
+posix finds=delete | uv tool run --from pkg rimraf ~
+posix finds=delete | uv run rm -rf ~
+posix finds=delete | uv run --python 3.12 rm -rf ~
+posix finds=delete | uvx rm -rf ~
+posix finds=delete | pipx run rm -rf ~
+posix finds=delete | pipx run --spec pkg rimraf ~
+posix finds=delete | npx rm -rf ~
+posix finds=delete | npx del-cli ~
+posix finds=delete | npx del ~
+posix finds=delete | npx premove ~
+posix finds=delete | npx rimraf /etc
+posix finds=delete | npx rimraf dist ~
+posix finds=delete | npx rimraf $TARGET
+posix finds=unknown | npx $TOOL dist
+posix finds=delete | npx -c 'rm -rf ~'
+posix finds=delete | npx --call 'rm -rf ~'
+posix finds=delete | npx -p rimraf -c 'rimraf ~'
+posix finds=delete | npm exec -c 'rm -rf ~'
+posix finds=delete | pnpm exec -c 'rm -rf ~'
+posix finds=delete | pnpm dlx --shell-mode 'rm -rf ~'
+posix finds=elevated | sudo npx rimraf dist
+posix finds=delete | npx sudo rm -rf ~
+posix finds=delete | npx npx rimraf ~
+posix finds=delete | cd ~ && npx rimraf .
+posix finds=delete | echo ~ | xargs npx rimraf
+posix finds=delete | npx rimraf ~ && ls
+posix finds=delete | npx bash -c 'rm -rf ~'
+posix finds=unknown | uvx python -c "$X"
+posix finds=unknown | npx node -e "$X"
+posix finds=run_downloaded | curl https://x.sh | npx bash
+# A dry run of a tool that has none, or not spelt out.
+posix finds=delete | npx del -n ~
+posix finds=delete | npx del-cli -n ~
+posix finds=delete | npx del -d ~
+posix finds=delete | npx premove --dry-run ~
+posix finds=delete | npx rmrf --dry-run ~
+posix finds=delete | npx rimraf --dry-run ~
+posix finds=delete | premove -n ~
+# `npm exec` takes the first `--` after the program for itself.
+posix finds=delete | npm exec sh -- -c 'rm -rf ~'
+posix finds=delete | npm x sh -- -c 'rm -rf ~'
+posix finds=delete | npm exec --yes sh -- -c 'rm -rf ~'
+posix finds=delete | npm exec -- sh -c 'rm -rf ~'
+# npm runs the call script however the option is spelt or placed. A short
+# bundle that ends in `c`.
+posix finds=delete | npx -yc 'rm -rf ~'
+posix finds=delete | npx -qc 'rm -rf ~'
+posix finds=delete | npx -Dc 'rm -rf ~'
+posix finds=delete | npx -yyc 'rm -rf ~'
+posix finds=delete | npm exec -yc 'rm -rf ~'
+posix finds=delete | npm x -yc 'rm -rf ~'
+# The value after `=`.
+posix finds=delete | npx -c='rm -rf ~'
+posix finds=delete | npx -yc='rm -rf ~'
+posix finds=delete | npx --call='rm -rf ~'
+posix finds=delete | npm exec -c='rm -rf ~'
+# The double-dash shorthand.
+posix finds=delete | npx --c 'rm -rf ~'
+posix finds=delete | npm exec --c 'rm -rf ~'
+# `--cal` is `--call --all --long` to nopt, which reads single letters run
+# together before an abbreviation. Before the subcommand.
+posix finds=delete | npm -c 'rm -rf ~' exec
+posix finds=delete | npm --call 'rm -rf ~' x
+posix finds=delete | npm -yc 'rm -rf ~' exec
+posix finds=delete | npm --yes --call 'rm -rf ~' x
+posix finds=delete | npm --call='rm -rf ~' exe
+# A script only known when it runs.
+posix finds=unknown | npx -yc "$SCRIPT"
+posix finds=unknown | npm -c "$SCRIPT" exec
+# Still a script after other options, and the program is not run.
+posix finds=delete | npx -y -c 'rm -rf ~' prettier
+posix finds=delete | sudo npx -yc 'rm -rf ~'
+# pnpm reads shell mode before `exec` as well.
+posix finds=delete | pnpm -c exec 'rm -rf ~'
+posix finds=delete | pnpm --shell-mode exec 'rm -rf ~'
+posix finds=delete | pnpm -r -c exec 'rm -rf ~'
+posix finds=delete | pnpm -C app -c exec 'rm -rf ~'
+posix finds=delete | pnpm --filter app --shell-mode exec 'rm -rf ~'
+posix finds=delete | pnpm -c dlx 'rm -rf ~'
+# `pnpx` and `pnx`.
+posix finds=delete | pnpx rimraf ~
+posix finds=delete | pnx rimraf ~
+posix finds=delete | pnpx rimraf@5 ~
+posix finds=delete | pnpx -p rimraf rimraf ~
+posix finds=delete | pnpx -c "rm -rf ~"
+posix finds=delete | pnx -c 'rm -rf ~'
+posix finds=delete | pnpx --shell-mode 'rm -rf ~'
+posix finds=delete | pnpx sh -c 'rm -rf ~'
+posix finds=unknown | pnpx node -e "$X"
+posix finds=elevated | sudo pnpx rimraf ~
+# A bare pnpm name.
+posix finds=delete | pnpm sh -c "rm -rf ~"
+posix finds=delete | pnpm bash -c 'rm -rf ~'
+posix finds=delete | pnpm find ~ -delete
+posix finds=delete | pnpm shred ~/x
+posix finds=git_discard | pnpm git clean -fdx
+posix finds=delete | pnpm -C app sh -c 'rm -rf ~'
+posix finds=delete | pnpm --filter app find ~ -delete
+posix finds=unknown | pnpm node -e "$X"
+posix finds=elevated | sudo pnpm sh -c 'rm -rf ~'
+# pnpm's spellings of `-r`.
+posix finds=delete | pnpm -r exec rm -rf ~
+posix finds=delete | pnpm recursive exec rm -rf ~
+posix finds=delete | pnpm m exec rm -rf ~
+posix finds=delete | pnpm multi exec rm -rf ~
+posix finds=delete | pnpm recursive exec -- rm -rf ~
+posix finds=delete | pnpm -C app recursive exec rm -rf ~
+posix finds=delete | pnpm recursive --filter app exec rm -rf ~
+posix finds=delete | pnpm recursive dlx rimraf ~
+posix finds=delete | pnpm multi exec rimraf ~
+posix finds=delete | pnpm recursive exec -c 'rm -rf ~'
+posix finds=delete | pnpm recursive -c exec 'rm -rf ~'
+posix finds=delete | pnpm recursive sh -c 'rm -rf ~'
+posix finds=delete | pnpm m rimraf ~
+posix finds=unknown | pnpm recursive exec $TOOL
+# `yarn exec` and `yarn run`.
+posix finds=delete | yarn exec 'rm -rf /home/me'
+posix finds=delete | yarn exec rm -rf ~
+posix finds=delete | yarn exec 'tsc && rm -rf ~'
+posix finds=delete | yarn exec 'ls & rm -rf ~'
+posix finds=delete | yarn --cwd app exec 'rm -rf ~'
+posix finds=delete | yarn exec 'bash -c "rm -rf ~"'
+posix finds=unknown | yarn exec $TOOL
+posix finds=delete | yarn run rimraf ~
+posix finds=delete | yarn run --silent rimraf ~
+posix finds=delete | yarn --cwd app run rimraf ~
+posix finds=delete | yarn run del-cli ~
+posix finds=delete | yarn run premove ~
+posix finds=delete | sudo yarn run rimraf ~
+# bun starts a delete tool of the project by its name.
+posix finds=delete | bun rimraf ~
+posix finds=delete | bun run rimraf ~
+posix finds=delete | bun run --silent rimraf ~
+posix finds=delete | bun --hot run rimraf ~
+posix finds=delete | bun -d x:1 rimraf ~
+posix finds=delete | bun run --cwd app rimraf ~
+posix finds=delete | bun del-cli ~
+posix finds=delete | bun run premove ~
+posix finds=elevated | sudo bun rimraf dist
+# `bun exec`.
+posix finds=delete | bun exec 'rm -rf ~'
+posix finds=delete | bun --cwd x exec 'rm -rf ~'
+posix finds=delete | bun --silent exec 'rm -rf ~'
+posix finds=delete | bun exec --silent 'rm -rf ~'
+posix finds=delete | bun exec 'ls && rm -rf ~'
+posix finds=delete | bun exec rm -rf ~
+posix finds=delete | sudo bun exec 'rm -rf ~'
+# `bun run` of a program on the path.
+posix finds=delete | bun run rm -rf ~
+posix finds=delete | bun run sh -c 'rm -rf ~'
+posix finds=delete | bun run bash -c 'rm -rf ~'
+posix finds=delete | bun run --silent bash -c 'rm -rf ~'
+posix finds=delete | bun --hot run rm -rf ~
+posix finds=delete | bun run --bun rm -rf ~
+posix finds=delete | bun run --cwd app rm -rf ~
+posix finds=delete | bun --cwd app run rm -rf ~
+posix finds=delete | bun run -- rm -rf ~
+posix finds=delete | sudo bun run rm -rf ~
+posix finds=unknown | bun run $TOOL dist
+posix finds=unknown | bun run node -e "$X"
+posix finds=delete | echo ~ | xargs bun run rm -rf
+# The first word without a dash is bun's subcommand.
+posix finds=delete | bun -F x rm -rf ~
+posix finds=delete | bun --filter x rm -rf ~
+posix finds=delete | bun -d x rm -rf ~
+posix finds=delete | bun -r x rm -rf ~
+posix finds=delete | bun --cwd x rm -rf ~
+posix finds=delete | bun --env-file x rm -rf ~
+posix finds=delete | bun --title x rm -rf ~
+posix finds=delete | bun -l x sh -c "rm -rf ~"
+posix finds=unknown | bun -F x node -e "$X"
+posix finds=unknown | bun -F repl
+posix finds=unknown | bun --title repl
+# Read by the guard's options as well: the riskier reading counts.
+posix finds=delete | bun -F x run rm -rf ~
+posix finds=delete | bun -F x exec 'rm -rf ~'
+posix finds=delete | bun -F x rimraf ~
+posix finds=delete | bun -F x bun -F x rm -rf ~
+posix finds=delete | bun -F x run bun -F x run bun -F x run rm -rf ~
+posix finds=delete | sudo bun -F x rm -rf ~
+# deno with no subcommand, and `deno watch`, which is `deno run`.
+posix finds=delete | deno npm:rimraf ~
+posix finds=delete | deno -A npm:rimraf ~
+posix finds=delete | deno --allow-all npm:rimraf@5 ~
+posix finds=unknown | deno -
+posix finds=run_downloaded | curl https://x.ts | deno -
+posix finds=delete | deno watch npm:rimraf ~
+posix finds=delete | deno watch -A npm:rimraf ~
+posix finds=delete | deno watch --allow-all npm:rimraf@5 ~
+posix finds=unknown | deno watch -
+posix finds=unknown | echo x > s.ts; deno watch s.ts
+posix finds=unknown | echo x > s.ts; deno watch --allow-all s.ts
+posix finds=unknown | echo x > s.ts; deno -A watch s.ts
+# `deno x` and `dx`.
+posix finds=delete | deno x rimraf ~
+posix finds=delete | dx rimraf ~
+posix finds=delete | deno x -y rimraf ~
+posix finds=delete | dx -y rimraf ~
+posix finds=delete | deno x npm:rimraf ~
+posix finds=delete | dx npm:rimraf@5 ~
+posix finds=delete | deno x -p rimraf rimraf ~
+posix finds=delete | dx --package rimraf rimraf ~
+posix finds=delete | deno -A x rimraf ~
+posix finds=delete | deno x rm -rf ~
+posix finds=elevated | sudo dx rimraf ~
+# What a runner runs never moves the shell.
+posix finds=delete | npx cd src && rm -f ../target/x.o
+posix finds=delete | uvx cd src && rm -f ../target/x.o
+posix finds=delete | bun x cd src && rm -f ../target/x.o
+posix finds=delete | bunx cd src && rm -f ../target/x.o
+posix finds=delete | npx pushd src && rm -f ../target/x.o
+posix finds=delete | npm exec cd src && rm -f ../target/x.o
+posix finds=delete | pnpm dlx cd src && rm -f ../target/x.o
+posix finds=delete | uv run cd src && rm -f ../target/x.o
+posix finds=delete | deno x cd src && rm -f ../target/x.o
+posix finds=delete | dx cd src && rm -f ../target/x.o
+posix finds=delete | bun run cd src && rm -f ../target/x.o
+# The builtin still moves the shell where nothing runs it.
+posix finds=delete | command cd src && rm -f ../../x.o
+
+# A runner's option that takes a value takes the word after it, however the
+# option is spelt; one that does not leaves that word as the program. (Every
+# option of each runner that takes a value, one line each, is made in
+# package_runners.rs.)
+posix safe | npx --editor vim prettier --check .
+posix safe | npm exec --logs-dir logs prettier --check .
+posix safe | npm --cpu arm64 exec tsc
+posix safe | npm -C app exec tsc
+posix safe | npx --node-options --no-warnings tsc
+posix safe | npx --ed vim prettier --check .
+posix safe | npm exec --yes prettier .
+posix safe | npx --foo ls rimraf ~
+posix safe | pipx run --fetch-missing-python black .
+posix safe | pnpm --store-dir x exec tsc
+posix safe | yarn --cache-folder x exec tsc
+posix safe | uv run --group dev pytest
+posix safe | uv run --extra dev -- pytest
+posix safe | uv run --python-preference only-managed pytest
+posix safe | deno run --preload p main.ts
+posix safe | deno run --reload main.ts
+posix safe | deno run --env-file main.ts
+posix safe | deno run --reload=npm: main.ts
+posix safe | deno run --ext ts main.ts
+posix safe | deno run -L debug main.ts
+posix safe | bun -d x:1 run build.ts
+posix safe | bun --define x:1 build.ts
+posix safe | bun --title t run build.ts
+posix safe | bun --install fallback run build.ts
+posix safe | bun --hot run build.ts
+posix safe | bun --watch build.ts
+posix safe | bun -c=bunfig.toml run build.ts
+posix safe | bun --config=bunfig.toml run build.ts
+posix safe | bun -c=bunfig.toml build.ts
+posix safe | bun -c run build.ts
+posix safe | bun --config run build.ts
+posix safe | bun -ce 'x' build.ts
+# npm and npx.
+posix finds=delete | npx --editor vim rimraf ~
+posix finds=delete | npx --logs-dir x rimraf ~
+posix finds=delete | npx --cpu x rimraf ~
+posix finds=delete | npx --git git rimraf ~
+posix finds=delete | npx -L project rimraf ~
+posix finds=delete | npx --depth 1 rimraf ~
+posix finds=delete | npm --editor vim exec rimraf ~
+posix finds=delete | npm -m msg exec rimraf ~
+# npm's short prefix and node options.
+posix finds=delete | npm -C foo exec rimraf ~
+posix finds=delete | npm -C x exec rimraf ~
+posix finds=delete | npx -C foo rimraf ~
+posix finds=delete | npx --node-options x rimraf ~
+posix finds=delete | npx --node-options --no-warnings rimraf ~
+posix finds=delete | npm exec --node-options x rimraf ~
+posix finds=delete | npx --include dev rimraf ~
+posix finds=delete | npx --omit dev rimraf ~
+posix finds=delete | npx --tag next rimraf ~
+posix finds=delete | npx --before 2030-01-01 rimraf ~
+posix finds=delete | npx --location project rimraf ~
+posix finds=delete | npx --scope @s rimraf ~
+posix finds=delete | npx --otp 123456 rimraf ~
+posix finds=delete | npx --fetch-retries 1 rimraf ~
+posix finds=delete | npx --install-strategy hoisted rimraf ~
+# npm reads an option spelt short or run together like npm does. An
+# unambiguous start of an option's name is the option.
+posix finds=delete | npx --ed vim rimraf ~
+posix finds=delete | npm exec --ed vim rimraf ~
+posix finds=delete | npx --pack-d dir rimraf ~
+posix finds=delete | npm exec --reg http://x rimraf ~
+# `--pre` starts several names: it is no option, takes nothing.
+posix finds=delete | npm exec --pre rimraf ~
+# `npm exec` reads a boolean's `true` or `false`; `-p` is `--parseable` there
+# and `--package` for `npx`.
+posix finds=delete | npm exec --yes false rimraf ~
+posix finds=delete | npm exec -y true rimraf ~
+posix finds=delete | npm exec --browser x rimraf ~
+posix finds=delete | npm exec --color always rimraf ~
+posix finds=delete | npm exec -p rimraf ~
+# A word `npx` takes for a value that `npm exec` does not is the program:
+# `npx --foo prog` runs `prog`.
+posix finds=delete | npx --foo rimraf ~
+posix finds=delete | npx --no-warnings rimraf ~
+posix finds=delete | npx --exe rimraf ~
+posix finds=delete | npm exe rimraf ~
+posix finds=delete | npx --foo rimraf ~ ; rm -rf ~
+# What `npx` rewrites or takes out, with the word after it.
+posix finds=delete | npx -n x rimraf ~
+posix finds=delete | npx --npm x rimraf ~
+posix finds=delete | npx --node-arg x rimraf ~
+posix finds=delete | npx --shell sh rimraf ~
+posix finds=delete | npx --no-install rimraf ~
+posix finds=delete | npx --always-spawn rimraf ~
+posix finds=delete | npx -q rimraf ~
+posix finds=delete | npx -d rimraf ~
+posix finds=delete | npx -C=app rimraf ~
+posix finds=delete | npm exec -yg rimraf ~
+# An option name that is not ASCII is no option, and no panic.
+posix finds=delete | npm exec --ééé rimraf ~
+posix finds=delete | npx --ééé rimraf ~
+# pipx: a flag, not an option that takes a value: `rimraf` is the program.
+posix finds=delete | pipx run --fetch-missing-python rimraf ~
+# pnpm.
+posix finds=delete | pnpm exec --resume-from a rimraf ~
+posix finds=delete | pnpm dlx --allow-build esbuild rimraf ~
+# `-w` is `--workspace-root` for pnpm, a flag.
+posix finds=delete | pnpm -w exec rimraf ~
+# uv skips every option that takes a value, hidden ones too.
+posix finds=delete | uv run --group dev rm -rf ~
+posix finds=delete | uv run --no-group dev rm -rf ~
+posix finds=delete | uv run --only-group dev rm -rf ~
+posix finds=delete | uv run --extra dev rm -rf ~
+posix finds=delete | uv run --no-extra dev rm -rf ~
+posix finds=delete | uv run --no-editable-package p rm -rf ~
+posix finds=delete | uv run --upgrade-group g rm -rf ~
+posix finds=delete | uv run --prerelease-package p rm -rf ~
+posix finds=delete | uv run --fork-strategy fewest rm -rf ~
+posix finds=delete | uv run --exclude-newer-package p=2030-01-01 rm -rf ~
+posix finds=delete | uv run --no-sources-package p rm -rf ~
+posix finds=delete | uv run --config-settings-package p=k=v rm -rf ~
+posix finds=delete | uv run --no-build-isolation-package p rm -rf ~
+posix finds=delete | uv run --no-build-package p rm -rf ~
+posix finds=delete | uv run --no-binary-package p rm -rf ~
+posix finds=delete | uv run -b c.txt rm -rf ~
+posix finds=delete | uv run --build-constraints c.txt rm -rf ~
+posix finds=delete | uv run --torch-backend cpu rm -rf ~
+posix finds=delete | uv tool run --torch-backend cpu rimraf ~
+posix finds=delete | uvx --torch-backend cpu rimraf ~
+posix finds=delete | uvx -b c.txt rimraf ~
+posix finds=delete | uv --directory app run --group dev rm -rf ~
+posix finds=delete | uv run --python-preference only-managed rm -rf ~
+# deno takes `--reload` and `--env-file` only with an equals sign.
+posix finds=delete | deno run --reload npm:rimraf ~
+posix finds=delete | deno run -r npm:rimraf ~
+posix finds=delete | deno run --env-file npm:rimraf ~
+posix finds=delete | deno run --env-file=.env npm:rimraf ~
+posix finds=delete | deno run --ext ts npm:rimraf ~
+posix finds=delete | deno run -L debug npm:rimraf ~
+posix finds=delete | deno run --log-level debug npm:rimraf ~
+posix finds=unknown | deno --reload eval "$X"
+# bun reads an option that takes a value before it looks for code.
+posix finds=unknown | bun -d x:1 -e 'console.log(1)'
+posix finds=unknown | bun --define x:1 -e 'x'
+posix finds=unknown | bun -l .js:jsx -e 'x'
+posix finds=unknown | bun --tsconfig-override t.json -e 'x'
+posix finds=unknown | bun --install fallback -e 'x'
+posix finds=unknown | bun --conditions c -e "$X"
+posix finds=unknown | bun --main-fields main -e 'x'
+posix finds=unknown | bun --extension-order .ts -e 'x'
+posix finds=unknown | bun --jsx-factory h -e 'x'
+posix finds=unknown | bun --jsx-fragment F -e 'x'
+posix finds=unknown | bun --jsx-import-source react -e 'x'
+posix finds=unknown | bun --jsx-runtime classic -e 'x'
+posix finds=unknown | bun --drop console -e 'x'
+posix finds=unknown | bun --feature F -e 'x'
+posix finds=unknown | bun --title t -e 'x'
+posix finds=unknown | bun --console-depth 3 -e 'x'
+posix finds=unknown | bun --user-agent ua -e 'x'
+posix finds=unknown | bun --dns-result-order verbatim -e 'x'
+posix finds=unknown | bun --fetch-preconnect http://x -e 'x'
+posix finds=unknown | bun --max-http-header-size 100 -e 'x'
+posix finds=unknown | bun --unhandled-rejections warn -e 'x'
+posix finds=unknown | bun --disable-warning X -e 'x'
+posix finds=unknown | bun --redirect-warnings w.txt -e 'x'
+posix finds=unknown | bun --shell bun -e 'x'
+posix finds=unknown | bun --elide-lines 1 -e 'x'
+posix finds=unknown | bun --watch-kill-signal SIGTERM -e 'x'
+posix finds=unknown | bun --cpu-prof --cpu-prof-name n -e 'x'
+posix finds=unknown | bun --cpu-prof --cpu-prof-dir d -e 'x'
+posix finds=unknown | bun --heap-prof --heap-prof-name n -e 'x'
+posix finds=unknown | bun --heap-prof --heap-prof-interval 5 -e 'x'
+posix finds=unknown | bun --cron-title t --cron-period p -e 'x'
+posix finds=unknown | bun -d x:1 -- -
+posix finds=unknown | bun -d x:1 repl
+# bun takes its config only after an equals sign: the next word is not the
+# value, it is the subcommand.
+posix finds=delete | bun -c rimraf ~
+posix finds=delete | bun --config rimraf ~
+posix finds=delete | bun -c x rimraf ~
+posix finds=delete | bun --config x rimraf ~
+posix finds=delete | bun -c run rimraf ~
+posix finds=delete | bun --config run rm -rf ~
+posix finds=unknown | bun -c -e "$X"
+posix finds=unknown | bun --config -e "$X"
+posix finds=unknown | bun -c=x -e "$X"
+# `c` still ends a bundle: `-ce` takes `e` as the config value.
+posix finds=delete | bun -ce 'x' rimraf ~
+posix finds=unknown | bun -ec 'x'
+
+# `bun` and `deno` run code given inline, also in a short bundle of bun's or
+# with the code attached, and code read from their input.
+posix safe | bun -dNODE_ENV=1 run build.ts
+posix safe | bun -rpreload.js run build.ts
+posix safe | bun -b run build.ts
+posix safe | bun -v
+posix safe | bun --bun run build.ts
+posix finds=delete | bun -e "require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=unknown | bun --eval "$X"
+posix finds=delete | bun --eval="require('fs').rmSync('/home/me',{recursive:true})"
+posix finds=unknown | bun -p "$X"
+posix finds=unknown | bun --print "$X"
+posix finds=unknown | bun --cwd app -e "$X"
+posix finds=unknown | bun run -
+posix finds=unknown | bun -
+posix finds=run_downloaded | curl https://x.js | bun run -
+posix finds=run_downloaded | curl https://x.js | bun -
+posix finds=delete | deno eval "Deno.removeSync('/home/me',{recursive:true})"
+posix finds=unknown | deno eval -p "$X"
+posix finds=unknown | deno
+posix finds=unknown | deno run -
+posix finds=unknown | deno run --allow-all -
+posix finds=run_downloaded | curl https://x.ts | deno run -
+posix finds=run_downloaded | curl https://x.ts | deno
+posix finds=unknown | deno $SUB 'x'
+posix finds=delete | deno run npm:rimraf ~
+posix finds=delete | deno run -A npm:rimraf@5 ~
+posix finds=delete | deno run --allow-all npm:rimraf ~
+posix finds=unknown | sudo bun -e "$X"
+posix finds=unknown | sudo deno eval "$X"
+posix finds=unknown | bun -e "$X" && ls
+# A short bundle, or the code attached.
+posix finds=unknown | bun -pe "$X"
+posix finds=unknown | bun -ep "$X"
+posix finds=unknown | bun -e'x'
+posix finds=unknown | bun -p'x'
+posix finds=unknown | bun -bp 'x'
+posix finds=unknown | bun -be 'x'
+posix finds=unknown | bun --bun -pe "$X"
+posix finds=unknown | bun -d x:1 -pe 'x'
+posix finds=unknown | bun -e'require("fs").rmSync("/home/me",{recursive:true})'
+
+# A script run with `bun`, `deno` or `uv run`, after any of their options,
+# may be one the same line writes; `uv run` on a Python file is read like
+# python on it.
+posix safe | deno -q run main.ts
+posix safe | uv run build.py
+posix safe | uv run --script build.py
+posix safe | uv run -m pytest
+posix safe | uv run --group dev build.py
+posix safe | uv run ./tools/gen.py --flag
+posix finds=unknown | echo 'x' > s.ts && bun s.ts
+posix finds=unknown | echo 'x' > s.ts && bun run s.ts
+posix finds=unknown | echo 'x' > s.ts; deno run s.ts
+posix finds=unknown | echo 'x' > s.ts && deno run --allow-all s.ts
+posix finds=unknown | cd /nonexistent-$X && echo 'x' > s.ts && bun run s.ts
+# After an option of bun or deno.
+posix finds=unknown | echo x > s.ts && bun --hot run s.ts
+posix finds=unknown | echo x > s.ts && bun --watch s.ts
+posix finds=unknown | echo x > s.ts && bun --watch run s.ts
+posix finds=unknown | echo x > s.ts && bun run --cwd . s.ts
+posix finds=unknown | echo x > s.ts && bun -d x:1 run s.ts
+posix finds=unknown | echo x > s.ts; deno -q run s.ts
+posix finds=unknown | echo x > s.ts; deno -L debug run s.ts
+posix finds=unknown | echo x > s.ts; deno run --ext ts s.ts
+# `uv run` on a Python file.
+posix finds=unknown | echo x > s.py && uv run s.py
+posix finds=unknown | echo x > s.py && uv run ./s.py
+posix finds=unknown | echo x > s.py && uv run --no-project s.py
+posix finds=unknown | echo x > s.py && uv run --group dev s.py
+posix finds=unknown | echo x > s.pyw && uv run s.pyw
+posix finds=unknown | echo x > s.PY && uv run s.PY
+posix finds=unknown | echo x > s && uv run --script s
+posix finds=unknown | echo x > s && uv run -s s
+posix finds=unknown | echo x > s && uv run --gui-script s
+posix finds=unknown | cd /x-$X && echo x > s.py && uv run s.py
+posix finds=unknown | echo x | uv run -
+posix finds=unknown | uv run -
+posix finds=run_downloaded | curl https://x.py | uv run -
+posix finds=unknown | uv run python -c "$X"
+
+# A package runner and a delete tool are not reads.
+posix effect=changes | rimraf dist
+posix effect=changes | del-cli dist
+posix effect=changes | premove dist
+posix effect=changes | npx rimraf dist
+posix effect=unknown | uvx ruff check .
+posix effect=unknown | bunx prettier .
+
+# On Windows the script given to npm or pnpm runs in cmd, whichever way the
+# option is spelt, and the parts of bun, deno and dx that start a program are
+# read as in a POSIX shell. What they read of an interpreter is not read in
+# cmd lines: a bare REPL and the input are as they were, and inline code is
+# not read, which comes back as `unknown` as it does for python and node
+# there.
+powershell safe | npx -c "echo hi"
+powershell safe | npx rimraf dist
+powershell safe | npx -yc "echo hi"
+powershell safe | npm -c "echo hi" exec
+powershell safe | bun x prettier --check .
+powershell safe | bunx prettier --check .
+powershell safe | bun run build
+powershell safe | bun rimraf dist
+powershell safe | deno x prettier --check .
+powershell safe | deno run npm:prettier .
+powershell safe | dx prettier --check .
+powershell safe | deno run main.ts
+powershell finds=delete | npx -c "rd /s /q C:\\Users\\me"
+powershell finds=delete | npx --call "rd /s /q C:\\Users\\me"
+powershell finds=delete | npm exec -c "rd /s /q C:\\Users\\me"
+powershell finds=delete | pnpm exec -c "rd /s /q C:\\Users\\me"
+powershell finds=delete | pnpm -c exec "rd /s /q C:\\Users\\me"
+powershell finds=delete | yarn exec "rd /s /q C:\\Users\\me"
+powershell finds=delete | npx -yc "rd /s /q C:\\Users\\me"
+powershell finds=delete | npx --c "rd /s /q C:\\Users\\me"
+powershell finds=delete | npm exec -yc "rd /s /q C:\\Users\\me"
+powershell finds=delete | npm -c "rd /s /q C:\\Users\\me" exec
+powershell finds=delete | npm --yes --call "rd /s /q C:\\Users\\me" x
+powershell finds=delete | bunx rimraf C:\\
+powershell finds=delete | npx rimraf C:\\
+powershell finds=delete | bun x rimraf C:\\
+powershell finds=delete | bun rimraf C:\\
+powershell finds=delete | bun run rimraf C:\\
+powershell finds=delete | bun run --silent rimraf C:\\
+powershell finds=delete | bun run rd /s /q C:\\Users\\me
+powershell finds=delete | bun --hot run rimraf C:\\
+powershell finds=delete | deno x rimraf C:\\
+powershell finds=delete | deno x -y rimraf C:\\
+powershell finds=delete | deno run npm:rimraf C:\\
+powershell finds=delete | deno run -A npm:rimraf@5 C:\\
+powershell finds=delete | deno npm:rimraf C:\\
+powershell finds=delete | dx rimraf C:\\
+powershell finds=delete | dx npm:rimraf C:\\
+powershell finds=delete | dx -y rimraf C:\\
+cmd safe | npx -c "echo hi"
+cmd safe | npx rimraf dist
+cmd safe | npx -yc "echo hi"
+cmd safe | npm -c "echo hi" exec
+cmd safe | bun x prettier --check .
+cmd safe | bunx prettier --check .
+cmd safe | bun run build
+cmd safe | bun rimraf dist
+cmd safe | deno x prettier --check .
+cmd safe | deno run npm:prettier .
+cmd safe | dx prettier --check .
+cmd safe | deno run main.ts
+cmd finds=delete | npx -c "rd /s /q C:\\Users\\me"
+cmd finds=delete | npx --call "rd /s /q C:\\Users\\me"
+cmd finds=delete | npm exec -c "rd /s /q C:\\Users\\me"
+cmd finds=delete | pnpm exec -c "rd /s /q C:\\Users\\me"
+cmd finds=delete | pnpm -c exec "rd /s /q C:\\Users\\me"
+cmd finds=delete | yarn exec "rd /s /q C:\\Users\\me"
+cmd finds=delete | npx -yc "rd /s /q C:\\Users\\me"
+cmd finds=delete | npx --c "rd /s /q C:\\Users\\me"
+cmd finds=delete | npm exec -yc "rd /s /q C:\\Users\\me"
+cmd finds=delete | npm -c "rd /s /q C:\\Users\\me" exec
+cmd finds=delete | npm --yes --call "rd /s /q C:\\Users\\me" x
+cmd finds=delete | bunx rimraf C:\\
+cmd finds=delete | npx rimraf C:\\
+cmd finds=delete | bun x rimraf C:\\
+cmd finds=delete | bun rimraf C:\\
+cmd finds=delete | bun run rimraf C:\\
+cmd finds=delete | bun run --silent rimraf C:\\
+cmd finds=delete | bun run rd /s /q C:\\Users\\me
+cmd finds=delete | bun --hot run rimraf C:\\
+cmd finds=delete | deno x rimraf C:\\
+cmd finds=delete | deno x -y rimraf C:\\
+cmd finds=delete | deno run npm:rimraf C:\\
+cmd finds=delete | deno run -A npm:rimraf@5 C:\\
+cmd finds=delete | deno npm:rimraf C:\\
+cmd finds=delete | dx rimraf C:\\
+cmd finds=delete | dx npm:rimraf C:\\
+cmd finds=delete | dx -y rimraf C:\\
+# In cmd.
+cmd safe | deno
+cmd safe | bun run -
+cmd safe | bun exec x
+cmd safe | bun -F x echo RAN
+cmd safe | bun --cwd app run build
+# npm reads the call script given after an equals sign in cmd.
+cmd finds=delete | npx -c="rd /s /q C:\\Users\\me"
+cmd finds=delete | npx -yc="rd /s /q C:\\Users\\me"
+cmd finds=unknown | bun -e x
+cmd finds=unknown | deno eval x
+# bun with an option value is read in cmd by both readings.
+cmd finds=delete | bun -F x rimraf C:\\
+cmd finds=delete | bun -F x run rimraf C:\\
+cmd finds=delete | bun --title x rd /s /q C:\\Users\\me

@@ -1,0 +1,439 @@
+# A script the line writes and then runs is `unknown`: the line writes it, so
+# what it does is not in the line. However it is run (handed to a POSIX
+# shell, run as the program itself by its path, with `powershell -File`,
+# `pwsh -File` or `Invoke-Command -FilePath`, by cmd's look in the working
+# folder before `PATH`), and however it is written (by a redirect, a
+# download, a copy, a write cmdlet's named or positional path). Where the
+# name the line writes cannot be read for sure (a pattern, an operand that
+# may be a list, a name only known when it runs, more patterns than the guard
+# reads), a run that may be of that file is not safe either. The format is in
+# CONTRIBUTING.md.
+
+# A file the line writes and runs by its path is a script nobody can read.
+# Nothing written first: a program by its path is only a program.
+posix safe | ./gradlew build
+posix safe | ./x.sh
+posix safe | x/run
+posix safe | /usr/local/bin/tool --help
+posix safe | ./gradlew build > build.log
+posix safe | ./gradlew build 2>/dev/null
+posix safe | echo hi > out.txt; ./gradlew build
+posix safe | make > build.log; ./a.out
+posix safe | ./configure > config.log; make; ./a.out
+posix safe | cargo build 2> err.log; ./target/debug/app
+posix safe | npm test > out.log; ./node_modules/.bin/jest
+# A download of something else, an unpacked archive.
+posix safe | curl -o x.tar.gz https://x.example/x.tar.gz; ./configure
+posix safe | tar xzf x.tar.gz; ./x/configure
+# A bare name is looked up in PATH, not in the folder.
+posix safe | echo 'rm -rf ~' > x.sh; x.sh
+# A different file than the one written.
+posix safe | echo 'rm -rf ~' > y.sh; ./x.sh
+posix safe | echo 'rm -rf ~' > x.sh; ./sub/x.sh
+posix safe | echo 'rm -rf ~' > x.sh; ../x.sh
+posix safe | echo 'rm -rf ~' > x.sh; /tmp/x.sh
+posix safe | echo 'rm -rf ~' > x.sh; ~/x.sh
+posix safe | cd sub; echo 'rm -rf ~' > x.sh; cd ..; ./x.sh
+# Run from a folder that cannot be placed, with nothing written.
+posix safe | cd "$(git rev-parse --show-toplevel)" && ./gradlew build
+posix finds=unknown | echo 'rm -rf ~' > x.sh; ./x.sh
+posix finds=unknown | curl -o run https://x.example/r; chmod +x run; ./run
+# Every way the file is written.
+posix finds=unknown | curl -fsSLo run https://x.example/r && chmod +x run && ./run
+posix finds=unknown | wget -O run https://x.example/r; chmod +x run; ./run
+posix finds=unknown | curl -O https://x.example/install.sh; ./install.sh
+posix finds=unknown | printf 'rm -rf ~' > x.sh; ./x.sh
+posix finds=unknown | echo 'rm -rf ~' | tee x.sh; ./x.sh
+posix finds=unknown | cp evil x.sh; ./x.sh
+posix finds=unknown | echo 'rm -rf ~' >> x.sh; ./x.sh
+# Every way the path is written.
+posix finds=unknown | echo hi > x/run; x/run
+posix finds=unknown | echo hi > sub/x.sh; sub/x.sh
+posix finds=unknown | echo hi > sub/x.sh; ./sub/x.sh
+posix finds=unknown | echo hi > sub/x.sh; ./sub/../sub/x.sh
+posix finds=unknown | echo hi > ./x.sh; ./x.sh
+posix finds=unknown | echo hi > x.sh; ././x.sh
+posix finds=unknown | echo hi > x.sh; ./x.sh arg --flag
+posix finds=unknown | echo hi > /tmp/x; /tmp/x
+posix finds=unknown | curl -fsSL -o /tmp/i https://x.example/i; /tmp/i
+posix finds=unknown | echo hi > ~/x.sh; ~/x.sh
+posix finds=unknown | echo hi > "$HOME/x.sh"; "$HOME/x.sh"
+posix finds=unknown | echo hi > /home/me/work/repo/x.sh; ./x.sh
+# Where the line is when it runs.
+posix finds=unknown | cd sub; echo hi > x.sh; ./x.sh
+posix finds=unknown | echo hi > sub/x.sh; cd sub; ./x.sh
+posix finds=unknown | echo hi > x.sh; cd sub; ../x.sh
+# The program wrapped or nested.
+posix finds=unknown | echo hi > x.sh; sudo ./x.sh
+posix finds=unknown | echo hi > x.sh; env FOO=1 ./x.sh
+posix finds=unknown | echo hi > x.sh; nohup ./x.sh
+posix finds=unknown | echo hi > x.sh; time ./x.sh
+posix finds=unknown | echo hi > x.sh; exec ./x.sh
+posix finds=unknown | echo hi > x.sh; command ./x.sh
+posix finds=unknown | echo hi > x.sh; xargs ./x.sh
+posix finds=unknown | echo hi > x.sh; find . -exec ./x.sh {} \\;
+posix finds=unknown | echo hi > x.sh; bash -c './x.sh'
+posix finds=unknown | echo hi > x.sh; sh -c "./x.sh"
+posix finds=unknown | echo hi > x.sh; ./x.sh | cat
+posix finds=unknown | echo hi > x.sh; ./x.sh &
+posix finds=unknown | echo hi > x.sh; ./x.sh > /dev/null
+posix finds=unknown | echo hi > x.sh; (./x.sh)
+posix finds=unknown | echo hi > x.sh; { ./x.sh; }
+posix finds=unknown | echo hi > x.sh; true && ./x.sh
+posix finds=unknown | echo hi > x.sh; if true; then ./x.sh; fi
+posix finds=unknown | echo hi > x.sh; for i in 1 2; do ./x.sh; done
+# Run before it is written: a loop, a function, a trap.
+posix finds=unknown | ./x.sh; echo hi > x.sh
+posix finds=unknown | f() { ./x.sh; }; echo hi > x.sh; f
+posix finds=unknown | trap './x.sh' EXIT; echo 'rm -rf ~' > x.sh
+posix finds=unknown | trap ./x.sh EXIT; echo 'rm -rf ~' > x.sh
+posix finds=unknown | trap "./x.sh" EXIT; printf 'rm -rf ~' > x.sh
+posix finds=unknown | trap './x.sh' EXIT; curl -o x.sh https://x.example/x
+# From a folder that cannot be placed, with a file written.
+posix finds=unknown | cd $DIR && echo hi > i.sh && ./i.sh
+posix finds=unknown | echo hi > i.sh; cd $DIR; ./i.sh
+posix finds=unknown | cd $DIR; echo hi | tee i.sh; ./i.sh
+# In PowerShell.
+powershell safe | .\\gradlew.bat build
+powershell safe | .\\gradlew.bat build > build.log
+powershell safe | 'x' > out.txt; .\\gradlew.bat build
+# A bare name is not looked up in the folder.
+powershell safe | Set-Content -Path x.ps1 -Value x; x.ps1
+powershell safe | Set-Content -Path x.ps1 -Value x; .\\y.ps1
+powershell safe | cd $env:X; .\\run.ps1
+powershell finds=unknown | 'x' > x.ps1; .\\x.ps1
+powershell finds=unknown | 'x' > x.ps1; & .\\x.ps1
+powershell finds=unknown | 'x' > x.ps1; . .\\x.ps1
+powershell finds=unknown | 'x' > x.ps1; & ./x.ps1
+powershell finds=unknown | Set-Content -Path x.ps1 -Value x; .\\x.ps1
+powershell finds=unknown | Set-Content -Path x.ps1 -Value x; & .\\x.ps1
+# Windows file names are not case sensitive.
+powershell finds=unknown | Set-Content -Path x.ps1 -Value x; .\\X.PS1
+# A name with no extension runs the file with one: `.ps1` first, then the
+# executable extensions.
+powershell finds=unknown | Set-Content -Path x.ps1 -Value x; .\\x
+powershell finds=unknown | 'x' > x.ps1; .\\x
+powershell finds=unknown | Invoke-WebRequest https://x.example/i.ps1 -OutFile i.ps1; .\\i
+powershell finds=unknown | Set-Content -Path x.bat -Value x; .\\x
+powershell finds=unknown | Set-Content -Path x.bat -Value x; & .\\x.bat
+powershell finds=unknown | Invoke-WebRequest https://x.example/i.ps1 -OutFile i.ps1; .\\i.ps1
+powershell finds=unknown | Invoke-WebRequest https://x.example/i.ps1 -OutFile i.ps1; C:\\Users\\me\\dev\\repo\\i.ps1
+powershell finds=unknown | cd $env:X; 'x' > i.ps1; .\\i.ps1
+
+# cmd looks in the working folder before `PATH`, so a bare name is the file
+# the line wrote when it names one, and a name with no extension runs the
+# file with one of the executable extensions.
+cmd safe | gradlew.bat build
+cmd safe | gradlew build > build.log
+cmd safe | echo hi > out.txt & gradlew.bat build
+cmd safe | echo hi > out.txt & dir
+cmd safe | echo hi > out.txt & echo done
+cmd safe | echo hi > out.txt & del out.txt
+cmd safe | echo del x > b.bat & a.bat
+cmd finds=unknown | echo del x > a.bat & a.bat
+cmd finds=unknown | echo del x > a.bat & a
+cmd finds=unknown | echo del x > a.cmd & a
+cmd finds=unknown | echo del x > a.exe & a
+cmd finds=unknown | echo del x > A.BAT & a.bat
+cmd finds=unknown | echo del x > a.bat && call a.bat
+cmd finds=unknown | echo del x > a.bat && start a.bat
+cmd finds=unknown | echo del x > a.bat && cmd /c a.bat
+cmd finds=unknown | curl -o i.bat https://x.example/i.bat & i.bat
+
+# A script the line writes and then runs with `powershell -File` (or
+# `pwsh -File`, `Invoke-Command -FilePath`) is the same script as one run by
+# its path or handed to a POSIX shell.
+# Nothing written first: a script is only a script.
+powershell safe | powershell -File scripts\\build.ps1
+powershell safe | powershell -File .\\scripts\\build.ps1
+powershell safe | powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Verbose
+powershell safe | pwsh -File build.ps1
+powershell safe | pwsh build.ps1
+powershell safe | pwsh -NoProfile -File C:\\tools\\setup.ps1
+# (`& .\\build.ps1` is in read_secret.cases.)
+powershell safe | .\\build.ps1
+powershell safe | . .\\profile.ps1
+powershell safe | Invoke-Command -FilePath scripts\\build.ps1
+powershell safe | powershell -WorkingDirectory sub -File i.ps1
+powershell safe | powershell -File
+# Something else written first.
+powershell safe | 'x' > out.txt; powershell -File build.ps1
+powershell safe | 'x' > out.txt; & .\\build.ps1
+powershell safe | cargo build > build.log; powershell -File build.ps1
+powershell safe | Invoke-WebRequest https://x.example/x.json -OutFile data.json; pwsh -File build.ps1
+# A different file than the one written.
+powershell safe | 'x' > j.ps1; powershell -File i.ps1
+powershell safe | 'x' > sub\\i.ps1; powershell -File i.ps1
+powershell safe | 'x' > i.ps1; powershell -File sub\\i.ps1
+powershell safe | 'x' > i.ps1; pwsh -File ..\\i.ps1
+powershell safe | Set-Location sub; 'x' > i.ps1; Set-Location ..; powershell -File i.ps1
+powershell safe | 'x' > i.ps1; Invoke-Command -FilePath other.ps1
+# The script is not a file the line names.
+powershell safe | 'x' > i.ps1; powershell -Command ls
+powershell safe | 'x' > i.ps1; pwsh -c ls
+powershell safe | 'x' > i.ps1; Invoke-Command -ScriptBlock { ls }
+# Run from a folder that cannot be placed, with nothing written.
+powershell safe | Set-Location $d; powershell -File i.ps1
+# The download is an unknown script, as the POSIX forms are; only a pipe
+# into a shell is a `run_downloaded`.
+powershell finds=unknown | 'x' > i.ps1; powershell -File i.ps1
+powershell finds=unknown | Invoke-WebRequest https://x.example/a.ps1 -OutFile i.ps1; powershell -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; pwsh -File i.ps1
+powershell finds=unknown | Invoke-WebRequest https://x.example/a.ps1 -OutFile i.ps1; pwsh -File i.ps1
+powershell finds=unknown | iwr https://x.example/a.ps1 -OutFile i.ps1; powershell -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; & .\\i.ps1
+powershell finds=unknown | iwr https://x.example/a.ps1 -OutFile i.ps1; & .\\i.ps1
+powershell finds=unknown | 'x' > i.ps1; .\\i.ps1
+powershell finds=unknown | iwr https://x.example/a.ps1 -OutFile i.ps1; .\\i.ps1
+# Every way the file is written.
+powershell finds=unknown | Set-Content -Path i.ps1 -Value x; powershell -File i.ps1
+powershell finds=unknown | 'x' | Out-File -FilePath i.ps1; pwsh -File i.ps1
+powershell finds=unknown | Add-Content -Path i.ps1 -Value x; pwsh -File i.ps1
+powershell finds=unknown | Copy-Item -Path a.ps1 -Destination i.ps1; pwsh -File i.ps1
+powershell finds=unknown | 'x' >> i.ps1; powershell -File i.ps1
+# Every way the parameter is spelled.
+powershell finds=unknown | 'x' > i.ps1; powershell -f i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -fi i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -FILE i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell /File i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -File:i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -File i.ps1 a b
+powershell finds=unknown | 'x' > i.ps1; powershell -File "i.ps1"
+powershell finds=unknown | 'x' > i.ps1; powershell -File 'i.ps1'
+# After the options that take a value.
+powershell finds=unknown | 'x' > i.ps1; powershell -NoProfile -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -ExecutionPolicy Bypass -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -Version 5 -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -WindowStyle Hidden -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; pwsh -NoProfile -NonInteractive -File i.ps1
+# The first word that is not a parameter is the file for `pwsh`.
+powershell finds=unknown | 'x' > i.ps1; pwsh i.ps1
+powershell finds=unknown | 'x' > i.ps1; pwsh -NoProfile i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell i.ps1
+# Every way the path is written.
+powershell finds=unknown | 'x' > i.ps1; powershell -File .\\i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -File ./i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -File I.PS1
+powershell finds=unknown | 'x' > i.ps1; powershell -File C:\\Users\\me\\dev\\repo\\i.ps1
+powershell finds=unknown | 'x' > sub\\i.ps1; powershell -File sub\\i.ps1
+powershell finds=unknown | 'x' > sub\\i.ps1; Set-Location sub; pwsh -File i.ps1
+powershell finds=unknown | Set-Location sub; 'x' > i.ps1; pwsh -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell.exe -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; pwsh.exe -File i.ps1
+# A name with no extension: PowerShell tries `.ps1` first.
+powershell finds=unknown | 'x' > i.ps1; powershell -File i
+powershell finds=unknown | 'x' > i; powershell -File i
+# The program wrapped or nested.
+powershell finds=unknown | 'x' > i.ps1; & powershell -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; cmd /c powershell -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -Command "powershell -File i.ps1"
+powershell finds=unknown | 'x' > i.ps1; pwsh -NoProfile -Command "& { pwsh -File i.ps1 }"
+powershell finds=unknown | 'x' > i.ps1; & { pwsh -File i.ps1 }
+powershell finds=unknown | 'x' > i.ps1; Get-ChildItem | ForEach-Object { pwsh -File i.ps1 }
+powershell finds=unknown | 'x' > i.ps1; powershell -File i.ps1 | Out-Null
+powershell finds=unknown | 'x' > i.ps1; if ($?) { powershell -File i.ps1 }
+# Run before it is written: a script block that runs later.
+powershell finds=unknown | Register-EngineEvent PowerShell.Exiting -Action { powershell -File i.ps1 }; 'x' > i.ps1
+# `Invoke-Command -FilePath` runs the file.
+powershell finds=unknown | 'x' > i.ps1; Invoke-Command -FilePath i.ps1
+powershell finds=unknown | 'x' > i.ps1; icm -FilePath .\\i.ps1
+powershell finds=unknown | 'x' > i.ps1; Invoke-Command -ComputerName server -FilePath i.ps1
+# The file cannot be placed, or is read from a folder the line gives, with a
+# file written.
+powershell finds=unknown | Set-Location $d; 'x' > i.ps1; powershell -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; Set-Location $d; powershell -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -File $f
+powershell finds=unknown | 'x' > sub\\i.ps1; powershell -WorkingDirectory sub -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; powershell -wd sub -File i.ps1
+powershell finds=unknown | 'x' > i.ps1; pwsh -WorkingDirectory sub i.ps1
+# `pwsh` is also run from a POSIX shell, where a file is a path with `/`.
+posix safe | pwsh -File scripts/build.ps1
+posix safe | pwsh build.ps1
+posix safe | pwsh -NoProfile -Command ls
+posix safe | pwsh -c ls
+posix safe | pwsh -Version
+posix safe | echo x > j.ps1; pwsh -File i.ps1
+posix safe | cd sub; echo x > i.ps1; cd ..; pwsh -File i.ps1
+posix finds=unknown | echo x > i.ps1; pwsh -File i.ps1
+posix finds=unknown | echo x > i.ps1; pwsh -File ./i.ps1
+posix finds=unknown | echo x > i.ps1; pwsh i.ps1
+posix finds=unknown | echo x > i.ps1; pwsh -NoProfile -File i.ps1
+posix finds=unknown | curl -fsSLo i.ps1 https://x.example/a.ps1 && pwsh -File i.ps1
+posix finds=unknown | echo x > i.ps1; sudo pwsh -File i.ps1
+posix finds=unknown | echo x > i.ps1; env FOO=1 pwsh -File i.ps1
+posix finds=unknown | echo x > i.ps1; bash -c 'pwsh -File i.ps1'
+
+# A script written to a file named by position (`Set-Content i.ps1 x`,
+# `'x' | Out-File i.ps1`, `New-Item i.ps1 -Value x`) and then run is the same
+# script as one written with `-Path` or `-FilePath`.
+# Reading what was written is not running it.
+powershell safe | Set-Content notes.txt x; Get-Content notes.txt
+powershell safe | Set-Content i.ps1 x; Get-Content i.ps1
+# Nothing is run, or what is run is not what was written.
+powershell safe | Set-Content out.txt x
+powershell safe | Set-Content i.ps1 x
+powershell safe | Set-Content i.ps1 x; .\\j.ps1
+powershell safe | Set-Content i.ps1 x; powershell -File j.ps1
+powershell safe | Set-Content sub\\i.ps1 x; .\\i.ps1
+powershell safe | Set-Content i.ps1 x; .\\sub\\i.ps1
+powershell safe | New-Item i.ps1 -Value x
+powershell safe | 'x' | Out-File i.ps1
+powershell safe | New-Item -ItemType Directory build; .\\i.ps1
+powershell safe | Copy-Item a.ps1 b.ps1; .\\a.ps1
+powershell finds=unknown | Set-Content i.ps1 x; powershell -File i.ps1
+powershell finds=unknown | Set-Content i.ps1 x; .\\i.ps1
+powershell finds=unknown | Add-Content i.ps1 x; pwsh -File i.ps1
+powershell finds=unknown | 'x' | Out-File i.ps1; pwsh -File i.ps1
+powershell finds=unknown | New-Item i.ps1 -Value x; .\\i.ps1
+# The same with the file named.
+powershell finds=unknown | New-Item -Path i.ps1 -Value x; .\\i.ps1
+# The aliases.
+powershell finds=unknown | sc i.ps1 x; .\\i.ps1
+powershell finds=unknown | ac i.ps1 x; .\\i.ps1
+powershell finds=unknown | ni i.ps1 -Value x; .\\i.ps1
+powershell finds=unknown | 'x' | tee i.ps1; .\\i.ps1
+powershell finds=unknown | 'x' | Tee-Object i.ps1; .\\i.ps1
+# Every way the file is run.
+powershell finds=unknown | Set-Content i.ps1 x; & .\\i.ps1
+powershell finds=unknown | Set-Content i.ps1 x; . .\\i.ps1
+powershell finds=unknown | Set-Content i.ps1 x; .\\i
+powershell finds=unknown | Set-Content i.bat x; .\\i
+powershell finds=unknown | Set-Content i.ps1 x; pwsh i.ps1
+powershell finds=unknown | Set-Content i.ps1 x; Invoke-Command -FilePath i.ps1
+# However the file is spelled.
+powershell finds=unknown | Set-Content ./i.ps1 x; .\\i.ps1
+powershell finds=unknown | Set-Content I.PS1 x; .\\i.ps1
+powershell finds=unknown | Set-Content 'i.ps1' x; .\\i.ps1
+powershell finds=unknown | Set-Content "i.ps1" x; .\\i.ps1
+powershell finds=unknown | Set-Content .\\sub\\i.ps1 x; .\\sub\\i.ps1
+powershell finds=unknown | Set-Content sub\\i.ps1 x; sub\\..\\sub\\i.ps1
+powershell finds=unknown | cd sub; Set-Content i.ps1 x; .\\i.ps1
+# After parameters, whatever they take.
+powershell finds=unknown | Set-Content -Value x i.ps1; .\\i.ps1
+powershell finds=unknown | Set-Content -Encoding utf8 i.ps1 x; .\\i.ps1
+powershell finds=unknown | Set-Content -NoNewline i.ps1 x; .\\i.ps1
+powershell finds=unknown | Set-Content -Force i.ps1 x; .\\i.ps1
+powershell finds=unknown | Set-Content -Foo i.ps1 x; .\\i.ps1
+powershell finds=unknown | Set-Content -Foo x i.ps1; .\\i.ps1
+powershell finds=unknown | Out-File i.ps1 -InputObject x; pwsh -File i.ps1
+powershell finds=unknown | 'x' | Out-File -Append i.ps1; pwsh -File i.ps1
+powershell finds=unknown | 'x' | Out-File -Width 80 i.ps1; pwsh -File i.ps1
+powershell finds=unknown | 'x' | Out-File -Encoding utf8 i.ps1; pwsh -File i.ps1
+powershell finds=unknown | Add-Content -Path:i.ps1 x; .\\i.ps1
+# `New-Item` names its file in the folder.
+powershell finds=unknown | New-Item -Name i.ps1 -Value x; .\\i.ps1
+powershell finds=unknown | New-Item -Path . -Name i.ps1 -Value x; .\\i.ps1
+powershell finds=unknown | New-Item -Path sub -Name i.ps1 -Value x; .\\sub\\i.ps1
+powershell finds=unknown | New-Item sub -Name i.ps1 -Value x; .\\sub\\i.ps1
+powershell finds=unknown | New-Item -ItemType File i.ps1; .\\i.ps1
+# A copy or a move by position writes its destination.
+powershell finds=unknown | Copy-Item a.ps1 i.ps1; .\\i.ps1
+powershell finds=unknown | Move-Item a.ps1 i.ps1; .\\i.ps1
+powershell finds=unknown | Copy-Item a.ps1 sub; .\\sub\\a.ps1
+powershell finds=unknown | Copy-Item -Path a.ps1 i.ps1; .\\i.ps1
+powershell finds=unknown | Copy-Item -Destination i.ps1 a.ps1; .\\i.ps1
+# The same names in a POSIX shell.
+posix safe | Set-Content x.sh 'x'; bash y.sh
+posix safe | Set-Content x.sh 'x'
+posix safe | echo x | tee x.sh
+posix safe | cp -r src/* dest/; bash build.sh
+posix safe | echo x | tee *.log; bash build.sh
+posix finds=unknown | Set-Content x.sh 'x'; bash x.sh
+posix finds=unknown | Set-Content x.sh 'x'; sh ./x.sh
+posix finds=unknown | Add-Content x.sh 'x'; bash x.sh
+posix finds=unknown | echo x | tee x.sh; bash x.sh
+posix finds=unknown | echo x | tee *.sh; bash x.sh
+posix finds=unknown | echo x | tee sub/*.sh; bash sub/x.sh
+posix finds=unknown | cp -r src/* dest/; bash dest/x.sh
+
+# A list of paths reaches the guard as separate words, so a file after the
+# first may be one of them, and the same word may only be a value.
+powershell safe | Set-Content a.ps1,b.ps1 x; .\\c.ps1
+powershell finds=unknown | Set-Content a.ps1,b.ps1 x; .\\b.ps1
+powershell finds=unknown | Set-Content -Path a.ps1,b.ps1 -Value x; .\\b.ps1
+powershell finds=unknown | Out-File a.ps1,b.ps1; .\\b.ps1
+powershell finds=unknown | New-Item a.ps1,b.ps1 -Value x; .\\b.ps1
+powershell finds=unknown | New-Item -Name a.ps1,b.ps1 -Value x; .\\b.ps1
+powershell finds=unknown | New-Item -Path sub -Name a.ps1,b.ps1; .\\sub\\b.ps1
+# The value is read as a file too: it is not told from one.
+powershell finds=unknown | Set-Content notes.txt x.ps1; .\\x.ps1
+
+# A pattern writes every file it matches, in its folder.
+powershell safe | Set-Content *.txt x; .\\i.ps1
+powershell safe | Set-Content *.ps1 x; .\\sub\\i.ps1
+powershell safe | Set-Content sub\\*.ps1 x; .\\i.ps1
+powershell safe | Set-Content *.ps1 x
+powershell safe | Copy-Item src\\* dest\\; .\\build.ps1
+powershell finds=unknown | Set-Content *.ps1 x; .\\i.ps1
+powershell finds=unknown | Set-Content -Path *.ps1 -Value x; .\\i.ps1
+powershell finds=unknown | Set-Content i*.ps1 x; .\\I1.PS1
+powershell finds=unknown | Set-Content ?.ps1 x; .\\i.ps1
+powershell finds=unknown | Set-Content sub\\*.ps1 x; .\\sub\\i.ps1
+powershell finds=unknown | Set-Content *.ps1 x; pwsh -File i.ps1
+powershell finds=unknown | Set-Content *.ps1 x; .\\i
+powershell finds=unknown | Copy-Item src\\* dest\\; .\\dest\\x.ps1
+
+# A name only known when it runs, after the first in a list or as the value,
+# is a file that cannot be placed: the line writes any file.
+# Nothing is run, or the name is not of a write cmdlet's file.
+powershell safe | Set-Content notes.txt,$x y
+powershell safe | Set-Content notes.txt $x
+powershell safe | Set-Content -Path notes.txt -Value $x
+powershell safe | Set-Content -Path notes.txt -Value $x; Get-Content notes.txt
+powershell safe | Get-Content notes.txt,$x; .\\i.ps1
+powershell safe | Write-Output notes.txt,$x; .\\i.ps1
+powershell safe | Set-Content -Path notes.txt -Value $x; Get-Process
+# The value is named: it is not a file.
+powershell safe | Set-Content -Path notes.txt -Value $x; .\\i.ps1
+powershell safe | Set-Content notes.txt -Value $x; .\\i.ps1
+powershell safe | New-Item -Path a.txt -Value $x; .\\i.ps1
+powershell finds=unknown | Set-Content notes.txt,$x y; .\\i.ps1
+powershell finds=unknown | Set-Content -Path notes.txt,$x -Value y; .\\i.ps1
+powershell finds=unknown | Add-Content a.txt,$x y; .\\i.ps1
+powershell finds=unknown | New-Item -Path a.txt,$x -Value y; .\\i.ps1
+# The value is not told from a name in a list.
+powershell finds=unknown | Set-Content notes.txt $x; .\\i.ps1
+powershell finds=unknown | Set-Content a.txt,b.txt $x; .\\i.ps1
+powershell finds=unknown | 'x' | Out-File a.txt,$x; .\\i.ps1
+powershell finds=unknown | 'x' | Tee-Object a.txt,$x; .\\i.ps1
+powershell finds=unknown | New-Item a.txt,$x -Value y; .\\i.ps1
+powershell finds=unknown | New-Item -Name a.txt,$x; .\\i.ps1
+# A name of a part: a string or an expression.
+powershell finds=unknown | Set-Content a.txt,"$d\\x" y; .\\i.ps1
+powershell finds=unknown | Set-Content a.txt,(Join-Path $d x) y; .\\i.ps1
+# Whatever runs it, and wherever it is.
+powershell finds=unknown | Set-Content notes.txt,$x y; powershell -File j.ps1
+powershell finds=unknown | Set-Content notes.txt,$x y; .\\sub\\j.ps1
+powershell finds=unknown | Set-Content notes.txt,$x y; .\\j
+powershell finds=unknown | Set-Content notes.txt,$x y; pwsh j.ps1
+powershell finds=unknown | sc notes.txt,$x y; .\\i.ps1
+powershell finds=unknown | ac notes.txt,$x y; .\\i.ps1
+powershell finds=unknown | ni a.txt,$x -Value y; .\\i.ps1
+posix finds=unknown | Set-Content a.txt,$x y; bash b.sh
+
+# `New-Item` makes each path with each name. (Past a few dozen files a line
+# is read as making any file: the lines of many names are made in
+# write_then_run.rs.)
+powershell finds=unknown | New-Item -Path a -Name n1,n2; .\\a\\n2
+
+# A name only known when it runs is written by a line that is not safe, so
+# the line is not judged only by its run.
+powershell finds=overwrite | Set-Content $f x; .\\i.ps1
+powershell finds=overwrite | Add-Content $f x; .\\i.ps1
+powershell finds=overwrite | 'x' | Out-File $f; .\\i.ps1
+powershell finds=overwrite | 'x' | Tee-Object $f; .\\i.ps1
+powershell finds=overwrite | New-Item $f -Value x; .\\i.ps1
+powershell finds=overwrite | New-Item -Name $n -Value x; .\\i.ps1
+powershell finds=overwrite | New-Item -Path $d -Name i.ps1 -Value x; .\\i.ps1
+powershell finds=overwrite | Copy-Item a.ps1 $f; .\\i.ps1
+powershell finds=overwrite | Set-Content (Join-Path $d i.ps1) x; .\\i.ps1
+powershell finds=overwrite | Set-Content "$d\\i.ps1" x; .\\i.ps1
+
+# The same pattern again is one pattern, and a pattern that matches no run is
+# no run of it. (A few distinct patterns, more than the guard reads, and
+# patterns or names too long are made in write_then_run.rs.)
+posix safe | echo x > *.log; bash b.sh
+posix finds=unknown | echo x > *.log; bash b.log
+# The same in PowerShell, whose runs are also read with each extension.
+powershell safe | sc *.log x; .\\b
+powershell finds=unknown | sc *.b* x; .\\b
