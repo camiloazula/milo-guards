@@ -529,6 +529,19 @@ cmd finds=delete | del /evil/share/x
 cmd finds=delete | del /*
 # A switch whose value is a path is judged as a path.
 cmd finds=delete | del /a:C:/Windows
+# A run is split at `/` before each switch's `:value`.
+cmd safe | del /a:h/s/q x
+# A built-in command takes only its own switch names, and cmd never reads a
+# quoted word as a switch: a root-relative folder is a path.
+cmd finds=delete | rd /s /q "/Users"
+cmd finds=delete | del /s /q "/Users"
+cmd finds=delete | rd /s /q "/Windows"
+cmd finds=delete | rd /s /q "/ProgramData"
+cmd finds=delete | rd /s /q "/usr/bin"
+cmd finds=delete | cmd /c "rd /s /q "/Users""
+cmd finds=delete | rd /s /q /Users
+cmd safe | del /ah /s x
+cmd safe | xcopy a b /s /e /y
 # A built-in command ends an argument at `,`, `;` and `=`, and each part is a
 # switch or a path of its own.
 cmd finds=delete | del /q;//evil/s
@@ -558,3 +571,9 @@ cmd safe | robocopy a b /LOG:build\\log.txt
 cmd finds=overwrite | robocopy a b /SAVE:C:\\x\\job
 cmd safe | robocopy a b /SAVE:job
 cmd finds=unknown | robocopy /JOB:x
+# A log or a job file known only when it runs is a write to a place known
+# only then, and no folder to copy.
+cmd finds=overwrite | robocopy a b /LOG:%X%
+cmd finds=overwrite | robocopy a b /UNILOG+:%X%
+cmd finds=overwrite | robocopy a b "/LOG:%X%"
+cmd finds=overwrite | robocopy a b /SAVE:%X%

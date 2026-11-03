@@ -2908,48 +2908,55 @@ pub(crate) fn has_switch(args: &[Arg], name: &str) -> bool {
 }
 
 /// Whether `text` is a `/X`-style switch, not a path: a slash and a switch
-/// name (`/q`, `/-y`, `/?`, `/mir`), or a run of short ones (`/s/q`), with an
-/// optional `:value` after the last (`/a:-d`, `/R:3`). A name is letters,
-/// digits, `-`, `+` and `?`; in a run each is at most
-/// [`RUN_NAME`] characters, so `/evil/share/x` is a path with folders.
+/// name (`/q`, `/-y`, `/?`, `/mir`), or a run of short ones (`/s/q`), each
+/// with an optional `:value` (`/a:-d`, `/R:3`, `/a:h/s/q`). A name is
+/// letters, digits, `-`, `+` and `?`; in a run each is at most [`RUN_NAME`]
+/// characters, so `/evil/share/x` is a path with folders.
 ///
 /// Anything else is a path, which can only be judged more strictly than a
 /// switch: a text that starts with two separators (`//server/share`,
 /// `//?/C:/x`, `/\server`), one core reads as a share or a device
 /// (`/dev/sda`), and one with a `\` or a `.` in it. So is a switch whose
-/// value holds a separator or starts with a drive (`/x://evil/s`, `/x:C:`):
-/// its value is a path, and the argument is judged as one.
+/// value starts with a drive or runs on into a path (`/x:C:/Windows`,
+/// `/x://evil/s`): its value is a path, and the argument is judged as one.
 pub(crate) fn is_switch(text: &str) -> bool {
+    switch_names(text).is_some()
+}
+
+/// The names of the switches `text` is, in order (`/a:h/s/q` is `a`, `s` and
+/// `q`), when it is one by [`is_switch`]; `None` for a path.
+pub(crate) fn switch_names(text: &str) -> Option<Vec<&str>> {
     use milo_guards_core::{spelling, Flavour};
-    let Some(body) = text.strip_prefix('/') else {
-        return false;
-    };
+    let body = text.strip_prefix('/')?;
     if body.is_empty()
         || body.starts_with(['/', '\\'])
         || text.contains(['\\', '.'])
         || spelling::network(text, Flavour::Windows)
         || spelling::device(text, Flavour::Windows).is_some()
     {
-        return false;
+        return None;
     }
-    let (names, value) = match body.split_once(':') {
-        Some((names, value)) => (names, Some(value)),
-        None => (body, None),
-    };
-    let names: Vec<&str> = names.split('/').collect();
-    let run = names.len() > 1;
-    let named = names.iter().all(|name| {
-        !name.is_empty()
-            && (!run || name.chars().count() <= RUN_NAME)
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '+' | '?'))
-    });
     let drive = |value: &str| {
         let mut chars = value.chars();
         chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':')
     };
-    named && !value.is_some_and(|value| value.contains('/') || drive(value))
+    let parts: Vec<&str> = body.split('/').collect();
+    let run = parts.len() > 1;
+    parts
+        .into_iter()
+        .map(|part| {
+            let (name, value) = match part.split_once(':') {
+                Some((name, value)) => (name, Some(value)),
+                None => (part, None),
+            };
+            let named = !name.is_empty()
+                && (!run || name.chars().count() <= RUN_NAME)
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '+' | '?'));
+            (named && !value.is_some_and(drive)).then_some(name)
+        })
+        .collect()
 }
 
 /// The longest name of a switch written in a run of several (`/s/q`,

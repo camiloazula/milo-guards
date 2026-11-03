@@ -1427,8 +1427,8 @@ a path.
   when it runs (see [Core](core.md#what-core-judges)).
 - **A cmd argument that starts with `/` is a switch only by its shape**: a
   switch name (letters, digits, `-`, `+` and `?`: `/q`, `/-y`, `/?`, `/mir`),
-  or a run of names of at most three characters each (`/s/q`), with an
-  optional `:value` after the last (`/a:-d`, `/R:3`). Anything else is a path,
+  or a run of names of at most three characters each (`/s/q`), each with an
+  optional `:value` (`/a:-d`, `/R:3`, `/a:h/s/q`). Anything else is a path,
   judged where it lands, which can only be stricter than a switch: a text that
   starts with two separators (`//evil/share/x`, `//?/C:/Windows`, `/\evil\s`)
   is a share or a long path, as its backslash spelling is, so `del
@@ -1438,11 +1438,17 @@ a path.
   (`/evil/share/x`), or a value that holds a separator or starts with a drive
   (`del /a:C:/Windows`) is a path. A built-in command splits an argument at
   `,`, `;` and `=` first, and each part is a switch or a path of its own
-  (`del /q;//evil/s`). A switch whose value names a file has the value
-  judged: `xcopy /exclude:` reads a list of strings to skip and is no operand;
+  (`del /q;//evil/s`). cmd's built-ins (`del`, `rd`, `copy`, `move`, `ren`,
+  `md`, `mklink`) and `xcopy` take only their own switch names, every name of
+  a run among them: cmd never reads a quoted word as a switch and the guard
+  no longer sees the quotes, so `rd /s /q "/Users"` deletes the folder
+  `\Users` and is `delete`, as is `rd /s /q /Users`. A switch whose value
+  names a file has the value judged: `xcopy /exclude:` reads a list of
+  strings to skip and is no operand;
   `robocopy`'s `/LOG:`, `/LOG+:`, `/UNILOG:` and `/UNILOG+:` write a log and
   `/SAVE:` a job file (the name and `.rcj`), each judged as a write
-  (`robocopy a b /LOG:C:\Users\me\.bashrc` is `overwrite`); `/JOB:` copies
+  (`robocopy a b /LOG:C:\Users\me\.bashrc` is `overwrite`, and so is
+  `/LOG:%X%`, a write to a place known only when it runs); `/JOB:` copies
   by a job file the guard never reads, so it is `unknown`.
 
 Inside a workspace or a temporary directory is the agent's own. Not the agent's
