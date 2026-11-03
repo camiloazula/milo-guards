@@ -20,6 +20,7 @@ use aliases::{Set, Stands};
 use crate::detect::DOWNLOADERS;
 use crate::launch;
 use crate::path::Made;
+use crate::said::Said;
 use crate::unit::{self, Arg, Between, Listing, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::glob;
@@ -3453,7 +3454,7 @@ impl Walker<'_> {
             {
                 self.split.problem(
                     Rule::RunDownloaded,
-                    "runs a downloaded script",
+                    Said::downloaded_script(),
                     Some(unit::text(&node, self.source)),
                 );
             }

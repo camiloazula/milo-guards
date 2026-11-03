@@ -434,6 +434,7 @@ unit 1: rm
   findings
     elevated: runs as root (sudo)
     delete: deletes your home directory (~)
+      instead: delete inside the workspace, or ask the user
 unit 2: bash
   shell: posix
   args
@@ -447,6 +448,7 @@ unit 3: git
     --hard
   findings
     git_discard: throws away uncommitted changes
+      instead: stash the changes first (`git stash`)
 ";
     assert_eq!(tree, expected);
 }

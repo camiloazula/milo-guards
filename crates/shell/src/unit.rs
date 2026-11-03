@@ -11,6 +11,7 @@ use crate::dotglob;
 use crate::effect::Kind;
 use crate::extended;
 use crate::inline;
+use crate::said::Said;
 use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
@@ -4020,6 +4021,7 @@ impl Split {
             rule: Rule::Unknown,
             reason: "runs code the guard does not read fully".to_string(),
             target: Some(inline::shorten(code)),
+            instead: None,
         }
     }
 
@@ -4043,12 +4045,10 @@ impl Split {
         self.moved > 0
     }
 
-    pub(crate) fn problem(&mut self, rule: Rule, reason: &str, target: Option<&str>) {
-        self.findings.push(Finding {
-            rule,
-            reason: reason.to_string(),
-            target: target.map(str::to_string),
-        });
+    /// Note a finding of `rule` about `target`, as [`Said`] says it.
+    pub(crate) fn problem(&mut self, rule: Rule, said: impl Into<Said>, target: Option<&str>) {
+        self.findings
+            .push(said.into().finding(rule, target.map(str::to_string)));
     }
 }
 

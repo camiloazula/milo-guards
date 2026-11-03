@@ -139,6 +139,7 @@ fn finding(rule: Rule, reason: impl Into<String>, target: Option<String>) -> Fin
         rule,
         reason: reason.into(),
         target,
+        instead: None,
     }
 }
 

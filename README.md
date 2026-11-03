@@ -195,9 +195,10 @@ byte ranges to scrub, and `code::read` and `code::understand` read a snippet of
 Python or JavaScript. Every example in the crate's documentation is a test too;
 `cargo doc --open` shows them all, one per guard.
 
-A finding has three fields: `rule`, the enum value with its wire name; `reason`,
-the words to show; and `target`, what the finding is about, when there is one.
-A finding about a secret never holds the secret.
+A finding has four fields: `rule`, the enum value with its wire name; `reason`,
+the words to show; `target`, what the finding is about, when there is one; and
+`instead`, what to do instead, where there is a real way out (`git stash` before
+a `git reset --hard`). A finding about a secret never holds the secret.
 
 If a guard calls a harmless line risky, that is a bug: open an issue. If it
 calls a line safe that deletes, overwrites or sends something beyond the

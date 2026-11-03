@@ -59,6 +59,9 @@ impl<R> Assessment<R> {
 }
 
 /// One reason something is risky.
+///
+/// A plain struct, not `#[non_exhaustive]`: each guard builds one in its own
+/// crate, and a caller may build one by hand.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Finding<R> {
     /// The rule that found it.
@@ -69,4 +72,9 @@ pub struct Finding<R> {
     /// The part of the input it is about, as written, where there is one:
     /// `~`.
     pub target: Option<String>,
+    /// What to do instead, in the same voice as `reason`, where there is a
+    /// real way out: "stash the changes first (`git stash`)" beside `throws
+    /// away uncommitted changes`. `None` where there is no safe general
+    /// advice, as for a line that runs as root.
+    pub instead: Option<String>,
 }

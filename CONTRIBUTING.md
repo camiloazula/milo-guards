@@ -110,10 +110,13 @@ command line, and it may hold anything, a ` | ` included.
   found; `a/b` is either of two), `rules=RULES` (exactly these, in order),
   `first=RULE` (the first finding), `lacks=RULES` (none of them),
   `reason="..."` (the reason of the `first` finding, or of the one rule of
-  `finds`) and `effect=` with `reads_workspace`, `reads_beyond`, `changes` or
-  `unknown`. A rule is its wire name; a list is comma separated. A value
-  with a space is quoted. Every case is also held to the agreement checks:
-  its `effect`, `explain` and `effect_paths` agree with `classify`.
+  `finds`), `instead="..."` (what that same finding says to do instead, or
+  `instead=none` for no advice) and `effect=` with `reads_workspace`,
+  `reads_beyond`, `changes` or `unknown`. A rule is its wire name; a list is
+  comma separated. A value with a space is quoted. Every case is also held
+  to the agreement checks: its `effect`, `explain` and `effect_paths` agree
+  with `classify`; and every finding's reason and `instead` are each one
+  plain sentence, with no trailing period.
 - **A `paths` line** names a machine: `base=MACHINE`, or `cwd=` and `home=`;
   then `workspace=` for each workspace folder (added to the base's), and
   `folder=` or `file=` for a protected path, each followed by its `words=`.
@@ -126,8 +129,8 @@ A case file is refused, every bad line named by its file and line, for a
 raw tab, carriage return or other control character, a space at the start or
 end of a line or of a command line (write `\s`), an unknown escape, an unknown
 word, field, shell, rule, effect or paths name, an answer that is not whole
-(no answer, `safe` with a rule, `reason` without its one rule, a field
-twice), a case without its `| LINE`, and a case that repeats another (the
+(no answer, `safe` with a rule, `reason` or `instead` without its one rule,
+a field twice), a case without its `| LINE`, and a case that repeats another (the
 same shell, paths, line and answer). A missing file fails its test, and
 `tests/cases.rs` fails for a case file no test file checks and for a case
 that repeats one in another file checked in the same build (a test file that

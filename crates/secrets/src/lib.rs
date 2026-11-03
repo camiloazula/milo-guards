@@ -222,6 +222,7 @@ pub fn find(text: &str) -> Assessment {
                 rule: hit.rule,
                 reason: hit.reason.to_string(),
                 target: Some(mask::target(read, hit)),
+                instead: None,
             })
             .collect(),
     )
