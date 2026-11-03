@@ -107,6 +107,10 @@ pub(crate) struct Unit {
     /// before it may not have run (see [`Split::elsewhere`]): a script it
     /// runs may be the file of that name in any of them.
     pub(crate) elsewhere: Vec<Option<Arg>>,
+    /// The folders the line is still in when a plain `cd` before it failed
+    /// (see [`Split::stayed`]): a script it runs may be the file of that
+    /// name in any of them.
+    pub(crate) stayed: Vec<Option<Arg>>,
     /// Whether an earlier unit in the line turned on a shell option that
     /// lets a wildcard match a leading dot (`shopt -s dotglob`, `setopt
     /// globdots`, a non-empty `GLOBIGNORE`): its patterns can match `.git`.
@@ -213,6 +217,7 @@ impl Unit {
             stdin: None,
             dir: None,
             elsewhere: Vec::new(),
+            stayed: Vec::new(),
             hidden: false,
             startup: Rc::default(),
             repeated: false,
@@ -609,6 +614,33 @@ pub(crate) struct Split {
     /// most [`MAX_ELSEWHERE`]; past that, one folder only known when it
     /// runs.
     elsewhere: Vec<Option<Arg>>,
+    /// The folders the line is still in when a plain `cd` failed: one that
+    /// is not in a branch, a loop, a function body, a pipeline stage or
+    /// behind a wrapper (those are [`Self::elsewhere`]'s), read after the
+    /// line wrote a file. A `cd` to a folder that is not there prints an
+    /// error and the shell (POSIX, cmd, PowerShell) runs the next command
+    /// where it was, so a file written before it and run after it may be the
+    /// one the line runs. Only that
+    /// judgement reads these (see [`Unit::stayed`]): where paths are placed,
+    /// redirects and every other check take the `cd` as run. Each is moved on
+    /// by every `cd` read since; a command on the right side of `&&` after
+    /// the `cd` runs only when it ran, so the list keeps them until it ends
+    /// (see [`Chain::stayed`]). A `cd` that only steps up (`cd ..`) goes back
+    /// through a folder the line came through and is taken as run. At most
+    /// [`MAX_ELSEWHERE`]; past that, each file written so far is judged by
+    /// its name (see [`Self::written_by_name`]) and none are kept.
+    stayed: Vec<Option<Arg>>,
+    /// How many of `writes`, and of `units`, have been judged by their name
+    /// when the folders in [`Self::stayed`] were too many.
+    named_writes: usize,
+    named_units: usize,
+    /// The folders the last unit added to [`Self::stayed`], when it is a
+    /// plain `cd`: the right side of `&&` after it runs only when it ran.
+    last_stayed: Vec<Option<Arg>>,
+    /// Whether the line has written a file so far: a redirect, or a command
+    /// that writes one. Before that, a plain `cd` that failed leaves no file
+    /// written where the line stayed.
+    wrote: bool,
     /// The units that move the line from a folder that is not certain (see
     /// [`Self::maybe_moved`]; a loop or a function body runs again from where
     /// its last `cd` went), by their place in `units`.
@@ -862,6 +894,7 @@ pub(crate) struct Place {
     later: usize,
     maybe_moved: bool,
     elsewhere: Vec<Option<Arg>>,
+    stayed: Vec<Option<Arg>>,
 }
 
 /// A list of commands joined by `&&` or `||` being read, from
@@ -898,6 +931,10 @@ struct Chain {
     /// before it let it, so only a command after the list may be in one of
     /// them, until an `||` (see [`Self::or`]).
     stops: Vec<Option<Arg>>,
+    /// The same for a plain `cd` that may have failed (see
+    /// [`Split::stayed`]): the folders the line stayed in, kept from the
+    /// right side of the `&&` after it, which runs only when it ran.
+    stayed: Vec<Option<Arg>>,
     /// Whether the list has an `||`: a command after one runs when a side
     /// before it failed, or when the left of the `||` ran without the ones
     /// between, so from then on each folder the list may have stopped in is
@@ -1018,6 +1055,8 @@ impl Split {
     pub(crate) fn push(&mut self, mut unit: Unit) {
         unit.dir.clone_from(&self.dir);
         unit.elsewhere.clone_from(&self.elsewhere);
+        unit.stayed.clone_from(&self.stayed);
+        self.last_stayed.clear();
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
         self.note_call(&unit);
@@ -1101,6 +1140,26 @@ impl Split {
                 elsewhere.push(self.dir.clone());
                 elsewhere.extend(self.elsewhere.iter().cloned());
             }
+            // The folders a plain `cd` that failed left the line in move
+            // on too; a `cd` that may not have run keeps them as they were,
+            // and a plain one that may have failed keeps every folder the
+            // line may be in now (see [`Self::stayed`]).
+            let mut stayed: Vec<Option<Arg>> = self
+                .stayed
+                .iter()
+                .map(|from| Some(self.moved_to(from.as_ref(), &target, unit.shell)))
+                .collect();
+            let mut added = Vec::new();
+            if unsure {
+                stayed.extend(self.stayed.iter().cloned());
+            } else if self.wrote && !steps_up(&target, unit.shell) {
+                added = std::iter::once(self.dir.clone())
+                    .chain(self.elsewhere.iter().cloned())
+                    .chain(self.stayed.iter().cloned())
+                    .filter(|folder| !stayed.contains(folder))
+                    .collect();
+                stayed.extend(added.iter().cloned());
+            }
             // The folder holds code when the target does (it replaced the
             // folder, or was put after it), or when the folder did and the
             // target was put after it: a join is longer than its target.
@@ -1116,7 +1175,11 @@ impl Split {
             self.pwd.unplain |= self.dir_code;
             self.dir = Some(dir);
             self.set_elsewhere(elsewhere);
+            self.set_stayed(stayed);
+            added.retain(|folder| self.stayed.contains(folder));
+            self.last_stayed = added;
         }
+        self.wrote = self.wrote || !crate::detect::written_by(&unit).is_empty();
         self.units.push(unit);
     }
 
@@ -1148,6 +1211,49 @@ impl Split {
             ))];
         }
         self.elsewhere = kept;
+    }
+
+    /// Say a plain `cd` that failed may have left the line in each of
+    /// `folders` (see [`Self::stayed`]), once each and not where the walk has
+    /// it; past [`MAX_ELSEWHERE`], the files written so far are judged by
+    /// their name instead (see [`Self::written_by_name`]).
+    fn set_stayed(&mut self, folders: Vec<Option<Arg>>) {
+        let mut kept: Vec<Option<Arg>> = Vec::new();
+        for folder in folders {
+            if folder != self.dir && !kept.contains(&folder) {
+                kept.push(folder);
+            }
+        }
+        if kept.len() > MAX_ELSEWHERE {
+            self.written_by_name();
+            kept.clear();
+        }
+        self.stayed = kept;
+    }
+
+    /// Past the most folders a plain `cd` that failed may have left the line
+    /// in, the line may be in any of them: each file written so far counts
+    /// as written in every folder by its name (see [`Self::unsure_writes`]),
+    /// so a later run of a script of that name, from any folder, may be it,
+    /// and a run of another name stays what it was.
+    fn written_by_name(&mut self) {
+        let redirects = self.writes.get(self.named_writes..).unwrap_or_default();
+        let mut named: Vec<Write> = redirects.to_vec();
+        for unit in self.units.get(self.named_units..).unwrap_or_default() {
+            named.extend(
+                crate::detect::written_by(unit)
+                    .into_iter()
+                    .map(|target| Write {
+                        shell: unit.shell,
+                        target,
+                        dir: unit.dir.clone(),
+                        hidden: unit.hidden,
+                    }),
+            );
+        }
+        self.named_writes = self.writes.len();
+        self.named_units = self.units.len();
+        self.unsure_writes.extend(named);
     }
 
     /// Where the cmd unit `unit`, which moves to `target`, takes the line,
@@ -1486,8 +1592,11 @@ impl Split {
 
     /// An `||` in `list`: its right side runs only when the left failed, so
     /// a `cd` on the left may not have moved the line, and the line may be
-    /// where the list began or in any folder it may have stopped in.
+    /// where the list began or in any folder it may have stopped in. A plain
+    /// `cd` just before it that failed is when it runs (see
+    /// [`Self::stayed`]).
     pub(crate) fn list_or(&mut self, list: &List) {
+        self.last_stayed.clear();
         self.chain.or = true;
         if self.moves != list.moves {
             self.maybe_moved = true;
@@ -1497,8 +1606,16 @@ impl Split {
     }
 
     /// Begin a right side of `&&` or `||` in a list; [`Self::link_end`] ends
-    /// it. It may not run, so it is a branch.
+    /// it. It may not run, so it is a branch. After `&&` it runs only when
+    /// the left side did, so the folders a plain `cd` that ends the left side
+    /// stayed in when it failed are left for after the list (see
+    /// [`Chain::stayed`]).
     pub(crate) fn link_start(&mut self) -> Link {
+        let held = std::mem::take(&mut self.last_stayed);
+        if !held.is_empty() {
+            self.stayed.retain(|folder| !held.contains(folder));
+            self.chain.stayed.extend(held);
+        }
         self.branches += 1;
         self.links += 1;
         Link {
@@ -1534,6 +1651,12 @@ impl Split {
             let mut folders = std::mem::take(&mut self.elsewhere);
             folders.extend(stops);
             self.set_elsewhere(folders);
+        }
+        let stayed = std::mem::take(&mut self.chain.stayed);
+        if !stayed.is_empty() {
+            let mut folders = std::mem::take(&mut self.stayed);
+            folders.extend(stayed);
+            self.set_stayed(folders);
         }
     }
 
@@ -1738,6 +1861,7 @@ impl Split {
     /// Add a redirect's write, made where the line has moved to, or from
     /// where the unit it is on started (see [`Self::open_from`]).
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
+        self.wrote = true;
         let hidden = self.hidden();
         for dir in self.redirect_dirs() {
             if self.bodies > 0 {
@@ -2048,6 +2172,7 @@ impl Split {
             later: self.later.len(),
             maybe_moved: self.maybe_moved,
             elsewhere: self.elsewhere.clone(),
+            stayed: self.stayed.clone(),
         }
     }
 
@@ -2071,6 +2196,8 @@ impl Split {
         self.moves = place.moves;
         self.maybe_moved = place.maybe_moved;
         self.elsewhere = place.elsewhere;
+        self.stayed = place.stayed;
+        self.last_stayed.clear();
     }
 
     /// Record that the line sets or unsets the variable `name`, for `effect`.
@@ -2289,6 +2416,24 @@ fn cmd_drive_switch(unit: &Unit) -> Option<char> {
     let letter = chars.next().filter(char::is_ascii_alphabetic)?;
     (chars.next().is_none() && unit.args.first().and_then(Arg::known) == Some(":"))
         .then_some(letter)
+}
+
+/// Whether a `cd` to `target` only steps up (`..`, `../..`) or stays (`.`):
+/// it goes back through folders the shell came through, so it is taken as
+/// run (see [`Split::stayed`]).
+fn steps_up(target: &Arg, shell: Shell) -> bool {
+    let separators: &[char] = if shell == Shell::Posix {
+        &['/']
+    } else {
+        &['/', '\\']
+    };
+    target.known().is_some_and(|text| {
+        !text.is_empty()
+            && text
+                .split(separators)
+                .all(|step| matches!(step, "" | "." | ".."))
+            && !text.starts_with(separators)
+    })
 }
 
 /// Where a `cd` (`pushd`, `Set-Location`) moves to, when `unit` is one.

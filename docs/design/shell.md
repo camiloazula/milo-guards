@@ -2113,6 +2113,31 @@ Some risks only show when units are read together.
   build.log; ./app` runs no file of a name it wrote and stays safe. Past
   eight such folders the line may be anywhere, and a run of a script by a
   relative path is `unknown` once the line writes any file.
+  A plain `cd` may fail too: a folder that is not there is an error, and
+  POSIX shells, cmd and PowerShell (whose `cd` error does not stop the line,
+  whatever `-ErrorAction` says, since a `try` or a `trap` may go on past it)
+  run the next command where the line was. So for a run of a file only, a
+  plain `cd` (`cd`, `pushd`, `Set-Location`, an `if true` body's, one before
+  `&&`), read after the line wrote a file, also leaves the line in every
+  folder it may have been in before it, each moved on by every later `cd`:
+  `echo x > x.sh; cd s; bash x.sh`, `echo x > x.bat & cd s & x.bat` and
+  `'x' > x.ps1; Set-Location s; .\x.ps1` may run the file they wrote and are
+  `unknown`. Nothing else takes the `cd` as one that may have failed: where
+  paths are placed, where a redirect opens and every other check go on from
+  where it moved the line, and a file written after it is placed from there
+  alone. A command on the right side of the `&&` after it runs only when it
+  ran, so the folders it may have stayed in count only after the list (or
+  from an `||` on): `echo x > x.sh; cd s && bash x.sh` stays safe, `echo x >
+  x.sh; cd s && make; bash x.sh` is `unknown`. Before the line writes a file
+  there is nothing to run where it stayed, so `cd build; make; ./app` and
+  `cd s; bash x.sh` stay safe, and a `cd` that only steps up (`cd ..`,
+  `cd ../..`, cmd's `cd..`) goes back through folders the shell came through
+  and is taken as run, so `cd sub; echo x > x.sh; cd ..; ./x.sh` stays safe.
+  Past eight such folders (a chain of `cd`s into folders, each of which may
+  have failed) each file written so far counts as written in every folder by
+  its name, as above: a run of a script of that name is `unknown`, and one of
+  another name (`echo x > log; cd a; cd b; cd c; cd d; cd e; cd f; ./app`)
+  stays safe.
   The file may be run as the program itself, not only handed to a shell: a
   program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
   file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x

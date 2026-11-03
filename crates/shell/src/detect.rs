@@ -930,10 +930,11 @@ impl Checker<'_> {
 
     /// Whether the line writes the file `name` names from where `unit` runs,
     /// or from any other folder the line may be in then (see
-    /// [`Unit::elsewhere`]).
+    /// [`Unit::elsewhere`] and [`Unit::stayed`]).
     fn names_written(&self, unit: &Unit, name: &str) -> bool {
         std::iter::once(unit.dir.as_ref())
             .chain(unit.elsewhere.iter().map(Option::as_ref))
+            .chain(unit.stayed.iter().map(Option::as_ref))
             .any(|dir| {
                 self.pattern_written(dir, name, unit.shell)
                     || self
@@ -984,16 +985,18 @@ impl Checker<'_> {
 
     /// `unit` runs `script`, from `dir`: say so when the line writes it, or
     /// may. From where `unit` runs, it is also judged from every other folder
-    /// the line may be in then (see [`Unit::elsewhere`]): a `cd` that may not
-    /// have run, after the line wrote the file, may have left it where the
-    /// file is.
+    /// the line may be in then (see [`Unit::elsewhere`] and
+    /// [`Unit::stayed`]): a `cd` that may not have run, or failed, after the
+    /// line wrote the file, may have left it where the file is.
     fn runs_written(&mut self, unit: &Unit, script: &Arg, dir: Option<&Arg>) {
-        let others: &[Option<Arg>] = if dir == unit.dir.as_ref() {
-            &unit.elsewhere
+        let (others, stayed): (&[Option<Arg>], &[Option<Arg>]) = if dir == unit.dir.as_ref() {
+            (&unit.elsewhere, &unit.stayed)
         } else {
-            &[]
+            (&[], &[])
         };
-        for from in std::iter::once(dir).chain(others.iter().map(Option::as_ref)) {
+        for from in
+            std::iter::once(dir).chain(others.iter().chain(stayed.iter()).map(Option::as_ref))
+        {
             let before = self.found.len();
             self.runs_written_from(unit, script, from);
             if self.found.len() != before {
@@ -1387,7 +1390,7 @@ fn sources_and_destination<'a>(
 }
 
 /// The files a unit writes, for matching a script the line then runs.
-fn written_by(unit: &Unit) -> Vec<Arg> {
+pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
     let Some(key) = unit.key() else {
         return Vec::new();
     };

@@ -83,6 +83,53 @@ powershell finds=unknown | 'x' > x.ps1; if ($a) { cd s }; .\\x.ps1
 powershell finds=unknown | 'x' > x.ps1; if ($a) { cd s }; pwsh -File x.ps1
 cmd finds=unknown | echo x > x.bat & if exist s cd s & x.bat
 cmd finds=unknown | echo x > x.bat & if exist s cd s & x
+# A plain `cd` after the write may fail: a folder that is not there is an
+# error, and the shell runs the next command where it was, so the run is
+# judged from there too. So is one in an `if true` body, a PowerShell `cd`
+# (even with `-ErrorAction Stop`: a `try` or a `trap` may go on past it), and
+# a `cd` before an `&&` for what comes after the list.
+posix finds=unknown | echo x > x.sh; cd s; bash x.sh
+posix finds=unknown | echo x > x.sh; cd s; ./x.sh
+posix finds=unknown | echo x > x.sh; pushd s; bash x.sh
+posix finds=unknown | echo x | tee x.sh; cd s; bash x.sh
+posix finds=unknown | curl -o x.sh https://x.example/x; cd s; bash x.sh
+posix finds=unknown | cd a; echo x > x.sh; cd b; bash x.sh
+posix finds=unknown | echo x > x.sh; cd a; cd b; bash ../x.sh
+posix finds=unknown | echo x > x.sh; cd s && make; bash x.sh
+posix finds=unknown | echo x > x.sh; cd s && { cd t; bash ../x.sh; }
+posix finds=unknown | echo x > x.sh; if true; then cd s; fi; bash x.sh
+powershell finds=unknown | 'x' > x.ps1; cd s; .\\x.ps1
+powershell finds=unknown | 'x' > x.ps1; Set-Location s; .\\x.ps1
+powershell finds=unknown | 'x' > x.ps1; Set-Location s -ErrorAction Stop; .\\x.ps1
+powershell finds=unknown | 'x' > x.ps1; Set-Location s; pwsh -File x.ps1
+powershell finds=unknown | 'x' > x.ps1; cd s | Out-Null; .\\x.ps1
+cmd finds=unknown | echo x > x.bat & cd s & x.bat
+cmd finds=unknown | echo x > x.bat & cd s & x
+cmd finds=unknown | echo x > x.bat & cd /d s & x.bat
+# After `&&` the `cd` ran; with nothing written before it, or another file
+# run, nothing it left behind is run; a `cd` that only steps up goes back
+# through a folder the line came through, and is taken as run.
+posix safe | echo x > x.sh; cd s && bash x.sh
+posix safe | echo x > x.sh; cd s && ./x.sh
+posix safe | echo x > x.sh; cd s && make && bash x.sh
+posix safe | echo x > x.sh; { cd s; } && bash x.sh
+powershell safe | 'x' > x.ps1; cd s && .\\x.ps1
+cmd safe | echo x > x.bat & cd s && x.bat
+posix safe | cd s; bash x.sh
+posix safe | cd build; make; ./app
+posix safe | cd sub && ./app
+posix safe | cd src; ls
+posix safe | echo x > log; cd build; make; ./app
+posix safe | echo x > x.sh; cd s; bash t/x.sh
+posix safe | echo x > x.sh; cd ..; bash x.sh
+cmd safe | echo x > x.bat & cd.. & x.bat
+# Past the most folders the guard keeps for plain `cd`s that may have failed,
+# each file written so far counts as written in every folder by its name: a
+# run of a script of that name is unknown, one of another name stays safe.
+posix finds=unknown | echo x > x.sh; cd a; cd b; cd c; cd d; cd e; cd f; bash x.sh
+posix finds=unknown | echo x | tee x.sh; cd a; cd b; cd c; cd d; cd e; cd f; bash t/x.sh
+posix safe | echo x > log; cd a; cd b; cd c; cd d; cd e; cd f; ./app
+posix safe | make > log; cd a; make; cd ../b; make; cd ../c; make; cd ../d; make; cd ../e; make; ./run.sh
 # Past the most folders the guard keeps, the line may be anywhere: a run is
 # unknown once the line writes a file, and safe when it writes none.
 posix finds=unknown reason="runs a script only known when it runs" | echo x > log.txt; false && cd a; false && cd b; false && cd c; false && cd d; ./app
@@ -147,13 +194,10 @@ powershell finds=unknown | 'x' > a\\x.ps1; cd a && cd b || .\\x.ps1
 cmd finds=unknown | echo x > a\\x.bat & cd a && cd b || x.bat
 # A `cd` that surely ran, a run of another file, and everyday lines that run
 # nothing they wrote.
-posix safe | echo x > x.sh; if true; then cd s; fi; bash x.sh
 posix safe | echo x > x.sh; false && cd s; bash t/x.sh
 posix safe | echo x > log.txt; test -d sub && cd sub; ./app
 posix safe | test -d sub && cd sub; ls > files.txt; cat files.txt
 posix safe | cd build && make; ./app
-powershell safe | 'x' > x.ps1; cd s; .\\x.ps1
-powershell safe | 'x' > x.ps1; cd s | Out-Null; .\\x.ps1
 # The program wrapped or nested.
 posix finds=unknown | echo hi > x.sh; sudo ./x.sh
 posix finds=unknown | echo hi > x.sh; env FOO=1 ./x.sh

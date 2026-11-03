@@ -340,11 +340,14 @@ posix safe | if false; then cd sub; else echo x; fi > x.sh; bash y.sh
 posix safe | if false; then cd sub; else echo x; fi > x.sh; bash sub/y.sh
 # The run is after a `cd` that surely ran, from a folder the file was not
 # written in.
-posix safe | { echo x; false && cd sub; } > x.sh; cd other; bash x.sh
+posix safe | { echo x; false && cd sub; } > x.sh; cd other && bash x.sh
 # After the group the line may be where it began or where the `cd` took it: a
 # later `cd` and run is judged from both. From either folder, these run a file
 # the line did not write.
-posix safe | { echo x; false && cd sub; } > x.sh; cd sub; bash x.sh
+posix safe | { echo x; false && cd sub; } > x.sh; cd sub && bash x.sh
+# A plain `cd` may fail and leave the line where the file was written.
+posix finds=unknown | { echo x; false && cd sub; } > x.sh; cd other; bash x.sh
+posix finds=unknown | { echo x; false && cd sub; } > x.sh; cd sub; bash x.sh
 posix safe | { echo x; false && cd sub; } > x.sh; bash sub/x.sh
 posix safe | { echo x; cd sub; } > x.sh; bash sub/x.sh
 # Everyday lines that do not run what they wrote.

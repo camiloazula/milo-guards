@@ -444,6 +444,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         stdin,
         dir: None,
         elsewhere: Vec::new(),
+        stayed: Vec::new(),
         hidden: false,
         startup,
         repeated: false,
