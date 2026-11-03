@@ -1,12 +1,12 @@
 //! PowerShell and cmd lines, judged against a Windows machine's paths: risky
 //! PowerShell (`Invoke-Expression` of a download among it), trap and event
-//! actions, risky cmd, the Windows spellings of a path (case, `/dev`,
-//! providers, drive-relative paths, a bare drive, a drive's root, trailing
-//! dots and spaces, short names, stream suffixes, long paths, the letters
-//! NTFS folds), and scripts run from a place the guard cannot read. Which
-//! names a wildcard matches is in `windows_wildcards.rs`, protected paths in
-//! `protected.rs`, and the everyday lines that stay safe in the front door's
-//! `tests/everyday.rs`.
+//! actions, the aliases and functions a PowerShell line sets, risky cmd, the
+//! Windows spellings of a path (case, `/dev`, providers, drive-relative paths,
+//! a bare drive, a drive's root, trailing dots and spaces, short names, stream
+//! suffixes, long paths, the letters NTFS folds), and scripts run from a place
+//! the guard cannot read. Which names a wildcard matches is in
+//! `windows_wildcards.rs`, protected paths in `protected.rs`, and the everyday
+//! lines that stay safe in the front door's `tests/everyday.rs`.
 //!
 //! The lines and their answers are in `tests/cases/windows.cases`; this file
 //! times the shells and interpreters a cmd line starts.

@@ -453,3 +453,58 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         assert!(took < limit, "{took:?} for {:?} in {shell:?}", &line[..20]);
     }
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
+    let _serial = serial();
+    // Every command may run any of the targets the line sets its name to, so
+    // the readings are bounded, and past the bound the line is unreadable.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+    let paths = paths_for(Shell::PowerShell);
+    let fill = |head: String, unit: &str| {
+        let count = (64 * 1024 - head.len()) / unit.len();
+        format!("{head}{}", unit.repeat(count))
+    };
+    let mut many = String::new();
+    for at in 0..100 {
+        let at = at.to_string();
+        many.push_str(&["Set-Alias x t", &at, "; Set-Alias t", &at, " y; "].concat());
+    }
+    // Targets of the name's own key add no reading, so they never run the
+    // bound out: each command must still cost one lookup, not a walk of
+    // every target.
+    let mut same = String::new();
+    for at in 0..64 {
+        same.push_str(&["Set-Alias x C:\\a", &at.to_string(), "\\x.exe; "].concat());
+    }
+    for (line, risky) in [
+        (fill(many, "x ~; "), true),
+        (fill("Set-Alias x Remove-Item; ".to_string(), "x b; "), true),
+        (fill(same.clone(), "x; "), false),
+        (fill(same, "x | x | x | x; "), false),
+    ] {
+        assert!(line.len() <= 64 * 1024);
+        let started = std::time::Instant::now();
+        let assessment = classify(&line, Shell::PowerShell, &paths);
+        let _ = effect(&line, Shell::PowerShell, &paths);
+        let took = started.elapsed();
+        assert!(took < LIMIT, "{took:?}");
+        if risky {
+            assert!(
+                assessment
+                    .findings()
+                    .iter()
+                    .any(|finding| matches!(finding.rule, Rule::Unreadable | Rule::Unknown)),
+                "{assessment:?}"
+            );
+        }
+    }
+}
