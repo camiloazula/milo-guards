@@ -163,6 +163,12 @@ pub(crate) struct Unit {
     /// `&&` in cmd's `set X=1 && del y`, the stage after PowerShell's `--%`).
     /// It is what the depth limit counts.
     pub(crate) depth: usize,
+    /// For a PowerShell unit the walk reads from the grammar, the variables
+    /// its arguments read, by the grammar's variable nodes (`$k`, `"x$k"`, a
+    /// splat `@p`; see [`crate::powershell::variables`]). `None` for a unit
+    /// of another shell, or one the guard makes up for a .NET call, whose
+    /// variables are read from its arguments' text (see [`Unit::variables`]).
+    pub(crate) names: Option<Vec<String>>,
 }
 
 /// A `Get-Process` written inside an argument: its own arguments, and what
@@ -245,6 +251,22 @@ impl Unit {
             listed: Vec::new(),
             tf_cli_args: Vec::new(),
             depth: 0,
+            names: None,
+        }
+    }
+
+    /// The variables the unit's arguments read: [`Unit::names`] when the
+    /// grammar gave them, and otherwise the ones its arguments that are only
+    /// known when it runs name.
+    pub(crate) fn variables(&self) -> Vec<String> {
+        match &self.names {
+            Some(names) => names.clone(),
+            None => self
+                .args
+                .iter()
+                .filter(|arg| arg.is_unknown())
+                .flat_map(|arg| referenced_in(arg.text(), self.shell))
+                .collect(),
         }
     }
 
@@ -538,6 +560,41 @@ pub(crate) fn referenced(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The variables PowerShell `text` names, in lower case as PowerShell
+/// matches them, without a scope: `$k`, `${K}` and `$script:k` all name `k`
+/// (`$env:k` names the environment, `env`).
+pub(crate) fn referenced_powershell(text: &str) -> Vec<String> {
+    const SCOPES: [&str; 5] = ["script", "global", "local", "private", "using"];
+    text.split('$')
+        .skip(1)
+        .filter_map(|piece| {
+            let piece = piece.strip_prefix('{').unwrap_or(piece);
+            let name = |piece: &str| {
+                let end = piece
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(piece.len());
+                piece.get(..end).unwrap_or_default().to_ascii_lowercase()
+            };
+            let first = name(piece);
+            let scoped = piece
+                .get(first.len()..)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .filter(|_| SCOPES.contains(&first.as_str()))
+                .map(name);
+            Some(scoped.unwrap_or(first)).filter(|name| !name.is_empty())
+        })
+        .collect()
+}
+
+/// The variables `text` names in `shell`: see [`referenced`] and
+/// [`referenced_powershell`].
+pub(crate) fn referenced_in(text: &str, shell: Shell) -> Vec<String> {
+    match shell {
+        Shell::PowerShell => referenced_powershell(text),
+        Shell::Posix | Shell::Cmd => referenced(text),
+    }
+}
+
 /// A function definition, noted where it begins (see [`Split::defining`]).
 #[derive(Debug)]
 pub(crate) struct Defining {
@@ -752,6 +809,13 @@ pub(crate) struct Split {
     /// one is not. Noted while a string is read, which only borrows the
     /// walker.
     splitting: RefCell<Vec<char>>,
+    /// The PowerShell double-quoted strings whose expansions are only known
+    /// when they run, by their source, with the text each holds where every
+    /// expansion stands as `${}` (see [`Split::template`]). `None` for a
+    /// string that holds a `$` or a backtick that is no expansion, which a
+    /// reader of the text would take for one. Noted while a string is read,
+    /// as `splitting` is.
+    templates: RefCell<HashMap<String, Option<(String, bool)>>>,
     /// Whether the shell reading the line has turned on a option that lets a
     /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
     /// except that a subshell or a script in a process of its own gives it
@@ -909,6 +973,12 @@ pub(crate) struct Split {
     /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
     /// a line must not make this grow without bound.
     pub(crate) find_work: usize,
+    /// How many groups a `coproc` opened that the grammar did not see
+    /// (`coproc { ls; }`, `coproc NAME { { ls; }; }`): it has no `coproc`,
+    /// so it reads each `{` as a word and each `}` that closes one as a
+    /// command of its own. The walk takes such a `}` off as it closes one,
+    /// and runs nothing for it.
+    pub(crate) coproc_groups: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -1755,7 +1825,13 @@ impl Split {
     /// Note that the variable `name` is set from what runs in `inside` and
     /// from the variables `value` names.
     pub(crate) fn assign(&mut self, name: &str, inside: Range<usize>, value: &str) {
-        let uses = referenced(value);
+        self.assign_uses(name, inside, referenced(value));
+    }
+
+    /// Note that the variable `name` is set from what runs in `inside` and
+    /// from the variables `uses`, as [`Self::assign`] does, the names already
+    /// read from the value (as PowerShell reads them, say).
+    pub(crate) fn assign_uses(&mut self, name: &str, inside: Range<usize>, uses: Vec<String>) {
         if !inside.is_empty() || !uses.is_empty() {
             self.assigned.push(Assigned {
                 name: name.to_string(),
@@ -2858,6 +2934,31 @@ impl Split {
         }
     }
 
+    /// Note the text the PowerShell double-quoted string `source` holds, its
+    /// expansions standing as `${}`, and whether one of them runs a command
+    /// (`$(…)`), or `None` when it cannot be read so.
+    pub(crate) fn note_template(&self, source: &str, text: Option<(String, bool)>) {
+        self.templates
+            .borrow_mut()
+            .entry(source.to_string())
+            .or_insert(text);
+    }
+
+    /// The PowerShell double-quoted string `source`, whose expansions are only
+    /// known when it runs, as a template: the text it holds with each
+    /// expansion standing as `${}`, which a reader of a database statement
+    /// reads as it reads a POSIX shell's (an expansion is a value, and where
+    /// a statement starts, a statement only known when it runs). `None` when
+    /// `source` is no such string.
+    pub(crate) fn template(&self, source: &str) -> Option<Arg> {
+        let (text, runs) = self.templates.borrow().get(source).cloned().flatten()?;
+        Some(Arg::Template {
+            text,
+            source: source.into(),
+            runs,
+        })
+    }
+
     /// Whether `script` holds a character noted by [`Split::note_splitting`]:
     /// run as code, its words are not the ones the guard's reading of the
     /// text finds. The script need not be a whole noted string: one reached
@@ -3362,22 +3463,14 @@ pub(crate) fn split(
     (drive, home_drive): (Option<char>, Option<char>),
     effect: bool,
 ) -> Split {
-    let mut split = Split {
-        drive,
-        home_drive,
-        ..Split::default()
-    };
+    let mut split = Split::default();
+    start(&mut split, false, (drive, home_drive));
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
     if split.psdrive {
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
-        split = Split {
-            psdrive: true,
-            drive,
-            home_drive,
-            ..Split::default()
-        };
+        start(&mut split, true, (drive, home_drive));
         script(&mut split, command, shell, 0);
     }
     // A function body or a loop may run after the line turns `extendedglob`
@@ -3396,6 +3489,21 @@ pub(crate) fn split(
     split.settle_functions();
     split.settle_pwd();
     split
+}
+
+/// Start `split` afresh for a read of the line from the drive `drive` with
+/// home on `home_drive`; `psdrive` says the read knows the drives the line
+/// makes. A function of its own, as [`start_again_extended`] is, so that the
+/// `Split` it builds is not held on the stack while [`split`] reads the line:
+/// the walk of a deeply nested line needs all of it.
+#[inline(never)]
+fn start(split: &mut Split, psdrive: bool, (drive, home_drive): (Option<char>, Option<char>)) {
+    *split = Split {
+        drive,
+        home_drive,
+        psdrive,
+        ..Split::default()
+    };
 }
 
 /// Clear `split` for a second read of the line that reads the words of its
@@ -3485,10 +3593,21 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     // (The line itself, at depth 0, is the shell whose functions these are.)
     let apart = !here && depth > 0;
     split.apart += usize::from(apart);
+    // A group a `coproc` opens closes in the same script.
+    let groups = std::mem::take(&mut split.coproc_groups);
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
         Shell::Cmd => crate::cmd::split(split, text, depth),
+    }
+    // One it never closes (`coproc {`) is a line the shell does not run
+    // as written.
+    if std::mem::replace(&mut split.coproc_groups, groups) > 0 {
+        split.problem(
+            Rule::Unreadable,
+            "opens a group that never closes",
+            Some("{"),
+        );
     }
     split.apart -= usize::from(apart);
     if !here {
@@ -3564,6 +3683,28 @@ pub(crate) fn for_each_node<'tree>(
     loop {
         visit(cursor.node());
         if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
+/// Visit the nodes under `root`, without recursion, going into the children
+/// of a node only when `visit` says so.
+pub(crate) fn for_each_node_until<'tree>(
+    root: tree_sitter::Node<'tree>,
+    mut visit: impl FnMut(tree_sitter::Node<'tree>) -> bool,
+) {
+    let mut cursor = root.walk();
+    loop {
+        if visit(cursor.node()) && cursor.goto_first_child() {
             continue;
         }
         loop {

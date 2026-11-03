@@ -203,6 +203,12 @@ fn a_line_at_the_length_limit_is_read_in_time() {
             ("blocks left open", fit("if x; then ", "", "")),
             ("loops left open", fit("for i in a b; do ", "", "")),
             ("here-documents left open", fit("cat <<EOF; ", "", "")),
+            // Each name a stop is given is matched against the processes the
+            // system needs and the ones that protect it.
+            ("pkill operands", fit(" x", "pkill", "")),
+            ("pkill -f operands", fit(" x", "pkill -f", "")),
+            ("killall operands", fit(" x", "killall", "")),
+            ("Stop-Process names", fit(",x", "Stop-Process -Name x", "")),
         ]
     };
     let mut slowest = (std::time::Duration::ZERO, String::new());
@@ -380,7 +386,10 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // each `${`), took a tenth of a second to a second at the length limit,
     // and 3.4 s on a slow machine for `${` repeated, inside the budget of
     // what a lexer reads: they are counted before parsing (`Openers` in
-    // `tangled.rs`). A release build reads each in
+    // `tangled.rs`). A chain of PowerShell assignments (`$a = $a = … gc
+    // .env`), whose value was read again for its variables at each level,
+    // took over two seconds in a debug build: each level now reads only its
+    // own nodes (`variables` in `powershell.rs`). A release build reads each in
     // tens of milliseconds; the bounds leave room for a machine busy with
     // other work, and for the debug build `just test` runs.
     let limit = if cfg!(debug_assertions) {
@@ -441,6 +450,8 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("cat <<EOF; ", "", "")),
         (Shell::Posix, fit("a(D);", "", "")),
         (Shell::PowerShell, "()".repeat(4_096)),
+        (Shell::PowerShell, fit("$a = ", "", "gc .env")),
+        (Shell::PowerShell, distinct_assignments()),
     ];
     for (shell, line) in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -505,4 +516,19 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
             );
         }
     }
+}
+
+/// A chain of PowerShell assignments, each to a variable of its own
+/// (`$a0 = $a1 = … gc .env`), as long as a line may be.
+fn distinct_assignments() -> String {
+    let tail = "gc .env";
+    let mut line = String::new();
+    for at in 0.. {
+        let next = format!("$a{at} = ");
+        if line.len() + next.len() + tail.len() > 64 * 1024 {
+            break;
+        }
+        line += &next;
+    }
+    line + tail
 }

