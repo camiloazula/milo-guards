@@ -11,6 +11,8 @@ use crate::startup;
 use crate::unit::{self, Arg, Defining, Flag, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
+mod values;
+
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let (text, marks, near, open) = join_continuations(text);
     let text = text.as_str();
@@ -37,17 +39,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
             None,
         );
     }
-    let (names, looped) = assigned(tree.root_node(), text);
-    for name in names {
-        split.reassign(&name);
-    }
-    for name in looped {
-        split.loop_variable(&name);
-    }
-    if split.kept.on {
-        environment(split, tree.root_node(), text);
-    }
-    Walker {
+    let mut walker = Walker {
         source: text,
         marks: &marks,
         depth,
@@ -57,8 +49,20 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         tail_of: Vec::new(),
         tail: None,
         unstaged: None,
+    };
+    // One walk of the tree finds the variables the line sets and the values
+    // it gives them.
+    let (names, looped) = assigned(tree.root_node(), text, |node| walker.note_value(node));
+    for name in names {
+        walker.split.reassign(&name);
     }
-    .walk(tree.root_node(), None, 0);
+    for name in looped {
+        walker.split.loop_variable(&name);
+    }
+    if walker.split.kept.on {
+        environment(walker.split, tree.root_node(), text);
+    }
+    walker.walk(tree.root_node(), None, 0);
 }
 
 /// Whether a character may stand in a zsh glob qualifier the guard reads:
@@ -663,26 +667,34 @@ fn dashes_before_heredoc(rest: &str) -> usize {
 /// The variables the line sets anywhere (assignments, also after `export`
 /// or `local`, `for` variables, `unset` and `read`), and among them the ones
 /// a `for` loop or a `read` sets: each of those holds one item of what the
-/// loop walks or the input it reads. One walk of the tree finds both.
-fn assigned(root: Node<'_>, source: &str) -> (Vec<String>, Vec<String>) {
+/// loop walks or the input it reads. One walk of the tree finds both, and
+/// hands each node to `also` on the way.
+fn assigned<'t>(
+    root: Node<'t>,
+    source: &str,
+    mut also: impl FnMut(Node<'t>),
+) -> (Vec<String>, Vec<String>) {
     let mut names = Vec::new();
     let mut looped = Vec::new();
-    unit::for_each_node(root, |node| match node.kind() {
-        "variable_assignment" => names.extend(
-            node.child_by_field_name("name")
-                .map(|name| unit::text(&name, source).to_string()),
-        ),
-        "unset_command" => {
-            let mut cursor = node.walk();
-            names.extend(
-                node.named_children(&mut cursor)
+    unit::for_each_node(root, |node| {
+        also(node);
+        match node.kind() {
+            "variable_assignment" => names.extend(
+                node.child_by_field_name("name")
                     .map(|name| unit::text(&name, source).to_string()),
-            );
-        }
-        _ => {
-            let found = loop_variables(node, source);
-            names.extend(found.iter().cloned());
-            looped.extend(found);
+            ),
+            "unset_command" => {
+                let mut cursor = node.walk();
+                names.extend(
+                    node.named_children(&mut cursor)
+                        .map(|name| unit::text(&name, source).to_string()),
+                );
+            }
+            _ => {
+                let found = loop_variables(node, source);
+                names.extend(found.iter().cloned());
+                looped.extend(found);
+            }
         }
     });
     (names, looped)
@@ -1034,6 +1046,7 @@ impl Walker<'_> {
             "variable_assignment" => {
                 self.split.assigned_earlier = true;
                 self.assignment(node);
+                self.integer_assignment(node);
                 self.assigned(node, level);
             }
             // The right side of `&&` and `||` may not run.
@@ -1100,6 +1113,21 @@ impl Walker<'_> {
                     self.split.hide();
                 }
                 self.split.assigned_earlier |= self.assigns_default(node);
+                self.expansion(node);
+                self.children(node, stage, level);
+            }
+            // `$((x))`, `((x))`, `a[i]`: arithmetic reads a value as an
+            // expression, and runs the code in it.
+            "arithmetic_expansion" => {
+                self.arithmetic(node);
+                self.children(node, stage, level);
+            }
+            "compound_statement" if self.is_arithmetic_command(node) => {
+                self.arithmetic(node);
+                self.children(node, stage, level);
+            }
+            "subscript" => {
+                self.subscript(node);
                 self.children(node, stage, level);
             }
             // `(( GLOBIGNORE++ ))`, `(( --GLOBIGNORE ))`: an empty variable
@@ -1123,6 +1151,9 @@ impl Walker<'_> {
             | "c_style_for_statement"
             | "function_definition" => {
                 let body = !matches!(node.kind(), "if_statement" | "case_statement");
+                if node.kind() == "c_style_for_statement" {
+                    self.arithmetic_for(node);
+                }
                 if node.kind() == "for_statement"
                     && node
                         .child_by_field_name("variable")
@@ -1201,9 +1232,13 @@ impl Walker<'_> {
                         Some(unit::text(&node, self.source)),
                     );
                 }
+                self.arithmetic_tests(node);
                 self.children(node, stage, level);
             }
             // A subshell's `cd` does not move the rest of the line.
+            // `` `echo \`cmd\`` ``: the code the shell reads once the
+            // escapes are taken off.
+            "command_substitution" if self.escaped_backticks(node) => {}
             "subshell" | "command_substitution" | "process_substitution" => {
                 self.substituted(node);
                 let outer = self.split.dir_snapshot();
@@ -1969,6 +2004,7 @@ impl Walker<'_> {
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let first = self.split.units.len();
         self.command(node, stage);
+        self.let_words(node);
         let own = first..self.split.units.len();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {

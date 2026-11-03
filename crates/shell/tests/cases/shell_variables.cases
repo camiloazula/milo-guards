@@ -1,7 +1,8 @@
 # Variables a shell runs or expands later. `PS4` and `BASH_ENV` hold text a
 # shell runs later: `$(…)` in `PS4` runs with each `set -x` line, and
 # `BASH_ENV` is expanded and then run as a script by every non-interactive
-# bash. The format is in CONTRIBUTING.md.
+# bash. Arithmetic, `${!x}` and `${x@P}` read any variable's value again as
+# code. The format is in CONTRIBUTING.md.
 
 # A PS4 or BASH_ENV value is code the shell runs.
 posix safe | PS4='+ '; set -x; make
@@ -546,3 +547,79 @@ posix finds=delete | cd "$x"; cd sub; rm -rf "$PWD/build"
 # lands, outside the workspace.
 posix finds=delete | cd 'd$(x)'; cd /abs; rm -rf "$PWD/build"
 posix finds=delete | cd "$x"; cd /abs; rm -rf "$PWD/build"
+
+# A value bash reads again as code: arithmetic reads a variable's value as an
+# expression and expands a subscript in it, `${!x}` reads the variable the
+# value names, subscript and all, and `${x@P}` expands it as a prompt. A
+# value the line gives in text is read where the read is; the variables a
+# value names are followed.
+posix finds=delete | x='a[$(rm -rf ~)]'; echo $(($x))
+posix finds=delete | x='a[$(rm -rf ~)]'; y=x; echo $((y))
+posix finds=delete | x='a[$(rm -rf ~)]'; echo $[x]
+posix finds=delete | x='a[`rm -rf ~`]'; echo $((x))
+posix finds=delete | x='a[$(rm -rf ~)]'; for ((i=x; i<1; i++)); do :; done
+posix finds=delete | x='a[$(rm -rf ~)]'; echo ${a[x]}
+posix finds=delete | x='a[$(rm -rf ~)]'; a[x]=1
+posix finds=delete | x='a[$(rm -rf ~)]'; echo ${s:x}
+posix finds=delete | x='a[$(rm -rf ~)]'; [[ x -lt 1 ]]
+posix finds=delete | x='a[$(rm -rf ~)]'; [[ 1 -eq 1 && "$x" -ge 0 ]]
+posix finds=delete | x='a[$(rm -rf ~)]'; let 'y = x + 1'
+posix finds=delete | x='a[$(rm -rf ~)]'; eval 'echo $((x))'
+posix finds=delete | export x='a[$(rm -rf ~)]'; echo $((x))
+posix finds=delete | local x='a[$(rm -rf ~)]'; echo $((x))
+posix finds=delete | a=(1 'a[$(rm -rf ~)]'); echo $((a[1]))
+posix finds=delete | for x in 1 'a[$(rm -rf ~)]'; do echo $((x)); done
+posix finds=delete | x='a[$(rm -rf ~)]'; echo ${!x:-y}
+posix finds=delete | x='a[i]'; i='a[$(rm -rf ~)]'; echo ${!x}
+posix finds=delete | x='\\044(rm -rf ~)'; echo "${x@P}"
+posix finds=delete | x='`rm -rf ~`'; echo ${x@P}
+# A variable with the integer attribute reads each value it is given as
+# arithmetic.
+posix finds=delete | declare -i n; n='a[$(rm -rf ~)]'
+posix finds=delete | declare -i n='a[$(rm -rf ~)]'
+posix finds=unknown | declare -i n; n=$(cat f)
+posix safe | declare -i n; n=n+1
+# A value only known when it runs may hold such code.
+posix finds=unknown | x=$(cat f); echo $((x + 1))
+posix finds=unknown | read x; echo $((x))
+posix finds=unknown | for x in $(cat f); do echo $((x)); done
+posix finds=unknown | for x in *; do echo $((x)); done
+posix finds=unknown | x=$1; echo ${!x}
+posix finds=unknown | x="$y"; echo "${x@P}"
+posix finds=unknown | start=$(date +%s); make; echo $(( $(date +%s) - start ))
+posix finds=unknown | printf -v x '%s' "$1"; (( x ))
+posix finds=unknown | : ${x:='a[$(rm -rf ~)]'}; echo $((x))
+# Pieces appended to a value may join into code none of them holds.
+posix finds=unknown | x='$'; x+='(rm -rf ~)'; echo $((x))
+# Text, numbers and the variables the line does not set stay safe.
+posix safe | echo $((y + 1))
+posix safe | echo $((COLUMNS - 1))
+posix safe | n=0; n=$((n + 1)); echo $n
+posix safe | for i in 1 2 3; do echo $((i * 2)); done
+posix safe | x=1; x+=2; echo $((x))
+posix safe | : ${n:=0}; echo $((n + 1))
+posix safe | x='$(rm -rf ~)'; echo "$x"
+posix safe | x='$(rm -rf ~)'; echo "${x@Q}"
+posix safe | x='$(rm -rf ~)'; echo $(( ${#x} + 1 ))
+posix safe | x='$(rm -rf ~)'; let y=1
+posix safe | x='a[$(rm -rf ~)]'; (( x = 1 ))
+posix safe | x='a[$(rm -rf ~)]'; [ "$x" -eq 1 ]
+posix safe | x='a[$(rm -rf ~)]'; echo ${!x@}
+posix safe | n=x; x='a[$(rm -rf ~)]'; echo ${!n}
+posix safe | x='\\u@\\h'; echo "${x@P}"
+# Single quotes inside double quotes are text in every word of a `${…}`, also
+# beside other text, in an ANSI-C string, in a nested `${…}`, and in a
+# here-document's body; outside double quotes they quote.
+posix finds=delete | echo "${x:-a'$(rm -rf ~)'b}"
+posix finds=delete | echo "${x:-$'$(rm -rf ~)'}"
+posix finds=delete | echo "${x:-${y:-'$(rm -rf ~)'}}"
+posix finds=delete | echo "${x#'$(rm -rf ~)'}"
+posix finds=delete | cat <<EOF\n${x:-'$(rm -rf ~)'}\nEOF
+posix safe | echo ${x:-'$(rm -rf ~)'}
+posix safe | cat <<'EOF'\n${x:-'$(rm -rf ~)'}\nEOF
+posix safe | echo "${x:-'$y'}"
+# A backslash before a backtick, a `$` or a backslash inside backticks goes
+# before the code is read.
+posix finds=delete | echo `echo \\`rm -rf ~\\``
+posix safe | echo `echo \\`date\\``
+posix safe | echo "`echo \\"x\\"`"
