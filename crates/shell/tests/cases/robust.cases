@@ -1,0 +1,5 @@
+# The plain lines beside what `robust.rs` makes long, nested or tangled:
+# a few reads of a short nested script are fine. The format is in
+# CONTRIBUTING.md.
+
+posix safe | eval eval eval : hi
