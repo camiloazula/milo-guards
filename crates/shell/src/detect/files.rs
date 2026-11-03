@@ -2,7 +2,7 @@
 
 use super::{
     dd_outputs, downloads_to, hidden_matches, or_here, sources_and_destination, Checker, Pattern,
-    COPY_VALUED,
+    CONTENTS, COPY_VALUED,
 };
 use crate::launch::{find_targets, find_unread_primary, perl_edits};
 use crate::path::{Access, Place};
@@ -204,7 +204,10 @@ impl Checker<'_> {
                     });
                     // What it names after the two folders is what it copies;
                     // with none, every file of the first.
-                    let named = leaves(unit, &operands[2..]);
+                    let named: Vec<String> = leaves(unit, &operands[2..])
+                        .into_iter()
+                        .filter(|leaf| *leaf != CONTENTS)
+                        .collect();
                     let leaves = if named.is_empty() {
                         vec!["*".to_string()]
                     } else {
@@ -1097,7 +1100,8 @@ fn folder_of(before: &str) -> String {
 /// The name each source lands as inside a folder it is copied into: its last
 /// part. A source that is not known, what a pipeline hands on, or what `find`
 /// found (`-exec cp {} dest \;`) lands as a name that could be anything (`*`),
-/// and `.` or `..` (the contents of a folder) has no name of its own.
+/// and `.` or `..` (the contents of a folder), `~` and the root have no name
+/// of their own the line shows: each is [`CONTENTS`].
 fn leaves(unit: &Unit, sources: &[&Arg]) -> Vec<String> {
     let shell = unit.shell;
     let found = unit.wrappers.iter().any(|wrapper| wrapper == "find");
@@ -1123,7 +1127,7 @@ fn leaves(unit: &Unit, sources: &[&Arg]) -> Vec<String> {
                 .into_iter()
                 .map(
                     |text| match text.trim_end_matches(separators).rsplit(separators).next() {
-                        None | Some("" | "." | ".." | "~") => None,
+                        None | Some("" | "." | ".." | "~") => Some(CONTENTS.to_string()),
                         Some(name) => Some(name.to_string()),
                     },
                 )
