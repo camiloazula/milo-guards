@@ -922,6 +922,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         listed: Vec::new(),
         tf_cli_args: Vec::new(),
         depth: unit.depth,
+        names: unit.names.clone(),
     }));
     in_folder(folder, launch)
 }
@@ -1595,6 +1596,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         listed: Vec::new(),
         tf_cli_args: Vec::new(),
         depth: unit.depth,
+        names: unit.names.clone(),
     }
 }
 

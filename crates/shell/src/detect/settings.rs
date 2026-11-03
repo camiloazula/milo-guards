@@ -7,23 +7,151 @@
 pub(super) mod firewall;
 
 use super::processes::{is_system_label, is_system_unit};
-use super::Checker;
+use super::{script_operand, Checker};
+use crate::launch::SHELLS;
 use crate::path::{Access, Place};
 use crate::unit::{has_flag, operands, Arg, Unit};
 use crate::{Rule, Shell};
 
 /// Units that protect the machine: stopping one turns protection off, as
-/// disabling the firewall does.
-const PROTECTORS: [&str; 8] = [
+/// disabling the firewall does. The firewalls, the mandatory access control
+/// and audit daemons, and the common antivirus and endpoint daemons, with
+/// the names their units have on the usual distributions and BSDs.
+const PROTECTORS: [&str; 22] = [
     "firewalld",
     "ufw",
     "nftables",
     "iptables",
     "ip6tables",
+    "netfilter-persistent",
+    "pf",
+    "ipfw",
     "apparmor",
     "auditd",
     "fail2ban",
+    "clamav-daemon",
+    "clamav-freshclam",
+    "clamav-clamd",
+    "clamd",
+    "freshclam",
+    "mdatp",
+    "falcon-sensor",
+    "sentinelone",
+    "osqueryd",
+    "wazuh-agent",
+    "ossec",
 ];
+
+/// The launchd labels of the daemons that protect a Mac: the application
+/// firewall, the audit daemon, Gatekeeper's policy daemon, `XProtect`,
+/// Endpoint Security, and the common endpoint agents. A label is one of
+/// them, or starts with one and a dot (`com.apple.XProtect.daemon.scan`,
+/// `com.apple.XprotectFramework.PluginService`).
+const PROTECTING_LABELS: [&str; 10] = [
+    "com.apple.alf",
+    "com.apple.auditd",
+    "com.apple.syspolicyd",
+    "com.apple.xprotect",
+    "com.apple.xprotectframework",
+    "com.apple.endpointsecurity",
+    "com.crowdstrike",
+    "com.microsoft.wdav",
+    "com.sentinelone",
+    "at.obdev.littlesnitchd",
+];
+
+/// The folders init scripts are run from: System V's (`/etc/init.d/ufw stop`),
+/// Red Hat's older one, and the BSDs'.
+const INIT_FOLDERS: [&str; 4] = [
+    "etc/init.d",
+    "etc/rc.d/init.d",
+    "etc/rc.d",
+    "usr/local/etc/rc.d",
+];
+
+/// Whether an action of an init script, `service`, `invoke-rc.d` or
+/// `rc-service` stops the service or takes its protection down: `stop` and
+/// the BSD spellings of it, and the actions of the firewall and `AppArmor`
+/// scripts that empty the rules or unload the profiles.
+fn stops(action: &str) -> bool {
+    matches!(
+        action.to_ascii_lowercase().as_str(),
+        "stop"
+            | "onestop"
+            | "forcestop"
+            | "faststop"
+            | "quietstop"
+            | "force-stop"
+            | "kill"
+            | "flush"
+            | "teardown"
+    )
+}
+
+/// Whether a command of runit's `sv` takes the service down. `sv` reads
+/// most commands by their first letter: `d` (down), `x` and `e` (exit), `p`
+/// (pause, which freezes it), and `D`, `X` and `E` (the same, killing it if
+/// it does not stop); `stop`, `shutdown`, `force-stop` and `force-shutdown`
+/// are its spelled-out ones.
+fn sv_stops(command: &str) -> bool {
+    matches!(
+        command,
+        "stop" | "shutdown" | "force-stop" | "force-shutdown"
+    ) || command.starts_with(['d', 'D', 'x', 'X', 'e', 'E', 'p'])
+}
+
+/// Whether a launchd label or target (`system/com.apple.alf`) names a daemon
+/// that protects the machine.
+fn is_protecting_label(target: &str) -> bool {
+    let label = target
+        .rsplit('/')
+        .next()
+        .unwrap_or(target)
+        .to_ascii_lowercase();
+    PROTECTING_LABELS.iter().any(|known| {
+        label
+            .strip_prefix(known)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    })
+}
+
+/// Whether a `systemctl` target is one the system boots into for everyday
+/// work: the graphical and the multi-user one, and the System V runlevels
+/// that are their aliases (`runlevel2` to `runlevel4` are multi-user,
+/// `runlevel5` graphical).
+fn is_everyday_target(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let target = lower.strip_suffix(".target").unwrap_or(&lower);
+    matches!(
+        target,
+        "graphical" | "multi-user" | "runlevel2" | "runlevel3" | "runlevel4" | "runlevel5"
+    )
+}
+
+/// Whether a `systemctl` target shuts the computer down, restarts it, or
+/// leaves only a rescue shell, as `systemctl poweroff` and `rescue` do, and
+/// the System V runlevels that are their aliases (`runlevel0` is poweroff,
+/// `runlevel1` rescue, `runlevel6` reboot).
+fn is_stopping_target(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let target = lower.strip_suffix(".target").unwrap_or(&lower);
+    matches!(
+        target,
+        "poweroff"
+            | "reboot"
+            | "halt"
+            | "kexec"
+            | "rescue"
+            | "emergency"
+            | "soft-reboot"
+            | "shutdown"
+            | "exit"
+            | "final"
+            | "runlevel0"
+            | "runlevel1"
+            | "runlevel6"
+    )
+}
 
 /// The first operand of a command.
 enum Word {
@@ -308,9 +436,14 @@ fn is_restore(key: &str) -> bool {
         .is_some_and(|name| TABLES.contains(&base_name(name)))
 }
 
-/// A unit's name without its `.service` suffix.
+/// A unit's name without its `.service` suffix and its instance
+/// (`clamd@scan`), or a runit service's without its folder
+/// (`/etc/service/ufw`).
 fn unit_name(name: &str) -> &str {
-    name.strip_suffix(".service").unwrap_or(name)
+    let name = name.trim_end_matches('/');
+    let name = name.rsplit('/').next().unwrap_or(name);
+    let name = name.strip_suffix(".service").unwrap_or(name);
+    name.split('@').next().unwrap_or(name)
 }
 
 /// Whether `name` is one of the units that protect the machine.
@@ -322,6 +455,12 @@ impl Checker<'_> {
     /// Machine settings of macOS and Linux.
     pub(super) fn settings(&mut self, at: usize, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
+        // pwsh on Linux and macOS runs a path under `/etc/init.d` as the
+        // init script it is; cmd never does.
+        if unit.shell != Shell::Cmd {
+            self.init_script(unit, &unit.program, args, false);
+            self.shell_runs_init_script(unit, key);
+        }
         match base_name(key) {
             "spctl" => self.spctl(args),
             "csrutil" => self.csrutil(args),
@@ -340,6 +479,17 @@ impl Checker<'_> {
             "socketfilterfw" => self.socketfilterfw(args),
             "systemctl" => self.systemctl(args),
             "service" if unit.shell == Shell::Posix => self.service(args),
+            // `--query` only asks whether the action would be allowed.
+            "invoke-rc.d" => {
+                if !args.iter().any(|arg| arg.known() == Some("--query")) {
+                    self.service(args);
+                }
+            }
+            "rc-service" => self.rc_service(args),
+            "rc-update" => self.rc_update(args),
+            "update-rc.d" => self.update_rc(args),
+            "chkconfig" => self.chkconfig(args),
+            "sv" if unit.shell == Shell::Posix => self.sv(args),
             "launchctl" => self.launchctl(unit),
             "tmutil" => self.tmutil(args),
             "defaults" => self.defaults(unit),
@@ -616,8 +766,11 @@ impl Checker<'_> {
 
     /// `systemctl disable` and `mask` change which services the system runs,
     /// and `stop` of a unit that protects the machine turns that protection
-    /// off. Stopping any other unit is everyday work (`stop docker`), and
-    /// `--user` units are the user's own.
+    /// off. `isolate`, `set-default` to a target that is not an everyday one
+    /// and `preset-all` change many units at once, and `edit`, `revert` and
+    /// `preset` of a protecting unit change how it runs. Stopping any other
+    /// unit is everyday work (`stop docker`), and `--user` units are the
+    /// user's own.
     fn systemctl(&mut self, args: &[Arg]) {
         let walk = getopt_walk(args, SYSTEMCTL_SHORT, &SYSTEMCTL_LONG);
         let mut user = false;
@@ -632,6 +785,7 @@ impl Checker<'_> {
             return;
         }
         let words = walk.operands;
+        let units = words.get(1..).unwrap_or_default();
         match first_word(&words) {
             Word::Missing => {}
             Word::Unknown => self.add(
@@ -649,30 +803,65 @@ impl Checker<'_> {
                     },
                     words.get(1).copied(),
                 ),
-                // A pattern (`firewall*`) matches the loaded units, so it may
-                // stop one that protects the machine. `kill` sends SIGTERM
-                // unless told otherwise, which ends a daemon as `stop` does.
+                // `kill` sends SIGTERM unless told otherwise, which ends a
+                // daemon as `stop` does.
                 "stop" | "kill" => {
                     let verb = if sub == "kill" { "kills" } else { "stops" };
-                    for unit in words.iter().skip(1) {
-                        // The unit that runs a process the system needs
-                        // (`systemd-logind`) ends the session it serves.
-                        if unit.known().is_some_and(is_system_unit) {
+                    for unit in units {
+                        self.stop_service(verb, unit);
+                    }
+                }
+                // `isolate` starts the target and stops every unit it does
+                // not want; a target that shuts the computer down or leaves
+                // a rescue shell stops the system as `systemctl poweroff`
+                // and `rescue` do.
+                // Without a target it is an error.
+                "isolate" => {
+                    let Some(target) = words.get(1).copied() else {
+                        return;
+                    };
+                    let target = Some(target);
+                    if target.and_then(Arg::known).is_some_and(is_stopping_target) {
+                        self.add(
+                            Rule::StopSystem,
+                            "shuts the computer down or restarts it",
+                            target,
+                        );
+                    }
+                    self.add(
+                        Rule::SystemSettings,
+                        "changes which services the system runs",
+                        target,
+                    );
+                }
+                "set-default" => {
+                    if let Some(target) = words.get(1) {
+                        if !target.known().is_some_and(is_everyday_target) {
                             self.add(
-                                Rule::StopSystem,
-                                format!("{verb} a process the system needs"),
+                                Rule::SystemSettings,
+                                "changes what the system starts at boot",
+                                Some(target),
+                            );
+                        }
+                    }
+                }
+                "preset-all" => self.add(
+                    Rule::SystemSettings,
+                    "changes which services the system runs",
+                    None,
+                ),
+                "edit" | "revert" | "preset" => {
+                    for unit in units {
+                        let protecting = unit
+                            .known()
+                            .is_none_or(|name| is_pattern(name) || protects(name));
+                        if protecting {
+                            self.add(
+                                Rule::SystemSettings,
+                                "changes a service that protects the system",
                                 Some(unit),
                             );
-                            continue;
                         }
-                        let reason = match unit.known() {
-                            Some(name) if is_pattern(name) && !protects(name) => {
-                                format!("{verb} services that may protect the system")
-                            }
-                            Some(name) if !protects(name) => continue,
-                            _ => format!("{verb} a service that protects the system"),
-                        };
-                        self.add(Rule::SystemSettings, &reason, Some(unit));
                     }
                 }
                 _ => {}
@@ -680,30 +869,190 @@ impl Checker<'_> {
         }
     }
 
-    /// `service name stop` is `systemctl stop`. An action only known when it
-    /// runs may be `stop`; a name only known when it runs may protect the
+    /// One service a stop names: the unit that runs a process the system
+    /// needs (`systemd-logind`) ends the session it serves, and stopping one
+    /// that protects the machine, or one only known when it runs, turns
+    /// that protection off. A pattern (`firewall*`, `/etc/service/*`) may
+    /// match one that protects the machine: `systemctl` matches it against
+    /// the loaded units, and the shell expands it against the files. Any
+    /// other is everyday work.
+    fn stop_service(&mut self, verb: &str, unit: &Arg) {
+        match unit.known() {
+            Some(name) if is_pattern(name) && !protects(name) => self.add(
+                Rule::SystemSettings,
+                format!("{verb} services that may protect the system"),
+                Some(unit),
+            ),
+            Some(name) if is_system_unit(unit_name(name)) => self.add(
+                Rule::StopSystem,
+                format!("{verb} a process the system needs"),
+                Some(unit),
+            ),
+            Some(name) if !protects(name) => {}
+            _ => self.add(
+                Rule::SystemSettings,
+                format!("{verb} a service that protects the system"),
+                Some(unit),
+            ),
+        }
+    }
+
+    /// One service an init system takes out of what the system starts at
+    /// boot, as `systemctl disable` does.
+    fn disable_service(&mut self, unit: Option<&Arg>) {
+        self.add(Rule::SystemSettings, "disables a system service", unit);
+    }
+
+    /// `service name action` is `systemctl stop` when the action stops the
+    /// service ([`stops`]); `invoke-rc.d name action`, Debian's way for
+    /// package scripts, reads the same. An action only known when it runs
+    /// may be `stop`; a name only known when it runs may protect the
     /// machine.
     fn service(&mut self, args: &[Arg]) {
         let words = operands(args, &[]);
         let (Some(name), Some(action)) = (words.first(), words.get(1)) else {
             return;
         };
-        let stops = action
-            .known()
-            .is_none_or(|action| action.eq_ignore_ascii_case("stop"));
-        if stops && name.known().is_some_and(is_system_unit) {
-            self.add(
-                Rule::StopSystem,
-                "stops a process the system needs",
-                Some(name),
-            );
+        if action.known().is_none_or(stops) {
+            self.stop_service("stops", name);
         }
-        if stops && name.known().is_none_or(protects) {
-            self.add(
-                Rule::SystemSettings,
-                "stops a service that protects the system",
-                Some(name),
-            );
+    }
+
+    /// A script a shell runs (`sh /etc/init.d/ufw stop`, `bash -x …`) or the
+    /// line sources (`. /etc/init.d/ufw stop`, `source …`) is read as the
+    /// script run as the program: the operands after it are its own.
+    fn shell_runs_init_script(&mut self, unit: &Unit, key: &str) {
+        let args = unit.args.as_slice();
+        let sourced = unit.shell == Shell::Posix && matches!(key, "source" | ".");
+        if !sourced && !SHELLS.contains(&key) {
+            return;
+        }
+        let Some(script) = script_operand(key, args) else {
+            return;
+        };
+        let Some(at) = args.iter().position(|arg| std::ptr::eq(arg, script)) else {
+            return;
+        };
+        // `-c` runs its operand as a line of its own, which is read as one,
+        // and no script.
+        if !has_flag(&args[..at], Some('c'), None) {
+            // A shell reads a script named without a folder from the
+            // working folder; `.` and `source` look it up on `PATH` first.
+            self.init_script(unit, script, &args[at + 1..], !sourced);
+        }
+    }
+
+    /// A program run from an init script folder (`/etc/init.d/ufw stop`,
+    /// `/etc/rc.d/pf stop`) is the service of its name, and its first
+    /// operand the action, as `service ufw stop`. The program is placed
+    /// where it lands, so `cd /etc/init.d && ./ufw stop` is the same.
+    /// `bare` says a name without a folder is a file in the working folder,
+    /// as it is to a shell given a script.
+    fn init_script(&mut self, unit: &Unit, program: &Arg, args: &[Arg], bare: bool) {
+        let Some(text) = program.known() else {
+            return;
+        };
+        // A program named without a folder is looked up on `PATH`, never
+        // here.
+        if !bare && !text.contains('/') {
+            return;
+        }
+        let Some(key) = self
+            .resolver
+            .file_key(unit.dir.as_ref(), program, unit.shell)
+        else {
+            return;
+        };
+        let Some((folder, name)) = key
+            .strip_prefix("/|")
+            .and_then(|path| path.rsplit_once('/'))
+        else {
+            return;
+        };
+        if !INIT_FOLDERS
+            .iter()
+            .any(|init| init.eq_ignore_ascii_case(folder))
+        {
+            return;
+        }
+        let words = operands(args, &[]);
+        let Some(action) = words.first() else {
+            return;
+        };
+        if action.known().is_none_or(stops) {
+            self.stop_service("stops", &Arg::Known(name.to_string()));
+        }
+    }
+
+    /// `rc-service name command`, `OpenRC`'s `service`. `-e` and `-r` take a
+    /// service name. `-U` (`--user`) runs the user's own services, as
+    /// `systemctl --user` does.
+    fn rc_service(&mut self, args: &[Arg]) {
+        if has_flag(args, Some('U'), Some("user")) {
+            return;
+        }
+        let words = operands(args, &["-e", "--exists", "-r", "--resolve"]);
+        let (Some(name), Some(action)) = (words.first(), words.get(1)) else {
+            return;
+        };
+        if action.known().is_none_or(stops) {
+            self.stop_service("stops", name);
+        }
+    }
+
+    /// `rc-update del name [runlevel]` takes a service out of a runlevel.
+    fn rc_update(&mut self, args: &[Arg]) {
+        let words = operands(args, &[]);
+        match first_word(&words) {
+            Word::Missing => {}
+            Word::Unknown => self.disable_service(words.get(1).copied()),
+            Word::Is(verb) => {
+                if matches!(verb.as_str(), "del" | "delete") {
+                    self.disable_service(words.get(1).copied());
+                }
+            }
+        }
+    }
+
+    /// `update-rc.d name disable|remove` takes a service out of what starts
+    /// at boot.
+    fn update_rc(&mut self, args: &[Arg]) {
+        let words = operands(args, &[]);
+        let Some(action) = words.get(1) else { return };
+        if action.known().is_none_or(|action| {
+            matches!(action.to_ascii_lowercase().as_str(), "disable" | "remove")
+        }) {
+            self.disable_service(words.first().copied());
+        }
+    }
+
+    /// `chkconfig name off` and `chkconfig --del name` (`-d` on SUSE) take a
+    /// service out of what starts at boot; `--level` takes the runlevels.
+    fn chkconfig(&mut self, args: &[Arg]) {
+        let words = operands(args, &["--level"]);
+        if has_long(args, "del", 3) || has_flag(args, Some('d'), None) {
+            self.disable_service(words.first().copied());
+            return;
+        }
+        let Some(state) = words.get(1) else { return };
+        if state
+            .known()
+            .is_none_or(|state| state.eq_ignore_ascii_case("off"))
+        {
+            self.disable_service(words.first().copied());
+        }
+    }
+
+    /// `sv command service...`, runit's: a command that takes the service
+    /// down ([`sv_stops`]) is a stop of each one. `-w` takes a number of
+    /// seconds.
+    fn sv(&mut self, args: &[Arg]) {
+        let words = operands(args, &["-w"]);
+        let Some(command) = words.first() else { return };
+        if command.known().is_none_or(sv_stops) {
+            for service in &words[1..] {
+                self.stop_service("stops", service);
+            }
         }
     }
 
@@ -726,14 +1075,21 @@ impl Checker<'_> {
         };
         let rest = &words[1..];
         // `kill signal target` and `stop label` end the process of a
-        // service: one the system needs is `stop_system`, and one only
-        // known when it runs is `stop_unknown`. The target is the last
-        // operand.
+        // service: one the system needs is `stop_system`, one that protects
+        // the machine is `system_settings`, and one only known when it runs
+        // is `stop_unknown`. The target is the last operand.
         if matches!(sub.as_str(), "kill" | "stop") {
             match rest.last().map(|target| (target, target.known())) {
                 Some((target, Some(label))) if is_system_label(label) => self.add(
                     Rule::StopSystem,
                     "stops a process the system needs",
+                    Some(target),
+                ),
+                // A daemon that protects the machine: stopping it is a
+                // bootout of it.
+                Some((target, Some(label))) if is_protecting_label(label) => self.add(
+                    Rule::SystemSettings,
+                    "stops a service that protects the system",
                     Some(target),
                 ),
                 Some((target, None)) => self.add(

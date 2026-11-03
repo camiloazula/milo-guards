@@ -20,11 +20,42 @@ use milo_guards_shell::{
     Shell,
 };
 
-/// A text as the tree prints it: a control character written as an escape.
+/// The format characters of Unicode 17.0 (category `Cf`), which the tree
+/// writes as escapes. The library's own test lists the ones it must hold
+/// without reading this table.
+const FORMAT: [(char, char); 21] = [
+    ('\u{00ad}', '\u{00ad}'),
+    ('\u{0600}', '\u{0605}'),
+    ('\u{061c}', '\u{061c}'),
+    ('\u{06dd}', '\u{06dd}'),
+    ('\u{070f}', '\u{070f}'),
+    ('\u{0890}', '\u{0891}'),
+    ('\u{08e2}', '\u{08e2}'),
+    ('\u{180e}', '\u{180e}'),
+    ('\u{200b}', '\u{200f}'),
+    ('\u{202a}', '\u{202e}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206f}'),
+    ('\u{feff}', '\u{feff}'),
+    ('\u{fff9}', '\u{fffb}'),
+    ('\u{110bd}', '\u{110bd}'),
+    ('\u{110cd}', '\u{110cd}'),
+    ('\u{13430}', '\u{1343f}'),
+    ('\u{1bca0}', '\u{1bca3}'),
+    ('\u{1d173}', '\u{1d17a}'),
+    ('\u{e0001}', '\u{e0001}'),
+    ('\u{e0020}', '\u{e007f}'),
+];
+
+/// A text as the tree prints it: a control character, a line or paragraph
+/// separator and a format character written as an escape.
 pub fn as_printed(text: &str) -> String {
     text.chars()
         .flat_map(|c| {
-            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+            if c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}')
+                || FORMAT.iter().any(|&(from, to)| (from..=to).contains(&c))
+            {
                 c.escape_debug().collect::<Vec<_>>()
             } else {
                 vec![c]

@@ -31,6 +31,11 @@
 //! the workspace; [`Effect::Changes`] when one writes, and
 //! [`Effect::Unknown`] when anything is not understood.
 //!
+//! [`explain`] shows the reading both answers come from: every unit as the
+//! rules saw it (its program, wrappers and arguments, where each argument
+//! lands, the folder it runs from) and what each found, with a `Display` that
+//! draws it as a short tree for a person to read.
+//!
 //! What cannot be read is risky: a program or a script known only when it
 //! runs, a line the grammar cannot parse, shells nested past a limit.
 //! Nothing here touches the file system or the environment: paths are
@@ -43,6 +48,7 @@ mod detect;
 mod dotglob;
 mod effect;
 mod explain;
+mod extended;
 mod inline;
 mod launch;
 mod path;
