@@ -167,7 +167,11 @@ fn a_line_at_the_length_limit_is_read_in_time() {
     let _serial = serial();
     // Longest line there is, in the shapes a real or a broken line takes.
     // The bound is for the debug build `just verify` runs; a release build
-    // takes a tenth of it or less.
+    // takes a tenth of it or less. A POSIX line that turns zsh's
+    // `extendedglob` on costs up to about twice as much: a word or redirect
+    // the option reads another way is judged both ways, and a line with a
+    // loop or a function body is read a second time. A bound for such a line
+    // allows for that.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let fit = |unit: &str, head: &str, tail: &str| {
         let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
