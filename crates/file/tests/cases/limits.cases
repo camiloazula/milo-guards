@@ -30,7 +30,7 @@ write@jose rules=write_outside | /home/jose\u{301}/.agent/x
 read@windows safe | /c/Users/me/.ssh/id_rsa
 read@windows safe | /cygdrive/c/Users/me/.ssh/id_rsa
 
-# A Windows reserved device name is a file here.
+# A Windows reserved device name is a device in any folder.
 write@windows safe | COM1
 write@windows safe | PRN
 write@windows safe | AUX

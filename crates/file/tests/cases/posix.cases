@@ -224,6 +224,10 @@ write safe | /private/tmp/x
 write safe | /dev/null
 write safe | /dev/stderr
 write safe | /dev/fd/1
+# A path past `/dev/fd` lands where only the system knows: on Linux
+# `/dev/fd/..` is `/proc/self`.
+write rules=unreadable | /dev/fd/../cwd/../stdout
+write rules=unreadable | /dev/fd/../null
 # Beside a sensitive place is not it.
 write safe | /home/me/work/repo/.sshx
 write safe | src/.ssh.rs

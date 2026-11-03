@@ -1308,6 +1308,11 @@ impl Resolver {
         for variant in climbing(path.text(), flavour) {
             places.push(self.place_one(respell(path, &variant), flavour, hidden, holding, writes));
         }
+        // A path that goes on past `/dev/fd` lands where only the system
+        // knows (see `through_fd`): as spelled, and as unknown.
+        if flavour == Flavour::Posix && matches!(path, Spelling::Plain(text) if through_fd(text)) {
+            places.push((Place::Unknown, None));
+        }
         places
     }
 
@@ -1322,6 +1327,14 @@ impl Resolver {
         if let Spelling::Plain(text) = path {
             if let Some(device) = device(text, flavour) {
                 return (device, None);
+            }
+            // As spelled, a path past `/dev/fd` is the device its parts
+            // name once `..` is applied: `/dev/fd/../null` is `/dev/null`.
+            if flavour == Flavour::Posix && through_fd(text) {
+                let spelled = format!("/{}", parts(text, flavour).join("/"));
+                if let Some(device) = device(&spelled, flavour) {
+                    return (device, None);
+                }
             }
         }
         // A long path (`\\?\C:\x`) is the plain path it names.
@@ -2185,7 +2198,7 @@ fn climbing(text: &str, flavour: Flavour) -> Vec<String> {
 /// path, a key.
 fn severity(place: Place) -> u8 {
     match place {
-        Place::Inside | Place::Temp { .. } | Place::Null => 0,
+        Place::Inside | Place::Temp { .. } | Place::Null | Place::Session(_) => 0,
         Place::Outside | Place::Unknown | Place::Registry => 1,
         Place::Top(_) => 2,
         Place::Workspace { .. } | Place::Home { .. } => 3,
@@ -2347,19 +2360,25 @@ pub fn network(text: &str, flavour: Flavour) -> bool {
 }
 
 /// A device a path names, by its spelling: `/dev/null`, `/dev/fd/<digits>`
-/// and the disks under `/dev` on either flavour, and on Windows also `NUL`,
-/// `CON` and the `\\.\` device namespace.
+/// and the disks under `/dev` on either flavour, and on Windows also the
+/// names Windows keeps for a device in every folder (`NUL`, `CON`, `AUX`,
+/// `PRN`, `COM1`, `LPT1`...), the same names in the `\\.\` device namespace
+/// (`\\.\NUL` is the null device), and the rest of that namespace, which is
+/// a disk (`\\.\PhysicalDrive0`).
 ///
 /// On POSIX an absolute path is judged where it lands, with `.` and `..`
 /// applied, so `/dev/./null` is the null device and `/dev/fd/../../etc` is
-/// not a device at all: it is `/etc`. A name that is not exactly a device
+/// not a device at all. A name that is not exactly a device
 /// (`/dev/fd`, `/dev/fd/3/x`) is not one. Nor is a spelling with any part
 /// after a descriptor, which could be a folder, so a `..` after it lands
 /// beside that folder's parent: that is any part after `fd/<name>` (digits,
 /// a wildcard, any name) and any part after `stdin`, `stdout` or `stderr`
 /// (links to the same descriptors), as in `/dev/fd/3*/../1` and
-/// `/dev/stdout/../null`; only `fd/..` climbs out of `fd` itself, so
-/// `/dev/fd/../null` is the null device. A wildcard part with more parts
+/// `/dev/stdout/../null`. Nor is any spelling that goes on past `/dev/fd`
+/// with anything but one final number, `fd/..` included: on Linux `/dev/fd`
+/// is a link to `/proc/self/fd`, so `/dev/fd/..` is `/proc/self`, not
+/// `/dev`, and the resolver judges such a path both where its spelling lands
+/// and as a place only known when it runs. A wildcard part with more parts
 /// after it is no device either, since it can match `stdout` and be a
 /// folder: `/dev/std*/../null` and `/dev/*/../null` land beside it, not on
 /// `/dev/null`. A name that ends in `/`, `/.` or `/..` is no device
@@ -2369,6 +2388,10 @@ pub fn network(text: &str, flavour: Flavour) -> bool {
 /// does not show, so it is never a device.
 #[must_use]
 pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
+    // `\\.\NUL` is the null device in the device namespace, as `NUL` is.
+    if flavour == Flavour::Windows && prefix(text, '.').is_some_and(reserved_device) {
+        return Some(Place::Null);
+    }
     if flavour == Flavour::Windows
         && (prefix(text, '.').is_some()
             || (verbatim(text).is_some() && windows_root(text).is_none()))
@@ -2382,10 +2405,10 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
     if text.contains('{') {
         return None;
     }
-    let lower = text.to_ascii_lowercase();
-    if flavour == Flavour::Windows && matches!(lower.as_str(), "nul" | "nul:" | "con" | "con:") {
+    if flavour == Flavour::Windows && reserved_device(text) {
         return Some(Place::Null);
     }
+    let lower = text.to_ascii_lowercase();
     let rest = lower.strip_prefix('/')?;
     let name: Vec<String> = if flavour == Flavour::Windows {
         let plain: Vec<&str> = rest.split('/').collect();
@@ -2398,21 +2421,19 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         if lower.ends_with('/') || lower.ends_with("/.") || lower.ends_with("/..") {
             return None;
         }
-        // Nor is a spelling that goes on past a descriptor: `fd/<name>`
-        // (digits, a wildcard that expands to digits, any name) or
-        // `stdin`, `stdout` and `stderr`, which are links to the same
-        // `/proc/self/fd` entries. The descriptor could be a folder, and a
-        // `..` after it lands beside that folder's parent, not on
-        // `/dev/fd`. The kernel drops `//` and `/.`, so an empty or `.`
-        // part before the descriptor changes nothing. Only `fd/..` climbs
-        // out of `fd` itself, so `/dev/fd/../null` stays the null device.
+        // Nor is a spelling that goes on past `/dev/fd` with anything but
+        // one final number (see [`through_fd`]), or past `stdin`, `stdout`
+        // and `stderr`, which are links to the same `/proc/self/fd`
+        // entries: the descriptor could be a folder, and a `..` after it
+        // lands beside that folder's parent. The kernel drops `//` and `/.`,
+        // so an empty or `.` part changes nothing.
+        if through_fd(&lower) {
+            return None;
+        }
         let raw: Vec<&str> = lower
             .split('/')
             .filter(|part| !part.is_empty() && *part != ".")
             .collect();
-        if raw.windows(3).any(|w| w[0] == "fd" && w[1] != "..") {
-            return None;
-        }
         // A wildcard part with more parts after it can expand to a folder
         // (`std*` and `*` match `stdout`), so a `..` after it lands beside
         // that folder's parent, whatever the pattern is spelled as.
@@ -2451,6 +2472,59 @@ pub fn device(text: &str, flavour: Flavour) -> Option<Place> {
         return Some(Place::Disk);
     }
     None
+}
+
+/// Whether a POSIX path `text`, absolute, goes on past `/dev/fd` with
+/// anything but one final number (`/dev/fd/3` is a descriptor; `/dev/fd/..`,
+/// `/dev/fd/3/x` and `/dev/fd/x/../1` go on), `.` and `..` applied as the
+/// parts come, names without case. On Linux `/dev/fd` is a link to
+/// `/proc/self/fd`, so `/dev/fd/..` is `/proc/self` and what follows it is
+/// that process's folder; on a Mac it is a real folder, and a descriptor in
+/// it may be a folder too. Where such a path lands is only known to the
+/// system it runs on.
+fn through_fd(text: &str) -> bool {
+    if !text.starts_with('/') {
+        return false;
+    }
+    let raw: Vec<&str> = text
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    let mut at: Vec<&str> = Vec::new();
+    for (index, part) in raw.iter().enumerate() {
+        if at.len() == 2 && same_fold(at[0], "dev") && same_fold(at[1], "fd") {
+            let rest = &raw[index..];
+            return !matches!(rest, [number] if is_digits(number));
+        }
+        if *part == ".." {
+            at.pop();
+        } else {
+            at.push(part);
+        }
+    }
+    false
+}
+
+/// Whether `text` is a name Windows keeps for a device in every folder:
+/// `NUL`, `CON`, `AUX`, `PRN`, `COM1` to `COM9` and `LPT1` to `LPT9` (and
+/// with `¹`, `²` or `³` for the digit), in any case, with or without a
+/// closing `:`. A name that only starts like one (`COM10`, `AUX.txt`) is a
+/// file.
+fn reserved_device(text: &str) -> bool {
+    let name = text.strip_suffix(':').unwrap_or(text).to_ascii_lowercase();
+    if matches!(name.as_str(), "nul" | "con" | "aux" | "prn") {
+        return true;
+    }
+    let Some(number) = name
+        .strip_prefix("com")
+        .or_else(|| name.strip_prefix("lpt"))
+    else {
+        return false;
+    };
+    matches!(
+        number,
+        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "\u{b9}" | "\u{b2}" | "\u{b3}"
+    )
 }
 
 /// Whether `text` is a descriptor number: one or more ASCII digits.
@@ -2867,7 +2941,7 @@ mod tests {
             ("/dev/stdout", POSIX, Some(Place::Null)),
             ("/dev/stderr", POSIX, Some(Place::Null)),
             ("/dev/./null", POSIX, Some(Place::Null)),
-            ("/dev//fd/../null", POSIX, Some(Place::Null)),
+            ("/dev//fd/../null", POSIX, None),
             ("/../dev/null", POSIX, Some(Place::Null)),
             ("/dev/mapper/vg-root", POSIX, Some(Place::Disk)),
             ("/dev/disk0", WINDOWS, Some(Place::Disk)),
@@ -2879,7 +2953,7 @@ mod tests {
             ("/dev/stderr/../x", POSIX, None),
             ("/dev/sda/../../etc", POSIX, None),
             ("/dev/disk0/..", POSIX, None),
-            ("/dev/fd/../../dev/sda", POSIX, Some(Place::Disk)),
+            ("/dev/fd/../../dev/sda", POSIX, None),
             // Names that are not exactly a device.
             ("/dev/fd", POSIX, None),
             ("/dev/fd/", POSIX, None),
@@ -2908,18 +2982,33 @@ mod tests {
             ("/dev/fd/../std*/../null", POSIX, None),
             ("/dev//std*//../null", POSIX, None),
             ("/dev/fd/../std*", POSIX, None),
-            ("/dev/fd/../null", POSIX, Some(Place::Null)),
+            ("/dev/fd/../null", POSIX, None),
             ("/dev/stdout/../null", POSIX, None),
             ("/dev/stderr/../null", POSIX, None),
             ("/dev/stdin/../null", POSIX, None),
             ("/dev/stdout/x/../../null", POSIX, None),
             ("/dev//stdout//../null", POSIX, None),
-            ("/dev/fd/../stdout", POSIX, Some(Place::Null)),
+            ("/dev/fd/../stdout", POSIX, None),
+            ("/dev/fd/../cwd/../stdout", POSIX, None),
+            ("/dev/fd//./7", POSIX, Some(Place::Null)),
             ("/dev/nulls", POSIX, None),
             ("dev/null", POSIX, None),
             // Windows spellings: a name is exact, the namespace is a root.
             ("NUL", WINDOWS, Some(Place::Null)),
             ("con:", WINDOWS, Some(Place::Null)),
+            ("AUX", WINDOWS, Some(Place::Null)),
+            ("prn:", WINDOWS, Some(Place::Null)),
+            ("com9", WINDOWS, Some(Place::Null)),
+            ("LPT\u{b3}", WINDOWS, Some(Place::Null)),
+            ("COM0", WINDOWS, None),
+            ("COM10", WINDOWS, None),
+            ("AUX.txt", WINDOWS, None),
+            ("AUX", POSIX, None),
+            (r"\\.\NUL", WINDOWS, Some(Place::Null)),
+            ("//./nul", WINDOWS, Some(Place::Null)),
+            (r"\\.\COM1", WINDOWS, Some(Place::Null)),
+            (r"\\.\NUL\x", WINDOWS, Some(Place::Disk)),
+            (r"\\?\NUL", WINDOWS, Some(Place::Disk)),
             (r"NUL\..\x", WINDOWS, None),
             ("NUL/x", WINDOWS, None),
             (r"CON\..\..", WINDOWS, None),

@@ -164,6 +164,25 @@ windows place=disk | \\\\.\\C:\\Users\\me\\.ssh\\id_rsa
 windows place=disk | //./C:/Users/me/.ssh/id_rsa
 windows place=disk | \\/.\\C:\\Users\\me\\.ssh\\id_rsa
 windows place=disk | \\\\.\\PhysicalDrive0
+# A name Windows keeps for a device is one in any folder, and in the device
+# namespace too.
+windows place=null | \\\\.\\NUL
+windows place=null | //./nul
+windows place=null | AUX
+windows place=null | lpt1:
+windows place=inside | COM10
+windows place=disk | \\\\.\\NUL\\x
+# On Linux `/dev/fd` is a link to `/proc/self/fd`, so a path that goes on past
+# it with anything but one final number lands where only the system knows:
+# the worse of where its spelling lands and a place only known when it runs.
+posix place=null | /dev/fd/1
+posix place=null | /dev/fd//./1
+posix place=unknown | /dev/fd/../null
+posix place=unknown | /dev/fd/../cwd/../stdout
+posix place=unknown | /dev/fd/../fd/1
+posix place=disk | /dev/fd/../../dev/sda
+posix place=home | /dev/fd/../../home/me
+posix@macos place=unknown | /dev/fd/../null
 # The folders the caller names may be spelled as a long path too: a canonical
 # path on Windows has the prefix.
 paths verbatim cwd=\\\\?\\C:\\Users\\me\\dev\\repo home=\\\\?\\C:\\Users\\me workspace=\\\\?\\C:\\Users\\me\\dev\\repo

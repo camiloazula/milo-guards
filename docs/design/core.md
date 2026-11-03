@@ -80,6 +80,7 @@ does touching it mean? The answer is a **`Place`**.
 | `Inside` | Inside a workspace folder. The agent's to change. |
 | `Temp { exact }` | A temporary directory itself, or a path under one. |
 | `Null` | A device that discards or echoes: `/dev/null`, `NUL`. |
+| `Session(words)` | What lives only as long as the shell session: PowerShell's `Env:` and `Variable:` drives, the session's environment and variables. |
 | `Workspace { exact }` | A workspace folder itself, or a folder holding one. |
 | `Home { exact }` | The home directory itself, or a folder holding it. |
 | `Top(words)` | The root of a disk, a system folder, or a top-level folder. |
@@ -91,7 +92,8 @@ does touching it mean? The answer is a **`Place`**.
 | `Unknown` | Known only when the input runs. |
 
 `harmless()` says whether touching a place is the agent's own business: inside
-a workspace, a temporary file, or the null device. `Protected` is never
+a workspace, a temporary file, the null device, or the session's own
+environment and variables. `Protected` is never
 harmless. `words()` gives the place in
 the words of a reason, so a rule can say `deletes {words}`.
 
@@ -128,8 +130,9 @@ shell, tool or language the text came from. Two things come with it.
 
 - `Posix`: `/` separates. A backslash or a colon is part of a file name.
 - `Windows`: `/` and `\` separate. A path can start with a drive letter
-  (`C:`) or a share (`\\server\share`). Names compare without case. `NUL`,
-  `CON` and `\\.\` are devices.
+  (`C:`) or a share (`\\server\share`). Names compare without case. The
+  names Windows keeps for a device (`NUL`, `CON`, `AUX`, `PRN`, `COM1`,
+  `LPT1`...) and `\\.\` are devices.
 
 The flavour follows the system the path will be used on, not the host the
 guard runs on. That is why a Windows line is judged the same on every host.
@@ -439,27 +442,34 @@ itself.
   applied first, then the name must be exactly one of `/dev/null`,
   `/dev/stdout`, `/dev/stderr`, `/dev/tty`, `/dev/zero`, `/dev/random`,
   `/dev/urandom`, `/dev/fd/<digits>` (and nothing else under `/dev/fd`), or a
-  disk under `/dev`. A path that climbs out of a device is no device:
-  `/dev/fd/../../Users/me` is the home directory, and is judged as such. A
-  name followed by `/` or `/.` is no device either, since descriptor 3 could
-  be a folder; for the same reason a spelling with any part after
-  `fd/<digits>` is none (`/dev/fd/3/../1` lands beside that folder's parent,
-  not on descriptor 1), and so is one with any part after `fd/<name>` (a
-  wildcard that expands to digits, any name) or after `stdin`, `stdout` or
-  `stderr` (links to the same descriptors); only `fd/..` climbs out of `fd`
-  itself, so `/dev/fd/../null` is still the null device. A wildcard part with
+  disk under `/dev`. A name followed by `/` or `/.` is no device, since
+  descriptor 3 could be a folder; for the same reason a spelling with any
+  part after `stdin`, `stdout` or `stderr` (links to the descriptors) is
+  none. Nor is a spelling that goes on past `/dev/fd` with anything but one
+  final number: on Linux `/dev/fd` is a link to `/proc/self/fd`, so
+  `/dev/fd/..` is `/proc/self`, and on a Mac a descriptor may be a folder.
+  Such a path is judged both where its spelling lands, `..` applied and a
+  device read again (`/dev/fd/../../dev/sda` is a disk,
+  `/dev/fd/../../Users/me` the home directory), and as `Unknown`, and the
+  more serious place wins: `/dev/fd/../null` and
+  `/dev/fd/../cwd/../stdout` are `Unknown`. A wildcard part with
   more parts after it is no device either, since it can match `stdout` and be
   a folder (`/dev/std*/../null` and `/dev/*/../null` land beside it). On Windows, `/dev`
   is a real folder on the current drive, so only the plain `/`-separated
   spellings above count, never normalised (`/dev\null` and `/dev/./null` are
-  files), plus `NUL`, `CON` and `\\.\`; the `\\.\` namespace is a root that
-  `..` cannot leave, so everything spelled below it is a disk. A text with a
+  files), plus the names Windows keeps for a device in every folder (`NUL`,
+  `CON`, `AUX`, `PRN`, `COM1` to `COM9`, `LPT1` to `LPT9`, and `¹`, `²`, `³`
+  for the digit; in any case, with or without a closing `:`; `COM10` and
+  `AUX.txt` are files) and `\\.\`. The same names in the `\\.\` namespace
+  are the same devices (`\\.\NUL` is the null device); the namespace is a
+  root that `..` cannot leave, so everything else spelled below it is a disk
+  (`\\.\PhysicalDrive0`, `\\.\NUL\x`). A text with a
   `{` can expand to paths it does not show, so it is never a device; the
   shell guard checks for a brace list before it asks whether a path is a
   device.
 - Nothing reads the file system. A symlink is judged by its own name.
 
-Core never answers `Registry`. A path spelled out as text is a file path. A
+Core never answers `Registry` or `Session`. A path spelled out as text is a file path. A
 guard that reads the syntax around it says when a path is not one. Core
 answers `Unknown` for the Windows spellings it cannot read to a name, listed
 under "What core judges".
@@ -475,8 +485,11 @@ guard keeps these:
 - `$HOME`, `%USERPROFILE%` and `$env:TEMP`: it turns each into the place it
   names before it asks, unless the line sets that variable.
 - PowerShell's provider paths and drives, such as `HKLM:` and
-  `FileSystem::C:\x`. A registry drive is `Registry`; any other drive is
-  `Outside`.
+  `FileSystem::C:\x`. A registry drive is `Registry`; `Env:` and `Variable:`
+  (and their providers, `Environment::x`, `Variable::x`) are `Session`;
+  `Temp:` is the user's temporary folder; a drive the line makes with
+  `New-PSDrive` is `Registry` for a registry one and `Unknown` for any other;
+  any other drive is `Outside`.
 - `$null`, and brace lists such as `{~,x}`, which are `Unknown`.
 - `within`, which joins a path to the folder an earlier `cd` moved to.
 - `listed`, which says what a listing hands on to the next command: a pattern

@@ -19,8 +19,11 @@ use aliases::{Set, Stands};
 
 use crate::detect::DOWNLOADERS;
 use crate::launch;
+use crate::path::Made;
 use crate::unit::{self, Arg, Between, Listing, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
+use milo_guards_core::spelling::glob;
+use milo_guards_core::Flavour;
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let language = tree_sitter_powershell::LANGUAGE.into();
@@ -55,7 +58,27 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     // `$env:TEMP = $HOME`: a variable the line sets no longer names its
     // usual place.
     let mut names = Vec::new();
+    // `Set-Item Env:TEMP ~`, `Remove-Item Env:TEMP`, `cd Env:; Set-Item
+    // TEMP ~`: a word on the `Env:` or `Variable:` drive may change any
+    // variable that names a place, whatever the cmdlet, so none does.
+    // A word that names the `Env:` drive itself (`cd Env:`) may put the
+    // line there, where a plain name is a variable of the environment.
+    let mut drives = (false, false);
+    let mut env_location = false;
     unit::for_each_node(tree.root_node(), |node| {
+        if matches!(
+            node.kind(),
+            "generic_token" | "verbatim_string_characters" | "expandable_string_literal"
+        ) {
+            match session_drive(unit::text(&node, text)) {
+                Some((Session::Environment, whole)) => {
+                    drives.0 = true;
+                    env_location |= whole;
+                }
+                Some((Session::Variables, _)) => drives.1 = true,
+                None => {}
+            }
+        }
         if node.kind() == "assignment_expression" {
             if let Some(left) = node.named_child(0) {
                 let left = unit::text(&left, text).trim();
@@ -71,6 +94,16 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     for name in names {
         split.reassign(&name);
         split.set(&name);
+    }
+    if drives.0 {
+        for name in PLACE_ENVIRONMENT {
+            split.reassign(&format!("env:{name}"));
+        }
+    }
+    if drives.1 {
+        for name in PLACE_VARIABLES {
+            split.reassign(name);
+        }
     }
     // `foreach ($c in …)`: the variable holds one item of what it walks.
     unit::for_each_node(tree.root_node(), |node| {
@@ -98,6 +131,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         holds: HashSet::new(),
         variables: variables::Variables::read(tree.root_node(), text),
         streams: HashSet::new(),
+        env_location,
     };
     walker.mark_listings(tree.root_node());
     walker.define(tree.root_node());
@@ -504,6 +538,9 @@ struct Walker<'a> {
     /// The variables set from a network stream (`$s = $tcp.GetStream()`),
     /// whose `Write` sends what it is given.
     streams: HashSet<String>,
+    /// Whether a word names the `Env:` drive itself (`cd Env:`), so an item
+    /// cmdlet's plain name may be a variable of the environment.
+    env_location: bool,
 }
 
 impl Walker<'_> {
@@ -860,34 +897,65 @@ impl Walker<'_> {
     /// does not read, so a later `terraform apply` is only known when it
     /// runs (also `env:ZIPOPT` and `env:ZIP` for `zip`). A wildcard in the
     /// name may match one.
+    ///
+    /// A name with a wildcard may match any of them, and so may the name an
+    /// item takes from a rename, a copy or a move of an `Env:` item
+    /// (`Rename-Item Env:FOO npm_config_call`), or a plain name after the
+    /// line may have gone to the `Env:` drive (`cd Env:; Set-Item
+    /// npm_config_call …`).
     fn env_item(&mut self, key: &str, args: &[Arg]) {
-        if !matches!(key, "set-item" | "new-item" | "set-content" | "add-content") {
+        let names = matches!(key, "set-item" | "new-item" | "set-content" | "add-content");
+        let moves = matches!(key, "rename-item" | "copy-item" | "move-item");
+        if !names && !moves {
             return;
         }
+        let on_env = args.iter().any(|arg| {
+            let lower = arg.text().trim_matches(['"', '\'']).to_ascii_lowercase();
+            lower.starts_with("env:") || lower.contains(":env:")
+        });
+        // A plain word is a name on `Env:` when the cmdlet moves an item of
+        // it (the new name) or the line may be there.
+        let plain = (moves && on_env) || self.env_location;
         for arg in args {
-            let Some(text) = arg.known() else { continue };
+            let text = arg.text();
             let lower = text.trim_matches(['"', '\'']).to_ascii_lowercase();
-            let Some(rest) = lower
+            let rest = lower
                 .strip_prefix("env:")
                 .or_else(|| lower.split_once(":env:").map(|(_, rest)| rest))
-            else {
-                continue;
+                .map(|rest| rest.trim_start_matches(['\\', '/']));
+            let name = match rest {
+                Some(rest) => rest,
+                None if plain && !text.starts_with('-') => lower.as_str(),
+                None => continue,
             };
-            let rest = rest.trim_start_matches(['\\', '/']);
-            let name = unit::argument_variable(rest).or_else(|| {
-                rest.contains(['*', '?', '['])
-                    .then(|| "TF_CLI_ARGS".to_string())
-            });
-            if let Some(name) = name {
+            let value = Arg::Unknown(text.to_string());
+            // A name only known when it runs may be any of them.
+            let unknown = arg.known().is_none();
+            let pattern = name.contains(['*', '?', '[']);
+            let is = |special: &str| {
+                unknown
+                    || special.eq_ignore_ascii_case(name)
+                    || (pattern && glob::matches(name, special, Flavour::Windows, true))
+            };
+            let mut argument = unit::argument_variable(name);
+            if argument.is_none() && (unknown || pattern) {
+                argument = Some("TF_CLI_ARGS".to_string());
+            }
+            if let Some(name) = argument {
+                self.split.note_argument_variable(name, value.clone());
+            }
+            if is("npm_config_call") && !unit::npm_call(name) {
                 self.split
-                    .note_argument_variable(name, Arg::Unknown(text.to_string()));
+                    .note_argument_variable("npm_config_call".to_string(), value.clone());
             }
-            if rest.eq_ignore_ascii_case("NODE_OPTIONS") {
-                self.split.node_options.push(Arg::Unknown(text.to_string()));
+            if is("NODE_OPTIONS") {
+                self.split.node_options.push(value.clone());
             }
-            self.split
-                .zip_env
-                .set(rest, &Arg::Unknown(text.to_string()), true);
+            for zip in ["ZIPOPT", "ZIP"] {
+                if is(zip) {
+                    self.split.zip_env.set(zip, &value, true);
+                }
+            }
         }
     }
 
@@ -4709,6 +4777,53 @@ pub(crate) const START_PROCESS: [Param; 17] = [
     Param::switch("confirm", &["cf"]),
 ];
 
+/// The parameters of `New-PSDrive`. `-Name`, `-PSProvider` and `-Root` are
+/// also taken by position, in that order.
+const NEW_PSDRIVE: [Param; 9] = [
+    Param::value("name", &[]),
+    Param::value("psprovider", &[]),
+    Param::value("root", &[]),
+    Param::value("description", &[]),
+    Param::value("scope", &[]),
+    Param::value("credential", &[]),
+    Param::switch("persist", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The drive a `New-PSDrive` makes: its name when it is written out (by
+/// `-Name` or the first place), and whether its provider is the registry
+/// (by `-PSProvider` or the place after the name), as a module may qualify
+/// it (`Microsoft.PowerShell.Core\Registry`). A splat may hold either, so
+/// with one the name is only known when it runs.
+pub(crate) fn made_drive(args: &[Arg]) -> Made {
+    let params = Params::cmdlet(args, &NEW_PSDRIVE);
+    let mut positional = params.positional.iter().copied();
+    let mut take = |name: &str| {
+        let named = params.values(&[name]).first().copied();
+        if params.has(&[name]) {
+            named
+        } else {
+            positional.next()
+        }
+    };
+    let name = take("name");
+    let provider = take("psprovider");
+    let splat = args.iter().any(|arg| arg.text().starts_with('@'));
+    let name = name
+        .and_then(Arg::known)
+        .filter(|_| !splat)
+        .map(str::to_ascii_lowercase);
+    let registry = provider.and_then(Arg::known).is_some_and(|provider| {
+        provider
+            .rsplit('\\')
+            .next()
+            .unwrap_or(provider)
+            .eq_ignore_ascii_case("registry")
+    });
+    Made { name, registry }
+}
+
 /// The parameters of `Set-Location`, `Push-Location` and `Pop-Location`:
 /// `-StackName` takes a value, which is not the folder.
 pub(crate) const LOCATION: [Param; 4] = [
@@ -5002,6 +5117,56 @@ fn variable_word(chars: &[char], at: usize) -> Option<usize> {
         i += 1;
     }
     Some(i)
+}
+
+/// The variables of the environment that name a place, here and in cmd
+/// (see [`place_variable`] and `cmd::place`).
+const PLACE_ENVIRONMENT: [&str; 12] = [
+    "userprofile",
+    "home",
+    "temp",
+    "tmp",
+    "appdata",
+    "localappdata",
+    "systemroot",
+    "windir",
+    "systemdrive",
+    "programfiles",
+    "programfiles(x86)",
+    "programdata",
+];
+
+/// The session's variables that name a place (see [`place_variable`]).
+const PLACE_VARIABLES: [&str; 2] = ["home", "pwd"];
+
+/// Which of the session's own drives a PowerShell word is on.
+enum Session {
+    /// `Env:`, or the `Environment` provider.
+    Environment,
+    /// `Variable:`, or the `Variable` provider.
+    Variables,
+}
+
+/// The session's drive the word `word` names a path on, quoted or not: the
+/// `Env:` or `Variable:` drive, or its provider by its own name
+/// (`Environment::PATH`, `Microsoft.PowerShell.Core\Variable::x`); and
+/// whether the word names the drive itself, with no item on it (`Env:`,
+/// `env:\`).
+fn session_drive(word: &str) -> Option<(Session, bool)> {
+    if !word.contains(':') {
+        return None;
+    }
+    let word = word.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let (head, rest) = match word.split_once("::") {
+        Some((qualifier, rest)) => (qualifier.rsplit('\\').next().unwrap_or(qualifier), rest),
+        None => word.split_once(':')?,
+    };
+    let whole = rest.trim_matches(['\\', '/']).is_empty();
+    match head {
+        "env" | "environment" => Some((Session::Environment, whole)),
+        "variable" => Some((Session::Variables, whole)),
+        _ => None,
+    }
 }
 
 /// The place a variable names, by its lower-case name without `$`: the home

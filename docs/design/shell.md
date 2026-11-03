@@ -1163,10 +1163,14 @@ then goes to the folder `$x` holds when there is no folder `x`, so `shopt -s
 cdable_vars; x=/etc; cd x && rm -rf passwd` is a `delete` of a path only known
 when it runs. zsh's `autocd`, which runs a bare folder name as a `cd`, is not
 read.
-A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
-so it is read as written, before the path is joined to where a `cd` moved:
-`cd $dir; python x.py > $null` writes nothing, while `> out.txt` stays an
-overwrite of a file only known when it runs. `$null` is the device only in
+A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`, and the other names
+Windows keeps for one: `AUX`, `PRN`, `COM1` to `COM9`, `LPT1` to `LPT9`) is
+the same in any folder, so it is read as written, before the path is joined to
+where a `cd` moved: `cd $dir; python x.py > $null` and `cd $dir; python x.py >
+AUX` write nothing, while `> out.txt` stays an overwrite of a file only known
+when it runs (and so does `> COM10` or `> AUX.txt`, which are files).
+`\\.\NUL`, in any case, is the null device too; anything else in the `\\.\`
+namespace (`\\.\PhysicalDrive0`) stays a disk. `$null` is the device only in
 PowerShell, and only as the null value itself. In a POSIX shell it is the variable
 `null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
 is a file name like any other, joined to where the `cd` went.
@@ -1431,8 +1435,10 @@ before), a word only known when the line runs before the folder, or an option
 the guard does not know (`-q`, `--help`): every relative path after it is
 unknown too.
 
-In PowerShell a bare `NUL` or `CON` is the device only on the file system.
-After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, or to
+In PowerShell a bare `NUL` or `CON` is the device only on the file system
+(`Temp:` is a drive of the file system).
+After a `cd` to the registry, `Env:`, `Variable:`, `Function:` or `Cert:`, to
+a drive the line makes with `New-PSDrive`, or to
 a place only known when it runs (it may be a registry key), it is an ordinary
 item name there, so deleting, moving or changing it (`Remove-Item NUL`,
 `Move-Item NUL x`, `Set-ItemProperty NUL`, `New-Item NUL`) changes the item of
@@ -2814,8 +2820,36 @@ a path.
   after a name, where a word can begin; a line with a here-string, or a
   subexpression in a string, is read as written), so that the rules see the
   paths. What the second reading finds is added; the line stays `unreadable`.
-- A PowerShell drive such as `HKLM:` is the registry. Any other drive, such as
-  `Env:`, is outside the workspace. The drive is read before a wildcard, so
+- A PowerShell drive such as `HKLM:` is the registry. `Env:` and `Variable:`
+  hold the session's environment and variables, as `$env:FOO = 'bar'` sets
+  them, so a change there is the session's own and safe: `Set-Item
+  Env:RUST_LOG debug`, `Remove-Item Env:FOO`, `Set-Item -Path
+  Variable:ErrorActionPreference -Value Stop`, and the same by the providers'
+  own names (`Environment::FOO`, `Variable::x`) or after `cd Env:`; their
+  place reads as `the session's environment` and `a session variable`.
+  `Alias:` and `Function:` change what a later command runs, so they stay
+  risky. A word on `Env:` or `Variable:` may change a variable that names a
+  place, whatever the cmdlet (`Set-Item Env:TEMP ~`, `Remove-Item Env:TEMP`,
+  `Rename-Item Env:FOO TEMP`, `cd Env:; Set-Item TEMP ~`), so on a line with
+  one `$env:TEMP`, `$HOME` and the others no longer name their place; and an
+  item a program reads as its arguments or its command (`TF_CLI_ARGS`,
+  `npm_config_call`, `NODE_OPTIONS`, `ZIPOPT`) set by a pattern
+  (`Env:npm_config_*`), a name only known when it runs, the new name of a
+  rename, copy or move of an `Env:` item, or a plain name after a word that
+  names the `Env:` drive itself (`cd Env:`) is only known when it runs, as a
+  value set to it by name is. `Temp:` (a drive of the file system since
+  PowerShell 7.4) is the user's temporary folder, as `$env:TEMP` is: `Remove-Item
+  Temp:\scratch -Recurse` and `cd Temp:; Remove-Item NUL` are safe, and
+  `Remove-Item Temp:\ -Recurse` deletes a temporary folder. A drive the line
+  makes with `New-PSDrive` (by `-Name` and `-PSProvider`, or by position) is
+  read as its provider, wherever the line makes it: a registry drive is the
+  registry (`New-PSDrive -Name Q -PSProvider Registry -Root HKLM:\SOFTWARE;
+  Remove-Item Q:\Microsoft -Recurse` is `system_settings`), and any other
+  provider's path, a file system drive's included (its root is not
+  followed), is only known when it runs; once the line makes a drive whose
+  name or provider is only known when it runs (a splat, a variable), every
+  path on a drive is only known when it runs, a disk's included. Any other
+  drive, such as `Cert:`, is outside the workspace. The drive is read before a wildcard, so
   `HKCU:*` is the registry like `HKCU:\*`.
   A drive's name is whatever comes before the first `:` when that holds no
   `/`, `\`, `.` or `~`, no separator and no wildcard, so a drive made with `New-PSDrive`
@@ -2827,8 +2861,9 @@ a path.
   aliases. A registry place is `system_settings`: `Clear-Item HKCU:\Software\x`,
   `Rename-Item HKCU:\Software\x y`, `Set-Item HKLM:\SYSTEM\x -Value 1`. A
   rename or move of what lies beyond the workspace is `delete`, and a
-  `Set-Item` or `Clear-Item` on another drive (`Env:`, `Variable:`) is
-  `overwrite`, as writing to it is. `Rename-Item src\a.rs b.rs` is safe, but a new name only known when it runs
+  `Set-Item` or `Clear-Item` on another drive (`Alias:`, `Function:`) is
+  `overwrite`, as writing to it is; on `Env:` and `Variable:` it is the
+  session's own and safe (see above). `Rename-Item src\a.rs b.rs` is safe, but a new name only known when it runs
   (`Rename-Item src\a.rs $name`, `-NewName { $_.Name + 'x' }`) is `overwrite`,
   as it may be a startup file's. With
   no path, the four that act on an item work on what the stage before lists (or `$_`), except that a
@@ -3039,7 +3074,8 @@ a path.
   deletes `C:\Windows\System32`); after a `cd` to another provider, or to a
   place only known when it runs, it is only known when it runs.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
-- `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
+- `NUL` is the null device in any folder, and so are the other names Windows keeps for a device (`AUX`, `PRN`, `COM1`, `LPT1`...), `\\.\NUL` and PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
+- On POSIX `/dev/fd/<digits>` is a descriptor, but a path that goes on past `/dev/fd` with anything else is no device: on Linux `/dev/fd` is a link to `/proc/self/fd`, so `echo x > /dev/fd/../cwd/../stdout` writes the file `stdout` above the working folder. It is judged where its spelling lands and as a place only known when it runs, so it is `overwrite` (see [Core](core.md#what-core-judges)); `echo x > /dev/fd/1` and `> /dev/null` stay safe.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).

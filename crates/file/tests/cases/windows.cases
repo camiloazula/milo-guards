@@ -218,6 +218,12 @@ write@windows safe | C:\\Windows\\Temp\\x
 write@windows safe | ~\\AppData\\Local\\Temp\\x
 write@windows safe | NUL
 write@windows safe | nul
+# The other names Windows keeps for a device, and the null device in the
+# device namespace.
+write@windows safe | com1
+write@windows safe | lpt9:
+write@windows safe | \\\\.\\NUL
+write@windows rules=write_outside | \\\\.\\NUL\\x
 write@windows safe | NUL:
 # A long path to the workspace.
 write@windows safe | \\\\?\\C:\\Users\\me\\dev\\repo\\x
