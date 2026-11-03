@@ -2465,7 +2465,11 @@ pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
         return Some(Arg::Unknown(format!("{}:", &lower[..1])));
     }
     // `cd..` and `cd\`: cmd and PowerShell read them as one program name.
-    if unit.shell != Shell::Posix {
+    // A cmd name that names a program file (`cd.\a\b.bat`) is that file,
+    // which runs and leaves the line where it was.
+    if unit.shell == Shell::PowerShell
+        || (unit.shell == Shell::Cmd && !crate::cmd::names_program(program))
+    {
         for verb in ["chdir", "cd"] {
             if lower
                 .strip_prefix(verb)

@@ -163,24 +163,55 @@ impl Walker<'_> {
 
     /// The grammar reads an `if` or a `for` only at the start of a line:
     /// after `&&`, `||` or `|` (`ver && if exist q rd /s /q C:\x`) it is a
-    /// command named `if` whose condition and body are its arguments. cmd
-    /// reads it as the statement it is, so the command's text is split again
-    /// on its own, where the grammar reads it as one. Returns whether it was.
-    /// A command that already starts the text it was split from is not split
-    /// again: the grammar would read it the same way.
+    /// command named `if` whose condition and body are its arguments. Nor
+    /// does it read a `call`, `if` or `for` spelled with carets (`ca^ll`,
+    /// `i^f`), which cmd takes off first. cmd reads each as the statement it
+    /// is, so the command's text is split again on its own, the carets of
+    /// its first word taken off, where the grammar reads it as one. Returns
+    /// whether it was. An `if` or a `for` with no carets that already starts
+    /// the text it was split from is not split again: the grammar would read
+    /// it the same way.
     fn statement(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) -> bool {
-        let mut cursor = node.walk();
-        let keyword = node
-            .named_children(&mut cursor)
-            .find(|child| child.kind() == "command_name")
-            .is_some_and(|name| {
-                let name = unit::text(&name, self.source);
-                name.eq_ignore_ascii_case("if") || name.eq_ignore_ascii_case("for")
-            });
-        if !keyword || node.kind() != "cmd" || node.start_byte() == 0 {
+        if node.kind() != "cmd" {
             return false;
         }
-        let text = format!("{}\n", unit::text(&node, self.source));
+        let Some((word, _)) = parts(node) else {
+            return false;
+        };
+        let Some(range) = span(&word) else {
+            return false;
+        };
+        let raw = self.source.get(range.clone()).unwrap_or_default();
+        let bare = unescape(raw);
+        let is =
+            |text: &str, names: &[&str]| names.iter().any(|name| name.eq_ignore_ascii_case(text));
+        let spelled = raw.contains('^') && !raw.contains('"') && is(&bare, &["call", "if", "for"]);
+        let name = word
+            .first()
+            .filter(|name| name.kind() == "command_name")
+            .map(|name| unit::text(name, self.source))
+            .unwrap_or_default();
+        let later = node.start_byte() != 0 && is(name, &["if", "for"]);
+        if !spelled && !later {
+            return false;
+        }
+        let command = self
+            .source
+            .get(node.start_byte()..node.end_byte())
+            .unwrap_or_default();
+        let text = if spelled {
+            let before = self
+                .source
+                .get(node.start_byte()..range.start)
+                .unwrap_or_default();
+            let after = self
+                .source
+                .get(range.end..node.end_byte())
+                .unwrap_or_default();
+            format!("{before}{bare}{after}\n")
+        } else {
+            format!("{command}\n")
+        };
         let language = tree_sitter_batch::LANGUAGE.into();
         if let Some(tree) = unit::parse(self.split, &text, &language) {
             assigned(self.split, tree.root_node(), &text);
@@ -248,74 +279,37 @@ impl Walker<'_> {
     }
 
     fn command(&mut self, node: Node<'_>, stage: Option<Stage>) {
-        let mut cursor = node.walk();
-        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-        // `call %X%` names its program with a variable: the first piece is
-        // the program whatever its kind, so no command goes unread.
-        let Some(name) = children
-            .iter()
-            .find(|child| child.kind() == "command_name")
-            .or_else(|| {
-                children
-                    .iter()
-                    .find(|child| child.kind() != "argument_list")
-            })
-        else {
+        let Some((word, after)) = parts(node) else {
             return;
         };
-        let pieces: Vec<Node<'_>> = children
-            .iter()
-            .find(|child| child.kind() == "argument_list")
-            .map(|list| {
-                let mut cursor = list.walk();
-                list.named_children(&mut cursor).collect()
-            })
-            .unwrap_or_default();
-        // The grammar ends a command's name where cmd does not
-        // (`C:\Windows\System32\cmd.exe` is `C` given `:\Windows…`, `r^d` is
-        // `r` given `^d`): the pieces that touch the name are its word.
-        let mut word = vec![*name];
-        for piece in &pieces {
-            if word
-                .last()
-                .is_some_and(|last| last.end_byte() == piece.start_byte())
-            {
-                word.push(*piece);
-            } else {
-                break;
-            }
-        }
-        let after = &pieces[word.len() - 1..];
-        let (args, spans) = self.args(after);
-        let read = self.word(&word);
-        let file = read.file.map(|(program, first)| {
-            self.unit(program, first, args.clone(), spans.clone(), after, stage)
-        });
-        let unit = self.unit(read.program, read.first, args, spans, after, stage);
-        match file {
-            Some(file) => launch::add_either(self.split, unit, file, self.depth),
-            None => launch::add(self.split, unit, self.depth),
-        }
+        let (args, spans) = self.args(&after);
+        let units: Vec<Unit> = self
+            .word(&word)
+            .into_iter()
+            .map(|reading| self.unit(reading, args.clone(), spans.clone(), &after, stage))
+            .collect();
+        launch::add_readings(self.split, units, self.depth);
     }
 
-    /// The unit of `program` given what is left of its word, `first`, and
+    /// The unit of `reading`, the program and what is left of its word, and
     /// then `args`, the arguments after the word, made of the grammar's
     /// `pieces`; `spans` are where each argument is in the source.
     fn unit(
         &self,
-        program: Arg,
-        first: Option<Placed>,
+        reading: Reading,
         mut args: Vec<Arg>,
         mut spans: Vec<Range<usize>>,
         pieces: &[Node<'_>],
         stage: Option<Stage>,
     ) -> Unit {
+        let Reading { program, first } = reading;
         // `start "title" program …`: cmd takes a first quoted argument as
         // the window's title, which the values here no longer show.
-        let title = first.is_none() && pieces.first().is_some_and(|first| first.kind() == "string");
-        if let Some((first, span)) = first {
-            args.insert(0, first);
-            spans.insert(0, span);
+        let title =
+            first.is_empty() && pieces.first().is_some_and(|first| first.kind() == "string");
+        for (at, (first, span)) in first.into_iter().enumerate() {
+            args.insert(at, first);
+            spans.insert(at, span);
         }
         let key = program
             .known()
@@ -335,35 +329,58 @@ impl Walker<'_> {
     }
 
     /// How cmd reads a command's first word, made of the touching `pieces`:
-    /// the program it names and what is left of it, the first argument.
+    /// each program it may name, with what is left of the word as its first
+    /// arguments.
     ///
-    /// A word in quotes names a program's path. Otherwise cmd looks for one
-    /// of its built-in commands at the start of the word, with the carets
-    /// taken off (`r^d` is `rd`): the whole word, or the part before the
-    /// first `+`, `/`, `[`, `]`, `,`, `;`, `=` or `(` (`rd/s`, `echo(x`), or
-    /// the part before the first `.`, `\` or `:` (`echo.x`, `cd..`,
-    /// `cd\x`). The rest of the word is the built-in's first argument;
-    /// `echo` drops the one character after its name. In the last case cmd
-    /// runs the file the word names instead when there is one, which only
-    /// the disk can say: a word that names a program (`dir.bat`,
-    /// `echo\..\..\Windows\System32\shutdown.exe`) is read both ways.
-    /// A word that starts with no built-in is the path of a program,
-    /// judged by its last part (`C:\Windows\System32\cmd.exe` is `cmd`).
-    fn word(&self, pieces: &[Node<'_>]) -> Word {
+    /// cmd ends the name at the first `,`, `;` or `=` outside quotes, as it
+    /// does at a space, and skips them before the name: `shutdown,/s` is
+    /// `shutdown /s`. The name is then read by [`Self::name`].
+    fn word(&self, pieces: &[Node<'_>]) -> Vec<Reading> {
         let Some(range) = span(pieces) else {
-            return Word::program(Arg::Unknown(String::new()));
+            return vec![Reading::program(Arg::Unknown(String::new()))];
         };
-        let raw = self.source.get(range.clone()).unwrap_or_default();
+        let whole = self.source.get(range.clone()).unwrap_or_default();
+        let raw = whole.trim_start_matches(DELIMITERS);
+        let start = range.start + (whole.len() - raw.len());
+        if raw.is_empty() {
+            return vec![Reading::program(Arg::Unknown(whole.to_string()))];
+        }
+        let (name, rest) = match find_unquoted(raw, |c| DELIMITERS.contains(&c)) {
+            Some(end) => {
+                let after = raw[end..].trim_start_matches(DELIMITERS);
+                let from = start + (raw.len() - after.len());
+                let rest = (!after.is_empty()).then(|| (self.known(after), from..range.end));
+                (&raw[..end], rest)
+            }
+            None => (raw, None),
+        };
+        let mut readings = self.name(name, start);
+        if let Some(rest) = rest {
+            for reading in &mut readings {
+                reading.first.push(rest.clone());
+            }
+        }
+        readings
+    }
+
+    /// How cmd reads a command's name, `raw`, which is at `start` in the
+    /// source.
+    ///
+    /// A name in quotes is a program's path. Otherwise cmd looks for one
+    /// of its built-in commands at the start of the name, with the carets
+    /// taken off (`r^d` is `rd`): the whole name, or the part before the
+    /// first `+`, `/`, `[`, `]` or `(` (`rd/s`, `echo(x`), or the part
+    /// before the first `.`, `\` or `:` (`echo.x`, `cd..`, `cd\x`). The
+    /// rest of the name is the built-in's first argument; `echo` drops the
+    /// one character after its name. In the last case cmd runs the file the
+    /// name names instead when there is one, which only the disk can say: a
+    /// name that names a program (`dir.bat`,
+    /// `echo\..\..\Windows\System32\shutdown.exe`) is read both ways. A name
+    /// that starts with no built-in is the path of a program (see
+    /// [`Self::path`]).
+    fn name(&self, raw: &str, start: usize) -> Vec<Reading> {
         if raw.contains('"') {
-            let (program, first) = match self.value(pieces) {
-                Arg::Known(text) => cut(text, range),
-                unknown => (unknown, None),
-            };
-            return Word {
-                program,
-                first,
-                file: None,
-            };
+            return self.path(raw, start);
         }
         // Each character as cmd reads it, carets taken off, and where it is
         // in `raw`.
@@ -394,45 +411,75 @@ impl Walker<'_> {
                 })
         };
         let Some((end, maybe_file)) = built_in else {
-            let (program, first) = self.path(raw, range.start);
-            return Word {
-                program,
-                first,
-                file: None,
-            };
+            return self.path(raw, start);
         };
         let name = prefix(end);
         // `echo.x` says `x`.
         let skip = usize::from(name.eq_ignore_ascii_case("echo"));
-        let first = chars.get(end + skip).map(|(at, _)| {
-            let rest = &raw[*at..];
-            let value =
-                expand(rest, self.split).map_or_else(|| Arg::Unknown(rest.to_string()), Arg::Known);
-            (value, range.start + at..range.end)
-        });
-        let file = if maybe_file {
-            let (program, first) = self.path(raw, range.start);
-            program
-                .known()
-                .is_some_and(names_program)
-                .then_some((program, first))
-        } else {
-            None
-        };
-        Word {
+        let first = chars
+            .get(end + skip)
+            .map(|(at, _)| (self.known(&raw[*at..]), start + at..start + raw.len()));
+        let mut readings = vec![Reading {
             program: Arg::Known(name),
-            first,
-            file,
+            first: first.into_iter().collect(),
+        }];
+        if maybe_file {
+            readings.extend(
+                self.path(raw, start)
+                    .into_iter()
+                    .filter(|reading| reading.program.known().is_some_and(names_program)),
+            );
+        }
+        readings
+    }
+
+    /// The programs a name that starts with no built-in, `raw` at `start`
+    /// in the source, may run: a path, with the variables put in and the
+    /// quotes taken off, judged by its last part (`C:\Windows\System32\cmd.exe`
+    /// is `cmd`). A `/` outside the quotes ends the name (`cmd/c`,
+    /// `"C:\x\cmd.exe"/c`) and starts the first argument, unless it follows
+    /// a drive (`C:/Windows/System32/shutdown.exe` is `shutdown`). After a
+    /// folder in a name with no quotes (`C:\Windows/System32/shutdown.exe`)
+    /// it may be either, so both are read. A bare drive (`D:`) is the
+    /// program `D` given `:`, as the grammar reads it.
+    fn path(&self, raw: &str, start: usize) -> Vec<Reading> {
+        let end = start + raw.len();
+        let whole = self.known(raw);
+        if let Some(drive) = whole.known().filter(|text| is_drive(text)) {
+            return vec![Reading {
+                program: Arg::Known(drive[..1].to_string()),
+                first: vec![(Arg::Known(":".to_string()), end.saturating_sub(1)..end)],
+            }];
+        }
+        let whole = Reading::program(whole);
+        let Some(at) = find_unquoted(raw, |c| c == '/').filter(|at| *at > 0) else {
+            return vec![whole];
+        };
+        let before = self.known(&raw[..at]);
+        if before.known().is_some_and(is_drive) {
+            return vec![whole];
+        }
+        let folder = !raw[..at].contains('"')
+            && (raw[..at].contains(['\\', ':'])
+                || before
+                    .known()
+                    .is_some_and(|text| text.contains(['\\', ':'])));
+        let cut = Reading {
+            program: before,
+            first: vec![(self.known(&raw[at..]), start + at..end)],
+        };
+        if folder {
+            vec![cut, whole]
+        } else {
+            vec![cut]
         }
     }
 
-    /// The program a word that starts with no built-in names, with what is
-    /// left of it (see [`cut`]); `start` is where the word is in the source.
-    fn path(&self, raw: &str, start: usize) -> (Arg, Option<Placed>) {
-        match expand(raw, self.split) {
-            Some(text) => cut(text, start..start + raw.len()),
-            None => (Arg::Unknown(raw.to_string()), None),
-        }
+    /// `text` with the quotes taken off and the variables that name a known
+    /// place put in, or only known when it runs.
+    fn known(&self, text: &str) -> Arg {
+        expand(&text.replace('"', ""), self.split)
+            .map_or_else(|| Arg::Unknown(text.to_string()), Arg::Known)
     }
 
     /// The arguments of a list. cmd splits arguments at spaces only, so the
@@ -599,50 +646,97 @@ impl Walker<'_> {
     }
 }
 
-/// The program a word that starts with no built-in names, read from its
-/// `text` with the variables put in and the quotes taken off: a path, and,
-/// when a `/` that does not follow a drive (`C:/Windows`) ends the name
-/// (`cmd/c`), the rest of the word as the first argument. A bare drive (`D:`)
-/// is the program `D` given `:`, as the grammar reads it. `span` is where the
-/// word is in the source.
-fn cut(text: String, span: Range<usize>) -> (Arg, Option<Placed>) {
-    if is_drive(&text) {
-        let colon = span.end.saturating_sub(1)..span.end;
-        return (
-            Arg::Known(text[..1].to_string()),
-            Some((Arg::Known(":".to_string()), colon)),
-        );
+/// The characters that end a command's name as a space does.
+const DELIMITERS: &[char] = &[',', ';', '='];
+
+/// The pieces of a command's first word and the pieces after it. The
+/// grammar ends a command's name where cmd does not
+/// (`C:\Windows\System32\cmd.exe` is `C` given `:\Windows…`, `r^d` is `r`
+/// given `^d`): the name and the pieces that touch it are the word.
+fn parts(node: Node<'_>) -> Option<(Vec<Node<'_>>, Vec<Node<'_>>)> {
+    let mut cursor = node.walk();
+    let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+    // `call %X%` names its program with a variable: the first piece is
+    // the program whatever its kind, so no command goes unread.
+    let name = children
+        .iter()
+        .find(|child| child.kind() == "command_name")
+        .or_else(|| {
+            children
+                .iter()
+                .find(|child| child.kind() != "argument_list")
+        })?;
+    let pieces: Vec<Node<'_>> = children
+        .iter()
+        .find(|child| child.kind() == "argument_list")
+        .map(|list| {
+            let mut cursor = list.walk();
+            list.named_children(&mut cursor).collect()
+        })
+        .unwrap_or_default();
+    let mut word = vec![*name];
+    for piece in &pieces {
+        if word
+            .last()
+            .is_some_and(|last| last.end_byte() == piece.start_byte())
+        {
+            word.push(*piece);
+        } else {
+            break;
+        }
     }
-    match text.find('/') {
-        Some(at) if at > 0 && !is_drive(&text[..at]) => (
-            Arg::Known(text[..at].to_string()),
-            Some((Arg::Known(text[at..].to_string()), span)),
-        ),
-        _ => (Arg::Known(text), None),
+    let after = pieces.get(word.len() - 1..).unwrap_or_default().to_vec();
+    Some((word, after))
+}
+
+/// Where the first character of `text` that `stop` takes is, outside
+/// double quotes and `%…%` (cmd puts a variable's value in before it reads
+/// the word) and not escaped with `^`.
+fn find_unquoted(text: &str, stop: impl Fn(char) -> bool) -> Option<usize> {
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut skip = 0;
+    for (at, c) in text.char_indices() {
+        if at < skip {
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '"' => quoted = !quoted,
+            _ if quoted => {}
+            '^' => escaped = true,
+            '%' => {
+                if let Some(close) = text[at + 1..].find('%') {
+                    skip = at + close + 2;
+                }
+            }
+            _ if stop(c) => return Some(at),
+            _ => {}
+        }
     }
+    None
 }
 
 /// An argument and where it is in the source.
 type Placed = (Arg, Range<usize>);
 
-/// How cmd reads a command's first word (see [`Walker::word`]).
-struct Word {
+/// One way cmd may read a command's first word (see [`Walker::word`]).
+struct Reading {
     /// The program it names.
     program: Arg,
-    /// What is left of the word, the program's first argument, and where
-    /// it is in the source.
-    first: Option<Placed>,
-    /// The word read as the path of a program, with what is left of it,
-    /// when cmd may run that file instead of the built-in.
-    file: Option<(Arg, Option<Placed>)>,
+    /// What is left of the word, the program's first arguments, and where
+    /// each is in the source.
+    first: Vec<Placed>,
 }
 
-impl Word {
+impl Reading {
     fn program(program: Arg) -> Self {
         Self {
             program,
-            first: None,
-            file: None,
+            first: Vec::new(),
         }
     }
 }
@@ -668,7 +762,7 @@ fn is_drive(text: &str) -> bool {
 }
 
 /// Whether `path` names a program: it ends in an extension cmd runs.
-fn names_program(path: &str) -> bool {
+pub(crate) fn names_program(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     [".exe", ".com", ".bat", ".cmd"]
         .iter()

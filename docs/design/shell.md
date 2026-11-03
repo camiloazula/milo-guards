@@ -72,24 +72,32 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   `:\Windows…`, and `r^d` as `r` given `^d`). The word is every piece that
   touches the name, with the carets taken off and the variables that name a
   known place put in (an unknown one leaves the program `unknown`). cmd
-  first looks for a built-in at its start: the whole word, or the part
-  before the first `+`, `/`, `[`, `]`, `,`, `;`, `=` or `(` (`rd/s/q`,
-  `echo(x`), or the part before the first `.`, `\` or `:` (`echo.x`,
+  ends the name at a `,`, `;` or `=` outside quotes as at a space
+  (`shutdown,/s` is `shutdown /s`). It then looks for a built-in at the
+  name's start: the whole name, or the part before the first `+`, `/`,
+  `[`, `]` or `(` (`rd/s/q`, `echo(x`), or the part before the first `.`, `\` or `:` (`echo.x`,
   `cd..`, `cd\x`); the rest of the word is the built-in's first argument,
   and `echo` drops the one character after its name (`echo.DROP TABLE t`
   says `DROP TABLE t`). In the last case cmd runs the file the word names
   when there is one, which only the disk can say, so a word that names a
   program (`dir.bat`, `echo\..\..\Windows\System32\shutdown.exe`) is
-  read both ways and the riskier counts. Any other word, quoted or not, is
-  the path of a program, judged by its last part as the bare name is
-  (`%SystemRoot%\System32\cmd.exe /c …` is `cmd /c …`); a `/` ends the
-  name (`cmd/c`) unless it follows a drive (`C:/Windows/System32/shutdown.exe`
-  is `shutdown`).
+  read both ways and the riskier counts; each reading may be the one that
+  does not run, so a `cd` among them may not have moved the line. Any other
+  name, quoted or not, is the path of a program, judged by its last part as
+  the bare name is (`%SystemRoot%\System32\cmd.exe /c …` is `cmd /c …`).
+  A `/` outside the quotes ends the name (`cmd/c`) unless it follows a
+  drive (`C:/Windows/System32/shutdown.exe` is `shutdown`); one after a
+  folder in a name with no quotes (`C:\Windows/System32/shutdown.exe`)
+  may end it or not, so both are read. One inside the quotes is part of
+  the path.
 - The batch grammar reads an `if` or a `for` only at the start of a line:
   after `&&`, `||` or `|` it is a command named `if` with its condition and
   body as arguments. The guard splits that command's text again on its own,
   so `ver && if exist q rd /s /q C:\Windows` is the `delete` that
-  `if exist q rd /s /q C:\Windows` is. A `for` typed at the prompt
+  `if exist q rd /s /q C:\Windows` is. Nor does it read a `call`, `if` or
+  `for` spelled with carets (`ca^ll`, `i^f`), which cmd takes off first:
+  that command's text is split again with the carets of its first word
+  taken off. A `for` typed at the prompt
   (`for %i in …`, not `%%i`) is not read by the grammar and is `unreadable`
   wherever it stands.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:

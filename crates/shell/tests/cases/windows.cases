@@ -233,12 +233,44 @@ cmd rules=system_settings | C:\\Windows\\System32\\reg.exe delete HKLM\\Software
 cmd rules=delete | "C:\\Windows\\System32\\cmd.exe"/c rd /s /q C:\\
 cmd rules=delete | start "x" C:\\Windows\\System32\\cmd.exe /c rd /s /q C:\\
 cmd finds=unknown | %X%\\System32\\shutdown.exe /s
+# A `/` in the quotes is part of the path; one after a folder outside them
+# may end the name or not, so both are read.
+cmd rules=stop_system | "C:\\Windows/System32/shutdown.exe" /s /t 0
+cmd rules=stop_system | "%SystemRoot%/System32/shutdown.exe" /s /t 0
+cmd rules=stop_system | %SystemRoot%/System32/shutdown.exe /s /t 0
+cmd rules=stop_system | C:\\Windows/System32/shutdown.exe /s
+cmd rules=delete | %windir%/system32/cmd.exe /c rd /s /q C:\\
+# cmd ends the name at a `,`, `;` or `=` as at a space.
+cmd rules=stop_system | shutdown,/s /t 0
+cmd rules=stop_system | shutdown;/s
+cmd rules=stop_system | shutdown=/s
+cmd rules=wipe_disk | format,D:
+cmd rules=wipe_disk | diskpart,/s x.txt
+cmd rules=stop_system | taskkill,/f /im lsass.exe
+cmd rules=delete | powershell,-c Remove-Item -Recurse -Force C:\\
+cmd rules=delete | cmd,/c rd /s /q C:\\
+cmd rules=delete | C:\\Windows\\System32\\cmd.exe,/c rd /s /q C:\\
+cmd rules=system_settings | reg,delete HKLM\\Software\\X /f
+cmd rules=delete | rd,/s /q C:\\Windows
+cmd rules=delete | rd;/s /q C:\\Windows
+cmd rules=delete | rd=/s /q C:\\Windows
+cmd safe | dir,/b
+cmd safe | tool.exe,--version
 cmd safe | tool.exe --version
 cmd safe | C:\\x\\tool.exe --version
 cmd safe | "C:\\x\\tool.exe" --version
 # cmd takes the carets off the program's name too.
 cmd rules=delete | r^d /s /q C:\\Windows
 cmd rules=delete | de^l /s /q C:\\Windows\\*
+# A `call`, `if` or `for` spelled with carets is the statement it names.
+cmd rules=delete | ca^ll rd /s /q C:\\Windows
+cmd rules=stop_system | c^all C:\\Windows\\System32\\shutdown.exe /s
+cmd rules=delete | i^f exist q rd /s /q C:\\Windows
+cmd rules=delete | f^or %%i in (a) do rd /s /q C:\\Windows
+cmd rules=delete | ver && ca^ll rd /s /q C:\\Windows
+cmd rules=stop_system | ver && c^all C:\\Windows\\System32\\shutdown.exe /s
+cmd rules=delete | ver && i^f exist q rd /s /q C:\\Windows
+cmd rules=delete | ver && f^or %%i in (a) do rd /s /q C:\\Windows
 # cmd finds a built-in at the start of a longer word: `echo.x`, `rd/s`,
 # `cmd/c`. A word that may name a program in a folder is read both ways.
 cmd rules=drop_data | echo.DROP TABLE t| psql
