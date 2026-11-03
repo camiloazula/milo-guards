@@ -38,6 +38,7 @@ const STRACE_LONG: &[&str] = &[
     "summary-columns",
     "argv0",
     "const-print-style",
+    "detach-on",
 ];
 
 /// `strace` runs the program after its options, tracing it.
@@ -46,7 +47,8 @@ pub(super) fn strace(args: &[Arg]) -> Launch {
 }
 
 /// The options of `script` that take a value: util-linux's and the BSDs'
-/// (`-t time` on the BSDs and macOS).
+/// (`-t time` on the BSDs and macOS). FreeBSD's `-F pipe` takes one too, and
+/// macOS's `-F` none: [`script`] reads it both ways.
 const SCRIPT_SHORT: &str = "cEIOBTmot";
 const SCRIPT_LONG: &[&str] = &[
     "command",
@@ -62,12 +64,24 @@ const SCRIPT_LONG: &[&str] = &[
 /// `script`: `-c` (`--command`) runs a shell line, wherever it stands, as
 /// util-linux reads its options; otherwise the words after the file it
 /// records to are the command (the BSDs and macOS). `-p` plays a recording
-/// back and runs nothing.
+/// back and runs nothing. `-F` takes a value on FreeBSD and none on macOS,
+/// so where the two readings differ both are judged.
 pub(super) fn script(args: &[Arg]) -> Launch {
-    if let Some(line) = getopt_value(args, Some('c'), "command", SCRIPT_SHORT, SCRIPT_LONG) {
+    let flag = script_with(args, SCRIPT_SHORT);
+    let valued = script_with(args, &format!("{SCRIPT_SHORT}F"));
+    if flag == valued {
+        flag
+    } else {
+        Launch::Either(Box::new(valued), Box::new(flag))
+    }
+}
+
+/// [`script`] with the options of `short` taking a value.
+fn script_with(args: &[Arg], short: &str) -> Launch {
+    if let Some(line) = getopt_value(args, Some('c'), "command", short, SCRIPT_LONG) {
         return Launch::Script(Shell::Posix, line);
     }
-    let Some(file) = after_getopt(args, SCRIPT_SHORT, SCRIPT_LONG) else {
+    let Some(file) = after_getopt(args, short, SCRIPT_LONG) else {
         return Launch::Itself;
     };
     let playback = args[..file].iter().filter_map(Arg::known).any(|text| {
@@ -137,7 +151,8 @@ const WSL_VALUES: [&str; 7] = [
 ];
 
 /// `wsl` runs its words as a line in the Linux shell of a distribution:
-/// after its options, or all of them after `--`. `-e` (`--exec`) runs the
+/// after its options (a `~` among them is one, to start in the home
+/// directory), or all of them after `--`. `-e` (`--exec`) runs the
 /// words after it as a program and its arguments, with no shell. Any other
 /// option (`--list`, `--install`, `--shutdown`) manages WSL and runs no
 /// command; with no words it opens a shell.
@@ -159,7 +174,8 @@ pub(super) fn wsl(args: &[Arg]) -> Launch {
                 };
             }
             Some(text) if WSL_VALUES.contains(&text) => at += 2,
-            Some("--system") => at += 1,
+            // `wsl ~` starts in the home directory, as `--cd ~` does.
+            Some("--system" | "~") => at += 1,
             Some(text) if text.starts_with('-') => return Launch::Itself,
             _ => return linux_line(&args[at..]),
         }

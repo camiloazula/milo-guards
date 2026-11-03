@@ -377,6 +377,28 @@ posix safe | ssh-agent make
 posix safe | script -q /dev/null ls
 posix safe | nix run nixpkgs#hello
 posix safe | launchctl asuser 501 ls
+# `wsl ~` starts in the home directory: the `~` is its own, not the program.
+posix finds=delete | wsl ~ rm -rf ~
+posix finds=delete | wsl ~ -- rm -rf ~
+posix finds=delete | wsl ~ -e rm -rf ~
+posix finds=delete | wsl -d Ubuntu ~ rm -rf ~
+posix safe | wsl ~
+# `--detach-on` and FreeBSD's `script -F` take a value.
+posix finds=delete | strace --detach-on execve rm -rf ~
+posix finds=delete | script -F pipe /dev/null rm -rf /
+posix safe | script -F out.log ls
+# A glob filled into a quoted command stays one word of it.
+posix safe | parallel 'cd {} && cargo test' ::: crates/*
+posix safe | parallel 'make -C {}' ::: crates/*
+posix safe | parallel 'cd {} && make' ::: */
+posix safe | parallel 'git -C {} pull' ::: */
+posix safe | parallel 'echo {}' ::: *
+posix safe | parallel -q sh -c 'echo {}' ::: *
+posix safe | parallel --trim lr echo ::: a
+posix finds=delete | parallel --trim lr rm -rf ::: ' /'
+posix finds=delete | parallel --trim=l rm -rf ::: ' /'
+posix finds=unreadable | parallel --trim x rm -rf ::: ' /'
+posix safe | parallel --tmux --total-jobs 4 --group-by 1 echo ::: a
 
 # `env -S` with its string attached, `--split-string=` and its shorter
 # spellings split the string as `env -S STRING`, with the arguments after it.
@@ -392,6 +414,18 @@ posix safe | env -S'make test'
 posix finds=delete | env --s 'rm -rf ~'
 posix finds=delete | env -u FOO -S'rm -rf ~'
 posix finds=unknown | env -S 'rm -rf' "$X"
+# The words of the string are env's own arguments again: options and
+# assignments first, then the program.
+posix finds=delete | env -S'-i' rm -rf ~
+posix finds=delete | env -S'-i rm -rf ~'
+posix finds=delete | env -S'-u X rm -rf ~'
+posix finds=delete | env -S'-C / rm -rf ./*'
+posix finds=delete | env -S '-i' rm -rf ~
+posix finds=delete | env -S'X=1 rm -rf ~'
+posix safe | env -S'-i make test'
+posix finds=unreadable | env -S'rm\\_-rf\\_~'
+posix finds=unreadable | env -S 'rm\\_-rf\\_~'
+posix finds=unreadable | env -S'${CMD} -rf ~'
 
 # The script `xargs` hands to `sh -c` gets its input as `$1` and `$@`, known
 # only when it runs.

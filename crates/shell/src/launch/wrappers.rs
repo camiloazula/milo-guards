@@ -42,7 +42,8 @@ pub(super) fn rsh(args: &[Arg]) -> Option<Arg> {
 }
 
 /// `env`: assignments and options, then the program; `-S` splits a string
-/// into the command, the arguments after it added to its words.
+/// into words read as `env`'s own arguments, the arguments after it added
+/// to them.
 pub(super) fn env(args: &[Arg]) -> Launch {
     let mut at = 0;
     while let Some(arg) = args.get(at) {
@@ -56,6 +57,14 @@ pub(super) fn env(args: &[Arg]) -> Launch {
                     None => return Launch::Itself,
                 },
             };
+            // Its own escapes, `\_` a space or a separator, `\c` an end and
+            // `${NAME}` a variable, are not read.
+            if ["\\_", "\\c", "${"]
+                .iter()
+                .any(|escape| script.text().contains(escape))
+            {
+                return Launch::Opaque("runs a command split by escapes that are not read");
+            }
             return Launch::Script(Shell::Posix, with_words(script, rest));
         }
         match arg.known() {
@@ -107,14 +116,17 @@ fn split_string(text: &str) -> Option<SplitString<'_>> {
     None
 }
 
-/// The script `env -S` runs: the string's words, then the arguments after
-/// it, each one word.
+/// The script `env -S` runs: `env` again, with the string's words and then
+/// the arguments after it, each one word. GNU env puts the words back among
+/// its own arguments, so they may be its options and assignments
+/// (`env -S'-i X=1 cmd'`) as much as the command.
 fn with_words(script: Arg, rest: &[Arg]) -> Arg {
-    if rest.is_empty() {
-        return script;
-    }
     let words = super::shell_words(rest);
-    let line = format!("{} {}", script.text(), words.text());
+    let line = if rest.is_empty() {
+        format!("env {}", script.text())
+    } else {
+        format!("env {} {}", script.text(), words.text())
+    };
     match (script, words) {
         (Arg::Known(_), Arg::Known(_)) => Arg::Known(line),
         _ => Arg::Unknown(line),

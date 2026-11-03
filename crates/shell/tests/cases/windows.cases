@@ -124,6 +124,8 @@ powershell safe | wsl -d Ubuntu
 cmd finds=delete | wsl -e rm -rf ~
 cmd finds=delete | wsl rm -rf ~
 cmd safe | wsl ls
+powershell finds=delete | wsl ~ rm -rf ~
+cmd finds=delete | wsl ~ rm -rf ~
 
 # A PowerShell trap and event action run later.
 powershell safe | trap { Remove-Item build }

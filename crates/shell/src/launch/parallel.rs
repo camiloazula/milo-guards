@@ -1,7 +1,7 @@
 //! GNU `parallel`: a command, then the values it runs it with. Each job is a
-//! line its shell runs: the command's words joined with spaces, each value
-//! put, quoted, where a replacement string stands (`{}`, `{.}`, `{1}`) or
-//! after the words when none does.
+//! line its shell runs: the command's words joined with spaces (with `-q`,
+//! each word quoted), each value put, quoted, where a replacement string
+//! stands (`{}`, `{.}`, `{1}`) or after the words when none does.
 
 use super::{join, shell_word, Launch};
 use crate::unit::{Arg, Reads, MAX_LEN};
@@ -46,6 +46,7 @@ const LONG_VALUES: &[&str] = &[
     "env",
     "eof",
     "filter",
+    "group-by",
     "halt",
     "halt-on-error",
     "id",
@@ -63,6 +64,8 @@ const LONG_VALUES: &[&str] = &[
     "minversion",
     "nice",
     "profile",
+    "recend",
+    "recstart",
     "res",
     "results",
     "retries",
@@ -86,8 +89,10 @@ const LONG_VALUES: &[&str] = &[
     "timeout",
     "tmpdir",
     "tmpl",
+    "total-jobs",
     "transferfile",
     "trc",
+    "trim",
     "wd",
     "workdir",
 ];
@@ -157,6 +162,7 @@ const LONG_FLAGS: &[&str] = &[
     "spreadstdin",
     "tag",
     "tee",
+    "tmux",
     "transfer",
     "tty",
     "ungroup",
@@ -233,6 +239,9 @@ struct Options {
     grouping: bool,
     /// Sources named by `-a` (`--arg-file`).
     files: usize,
+    /// `--trim`: the sides of each value whose spaces are taken off, `l`
+    /// and `r` (`n`, none).
+    trim: String,
 }
 
 /// `parallel`: its options, the command, and the values after `:::` (or
@@ -268,7 +277,7 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
                     .map(|word| {
                         word.known().map_or_else(
                             || Value::Later(word.text().to_string()),
-                            |text| Value::Known(text.to_string()),
+                            |text| Value::Known(trimmed(text, &options.trim).to_string()),
                         )
                     })
                     .collect(),
@@ -282,19 +291,12 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
     if command.is_empty() {
         return values_as_lines(&sources);
     }
-    // The command's words joined, as its shell gets them: quoted with `-q`,
-    // as they are otherwise. A word with a space in it then splits, which
-    // is what GNU parallel does; the guard also reads it kept whole, and the
-    // riskier reading counts.
-    let quoted = super::shell_words(command);
-    let joined = if options.quote {
-        quoted.clone()
-    } else {
-        join(command)
-    };
-    let (Arg::Known(joined), Arg::Known(quoted)) = (joined, quoted) else {
+    if command.iter().any(|word| word.known().is_none()) {
         return Launch::Script(Shell::Posix, join(command));
-    };
+    }
+    let words: Vec<&str> = command.iter().filter_map(Arg::known).collect();
+    let joined = [words.join(" ")];
+    let joined = [joined[0].as_str()];
     // A command of plain words fed its input is `xargs`: what the input
     // holds is judged where it lands.
     if sources == [vec![Value::Input]] && plain(command, &options) {
@@ -323,11 +325,11 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
     }
     // The jobs' lines are one script, which is not read past the longest
     // line: building them stops there.
-    let script = |text: &str| {
+    let script = |template: &[&str], quote: usize| {
         let mut lines: Vec<String> = Vec::new();
         let mut budget = MAX_LEN;
         for job in &jobs {
-            let line = fill(text, job, &options.replace, grouping, budget)?;
+            let line = fill(template, quote, job, &options.replace, grouping, budget)?;
             if !lines.contains(&line) {
                 budget = budget.checked_sub(line.len() + 1).ok_or(TOO_LONG)?;
                 lines.push(line);
@@ -335,15 +337,22 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
         }
         Ok(Launch::Script(Shell::Posix, Arg::Known(lines.join("\n"))))
     };
-    let first = match script(&joined) {
-        Ok(first) => first,
-        Err(reason) => return Launch::Opaque(reason),
+    // The command's words as its shell gets them: with `-q` each word kept
+    // whole, its values put in before it is quoted; otherwise joined with
+    // spaces, so a word with a space in it splits. The guard also reads such
+    // a word after the program kept whole, as `-q` would (`parallel sh -c
+    // 'rm -rf {}'`), and the riskier reading counts. A program word kept
+    // whole names no program, so it is read split in both.
+    let readings = if options.quote {
+        script(&words, 0).map(|kept| (kept, None))
+    } else if words[1..].iter().all(|word| shell_word(word) == *word) {
+        script(&joined, 1).map(|split| (split, None))
+    } else {
+        script(&joined, 1).and_then(|split| script(&words, 1).map(|kept| (split, Some(kept))))
     };
-    if joined == quoted {
-        return first;
-    }
-    match script(&quoted) {
-        Ok(second) => Launch::Either(Box::new(first), Box::new(second)),
+    match readings {
+        Ok((first, None)) => first,
+        Ok((first, Some(second))) => Launch::Either(Box::new(first), Box::new(second)),
         Err(reason) => Launch::Opaque(reason),
     }
 }
@@ -435,20 +444,23 @@ fn jobs(sources: &[Vec<Value>]) -> Option<Vec<Job<'_>>> {
     Some(jobs)
 }
 
-/// The line one job runs: `text` with each replacement string replaced by
-/// its values, quoted, or the values after it when there is none. A value
-/// only known when it runs stands as `"$1"`, which the shell's grammar reads
-/// as one. Why not, for a `{= … =}` expression, which is Perl, for a
-/// numbered string when `grouping` pairs values the guard does not, and for
-/// a line longer than `budget`.
+/// The line one job runs: the command's `words` with each replacement
+/// string replaced by its values, quoted, or the values after them when
+/// there is none. Each word from the one at `quote` on (every word with
+/// `-q`) is one word of the line, its text quoted around the values; a word
+/// before it is text the shell reads as it is. A value only known when it runs stands as `"$1"`, which the
+/// shell's grammar reads as one. Why not, for a `{= … =}` expression, which
+/// is Perl, for a numbered string when `grouping` pairs values the guard
+/// does not, and for a line longer than `budget`.
 fn fill(
-    text: &str,
+    words: &[&str],
+    quote: usize,
     job: &[Vec<&Value>],
     replace: &str,
     grouping: bool,
     budget: usize,
 ) -> Result<String, &'static str> {
-    let words = |values: &[&Value], transform: &str| {
+    let values = |values: &[&Value], transform: &str| {
         values
             .iter()
             .map(|value| match value {
@@ -460,43 +472,65 @@ fn fill(
     };
     let all = |transform: &str| {
         let every: Vec<&Value> = job.iter().flatten().copied().collect();
-        words(&every, transform)
+        values(&every, transform)
     };
-    let mut line = String::with_capacity(text.len().min(budget));
+    let mut line = String::with_capacity(budget.min(words.iter().map(|word| word.len() + 1).sum()));
     let mut replaced = false;
-    let mut rest = text;
-    while !rest.is_empty() {
-        if line.len() > budget {
-            return Err(TOO_LONG);
+    for (index, word) in words.iter().enumerate() {
+        if index > 0 {
+            line.push(' ');
         }
-        if rest.starts_with("{=") {
-            return Err(UNREAD);
-        }
-        if let Some(after) = rest.strip_prefix(replace) {
-            line.push_str(&all(""));
-            replaced = true;
-            rest = after;
-            continue;
-        }
-        if let Some((number, transform, after)) = token(rest) {
-            match number {
-                Some(_) if grouping => return Err(UNREAD),
-                Some(number) => match job.get(number - 1) {
-                    Some(values) if !values.is_empty() => {
-                        line.push_str(&words(values, transform));
-                    }
-                    _ => line.push_str("''"),
-                },
-                None if matches!(transform, "#" | "%") => line.push('1'),
-                None => line.push_str(&all(transform)),
+        // The text of a word between its values, quoted when the word is.
+        let quote = index >= quote;
+        let mut text = String::new();
+        let flush = |line: &mut String, text: &mut String| {
+            if quote && !text.is_empty() {
+                line.push_str(&shell_word(text));
+            } else {
+                line.push_str(text);
             }
-            replaced = true;
-            rest = after;
-            continue;
+            text.clear();
+        };
+        let mut rest = *word;
+        if quote && rest.is_empty() {
+            line.push_str("''");
         }
-        let mut chars = rest.chars();
-        line.extend(chars.next());
-        rest = chars.as_str();
+        while !rest.is_empty() {
+            if line.len() + text.len() > budget {
+                return Err(TOO_LONG);
+            }
+            if rest.starts_with("{=") {
+                return Err(UNREAD);
+            }
+            if let Some(after) = rest.strip_prefix(replace) {
+                flush(&mut line, &mut text);
+                line.push_str(&all(""));
+                replaced = true;
+                rest = after;
+                continue;
+            }
+            if let Some((number, transform, after)) = token(rest) {
+                flush(&mut line, &mut text);
+                match number {
+                    Some(_) if grouping => return Err(UNREAD),
+                    Some(number) => match job.get(number - 1) {
+                        Some(given) if !given.is_empty() => {
+                            line.push_str(&values(given, transform));
+                        }
+                        _ => line.push_str("''"),
+                    },
+                    None if matches!(transform, "#" | "%") => line.push('1'),
+                    None => line.push_str(&all(transform)),
+                }
+                replaced = true;
+                rest = after;
+                continue;
+            }
+            let mut chars = rest.chars();
+            text.extend(chars.next());
+            rest = chars.as_str();
+        }
+        flush(&mut line, &mut text);
     }
     if !replaced {
         line.push(' ');
@@ -529,6 +563,20 @@ fn token(text: &str) -> Option<(Option<usize>, &str, &str)> {
         "." | "/" | "//" | "/." => Some((number, transform, after)),
         "#" | "%" if number.is_none() => Some((None, transform, after)),
         _ => None,
+    }
+}
+
+/// A value with the spaces on the sides `--trim` names taken off.
+fn trimmed<'a>(value: &'a str, sides: &str) -> &'a str {
+    let value = if sides.contains('l') {
+        value.trim_start_matches([' ', '\t'])
+    } else {
+        value
+    };
+    if sides.contains('r') {
+        value.trim_end_matches([' ', '\t'])
+    } else {
+        value
     }
 }
 
@@ -583,6 +631,7 @@ fn read_options(args: &[Arg]) -> Option<Options> {
         quote: false,
         grouping: false,
         files: 0,
+        trim: String::new(),
     };
     let mut at = 0;
     while let Some(arg) = args.get(at) {
@@ -612,6 +661,13 @@ fn read_options(args: &[Arg]) -> Option<Options> {
             if value.is_none() && LONG_VALUES.contains(&name) {
                 at += 1;
                 args.get(at)?;
+            }
+            if name == "trim" {
+                let sides = value.map_or_else(|| args.get(at)?.known(), Some)?;
+                if !sides.chars().all(|side| "nlr".contains(side)) {
+                    return None;
+                }
+                options.trim = sides.to_string();
             }
             at += 1;
             continue;

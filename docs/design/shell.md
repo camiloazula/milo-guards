@@ -292,11 +292,13 @@ expanding it. A `[` alone is a name, as the program `[` is.
 each with the options it reads and those of them that take a value, as
 `getopt` reads them (in a bundle, `strace -fo log rm`, or attached):
 
-- Tracers and runners: `strace` (`-o`, `-e`, `-p`, `-s` and its other
-  options that take one), `ssh-agent`, `chronic` and `script`. `script -c`
-  (`--command`, wherever it stands, as util-linux reads it) runs a shell line;
-  otherwise the words after the file it records to are the command (the BSDs
-  and macOS), and `-p` plays a recording back and runs nothing.
+- Tracers and runners: `strace` (`-o`, `-e`, `-p`, `-s`, `--detach-on` and
+  its other options that take one), `ssh-agent`, `chronic` and `script`.
+  `script -c` (`--command`, wherever it stands, as util-linux reads it) runs
+  a shell line; otherwise the words after the file it records to are the
+  command (the BSDs and macOS), and `-p` plays a recording back and runs
+  nothing. `-F` takes a value on FreeBSD (`-F pipe`) and none on macOS, so
+  both readings are judged and the riskier counts.
 - `launchctl asuser UID` and `launchctl bsexec PID` run the words after them;
   `launchctl submit … -- cmd` starts the command as a job (with `-p`, the
   program `-p` names, given the words after `--`).
@@ -314,7 +316,8 @@ each with the options it reads and those of them that take a value, as
   --command` run a shell line: POSIX on a POSIX line, cmd on Windows.
 - `wsl` runs its words as a line in the Linux shell of a distribution, from
   any shell of Windows: after its options (`-d`, `-u`, `--cd`,
-  `--shell-type`, `--distribution-id` take a value), or every word after
+  `--shell-type`, `--distribution-id` take a value; a `~` among them starts
+  in the home directory, as `--cd ~` does), or every word after
   `--`, read in the POSIX grammar. `-e` (`--exec`) runs the words after it
   as a program and its arguments, with no shell. Any other option
   (`--list`, `--install`, `--shutdown`) manages WSL and runs nothing. Windows
@@ -334,8 +337,12 @@ string stands (`{}` or the `-I` string, `{.}`, `{/}`, `{//}`, `{/.}`, `{#}`,
 job is judged, each source's values in turn, and one more line that gives
 the command every value at once, since the jobs run together (`parallel
 docker rm -f ::: web db` removes several containers). A word with a space
-splits when the words are joined (`-q` quotes each word instead); the guard
-reads it whole too, and the riskier reading counts. With no command each
+splits when the words are joined. `-q` quotes each word instead, its values
+put in before it is quoted, so a value stays one word with the text around
+it (`parallel -q sh -c 'make -C {}' ::: crates/*`). The guard reads a word
+after the program that way too (`parallel sh -c 'rm -rf {}' ::: ~`), and the
+riskier reading counts. `--trim` takes the spaces off the sides of each value
+it names before the value is put in. With no command each
 value is a line of its own, and lines read from the input are its input run
 as a shell runs it. A command of plain words fed its input is read as
 `xargs` reads it (`ls ~ | parallel rm -rf`). A value only known when it runs,
@@ -350,10 +357,14 @@ split, named or separated (`--colsep`, `--csv`, `--header`, `--plus`,
 does not know (a long one may be shortened to an unambiguous start, as
 `parallel` reads it), the line is `Unreadable`.
 
-`env -S` splits its string into the command, and the arguments after it are
-added to its words (`env -S 'rm -rf' ~`); the string may be attached (`env
--S'rm -rf ~'`, `env -iS'…'`), and `--split-string=` and a shorter start of
-the long name (`--split=…`, `--s`) are the same.
+`env -S` splits its string into words that are `env`'s own arguments again,
+with the arguments after it (`env -S 'rm -rf' ~`): GNU env puts them back
+among its arguments, so they may hold its options and assignments as well
+as the command (`env -S'-i X=1 rm -rf ~'`). The guard reads `env` with them
+as a POSIX line. The string may be attached (`env -S'rm -rf ~'`, `env
+-iS'…'`), and `--split-string=` and a shorter start of the long name
+(`--split=…`, `--s`) are the same. A string with one of its own escapes
+(`\_` for a space, `\c`, `${NAME}`) is not read: `Unreadable`.
 
 A script that `xargs` or `parallel` hands to a shell (`xargs -n1 sh -c 'docker
 rm -f "$1"' _`) runs once for each item it reads, as a loop body runs, so it
