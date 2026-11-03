@@ -166,6 +166,9 @@ powershell finds=overwrite | function f { Set-Location .. > x.txt }; f; f
 posix safe | cd sub && cd .. > x
 posix safe | cd sub; cd .. > ../repo/x
 posix safe | if true; then cd sub > out.txt; fi
+posix safe | cd sub || exit; cd .. > ../x
+cmd safe | cd sub || exit & cd .. > ..\\x.txt
+posix finds=overwrite | cd sub || true; cd .. > ../x
 posix finds=overwrite | cd sub || cd .. > ../x
 posix finds=overwrite | cd sub | cd .. > ../x
 posix finds=overwrite | cd sub & cd .. > ../x
