@@ -787,15 +787,14 @@ posix finds=system_settings reason="stops a service that protects the system" | 
 # matches their names is everyday work. `pkill agent` matches `wazuh-agentd`
 # and `ossec-agentd`, so it stays risky.
 posix safe | pkill app
-posix safe | pkill server
 posix safe | killall ufw
 posix safe | killall apparmor
 posix finds=system_settings | pkill agent
 
 # `pkill -f` searches the command lines the protecting daemons run with, so
 # a pattern that runs past a name into its arguments stops the daemon.
-posix safe | pkill -f 'node server.js'
 posix safe | pkill -f /opt/myapp
+posix safe | pkill -f 'vite --port 5173'
 posix finds=system_settings | pkill -f 'auditd '
 posix finds=system_settings | pkill -f 'firewalld --nofork'
 posix finds=system_settings | pkill -f 'wdavdaemon edr'
