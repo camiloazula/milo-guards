@@ -4,8 +4,9 @@
 //! (`shx`, `cross-env`, `concurrently`, `npm-run-all`), and the programs a
 //! package installs under another name (`aws-cdk` is `cdk`).
 
+use super::wrappers::subcommand;
 use super::{after_assignments, after_options, join, Launch, MAX_FORKS};
-use crate::unit::{Arg, Unit};
+use crate::unit::{Arg, Unit, MAX_LEN};
 use crate::Shell;
 
 /// The runners of a project's or a tool's environment that run the command
@@ -25,8 +26,11 @@ pub(super) fn run_values(key: &str) -> Option<&'static [&'static str]> {
             "--lockfile",
             "--venv",
         ],
-        // hatch's global options; the environment may also stand in front of
-        // the command (`hatch run test:cov`, see [`hatch_command`]).
+        // hatch's global options, and those of `hatch env run` that take a
+        // value; the environment may also stand in front of the command
+        // (`hatch run test:cov`, see [`hatch_command`]), and the matrix
+        // variables before it (`hatch run +py=3.12 cov`, see
+        // [`past_selectors`]).
         "hatch" => &[
             "-e",
             "--env",
@@ -35,6 +39,12 @@ pub(super) fn run_values(key: &str) -> Option<&'static [&'static str]> {
             "--data-dir",
             "--cache-dir",
             "--config",
+            "-i",
+            "--include",
+            "-x",
+            "--exclude",
+            "-f",
+            "--filter",
         ],
         // `conda run`, `mamba run` and `micromamba run`.
         "conda" | "mamba" | "micromamba" => &[
@@ -51,6 +61,7 @@ pub(super) fn run_values(key: &str) -> Option<&'static [&'static str]> {
             "-e",
             "--env",
             "--label",
+            "--log-level",
         ],
         "pixi" => &[
             "--manifest-path",
@@ -68,11 +79,31 @@ pub(super) fn run_values(key: &str) -> Option<&'static [&'static str]> {
             "--skip",
         ],
         "rye" => &["--pyproject"],
+        "pipenv" => &["--python", "--pypi-mirror"],
         // The tool versions and environment `volta run` gives the command.
         "volta" => &["--node", "--npm", "--pnpm", "--yarn", "--env"],
         _ => return None,
     })
 }
+
+/// The options of `pixi exec` that take the next word: the packages it
+/// installs (`-s python`), their channels and platform, besides pixi's own.
+pub(super) const PIXI_EXEC_VALUES: &[&str] = &[
+    "-s",
+    "--spec",
+    "-w",
+    "--with",
+    "-c",
+    "--channel",
+    "-p",
+    "--platform",
+    "--color",
+    "--concurrent-solves",
+    "--concurrent-downloads",
+    "--pypi-keyring-provider",
+    "--auth-file",
+    "--tls-root-certs",
+];
 
 /// The options of `mise` and `mise exec` that take the next word. The tools
 /// stand after them and the command after `--`; `-c` (`--command`) runs a
@@ -87,6 +118,47 @@ pub(super) const MISE_VALUES: &[&str] = &[
     "-c",
     "--command",
 ];
+
+/// The line `mise exec -c` (`--command`) runs among `args`, the options of
+/// `mise exec`: the next word, or the value joined to the option (`-c'cmd'`,
+/// `-c=cmd`, `--command=cmd`), as mise's option parser reads it.
+pub(super) fn mise_command(args: &[Arg]) -> Option<Arg> {
+    let mut words = args.iter();
+    while let Some(arg) = words.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            return None;
+        }
+        if text == "-c" || text == "--command" {
+            return words.next().cloned();
+        }
+        let joined = text.strip_prefix("--command=").or_else(|| {
+            text.strip_prefix("-c")
+                .filter(|rest| !rest.is_empty() && !text.starts_with("--"))
+                .map(|rest| rest.strip_prefix('=').unwrap_or(rest))
+        });
+        if let Some(value) = joined {
+            return Some(Arg::Known(value.to_string()));
+        }
+    }
+    None
+}
+
+/// Where the command of `hatch run` starts, from `at`: past the matrix
+/// variables that pick its environments (`+py=3.12`, and `-py=3.10`, which
+/// leaves one out). `None` when only those follow.
+pub(super) fn past_selectors(args: &[Arg], at: usize) -> Option<usize> {
+    let skip = args
+        .get(at..)?
+        .iter()
+        .take_while(|arg| {
+            arg.known().is_some_and(|text| {
+                (text.starts_with('+') || text.starts_with('-')) && text.contains('=')
+            })
+        })
+        .count();
+    (at + skip < args.len()).then_some(at + skip)
+}
 
 /// The command `hatch run` is given, at `program`: the environment it runs
 /// in may stand in front of it (`hatch run test:cov` runs `cov` in `test`).
@@ -199,10 +271,16 @@ pub(super) fn yarn_workspace(args: &[Arg], values: &[&str]) -> Option<Vec<Arg>> 
     let mut kept = Vec::new();
     let mut at = 0;
     let mut changed = false;
-    while let Some(step) = args.get(at..).and_then(|rest| after_options(rest, values)) {
+    while let Some(step) = args
+        .get(at..)
+        .and_then(|rest| subcommand(rest, values, &["workspace", "workspaces"]))
+    {
         let word = |offset: usize| args.get(at + step + offset).and_then(Arg::known);
         let next = match (word(0), word(1)) {
             (Some("workspace"), Some(_)) => at + step + 2,
+            // yarn 1's `yarn workspaces run NAME` runs `yarn run NAME` in
+            // each workspace.
+            (Some("workspaces"), Some("run")) => at + step + 1,
             (Some("workspaces"), Some("foreach")) => {
                 let from = at + step + 2;
                 from + args
@@ -223,12 +301,14 @@ pub(super) fn yarn_workspace(args: &[Arg], values: &[&str]) -> Option<Vec<Arg>> 
 
 /// The programs a package installs under a name of their own: the package
 /// a runner is given (`npx aws-cdk destroy`) is the program it runs.
-const PACKAGE_PROGRAMS: [(&str, &str); 5] = [
+const PACKAGE_PROGRAMS: [(&str, &str); 7] = [
     ("aws-cdk", "cdk"),
     ("cdktf-cli", "cdktf"),
     ("firebase-tools", "firebase"),
     ("awscli", "aws"),
     ("azure-cli", "az"),
+    ("dotenv-cli", "dotenv"),
+    ("npm-run-all2", "npm-run-all"),
 ];
 
 /// The program a runner runs for the package `program` names, without its
@@ -287,10 +367,7 @@ pub(super) fn line_runner(key: &str, unit: &Unit) -> Option<Launch> {
             }
             vec![join(&args[start..])]
         }
-        "concurrently" => strings(args, CONCURRENTLY_VALUES, &["--teardown"])
-            .into_iter()
-            .map(shortcut)
-            .collect(),
+        "concurrently" => concurrently(args, shell),
         "npm-run-all" | "run-s" | "run-p" => strings(args, &["--npm-path", "--max-parallel"], &[])
             .into_iter()
             .map(script_pattern)
@@ -310,6 +387,108 @@ pub(super) fn line_runner(key: &str, unit: &Unit) -> Option<Launch> {
     Some(readings.fold(last, |rest, line| {
         Launch::Either(Box::new(line), Box::new(rest))
     }))
+}
+
+/// The lines `concurrently` runs, with their shortcuts spelt out. With
+/// `-P` (`--passthrough-arguments`) the words after `--` are no lines: they
+/// fill in the placeholders of the lines (`{1}`, `{@}`, `{*}`), quoted as
+/// concurrently quotes them for the shell.
+fn concurrently(args: &[Arg], shell: Shell) -> Vec<Arg> {
+    let split = args.iter().position(|arg| arg.known() == Some("--"));
+    let options = &args[..split.unwrap_or(args.len())];
+    let passes = options.iter().filter_map(Arg::known).any(|text| {
+        matches!(
+            text,
+            "-P" | "--passthrough-arguments" | "--passthrough-arguments=true"
+        )
+    });
+    if !passes {
+        return strings(args, CONCURRENTLY_VALUES, &["--teardown"])
+            .into_iter()
+            .map(shortcut)
+            .collect();
+    }
+    let passed = split.map_or(&[][..], |at| &args[at + 1..]);
+    strings(options, CONCURRENTLY_VALUES, &["--teardown"])
+        .into_iter()
+        .map(|line| fill_in(&shortcut(line), passed, shell))
+        .collect()
+}
+
+/// `line` with its placeholders filled in from `passed`: `{N}` is the N-th
+/// word, `{@}` each word, `{*}` all of them as one, each quoted for
+/// `shell`. A placeholder for a word that is not there is empty. A word
+/// only known when the line runs makes the line only known then. Filling
+/// in stops past the longest line read, which the line then is.
+fn fill_in(line: &Arg, passed: &[Arg], shell: Shell) -> Arg {
+    let Arg::Known(text) = line else {
+        return line.clone();
+    };
+    if !text.contains('{') {
+        return line.clone();
+    }
+    let quote = |word: &str| quoted(word, shell);
+    let all: Vec<&str> = passed.iter().map(Arg::text).collect();
+    let each = all
+        .iter()
+        .map(|word| quote(word))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let whole = quote(&all.join(" "));
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    // Past the longest line the line is not read, so the rest is not
+    // filled in: what is there is already too long.
+    while let Some(open) = rest.find('{').filter(|_| out.len() <= MAX_LEN) {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let inside = &after[..close];
+        let filled = match inside {
+            "@" => Some(each.clone()),
+            "*" => Some(whole.clone()),
+            number => number
+                .parse::<usize>()
+                .ok()
+                .filter(|number| *number > 0)
+                .map(|number| {
+                    all.get(number - 1)
+                        .map_or_else(String::new, |word| quote(word))
+                }),
+        };
+        match filled {
+            Some(filled) => out.push_str(&filled),
+            None => out.push_str(&rest[open..=open + 1 + close]),
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    if passed.iter().all(|arg| arg.known().is_some()) {
+        Arg::Known(out)
+    } else {
+        Arg::Unknown(out)
+    }
+}
+
+/// `word` quoted for `shell` as a word of its own: as it is when it holds
+/// nothing the shell reads apart (a `~` stays, so the shell expands it, as
+/// concurrently leaves it), in quotes otherwise.
+fn quoted(word: &str, shell: Shell) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./~:=@%+,".contains(c));
+    if plain {
+        word.to_string()
+    } else if shell == Shell::Posix {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    } else {
+        format!("\"{}\"", word.replace('"', "\"\""))
+    }
 }
 
 /// The options of `concurrently` that take the next word (`--teardown`
@@ -403,18 +582,20 @@ fn shortcut(line: Arg) -> Arg {
         .unwrap_or(line)
 }
 
-/// The line `npm-run-all` runs for `line`: a first word with a wildcard
-/// (`watch:*`) is a pattern of the project's script names, run by `npm
-/// run`, not a program; any other line is read as it is written.
+/// The line `npm-run-all` runs for `line`: it runs `npm run` with the
+/// script the line names, so a name alone (`format`, `reboot`) or a first
+/// word with a wildcard (`watch:*`), a pattern of the project's script
+/// names, is a script, not a program. A line with words after its first
+/// (`'rimraf ~'`) is also read as it is written, as the program it names.
 fn script_pattern(line: Arg) -> Arg {
     let Arg::Known(text) = &line else {
         return line;
     };
-    let pattern = text
-        .split_whitespace()
+    let mut words = text.split_whitespace();
+    let pattern = words
         .next()
         .is_some_and(|name| name.contains(['*', '?', '[', '{']));
-    if pattern {
+    if pattern || words.next().is_none() {
         Arg::Known(format!("npm run {text}"))
     } else {
         line

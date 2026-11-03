@@ -798,7 +798,7 @@ impl Walker<'_> {
             None
         };
         let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
-        self.split.tf_cli_args.push((name, value));
+        self.split.note_argument_variable(name, value);
     }
 }
 

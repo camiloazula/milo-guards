@@ -1976,7 +1976,7 @@ impl Walker<'_> {
         // The same for `PYTHONPATH=… python3 -c …`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
-        let terraform = self.split.tf_cli_args.len();
+        let terraform = self.split.argument_variables.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -1997,7 +1997,7 @@ impl Walker<'_> {
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
-        self.split.tf_cli_args.truncate(terraform);
+        self.split.truncate_argument_variables(terraform);
         self.split.unscope_hidden(outer);
     }
 
@@ -2223,13 +2223,12 @@ impl Walker<'_> {
         {
             let noted = self
                 .split
-                .tf_cli_args
+                .argument_variables
                 .iter()
                 .any(|(noted, _)| noted == name);
             if !noted {
                 self.split
-                    .tf_cli_args
-                    .push((name.to_string(), Arg::Unknown(source.to_string())));
+                    .note_argument_variable(name.to_string(), Arg::Unknown(source.to_string()));
             }
             return;
         }
@@ -2245,7 +2244,7 @@ impl Walker<'_> {
                 ),
                 None => Arg::Unknown(source.to_string()),
             };
-            self.split.tf_cli_args.push((name.to_string(), value));
+            self.split.note_argument_variable(name.to_string(), value);
             return;
         }
         match word.known() {
@@ -2310,7 +2309,7 @@ impl Walker<'_> {
             .child_by_field_name("value")
             .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
         if terraform {
-            self.split.tf_cli_args.push((name.to_string(), value));
+            self.split.note_argument_variable(name.to_string(), value);
         } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
         } else {

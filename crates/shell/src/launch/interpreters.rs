@@ -592,12 +592,12 @@ fn bun_subcommand(unit: &Unit, first: usize) -> Launch {
             .map(|at| first + 1 + at)
         {
             // A code flag among the options of `run` (`bun -F x run -e
-            // CODE`) is code given inline, read as `bun -e CODE` is.
-            Some(at)
-                if args[first + 1..at]
-                    .iter()
-                    .filter_map(Arg::known)
-                    .any(bun_evals) =>
+            // CODE`, also with the code joined to it: `-e'CODE'`,
+            // `--eval=CODE`) is code given inline, read as `bun -e CODE` is.
+            at if args[first + 1..at.unwrap_or(args.len())]
+                .iter()
+                .filter_map(Arg::known)
+                .any(bun_evals) =>
             {
                 Launch::Reads(Reads::Interpreter)
             }

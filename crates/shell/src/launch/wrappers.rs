@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::interpreters::{reads_input, BUN_VALUES, DENO_VALUES};
 use super::npm::{call_script, npm_word, npx_start, prefix_folder, NPM_VALUES};
-use super::packages::{self, MISE_VALUES};
+use super::packages::{self, MISE_VALUES, PIXI_EXEC_VALUES};
 use super::{after_options, after_options_by, is_stdin, join, Launch, Word, MAX_FORKS};
 use crate::powershell::{native, Params};
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
@@ -845,7 +845,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
-        tf_cli_args: Vec::new(),
+        argument_variables: Rc::default(),
         depth: unit.depth,
     }));
     in_folder(folder, launch)
@@ -893,7 +893,7 @@ pub(super) fn start(args: &[Arg]) -> Launch {
 
 /// The package runners, by the name they stand under in a unit's wrappers.
 /// What a runner starts is a program, never a builtin of the shell.
-pub(crate) const RUNNERS: [&str; 26] = [
+pub(crate) const RUNNERS: [&str; 27] = [
     "npx",
     "npm",
     "pnpm",
@@ -917,6 +917,7 @@ pub(crate) const RUNNERS: [&str; 26] = [
     "rye",
     "volta",
     "mise",
+    "pipenv",
     "corepack",
     "shx",
     "cross-env",
@@ -1273,21 +1274,40 @@ pub(super) fn runner_in(key: &str, args: &[Arg], end: usize, launch: Launch) -> 
 fn locate(args: &[Arg], steps: &[(Opts, &[&str])], own: Opts) -> Option<(usize, Option<usize>)> {
     let mut from = 0;
     for (opts, words) in steps {
-        let at = from + opts.after(args.get(from..)?)?;
-        if !args
-            .get(at)?
-            .known()
-            .is_some_and(|text| words.contains(&text))
-        {
-            return None;
-        }
-        from = at + 1;
+        let rest = args.get(from..)?;
+        // A listed runner's options may also take a word its table misses
+        // (see [`subcommand`]); npm's and pnpm's are read by their parsers.
+        let at = if let Opts::List(values) = opts {
+            subcommand(rest, values, words)?
+        } else {
+            let at = opts.after(rest)?;
+            if !rest[at].known().is_some_and(|text| words.contains(&text)) {
+                return None;
+            }
+            at
+        };
+        from += at + 1;
     }
     let program = args
         .get(from..)
         .and_then(|rest| own.after(rest))
         .map(|at| from + at);
     Some((from, program))
+}
+
+/// Where the subcommand among `words` stands in `args`, past the options
+/// `values` lists as taking the next word. An option the table does not
+/// list may take the word after it or not, so when the word after the
+/// options is no subcommand but one is where such an option takes a word
+/// (`micromamba --log-level info run`), that one is: the reading that runs
+/// a command is the one judged. `None` when neither reading finds one.
+pub(super) fn subcommand(args: &[Arg], values: &[&str], words: &[&str]) -> Option<usize> {
+    let names = |at: &usize| args[*at].known().is_some_and(|text| words.contains(&text));
+    let at = after_options(args, values)?;
+    if names(&at) {
+        return Some(at);
+    }
+    programs(args, 0, values).into_iter().find(names)
 }
 
 /// A package runner: `npx`, `npm exec`, `pnpm dlx`, `pnpm exec`,
@@ -1364,11 +1384,7 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
                 &[(Opts::List(YARN_VALUES), &["run"])],
                 Opts::List(YARN_VALUES),
             )
-            .filter(|(_, program)| {
-                program
-                    .and_then(|at| args[at].known())
-                    .is_some_and(|name| !packages::yarn_command(name))
-            })
+            .filter(|(_, program)| program.is_some_and(|at| yarn_program(args, at)))
         }),
         // `x` after bun's options, which may take a value (`bun --cwd DIR
         // x`), or as the first word with no dash, as bun finds its
@@ -1404,6 +1420,38 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
             &[(Opts::List(&[]), &["run"])],
             Opts::List(PIPX_VALUES),
         ),
+        // `hatch run CMD` and `hatch env run [--] CMD`, past the matrix
+        // variables in front of the command (`+py=3.12`).
+        "hatch" => {
+            let values = packages::run_values(key).unwrap_or_default();
+            locate(args, &[(Opts::List(values), &["run"])], Opts::List(values))
+                .or_else(|| {
+                    locate(
+                        args,
+                        &[(Opts::List(values), &["env"]), (Opts::List(&[]), &["run"])],
+                        Opts::List(values),
+                    )
+                })
+                .map(|(from, program)| {
+                    (
+                        from,
+                        program.and_then(|at| packages::past_selectors(args, at)),
+                    )
+                })
+        }
+        // `pixi run CMD`, and `pixi exec CMD`, which installs the packages
+        // its `-s` names (or the command's) and runs the command, as `uvx`
+        // does.
+        "pixi" => {
+            let values = packages::run_values(key).unwrap_or_default();
+            locate(args, &[(Opts::List(values), &["run"])], Opts::List(values)).or_else(|| {
+                locate(
+                    args,
+                    &[(Opts::List(values), &["exec"])],
+                    Opts::List(PIXI_EXEC_VALUES),
+                )
+            })
+        }
         // `mise exec TOOLS -- CMD`: the command is the one after `--`.
         "mise" => locate(
             args,
@@ -1441,7 +1489,7 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
             }
             // The `npm_config_call` the line sets is the same setting.
             if let Some((_, script)) = unit
-                .tf_cli_args
+                .argument_variables
                 .iter()
                 .rev()
                 .find(|(name, _)| unit::npm_call(name))
@@ -1451,7 +1499,7 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
         }
         // `mise exec -c 'cmd'` runs a shell line.
         "mise" => {
-            if let Some(script) = super::option_value(own, "-c", "--command") {
+            if let Some(script) = packages::mise_command(own) {
                 return Launch::Script(shell, script);
             }
         }
@@ -1507,10 +1555,20 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
     // An option the runner's table does not list may take the word after
     // it or not, so the program is one of the words it may be, and each is
     // judged.
-    let others = list_values(key)
+    let others = list_values(key, args, from)
         .map(|values| programs(args, from, values))
         .unwrap_or_default();
-    let others: Vec<usize> = others.into_iter().filter(|at| *at != program).collect();
+    let others: Vec<usize> = others
+        .into_iter()
+        .filter_map(|at| {
+            if key == "hatch" {
+                packages::past_selectors(args, at)
+            } else {
+                Some(at)
+            }
+        })
+        .filter(|at| *at != program)
+        .collect();
     // Past the forks a line may make it is unreadable whatever the readings
     // hold, so they are not built.
     if others.len() > MAX_FORKS {
@@ -1529,10 +1587,16 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
 }
 
 /// The table of options a runner whose own options are listed reads in
-/// front of its program: `None` for npm and pnpm, whose option parsers are
-/// read as they are, and for `mise exec`, whose command follows `--`.
-fn list_values(key: &str) -> Option<&'static [&'static str]> {
+/// front of its program, which starts at `from` in `args`: `None` for npm
+/// and pnpm, whose option parsers are read as they are, and for `mise
+/// exec`, whose command follows `--`.
+fn list_values(key: &str, args: &[Arg], from: usize) -> Option<&'static [&'static str]> {
+    let subcommand = from
+        .checked_sub(1)
+        .and_then(|at| args.get(at))
+        .and_then(Arg::known);
     match key {
+        "pixi" if subcommand == Some("exec") => Some(PIXI_EXEC_VALUES),
         "bunx" | "bun" => Some(&BUN_X_VALUES),
         "uvx" | "uv" => Some(UV_VALUES),
         "dx" | "deno" => Some(&DENO_X_VALUES),
@@ -1655,8 +1719,18 @@ fn pnpm_direct(args: &[Arg]) -> Option<(usize, Option<usize>)> {
 /// rimraf dist`, `yarn cdk destroy`), read as that program.
 fn direct(args: &[Arg], opts: Opts) -> Option<(usize, Option<usize>)> {
     let at = opts.after(args)?;
-    let name = args.get(at)?.known()?;
-    (!packages::yarn_command(name)).then_some((at, Some(at)))
+    yarn_program(args, at).then_some((at, Some(at)))
+}
+
+/// Whether the word at `at`, after `yarn` or `yarn run`, is read as a
+/// program: it is no command of yarn, and words follow it (`yarn cdk
+/// destroy`) or it is a delete tool (`yarn rimraf`). A name alone (`yarn
+/// format`, `yarn shutdown`) runs the project's script by that name first,
+/// which is the project's own business.
+fn yarn_program(args: &[Arg], at: usize) -> bool {
+    args.get(at).and_then(Arg::known).is_some_and(|name| {
+        !packages::yarn_command(name) && (at + 1 < args.len() || DELETERS.contains(&name))
+    })
 }
 
 /// The unit a runner runs: the program at `program`, as a package without
@@ -1683,7 +1757,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
-        tf_cli_args: Vec::new(),
+        argument_variables: Rc::default(),
         depth: unit.depth,
     }
 }

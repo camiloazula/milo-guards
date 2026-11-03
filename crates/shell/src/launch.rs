@@ -4,6 +4,8 @@
 //! `Invoke-Expression`) has that script split in its own grammar. A package
 //! runner (`npx`, `uvx`, `bunx`) is a wrapper for the program it names.
 
+use std::rc::Rc;
+
 use crate::dotglob;
 use crate::inline::{self, Code, Language};
 use crate::powershell::Params;
@@ -91,16 +93,26 @@ pub(crate) fn add(split: &mut Split, unit: Unit, depth: usize) {
     // and so is the folder it starts the program in.
     let options = split.node_options.len();
     let paths = split.python_path.len();
-    let terraform = split.tf_cli_args.len();
+    let variables = split.argument_variables.len();
     let environment = split.environment;
     let folders = split.folders_mark();
     add_unit(split, unit, depth);
     split.leave_folders(folders);
     split.node_options.truncate(options);
     split.python_path.truncate(paths);
-    split.tf_cli_args.truncate(terraform);
+    split.truncate_argument_variables(variables);
     split.environment = environment;
     split.unscope_hidden(outer);
+}
+
+/// Whether `script`, which the runner `key` of `unit` runs, is the value of
+/// a variable the line sets (`npm_config_call`), not text of its own.
+fn runs_variable(key: &str, unit: &Unit, script: &Arg) -> bool {
+    matches!(key, "npx" | "npm")
+        && unit
+            .argument_variables
+            .iter()
+            .any(|(name, value)| unit::npm_call(name) && value == script)
 }
 
 /// Add `units`, the readings of one command (cmd's `echo\x.exe` may run
@@ -238,8 +250,17 @@ fn add_launched(
         };
         // What the line sets for the program where it runs, which a runner
         // reads (`npm_config_call='…' npx`).
-        unit.tf_cli_args.clone_from(&split.tf_cli_args);
+        unit.argument_variables = Rc::clone(&split.argument_variables);
         let launched = given.take().unwrap_or_else(|| launch(&key, &unit));
+        // The command `npm_config_call` sets runs once for each `npx`: its
+        // readings are bounded as a line's own text is.
+        if let Launch::Script(_, script) = &launched {
+            if runs_variable(&key, &unit, script) && !unit::read_from_variable(split, script.text())
+            {
+                split.push(unit);
+                return;
+            }
+        }
         // `env X=1 cmd` and `env -u X cmd` change the program's environment,
         // as `coproc X=1 cmd` and `time X=1 cmd` do.
         if split.kept.on && unit.shell != Shell::Cmd {
@@ -304,9 +325,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
-                split
-                    .tf_cli_args
-                    .extend(wrappers::tf_cli_args(&unit.args, start));
+                for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
+                    split.note_argument_variable(name, value);
+                }
                 // `env BASH_ENV=f bash`: the shell it starts runs `f`.
                 let files = if key == "env" && unit.shell == Shell::Posix {
                     startup::env(split, &unit.args[..start], depth)
@@ -344,9 +365,9 @@ fn add_launched(
                 split
                     .python_path
                     .extend(wrappers::python_path(&unit.args, start));
-                split
-                    .tf_cli_args
-                    .extend(wrappers::tf_cli_args(&unit.args, start));
+                for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
+                    split.note_argument_variable(name, value);
+                }
                 let hands = replace.map_or(Hands::After, Hands::Where);
                 unit = inner(unit, key, start, &hands);
             }
@@ -642,7 +663,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),
-        tf_cli_args: Vec::new(),
+        argument_variables: Rc::default(),
         depth,
     }
 }
@@ -898,7 +919,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         // Runners of a project's environment start the command they name,
         // as `uv run` does.
         "poetry" | "pdm" | "hatch" | "conda" | "mamba" | "micromamba" | "pixi" | "rye"
-        | "volta" | "mise" => runner(key, unit),
+        | "volta" | "mise" | "pipenv" => runner(key, unit),
         // `corepack pnpm@9 dlx …` starts the package manager it names.
         "corepack" if packages::corepack_runs(args) => {
             Launch::Replace(Box::new(wrappers::running(unit, key, 0)))
