@@ -109,6 +109,41 @@ posix finds=unknown | docker $cmd ps
 posix finds=unknown | docker system $sub
 posix finds=unknown | docker "$@"
 
+# A wildcard names several containers, and a find's placeholder every name the
+# search finds; images, secrets, swarm nodes, a forced swarm leave, a pod a
+# file named and every machine are destroyed too, by every engine and its
+# front ends.
+posix safe | podman rm -f web
+posix safe | docker rmi -f app
+posix safe | docker image rm -f app
+posix safe | docker secret ls
+posix safe | docker node ls
+posix safe | docker swarm leave
+posix safe | podman kube play pod.yaml
+posix safe | podman machine list
+posix safe | finch ps
+posix safe | docker-machine ls
+posix safe | colima status
+posix safe | find ids -type f -exec cat {} +
+posix finds=destroy_resources | docker rm -f *
+posix finds=destroy_resources | podman rm -f web-*
+posix finds=destroy_resources | docker rmi -f $(docker images -aq)
+posix finds=destroy_resources | docker image rm -f $(docker images -aq)
+posix finds=destroy_resources | docker secret rm s
+posix finds=destroy_resources | docker config rm c
+posix finds=destroy_resources | docker node rm -f n1
+posix finds=destroy_resources | docker swarm leave --force
+posix finds=destroy_resources | docker swarm leave -f
+posix finds=destroy_resources | podman kube play --down pod.yaml
+posix finds=destroy_resources | podman machine reset -f
+posix finds=destroy_resources | podman-remote system prune -af
+posix finds=destroy_resources | finch system prune -af
+posix finds=destroy_resources | nerdctl.lima volume rm x
+posix finds=destroy_resources | docker-machine rm -f default
+posix finds=destroy_resources | colima delete -f
+posix finds=destroy_resources | find ids -type f -exec docker rm -f {} +
+posix finds=destroy_resources | find ids -type f -exec docker rm {} \\;
+
 # Clusters.
 posix safe | kubectl get pods
 posix safe | kubectl get ns
@@ -198,6 +233,38 @@ posix finds=destroy_resources | k3d cluster delete dev
 posix finds=destroy_resources | k3d cluster delete --all
 posix finds=destroy_resources | k3d node delete n1
 
+
+# kubectl's front ends, helm's, OpenShift's own drain and prune, and the
+# tools that deploy to a cluster.
+posix safe | kubecolor get pods
+posix safe | oc adm prune images
+posix safe | oc adm top nodes
+posix safe | helmfile sync
+posix safe | argocd app sync web
+posix safe | argocd app list
+posix safe | flux get kustomizations
+posix safe | nomad job stop web
+posix safe | nomad job status web
+posix safe | skaffold dev
+posix safe | tilt up
+posix safe | minikube node list
+posix safe | k0s status
+posix finds=destroy_resources | kubecolor delete ns prod
+posix finds=destroy_resources | microk8s.kubectl delete ns prod
+posix finds=destroy_resources | k0s kubectl delete ns prod
+posix finds=destroy_resources | helm3 uninstall api
+posix finds=destroy_resources | helmfile destroy
+posix finds=destroy_resources | helmfile -e prod delete
+posix finds=destroy_resources | oc adm drain node1
+posix finds=destroy_resources | oc adm prune images --confirm
+posix finds=destroy_resources | argocd app delete web
+posix finds=destroy_resources | flux delete kustomization web
+posix finds=destroy_resources | flux uninstall
+posix finds=destroy_resources | nomad job stop -purge web
+posix finds=destroy_resources | nomad stop -purge web
+posix finds=destroy_resources | skaffold delete
+posix finds=destroy_resources | tilt down
+posix finds=destroy_resources | minikube node delete m02
 # Infrastructure.
 posix safe | terraform plan
 posix safe | terraform plan -destroy
@@ -279,6 +346,18 @@ posix finds=destroy_resources | vagrant destroy -f
 posix finds=destroy_resources | sam delete
 posix finds=destroy_resources | sam delete --stack-name app
 posix finds=unknown | terraform $cmd
+
+# What a state or a workspace holds is lost too.
+posix safe | terraform state list
+posix safe | terraform state show aws_instance.web
+posix safe | terraform workspace list
+posix safe | terraform workspace select prod
+posix safe | pulumi state --help
+posix finds=destroy_resources | terraform state rm aws_instance.web
+posix finds=destroy_resources | tofu state rm aws_instance.web
+posix finds=destroy_resources | terraform workspace delete prod
+posix finds=destroy_resources | pulumi state delete urn
+posix finds=destroy_resources | pulumi dn
 
 # aws.
 posix safe | aws s3 ls
@@ -490,6 +569,58 @@ posix finds=destroy_resources | eksctl delete cluster --name c
 posix finds=destroy_resources | eksctl delete nodegroup --cluster c --name n
 posix finds=destroy_resources | kops delete cluster --name c --yes
 
+
+# Repositories, sites and the clouds and stores beyond the big three.
+posix safe | gh repo view me/x
+posix safe | gh release list
+posix safe | glab repo view me/x
+posix safe | netlify sites:list
+posix safe | supabase projects list
+posix safe | openstack server list
+posix safe | linode-cli linodes list
+posix safe | exo compute instance list
+posix safe | ibmcloud resource service-instances
+posix safe | hcloud server describe web
+posix safe | aws organizations list-accounts
+posix safe | aws ec2 allocate-address
+posix safe | amplify status
+posix safe | azd up
+posix safe | eb status
+posix safe | multipass list
+posix safe | consul kv get x
+posix safe | rclone sync ./dist remote:bucket
+posix safe | rclone ls remote:b
+posix safe | s3cmd ls s3://b
+posix safe | mc ls local/b
+posix safe | firebase database:get /x
+posix safe | firebase hosting:channel:list
+posix safe | vercel blob store ls
+posix safe | fly scale count 2
+posix finds=destroy_resources | gh repo delete me/x --yes
+posix finds=destroy_resources | gh release delete v1 --yes
+posix finds=destroy_resources | glab repo delete me/x
+posix finds=destroy_resources | netlify sites:delete
+posix finds=destroy_resources | supabase projects delete ref
+posix finds=destroy_resources | openstack server delete vm
+posix finds=destroy_resources | linode-cli linodes delete 1
+posix finds=destroy_resources | exo compute instance delete x
+posix finds=destroy_resources | ibmcloud resource service-instance-delete x
+posix finds=destroy_resources | hcloud server rebuild web --image ubuntu-24.04
+posix finds=destroy_resources | aws organizations close-account --account-id 1
+posix finds=destroy_resources | aws ec2 release-address --allocation-id x
+posix finds=destroy_resources | amplify delete
+posix finds=destroy_resources | azd down --purge --force
+posix finds=destroy_resources | eb terminate --all --force
+posix finds=destroy_resources | multipass delete --all --purge
+posix finds=destroy_resources | consul kv delete -recurse x
+posix finds=destroy_resources | rclone purge remote:bucket
+posix finds=destroy_resources | rclone delete remote:b
+posix finds=destroy_resources | s3cmd rb s3://b
+posix finds=destroy_resources | mc rb --force local/b
+posix finds=destroy_resources | firebase ext:uninstall x
+posix finds=destroy_resources | firebase database:set / empty.json
+posix finds=destroy_resources | firebase hosting:disable
+posix finds=destroy_resources | vercel blob store rm store_x
 # An operand only known when it runs, after a verb that copies, runs, reads
 # or sets something, does not make an everyday cloud line unknown; a verb
 # that deletes is still read behind it.
@@ -655,3 +786,16 @@ posix rules=unknown first=unknown reason="runs an oci command only known when it
 posix rules=unknown first=unknown reason="runs an eksctl command only known when it runs" | eksctl $x
 posix rules=unknown first=unknown reason="runs an sst command only known when it runs" | sst $x
 posix rules=unknown first=unknown reason="runs a gcloud command only known when it runs" | gcloud $x
+posix rules=destroy_resources first=destroy_resources reason="removes containers chosen when it runs" | docker rm -f *
+posix rules=destroy_resources first=destroy_resources reason="removes every container a search finds" | find ids -type f -exec docker rm -f {} +
+posix rules=destroy_resources first=destroy_resources reason="removes images chosen when it runs" | docker rmi -f $(docker images -aq)
+posix rules=destroy_resources first=destroy_resources reason="removes resources from the Terraform state" | terraform state rm aws_instance.web
+posix rules=destroy_resources first=destroy_resources reason="deletes a Terraform workspace" | terraform workspace delete prod
+posix rules=destroy_resources first=destroy_resources reason="deletes old images, builds or deployments" | oc adm prune images --confirm
+posix rules=destroy_resources first=destroy_resources reason="stops a Nomad job and deletes it" | nomad job stop -purge web
+posix rules=destroy_resources first=destroy_resources reason="wipes a Hetzner Cloud server's disk" | hcloud server rebuild web --image ubuntu-24.04
+posix rules=destroy_resources first=destroy_resources reason="replaces data in a Firebase database" | firebase database:set / empty.json
+posix rules=destroy_resources first=destroy_resources reason="takes a Firebase site offline" | firebase hosting:disable
+posix rules=destroy_resources first=destroy_resources reason="deletes a GitHub repository, release or other object" | gh repo delete me/x --yes
+posix rules=unknown first=unknown reason="runs a kubecolor command only known when it runs" | kubecolor $x
+posix rules=unknown first=unknown reason="runs an s3cmd command only known when it runs" | s3cmd $x
