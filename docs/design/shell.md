@@ -891,7 +891,11 @@ moved no line between safe and risky. Each item below says which rule it is:
   `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, while a `launchctl
   kill` or `stop` whose target is only known when it runs is `stop_unknown`;
   the target of any other label (`gui/501/com.me.worker`) is the user's own.
-  `systemctl restart` is not a stop and stays safe.
+  `systemctl restart` is not a stop and stays safe. A name or pattern
+  that matches the process of a daemon that protects the machine
+  (`killall auditd`, `pkill firewalld`), and a `launchctl kill` or `stop`
+  of such a daemon's label (`com.apple.alf`), is `system_settings` (see
+  [Machine settings on macOS and Linux](#machine-settings-on-macos-and-linux)).
 - **A name only known when it runs (`stop_unknown`).** `killall $NAME`,
   `pkill "$PATTERN"`, `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
@@ -1196,7 +1200,25 @@ of their strictest, so each family below was added on that test.
   are not read as `--user` or `--system` either: one walk of the arguments
   skips the values and finds those two (`systemctl -p --user disable x` is
   a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
-  `-p`/`--property` value the same way.
+  `-p`/`--property` value the same way. The other init systems are read the
+  same way: `rc-update del` (or `delete`, or a verb only known when it runs),
+  `update-rc.d name disable` or `remove`, and `chkconfig name off` or
+  `chkconfig --del name` (with `--level` skipped) take a service out of what
+  starts at boot, as `systemctl disable` does, whatever the service;
+  `rc-update add`, `update-rc.d name defaults` or `enable` and `chkconfig
+  name on` are safe. Some `systemctl` verbs change many units at once:
+  `isolate` starts a target and stops every unit it does not want, so it is
+  risky whatever the target (and also `stop_system` for `poweroff`,
+  `reboot`, `halt`, `kexec`, `soft-reboot`, `rescue` and `emergency`, as
+  `systemctl poweroff` and `rescue` are); `set-default` to a target other
+  than `graphical` or `multi-user` (with or without `.target`), or to one
+  only known when it runs, changes what the computer boots into;
+  `preset-all` enables and disables units by the preset files. `edit`,
+  `revert` and `preset` of a unit that protects the machine (below), a
+  pattern or a unit only known when it runs change how that protection
+  runs; of any other unit (`systemctl edit nginx`) they are safe, as is
+  `get-default`. These follow `--user` as `disable` does: `systemctl --user
+  isolate x.target` changes only the user's own session and is safe.
 - **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
   stop` are safe, because `stop docker` is a common development step, and
   `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
@@ -1205,8 +1227,9 @@ of their strictest, so each family below was added on that test.
   `launchctl kill TERM system/com.apple.WindowServer`), which is `stop_system`
   as stopping the process is (see
   [Stopping processes by name](#stopping-processes-by-name)). The other is a unit
-  that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
-  `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
+  that protects the machine (the firewalls, `apparmor`, `auditd`,
+  `fail2ban` and the antivirus and endpoint daemons listed below), whose
+  stopping is the same
   as turning that protection off, so it is risky. `systemctl kill` sends
   SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
   refuses `stop`, so `kill` is how it is stopped), so it is read through the
@@ -1217,6 +1240,46 @@ of their strictest, so each family below was added on that test.
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
+  An action stops the service when it is `stop`, a BSD spelling of it
+  (`onestop`, `forcestop`, `faststop`, `quietstop`), `force-stop`, `kill`,
+  or one of the actions the firewall and `AppArmor` scripts take their
+  protection down with, `flush` (`service netfilter-persistent flush`) and
+  `teardown` (`service apparmor teardown`). Every other service manager
+  is read as `service`: a program run from an init script folder
+  (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
+  placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
+  as `/etc/init.d/ufw stop`, is the service of its name with its first
+  operand as the action; `invoke-rc.d name action` and `rc-service name
+  action` (whose `-e` and `-r` take a name) read the same; runit's `sv
+  command service...` stops each service when the command is `stop`,
+  `shutdown`, `force-stop`, `force-shutdown`, or starts with the letters
+  `sv` reads as down, exit or pause (`d`, `D`, `x`, `X`, `e`, `E`, `p`), or
+  is only known when it runs, and a service given as a folder
+  (`/etc/service/ufw`) is the last part. `/etc/init.d/nginx restart`,
+  `rc-service docker stop` and `sv down nginx` are safe; `/etc/init.d/ssh
+  stop` and `sv down sshd` are `stop_system`. The protecting units are the
+  firewalls (`firewalld`, `ufw`, `nftables`, `iptables`, `ip6tables`,
+  `netfilter-persistent`, and the BSDs' `pf` and `ipfw`), `apparmor`,
+  `auditd`, `fail2ban`, and the common antivirus and endpoint daemons
+  (`clamav-daemon`, `clamav-freshclam`, `clamav-clamd`, `clamd`,
+  `freshclam`, `mdatp`, `falcon-sensor`, `sentinelone`, `osqueryd`,
+  `wazuh-agent`, `ossec`); a unit is compared without `.service` and
+  without its instance (`clamd@scan`). Stopping the daemon's process is the
+  same: `killall` and `pkill` of a name that is, or a pattern that matches,
+  `auditd`, `firewalld`, `ufw`, `apparmor`, `clamd`, `freshclam`, `mdatp`,
+  `wdavdaemon`, `falcon-sensor`, `falcond`, `osqueryd`, `wazuh-agentd`,
+  `sentineld` or `ossec-agentd` is `system_settings` (`pkill firewalld`,
+  `killall auditd`, `pkill audit`); `fail2ban-server` is left out, since
+  `pkill` searches each name for its pattern and `pkill server` is everyday
+  work. `launchctl kill` and `stop` of a daemon that protects a Mac are a
+  bootout of it: a label that is, or starts with and a dot, `com.apple.alf`
+  (the application firewall), `com.apple.auditd`, `com.apple.syspolicyd`
+  (Gatekeeper), `com.apple.xprotect`, `com.apple.endpointsecurity`,
+  `com.crowdstrike`, `com.microsoft.wdav`, `com.sentinelone` or
+  `at.obdev.littlesnitchd`, without case (`launchctl kill 9
+  system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
+  A `kill` whose ids come from a substitution (`kill $(pidof auditd)`) is
+  `stop_unknown`, as every such `kill` is.
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
   `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
   `listbackups`, `status`, `startbackup` and `enable` are safe.
@@ -1239,8 +1302,9 @@ of their strictest, so each family below was added on that test.
   persistent-apps`), a path in the workspace or the user's own folder,
   `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
 
-`hostname` and `service` are read in POSIX shells only: in PowerShell and cmd
-they are Windows programs and are left alone.
+`hostname`, `service`, `sv` and init scripts are read in POSIX shells only:
+in PowerShell and cmd they are Windows programs or aliases (`sv` is
+PowerShell's `Set-Variable`) and are left alone.
 
 ### The rule enum is exhaustive on purpose
 

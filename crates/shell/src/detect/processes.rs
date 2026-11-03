@@ -103,6 +103,29 @@ const SYSTEM_COMMAND_LINES: [&str; 17] = [
     "/usr/lib/systemd/systemd-logind",
 ];
 
+/// The processes of the daemons that protect the machine, as they are named
+/// when they run: the audit daemon, the firewalls, `AppArmor`, `ClamAV`,
+/// Microsoft Defender (`mdatp`, `wdavdaemon`), `CrowdStrike` Falcon,
+/// `osquery`, Wazuh and `SentinelOne`. Stopping one turns that protection
+/// off, as stopping its service does. `fail2ban-server` is left out: `pkill`
+/// searches a name for its pattern, and `pkill server` is everyday work.
+const PROTECTING_PROCESSES: [&str; 14] = [
+    "auditd",
+    "firewalld",
+    "ufw",
+    "apparmor",
+    "clamd",
+    "freshclam",
+    "mdatp",
+    "wdavdaemon",
+    "falcon-sensor",
+    "falcond",
+    "osqueryd",
+    "wazuh-agentd",
+    "sentineld",
+    "ossec-agentd",
+];
+
 /// `Stop-Process`'s own parameters.
 const STOP_PROCESS: [Param; 7] = [
     Param::value("name", &["processname"]),
@@ -235,10 +258,19 @@ impl Checker<'_> {
         };
         if everything {
             self.add(Rule::StopSystem, "stops every process", Some(name));
-        } else if names_system_process(text, kind) {
+            return;
+        }
+        if names_system_process(text, kind) {
             self.add(
                 Rule::StopSystem,
                 "stops a process the system needs",
+                Some(name),
+            );
+        }
+        if names_process(text, kind, &PROTECTING_PROCESSES, &[]) {
+            self.add(
+                Rule::SystemSettings,
+                "stops a service that protects the system",
                 Some(name),
             );
         }
@@ -1054,12 +1086,19 @@ pub(super) fn is_system_label(target: &str) -> bool {
 /// Whether `text` names a process the system needs, or (for a wildcard
 /// or a regular expression) matches one.
 fn names_system_process(text: &str, kind: Names) -> bool {
+    names_process(text, kind, &SYSTEM_PROCESSES, &SYSTEM_COMMAND_LINES)
+}
+
+/// Whether `text` names one of `processes`, or (for a wildcard or a regular
+/// expression) matches one; `pkill -f` also searches `command_lines`, the
+/// command lines they usually run with.
+fn names_process(text: &str, kind: Names, processes: &[&str], command_lines: &[&str]) -> bool {
     match kind {
         // `killall` picks a process by its file when the name has a folder in
         // it (`/sbin/init`): the last part is the name.
         Names::Literal => {
             let name = text.rsplit('/').next().unwrap_or(text);
-            SYSTEM_PROCESSES
+            processes
                 .iter()
                 .any(|system| process_name(system) == process_name(name))
         }
@@ -1076,23 +1115,23 @@ fn names_system_process(text: &str, kind: Names) -> bool {
             text.split('|').any(|alternative| {
                 let bare = alternative.trim_matches(['^', '$', '(', ')']);
                 let name = bare.rsplit('/').next().unwrap_or(bare);
-                SYSTEM_PROCESSES
+                processes
                     .iter()
                     .any(|system| process_name(system) == process_name(name))
-            }) || regex::matches_any(text, &SYSTEM_PROCESSES, exact, ignore_case, dotnet)
+            }) || regex::matches_any(text, processes, exact, ignore_case, dotnet)
                 // `-f` searches the whole command line, whose program is not
                 // the last part of a path the pattern spells.
                 || (full
                     && regex::matches_command_line(
                         text,
-                        &SYSTEM_COMMAND_LINES,
+                        command_lines,
                         exact,
                         ignore_case,
                     ))
         }
         Names::Wildcard => {
             let pieces = wildcard_pieces(&process_name(text));
-            SYSTEM_PROCESSES.iter().any(|system| {
+            processes.iter().any(|system| {
                 let name: Vec<char> = process_name(system).chars().collect();
                 wildcard_matches(&pieces, &name)
             })

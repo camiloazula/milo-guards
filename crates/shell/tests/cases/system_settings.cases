@@ -423,6 +423,172 @@ posix finds=system_settings | launchctl unload -w -D system
 posix finds=system_settings | launchctl unload -D system ./x.plist
 posix finds=system_settings | launchctl unload ./x.plist -D system
 
+# Stopping a protecting service through another service manager (SysV init
+# scripts, `invoke-rc.d`, OpenRC, runit) is read as `systemctl stop` of the
+# same unit, and turning one off at boot (`rc-update del`, `update-rc.d
+# disable`, `chkconfig off`) as `systemctl disable`; `service` verbs that
+# empty or unload a protection are a stop. Stopping or restarting any other
+# service stays safe.
+posix safe | /etc/init.d/nginx restart
+posix safe | /etc/init.d/nginx stop
+posix safe | /etc/init.d/ufw status
+posix safe | /etc/init.d/ufw start
+posix safe | rc-service docker stop
+posix safe | rc-service ufw start
+posix safe | rc-service ufw status
+posix safe | invoke-rc.d nginx stop
+posix safe | invoke-rc.d ufw restart
+posix safe | rc-update add ufw default
+posix safe | rc-update show
+posix safe | rc-update
+posix safe | update-rc.d ufw defaults
+posix safe | update-rc.d nginx enable
+posix safe | chkconfig iptables on
+posix safe | chkconfig --list
+posix safe | chkconfig --list iptables
+posix safe | chkconfig iptables
+posix safe | sv down nginx
+posix safe | sv up ufw
+posix safe | sv status ufw
+posix safe | sv restart ufw
+posix safe | service netfilter-persistent save
+posix safe | service apparmor reload
+posix safe | service nginx flush
+posix safe | ./init.d/ufw stop
+posix finds=system_settings | /etc/init.d/ufw stop
+posix finds=system_settings | /etc/init.d/firewalld stop
+posix finds=system_settings | sudo /etc/init.d/auditd stop
+posix finds=system_settings | /etc/init.d/netfilter-persistent flush
+posix finds=system_settings | /etc/init.d/apparmor teardown
+posix finds=system_settings | /etc/init.d/ufw $action
+posix finds=system_settings | /etc/rc.d/init.d/iptables stop
+posix finds=system_settings | /etc/rc.d/pf stop
+posix finds=system_settings | /usr/local/etc/rc.d/clamav-clamd stop
+posix finds=system_settings | cd /etc/init.d && ./ufw stop
+posix finds=system_settings | cd /etc && init.d/ufw stop
+posix finds=unknown | /etc/init.d/$service stop
+posix finds=stop_system | /etc/init.d/ssh stop
+posix finds=system_settings | invoke-rc.d ufw stop
+posix finds=system_settings | invoke-rc.d --force ufw stop
+posix finds=system_settings | invoke-rc.d ufw $action
+posix finds=system_settings | invoke-rc.d $name stop
+posix finds=system_settings | rc-service ufw stop
+posix finds=system_settings | rc-service -q iptables stop
+posix finds=system_settings | rc-service $name stop
+posix finds=stop_system | rc-service sshd stop
+posix finds=system_settings | rc-update del ufw
+posix finds=system_settings | rc-update delete nginx default
+posix finds=system_settings | rc-update del ufw boot
+posix finds=system_settings | rc-update $verb ufw
+posix finds=system_settings | update-rc.d ufw disable
+posix finds=system_settings | update-rc.d -f ufw remove
+posix finds=system_settings | update-rc.d nginx disable 2 3 4 5
+posix finds=system_settings | update-rc.d ufw $action
+posix finds=system_settings | chkconfig iptables off
+posix finds=system_settings | chkconfig --level 35 iptables off
+posix finds=system_settings | chkconfig --del iptables
+posix finds=system_settings | chkconfig nginx off
+posix finds=system_settings | chkconfig iptables $state
+posix finds=system_settings | sv down ufw
+posix finds=system_settings | sv stop ufw
+posix finds=system_settings | sv d ufw
+posix finds=system_settings | sv exit ufw
+posix finds=system_settings | sv force-stop ufw
+posix finds=system_settings | sv -w 5 down ufw
+posix finds=system_settings | sv down nginx ufw
+posix finds=system_settings | sv down /etc/service/ufw
+posix finds=system_settings | sv down /etc/service/ufw/
+posix finds=system_settings | sv $verb ufw
+posix finds=system_settings | sv down $name
+posix finds=stop_system | sv down sshd
+posix finds=system_settings | service netfilter-persistent flush
+posix finds=system_settings | service netfilter-persistent stop
+posix finds=system_settings | service apparmor teardown
+posix finds=system_settings | service iptables flush
+posix finds=system_settings | service pf onestop
+posix finds=system_settings reason="stops a service that protects the system" | service ufw stop
+
+# Stopping a protecting daemon by its process is the same as stopping the
+# service: `killall` and `pkill` of `auditd`, `firewalld` and the antivirus
+# and endpoint daemons are risky; other processes are everyday work.
+posix safe | pkill nginx
+posix finds=system_settings | killall auditd
+posix finds=system_settings | sudo killall -9 auditd
+posix finds=system_settings | killall firewalld
+posix finds=system_settings | killall clamd
+posix finds=system_settings | killall wdavdaemon
+posix finds=system_settings | pkill firewalld
+posix finds=system_settings | pkill -9 auditd
+posix finds=system_settings | pkill -x wazuh-agentd
+posix finds=system_settings | pkill mdatp
+posix finds=system_settings | pkill clamd
+posix finds=system_settings | pkill 'firewall'
+posix finds=system_settings | killall -r 'audit'
+posix finds=system_settings reason="stops a service that protects the system" | pkill auditd
+posix finds=stop_unknown | kill $(pidof auditd)
+
+# launchctl kill and stop of a daemon that protects the machine (the
+# application firewall, XProtect, Gatekeeper's policy daemon, the audit
+# daemon, endpoint agents) are a bootout.
+posix safe | launchctl stop com.example.worker
+posix safe | launchctl kill TERM gui/501/com.me.worker
+posix safe | launchctl start com.apple.alf
+posix finds=system_settings | launchctl kill 9 system/com.apple.alf
+posix finds=system_settings | launchctl stop com.apple.alf
+posix finds=system_settings | launchctl kill TERM system/com.apple.alf.agent
+posix finds=system_settings | launchctl stop com.apple.auditd
+posix finds=system_settings | launchctl stop com.apple.syspolicyd
+posix finds=system_settings | launchctl kill KILL system/com.apple.XProtect.daemon.scan
+posix finds=system_settings | launchctl stop com.crowdstrike.falcond
+posix finds=system_settings | launchctl kill 9 system/com.microsoft.wdav.daemon
+posix finds=system_settings reason="stops a service that protects the system" | launchctl stop com.apple.alf
+
+# Antivirus and endpoint daemons protect the machine as the firewall does.
+posix finds=system_settings | systemctl stop clamav-daemon
+posix finds=system_settings | systemctl stop clamav-freshclam
+posix finds=system_settings | systemctl stop mdatp
+posix finds=system_settings | systemctl stop falcon-sensor
+posix finds=system_settings | systemctl stop osqueryd
+posix finds=system_settings | systemctl stop wazuh-agent
+posix finds=system_settings | systemctl disable --now sentinelone
+posix finds=system_settings | systemctl stop netfilter-persistent
+posix finds=system_settings | systemctl kill clamd@scan
+
+# systemctl verbs that change many units at once or a unit's own file:
+# `isolate` stops every unit the target does not want, `set-default` to a
+# target other than the graphical or multi-user one boots into it,
+# `preset-all` enables and disables units by the preset files, and `edit`,
+# `revert` and `preset` of a protecting unit change how it runs. A `--user`
+# isolate changes only the user's own session, so it is safe.
+posix safe | systemctl get-default
+posix safe | systemctl set-default graphical.target
+posix safe | systemctl set-default multi-user.target
+posix safe | systemctl set-default multi-user
+posix safe | systemctl --user isolate x.target
+posix safe | systemctl --user preset-all
+posix safe | systemctl edit nginx
+posix safe | systemctl revert nginx
+posix safe | systemctl preset nginx
+posix safe | systemctl --user edit ufw
+posix finds=system_settings | systemctl isolate rescue.target
+posix finds=system_settings | systemctl isolate multi-user.target
+posix finds=system_settings | systemctl isolate $target
+posix finds=system_settings,stop_system | systemctl isolate poweroff.target
+posix finds=system_settings,stop_system | systemctl isolate reboot.target
+posix finds=system_settings | systemctl set-default rescue.target
+posix finds=system_settings | systemctl set-default emergency.target
+posix finds=system_settings | systemctl set-default poweroff.target
+posix finds=system_settings | systemctl set-default $target
+posix safe | systemctl set-default
+posix finds=system_settings | systemctl --preset-mode=disable-only preset-all
+posix finds=system_settings | systemctl edit firewalld
+posix finds=system_settings | systemctl edit --full ufw.service
+posix finds=system_settings | systemctl edit $unit
+posix finds=system_settings | systemctl revert firewalld
+posix finds=system_settings | systemctl revert auditd
+posix finds=system_settings | systemctl preset firewalld
+posix finds=system_settings reason="changes which services the system runs" | systemctl preset-all
+
 # Time Machine backups are risky to delete or turn off.
 posix safe | tmutil listbackups
 posix safe | tmutil latestbackup
