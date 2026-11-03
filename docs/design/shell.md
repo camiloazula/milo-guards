@@ -550,7 +550,11 @@ bash `echo "hi"; rm -rf ~`, a `Delete`, where cmd's own quotes would give
 and hands on the words it made (`uv run`, `npx`, `pnpm dlx`, `npm exec`,
 `wsl`, `git submodule foreach`), and `start` hands the program it starts the
 text after its title. A word that holds a variable only known when it runs
-keeps its quotes, so `docker rm -f "%IDS%"` is one name. A shell built on
+keeps its quotes, but cmd puts the value in before the program splits the
+text, so a value that holds a `"` ends them: `docker rm -f "%IDS%"` may name
+several containers, and `git push "%F%" origin main` may hand git `--force`
+(see [Values only known when they run](#values-only-known-when-they-run)).
+A shell built on
 Cygwin or MSYS2 also reads single quotes; a script that opens one and does
 not close it in the C runtime's word is unreadable as POSIX, and so risky.
 `cmd` itself is given the text as it is, quotes and all, with cmd's rule for
@@ -1625,7 +1629,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | Wire name | What it finds |
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
-| `wipe_disk` | Formats, repartitions or writes over a disk. |
+| `wipe_disk` | Formats, repartitions or writes over a disk; `dd` writes to a file only known when it runs ([below](#values-only-known-when-they-run)). |
 | `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder, or to the absolute paths stored in it (`tar -xP`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
@@ -2041,11 +2045,15 @@ home directory, and the keys in it).
 A `tar` mode that is only known when it runs (`tar "$mode" -f x.tar ~
 --remove-files`) is judged as if it packed. A `tar` option that takes a value
 in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
-a member, and neither does one whose value is only known when it runs
-(`--file="$OUT"`, `--exclude="$SKIP"`): it is that option, read by its name,
-not a member and not the mode (`--directory="$DIR"` moves the members after it
-to a folder only known when it runs). An operand only known when it runs is a member known only when it
-runs; with `zip`, so is a first operand that is, since it may be the archive
+a member, unless it may split into words when it runs (`-f $A`,
+`--file=$A`, `-cf$A`, see
+[Values only known when they run](#values-only-known-when-they-run)), and
+neither does one whose value is only known when it runs (`--file="$OUT"`,
+`--exclude="$SKIP"`): it is that option, read by its name, not a member and
+not the mode (`--directory="$DIR"` moves the members after it to a folder only
+known when it runs). An operand only known when it runs is a member known only
+when it runs, unless it starts as an option (`"--$X"`); with `zip`, so is a
+first operand that is, since it may be the archive
 and the members together. A pipeline's input (`ls | xargs zip -m x.zip`) is
 the files the stage before it lists. With `7z`, an argument whose readable
 start is `-` (`-p"$PASS"`) is a switch, not an operand; one wholly unknown
@@ -2277,7 +2285,8 @@ of their strictest, so each family below was added on that test.
   zeros (`10.0.0.0/0.0.0.0`); `any` and `anywhere` are too. Any other
   match (`-i lo`, `-i eth+`, `--dport 22`, `-m conntrack`, `-p icmp`, `!`)
   narrows the rule, and so does an argument only known when it runs (`-s
-  $ip`), as for the other values of a rule; `-D`, `-C`, `-g` and `OUTPUT`
+  "$ip"`), as for the other values of a rule (outside quotes it may split
+  into an option, see below); `-D`, `-C`, `-g` and `OUTPUT`
   are not read. For
   `firewall-cmd`: a zone or policy whose target is set to `ACCEPT` or a
   target only known when it runs (`--set-target`), and a source of anywhere
@@ -2461,6 +2470,110 @@ and cmd they are Windows programs or aliases (`sv` is PowerShell's
 `Set-Variable`) and are left alone. An init script is read in PowerShell too
 (`& '/etc/init.d/ufw' stop`, `Start-Process /etc/init.d/ufw stop`), since pwsh
 on Linux runs a path under `/etc/init.d` as the script it is; cmd never does.
+
+An argument of any of these programs that is only known when it runs and
+may be an option (see [Values only known when they
+run](#values-only-known-when-they-run)) may be the option that changes a
+setting, so a line in which the program's own reading finds nothing is
+`system_settings` all the same ("may change a machine setting with an option
+only known when it runs"): `iptables $flag`, `spctl $x`, `iptables "-$F"`,
+`iptables -A INPUT -s $ip -j DROP`. Quoted with nothing before it, it is one
+word, a value (`iptables -A INPUT -s "$ip" -j DROP` is safe). `service`,
+`launchctl` and the other service managers take no option that changes what
+their words do, and their own reading judges each word, an unknown one
+included (`service nginx $action` stays safe).
+
+### Values only known when they run
+
+A value only known when it runs can hide an operand or an option the line
+does not show, and a rule takes the worst it may be:
+
+- **An output of `dd`.** An `of=` whose value is only known when it runs
+  (`of=$DISK`, `of="$DISK"`, `of=$(…)`, PowerShell's `of=$d`), an operand
+  wholly only known then (`dd if=a "$OUT"`), and one that may split into
+  words (`bs=$B`) may each name a disk, so each is `wipe_disk`, "writes over
+  a disk or file only known when it runs", as an unknown output of `cp` is
+  `overwrite`. So is a known `of=` after a `cd` the guard cannot follow.
+  `dd if=a of=out.bin`, `dd if=a of=/dev/null` and `dd bs="$B" if=a
+  of=out.bin` stay safe.
+- **Words a value splits into.** A value that may split into several words
+  when it runs (`may_split` in `unit.rs`): in a POSIX shell an expansion
+  outside quotes (`$a`, `x$a`, `$(…)`, a backtick) and a quoted list
+  (`"$@"`, `"${a[@]}"`, `"${!p@}"`); in PowerShell a variable but `$env:`, a
+  splat (`@a`) or a subexpression, which hand a program each item of an
+  array as its own argument; in cmd a `%X%` or `!X!`, quoted or not; and
+  what a pipeline hands a program (`xargs`). cmd puts a variable in as text
+  before the program splits its own command line with the C runtime's rules
+  (see [Splitting](#splitting)), so a value that holds a `"` ends the quotes
+  around it: with `F=x" --force "y`, `git push "%F%" origin main` hands git
+  `--force`. A quoted expansion in a POSIX shell or PowerShell (`"$a"`,
+  `"$(…)"`) and a known value are one word. Among the operands of a delete, a
+  move or an archive that removes what it packs, the value of an option that
+  splits is an operand too, a path only known when it runs: `tar -cf $A src
+  --remove-files` (and `A='x.tar /etc'; tar -cf $A --remove-files`), `tar
+  --exclude $E …`, `zip -b $T …`, `shred -n $N f`, `mv -S $X a b` and
+  `mv -t $T a`. `tar -cf "$A" src` stays safe.
+- **A word that starts as an option.** One word only known when it runs is
+  an option, whatever it holds, when the text it is sure to start with is
+  one (`option_start` in `unit.rs`): a `-` written before the expansion
+  (`"-$F"`, `-"$F"`, `"--remove-$X"`; in cmd a `/` too), the value a default
+  or an alternate writes out, which is the word when the variable is unset
+  or empty (`"${X:---force}"`, `"${X:+--force}"`, `"--${M:-hard}"`), and an
+  ANSI-C or locale quote (`$'--force'`, `$"-f"`), which the reader keeps as
+  only known when it runs and is read here to its text, or to any option
+  when an escape starts it. In find's expression, after the places it
+  searches, every word is a test or an action unless it is a test's value,
+  so `find ~ -name x "$A"` may be `-delete`, while `find . -name "$p"` stays
+  a search. A `git push` refspec that starts with `+` or `:` forces or
+  deletes the branch whatever follows (`git push origin "+$B"`, `":$B"`), as
+  `+main` does. A word that starts as an option is no member of an archive,
+  and `cp`, `install`, `mv` and `ln` read `--target-directory=$T`,
+  `--target-directory="$T"` and `-t` in a bundle (`-rt"$T"`) as a folder only
+  known when it runs, as `-t $T` is.
+- **An option that destroys.** Where a rule looks for an option that
+  destroys, an argument before `--` that may split into words, or that
+  starts as that option (`could_be` in `unit.rs`: `-` and a bundle for a
+  short one, `--` and a prefix for a long one), may be it, and is taken as
+  given (`may_be_option` and `flagged` in `unit.rs`): `git push $F origin
+  main` and `git push origin $BRANCH` are `git_remote`; `git reset $X`, `git
+  checkout $B`, `git clean $F`, `git switch $B`, `git branch $B`, `git tag
+  $T` and the others git reads by their force or delete option are
+  `git_discard`, and `git gc $X` is `git_history`; `docker image prune
+  $FLAGS` (`-a`), `docker swarm leave $F`, `kube play $F` (`--down`),
+  `docker compose down $F` (`-v`), `kubectl replace $F` and `apply $F`
+  (`--force`, `--prune`), `oc adm prune $F` (`--confirm`), `terraform apply
+  $TF_ARGS` (`-destroy`, also under terragrunt), `aws s3 sync … $F`
+  (`--delete`), `gcloud storage rsync $SRC …`, `gsutil rsync $F` (`-d`) and
+  `nomad job stop $F` (`-purge`) are `destroy_resources`; `rsync -a $F a/
+  ../b/` (`--delete`), `find ~ $F` (`-delete`) and `robocopy a ..\b %F%`
+  (`/MIR`) are `delete`; `sed $F … ~/.bashrc` (`-i`) is an `overwrite` of
+  `~/.bashrc`; `tar`, `zip` and `7z` take one as `--remove-files`, `-m` and
+  `-sdel`, and `7z a -p"$PASS" …` stays safe, since `-p` cannot be `-sdel`.
+  An option that keeps work (`--dry-run`, `git restore --staged`) is taken
+  only as written, and `git branch` and `git tag` refuse a delete beside a
+  listing, so `git tag -l $P` and `git branch --list $P` stay safe. `git
+  push origin "$BRANCH"` and `terraform apply "$PLAN"` are one word each, a
+  value, and are judged as before.
+- **What the finding says.** A finding that only such an option turns on
+  says what the program may do, not that it does it: `git tag $TAG` is
+  `git_discard`, "may delete a tag with an option only known when it runs",
+  and `terraform apply $PLAN` "may destroy the infrastructure a
+  configuration manages with an option only known when it runs". Where the
+  option is written out, the reason is the usual one. `docker system prune
+  $F` says what it does without `--volumes`, which it surely does. For
+  `effect` such a finding is not a change but a line not understood, so
+  `find $dir -name '*.rs'` and `git tag $TAG` are `Unknown`, as a line the
+  guard cannot read is.
+- **A machine setting.** See [Machine settings on macOS and
+  Linux](#machine-settings-on-macos-and-linux).
+
+A value the reader cannot place as a word at all is still judged where it
+stands: `rm $n` deletes a path only known when it runs, and `cp a $n` and
+`tee $n` write one. PowerShell puts a variable's value in a bare word in
+argument mode as in a double-quoted string, so the reader takes a bare word
+that holds `$name`, `${…}` or `$(…)` (not after a backtick, nor inside single
+quotes) as only known when it runs: `dd if=/dev/zero of=$d` is `wipe_disk`,
+`rm -r x$d` a `delete` and `cp a x$d` an `overwrite`.
 
 ### The rule enum is exhaustive on purpose
 
@@ -3312,6 +3425,10 @@ A line is never safe because the guard gave up on it. These come back risky:
   closed quote of a word is read as text (`--format="%an <%ae>"`), unless a
   double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
 - A database statement known only when it runs: `psql -c "$Q"`.
+- A value only known when it runs that may hide an output of `dd`, an
+  operand of a delete, or an option that destroys or changes a machine
+  setting (see [Values only known when they
+  run](#values-only-known-when-they-run)).
 - A path built at run time or by a brace list.
 - A value only known when it runs where bash reads a value again as code:
   arithmetic, `${!x}` and `${x@P}` (see
@@ -4314,8 +4431,8 @@ variables that start with a prefix (`"${!p@}"`, but not `"${!p*}"`), but not
 `"$name"`, nor a quoted variable after a plain head (`app-"$ENV"` is one word,
 `app-$ENV` may be several); in PowerShell any variable except `$env:` and a
 splat (`@ids`), since an array handed to a program is one argument per element,
-but not a quoted `"$ids"`; in cmd an unquoted `%IDS%` or `!IDS!`, which is
-expanded as text. A POSIX word also splits when an unquoted `$` follows a
+but not a quoted `"$ids"`; in cmd a `%IDS%` or `!IDS!`, quoted or not, which
+is expanded as text before the program splits its command line. A POSIX word also splits when an unquoted `$` follows a
 quoted head (`"$a"$b`) and when it holds an unquoted brace list or sequence
 (`web{1,2}`, `{web,db}`, `web{1..3}`); a brace list in a word the parser has
 already unquoted counts as bare. A command in a loop or a function body runs

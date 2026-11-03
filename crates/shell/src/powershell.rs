@@ -2407,7 +2407,14 @@ impl Walker<'_> {
     fn expr(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         match node.kind() {
-            "generic_token" => Arg::Known(unescape(source)),
+            "generic_token" => match bare_expansion(source) {
+                None => Arg::Known(unescape(source)),
+                Some(runs) => Arg::Template {
+                    text: unescape(source),
+                    source: source.into(),
+                    runs,
+                },
+            },
             "command_parameter" => match quoted_parameter(source) {
                 Some(Parameter {
                     text,
@@ -3308,6 +3315,36 @@ fn attach_colon(args: &mut [Arg]) {
 }
 
 /// PowerShell's escape character is the backtick: `` `$ `` is `$`.
+/// Whether a bare word holds an expansion PowerShell puts its value in, in
+/// argument mode as in a double-quoted string (`of=$d`, `x${d}`,
+/// `x$($d)`): `Some(true)` when one runs a command, `None` when there is
+/// none. A `$` after a backtick or inside single quotes is text, and so is
+/// one that starts no name (`a$`, `$:`).
+fn bare_expansion(source: &str) -> Option<bool> {
+    let mut found = None;
+    let mut single = false;
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => single = !single,
+            '`' if !single => {
+                chars.next();
+            }
+            '$' if !single => match chars.peek() {
+                Some('(') => return Some(true),
+                Some(&next)
+                    if next.is_alphanumeric() || matches!(next, '_' | '{' | '?' | '^' | '$') =>
+                {
+                    found = Some(false);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    found
+}
+
 fn unescape(text: &str) -> String {
     let mut value = String::with_capacity(text.len());
     let mut chars = text.chars();

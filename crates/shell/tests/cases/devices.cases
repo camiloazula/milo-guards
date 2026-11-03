@@ -159,3 +159,24 @@ posix@macos finds=delete | cd /dev && rm -rf std*/../null
 posix@macos finds=delete | cd /dev/std* && rm -rf ../null
 posix@macos finds=overwrite | cd /dev && echo x > */../null
 posix@macos finds=delete | rm -rf '/dev/std*/../null'
+
+# An output of `dd` only known when it runs may be a disk, as an unknown
+# output of `cp` is a write. An expansion outside quotes may split into
+# words, an `of=` among them.
+posix finds=wipe_disk reason="writes over a disk or file only known when it runs" | dd if=/dev/zero of=$DISK
+posix finds=wipe_disk reason="writes over a disk or file only known when it runs" | dd if=/dev/zero of="$DISK"
+posix finds=wipe_disk reason="writes over a disk or file only known when it runs" | dd if=a of=$(echo ~/.bashrc)
+posix finds=wipe_disk reason="writes over a disk" | dd if=/dev/zero of=/dev/disk2
+posix finds=wipe_disk | dd if=a "$OUT"
+posix finds=wipe_disk | dd bs=$B if=a of=out.bin
+posix finds=wipe_disk | cd $D && dd if=a of=out.bin
+posix safe | dd bs="$B" if=a of=out.bin
+posix safe | dd if=a of=out.bin
+posix safe | dd if=a of=/dev/null
+# PowerShell puts a variable's value in a bare word too, and cmd a `%X%`,
+# quoted or not.
+powershell finds=wipe_disk | dd if=/dev/zero of=$d
+powershell finds=wipe_disk | dd if=/dev/zero of=${d}
+powershell safe | dd if=a of=`$d
+cmd finds=wipe_disk | dd if=a of=%D%
+cmd finds=wipe_disk | dd if=a of="%D%"

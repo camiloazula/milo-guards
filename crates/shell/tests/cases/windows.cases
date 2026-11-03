@@ -82,6 +82,20 @@ powershell finds=stop_system | Restart-Computer
 powershell finds=system_settings | Set-ExecutionPolicy Unrestricted
 powershell finds=system_settings | Set-MpPreference -DisableRealtimeMonitoring $true
 powershell finds=git_remote | git push --force
+# A variable hands a program each item of an array as its own argument, and
+# cmd puts a `%X%` in as text before the program splits its command line, so
+# quotes around it do not keep a value that holds a `"` one word: either may
+# be an option. So may a quoted word that starts with `-`. PowerShell puts a
+# variable's value in a bare word too.
+powershell finds=git_remote | git push $f origin main
+powershell finds=git_remote | git push "-$F" origin main
+powershell finds=destroy_resources | docker image prune @flags
+powershell finds=delete reason="deletes a path only known when it runs" | rm -r x$d
+powershell finds=overwrite | cp a x$d
+cmd finds=git_remote | git push %F% origin main
+cmd finds=git_remote | git push "%F%" origin main
+cmd finds=delete | robocopy empty ..\\deploy %F%
+cmd finds=delete | robocopy empty ..\\deploy "%F%"
 powershell finds=git_discard | git reset --hard; git clean -fd
 # git runs what a submodule foreach is given with `sh` on Windows too, and
 # takes a prefix of a long option there as anywhere.

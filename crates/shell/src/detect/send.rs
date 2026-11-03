@@ -1901,7 +1901,8 @@ fn copied_by(unit: &Unit, key: &str) -> Vec<(Arg, String, bool, bool)> {
     };
     match key {
         "cp" | "mv" | "install" | "ditto" | "ln" => {
-            let (sources, destination) = super::sources_and_destination(args, &super::COPY_VALUED);
+            let (sources, destination) =
+                super::sources_and_destination(args, &super::COPY_VALUED, unit.shell);
             let whole = key == "ditto"
                 || has_flag(args, Some('r'), Some("recursive"))
                 || has_flag(args, Some('R'), None)

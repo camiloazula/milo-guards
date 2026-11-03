@@ -8,7 +8,7 @@ mod noise;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use common::{disagreements, posix};
+use common::{assert_linear, disagreements, filled, posix};
 use milo_guards_shell::{classify, effect, Rule, Shell};
 use noise::{lossy, paths_for, Lcg, SHELLS, WIDE_PIECES};
 
@@ -614,4 +614,40 @@ fn distinct_assignments() -> String {
         line += &next;
     }
     line + tail
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn values_only_known_when_they_run_are_read_in_linear_time() {
+    let _serial = serial();
+    // Each value only known when it runs is read once: as an output of
+    // `dd`, an operand an option's value adds, a destination, and an
+    // option that destroys or changes a setting, split into words or
+    // starting with a `-`.
+    let (shell, paths) = (Shell::Posix, posix());
+    for (head, part, tail) in [
+        ("dd if=a ", "of=$x bs=$b ", ""),
+        ("tar -cf x.tar ", "--exclude $e -C $d ", "--remove-files"),
+        ("tar -cf x.tar ", "\"--$x\" ", "src"),
+        ("zip -m x.zip ", "-b $t ", "src"),
+        ("shred ", "-n $n ", "x"),
+        ("mv ", "-S $x ", "a b"),
+        ("cp ", "--target-directory=\"$t\" ", "a"),
+        ("git push ", "$f ", "origin main"),
+        ("git push ", "\"-$f\" \"${x:---force}\" ", "origin main"),
+        ("find ~ -name x ", "\"$a\" ", ""),
+        ("docker image prune ", "$f ", ""),
+        ("terraform apply ", "$f ", ""),
+        ("iptables ", "-s $ip ", ""),
+    ] {
+        assert_linear(&format!("{head}{part}…"), shell, &paths, |size| {
+            format!(
+                "{head}{}{tail}",
+                filled(part, size, head.len() + tail.len())
+            )
+        });
+    }
 }
