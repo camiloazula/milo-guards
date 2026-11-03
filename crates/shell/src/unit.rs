@@ -839,7 +839,7 @@ struct Pwd {
 /// when it runs. A stack the line did not fill held what the session had
 /// before the line, which the line does not show.
 #[derive(Debug, Clone, Default)]
-struct Locations {
+pub(crate) struct Locations {
     /// Each stack the line saved a folder on, by name in lower case, with
     /// the folders saved, the last on top.
     stacks: Vec<(String, Vec<Saved>)>,
@@ -1277,6 +1277,12 @@ impl Split {
             return None;
         }
         let key = unit.key()?;
+        // An alias of a location cmdlet's name (`Set-Alias popd Get-Date`),
+        // or of a name only known when it runs, may stand in for it.
+        if renames_location(unit, &key) {
+            self.lose_locations();
+            return None;
+        }
         if !matches!(
             key.as_str(),
             "push-location" | "pop-location" | "set-location"
@@ -1285,14 +1291,19 @@ impl Split {
         }
         let params = crate::powershell::Params::cmdlet(&unit.args, &crate::powershell::LOCATION);
         let named = params.has(&["stackname"]);
-        if key == "set-location" && !named {
+        // In a later stage of a pipeline it runs once for each item, which
+        // may give it its folder and its stack (`$s | Pop-Location`).
+        let piped = unit.stage.is_some_and(|stage| stage.index > 0);
+        if key == "set-location" && !named && !piped {
             return None;
         }
         self.location_steps += 1;
         let certain = self.branches == self.taken
             && self.repeats == 0
             && self.bodies == 0
-            && unit.wrappers.is_empty();
+            && unit.wrappers.is_empty()
+            && !piped
+            && crate::powershell::location_binds(&unit.args, &key);
         if !certain {
             self.locations.lost = true;
             if key == "set-location" {
@@ -1359,6 +1370,26 @@ impl Split {
                 saved
             }
         }
+    }
+
+    /// Note that a step the line may or may not take came before, as a
+    /// function or an alias that stands in for a location cmdlet does: no
+    /// location stack can be read after it.
+    pub(crate) fn lose_locations(&mut self) {
+        self.location_steps += 1;
+        self.locations.lost = true;
+    }
+
+    /// Start a runspace of its own (a thread job's, a `-Parallel` block's),
+    /// whose location stacks are empty, and give back the line's, to put
+    /// back with [`Self::restore_locations`] once it is read.
+    pub(crate) fn take_locations(&mut self) -> Locations {
+        std::mem::take(&mut self.locations)
+    }
+
+    /// Put back the line's location stacks, from [`Self::take_locations`].
+    pub(crate) fn restore_locations(&mut self, locations: Locations) {
+        self.locations = locations;
     }
 
     /// Where a `cd` to `target` takes the line from `from`.
@@ -2784,6 +2815,21 @@ fn location_target(unit: &Unit, key: String) -> Option<Arg> {
     }
 }
 
+/// Whether `unit`, a PowerShell command whose name is `key`, sets an alias
+/// that may stand in for a location cmdlet: one named as one (`Set-Alias
+/// popd Get-Date`), one that stands for one under another name, or one whose
+/// name is only known when it runs (`Set-Alias $n …`, `Import-Alias`).
+fn renames_location(unit: &Unit, key: &str) -> bool {
+    match key {
+        "set-alias" | "new-alias" | "sal" | "nal" => unit.args.iter().any(|arg| match arg {
+            Arg::Known(word) => crate::powershell::names_location(word),
+            _ => true,
+        }),
+        "import-alias" | "ipal" => true,
+        _ => false,
+    }
+}
+
 /// Where a POSIX `pushd` moves to, `None` when it does not move.
 ///
 /// Its options come before the folder, as `cd`'s do: `-n` (the stack is
@@ -3033,6 +3079,11 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     // does not move the line that started it, and a function it defines is
     // not the line's. `eval`'s runs in this shell.
     let outer = split.dir_snapshot();
+    // Its location stacks are its own, and empty: a `Pop-Location` there
+    // does not take what the line saved.
+    if !here {
+        split.take_locations();
+    }
     // (The line itself, at depth 0, is the shell whose functions these are.)
     let apart = !here && depth > 0;
     split.apart += usize::from(apart);

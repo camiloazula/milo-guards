@@ -582,11 +582,28 @@ move the line (`& $b`, `iex $s`), which may save or take a folder too, and
 after a `Pop-Location` of a stack the line did not fill,
 which holds what the session saved before the line, or of a stack only known
 when it runs, a `Pop-Location` goes to a place only known when it runs.
+The same holds after a location cmdlet in a later stage of a pipeline, which
+runs once for each item and may take its folder and its stack from each
+(`Import-Csv s.csv | Pop-Location`); after one given an argument that does not
+bind (`Pop-Location -WhatIf`, `Pop-Location x`, `Push-Location -Foo x`, an
+unknown or ambiguous parameter, a value parameter with no value, more folders
+than it takes, or a splat), which stops it before it does anything; and once
+the line defines a function or sets an alias named as one of them
+(`function Pop-Location { }`, `Set-Alias popd Get-Date`), or an alias whose
+name is only known when it runs (`Set-Alias $n …`, `Import-Alias`), which may
+stand in for it. A process or a runspace of its own (a job's block, a thread
+job's, a `ForEach-Object -Parallel` block, a nested `pwsh -Command`) starts
+with empty stacks, so a `Pop-Location` there takes nothing the line saved and
+goes to a place only known when it runs (`Push-Location C:\Windows; Start-Job
+{ Pop-Location; Remove-Item -Recurse System32 }` deletes
+`C:\Windows\System32`), and the line's stacks are as they were after it.
 
 The blocks of `Start-Job` run in a process of their own, so a `cd` in them does
 not move the line. They start in its `-WorkingDirectory`, joined to where the
 line is (`Start-Job -WorkingDirectory ~ { Remove-Item -Recurse .\build }` deletes
-`~\build`), and where the line is when it names none. They are read after the
+`~\build`), and where the line is when it names none, as PowerShell 7 starts
+them; Windows PowerShell 5.1 starts such a job in `~\Documents`, which the guard
+does not read. They are read after the
 rest of the command, whose arguments and redirects the session runs before the
 job starts. When a job has more than one block and one of them moves, which
 runs first (`-InitializationScript` runs before the block, wherever it is

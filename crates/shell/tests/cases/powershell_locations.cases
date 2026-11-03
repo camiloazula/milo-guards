@@ -245,6 +245,46 @@ powershell finds=delete | Push-Location src; iex $s; Pop-Location; Remove-Item -
 powershell safe | Push-Location src; iex 'npm test'; Pop-Location; Remove-Item -Recurse -Force build
 powershell finds=delete | Push-Location src; iex 'Pop-Location'; Pop-Location; Remove-Item -Recurse -Force build
 
+# A job, a thread job, a `-Parallel` block and a nested `pwsh` start with
+# stacks of their own, empty: a `Pop-Location` there fails and stays where it
+# started, whatever the line saved.
+powershell finds=delete | Push-Location C:\\Windows; Start-Job { Pop-Location; Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Push-Location C:\\Windows; Start-Job -WorkingDirectory C:\\Windows { Pop-Location; Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Push-Location C:\\Windows; Start-ThreadJob { Pop-Location; Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Push-Location C:\\Windows; 1 | ForEach-Object -Parallel { Pop-Location; Remove-Item -Recurse -Force System32 }
+powershell finds=delete | Push-Location C:\\Windows; pwsh -NoProfile -Command 'Pop-Location; Remove-Item -Recurse -Force System32'
+powershell finds=delete | Push-Location C:\\Windows; powershell -Command 'Pop-Location; Remove-Item -Recurse -Force System32'
+posix finds=delete | pwsh -c 'Push-Location /etc; pwsh -c "Pop-Location; Remove-Item -Recurse -Force ssh"'
+# What the line saved is still there after one of them.
+powershell safe | Push-Location src; Start-Job { Push-Location C:\\Windows }; Pop-Location; Remove-Item -Recurse -Force build
+powershell safe | Push-Location src; Start-ThreadJob { cargo build }; Pop-Location; Remove-Item -Recurse -Force build
+
+# A location cmdlet in a later stage of a pipeline runs once for each item,
+# with its path and stack taken from each: no stack can be read after it.
+powershell finds=delete | 'C:\\Windows','x' | Push-Location; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | cd C:\\Windows; Push-Location C:\\Users\\me\\dev\\repo; Push-Location src; Import-Csv s.csv | Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location src; Import-Csv s.csv | Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Push-Location src; Import-Csv s.csv | Set-Location; Pop-Location; Remove-Item -Recurse -Force build
+
+# A step is kept only when the cmdlet runs: a function or an alias of the line
+# may stand for it, and an argument that does not bind stops it before it does
+# anything.
+powershell finds=delete | function Pop-Location { }; Push-Location C:\\Windows; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | function global:popd { }; Push-Location C:\\Windows; popd; Remove-Item -Recurse -Force System32
+powershell finds=delete | function Push-Location { }; Push-Location src; Pop-Location; Remove-Item -Recurse -Force build
+powershell finds=delete | Set-Alias Pop-Location Get-Date; Push-Location C:\\Windows; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | New-Alias -Name popd -Value Get-Date; Push-Location C:\\Windows; popd; Remove-Item -Recurse -Force System32
+powershell finds=delete | Set-Alias $n Get-Date; Push-Location C:\\Windows; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location -WhatIf; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location -Foo; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location x; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location -StackName; Remove-Item -Recurse -Force System32
+powershell finds=delete | Push-Location C:\\Windows; Pop-Location -P; Remove-Item -Recurse -Force System32
+powershell finds=delete | cd C:\\Windows; Push-Location C:\\Users\\me\\dev\\repo; Push-Location -Foo x; Pop-Location; Remove-Item -Recurse -Force System32
+powershell finds=delete | cd C:\\Windows; Push-Location C:\\Users\\me\\dev\\repo; Push-Location x y; Pop-Location; Remove-Item -Recurse -Force System32
+powershell safe | Push-Location -PassThru src; Pop-Location -PassThru -ErrorAction Stop; Remove-Item -Recurse -Force build
+powershell safe | Set-Alias ll Get-ChildItem; Push-Location src; Pop-Location; Remove-Item -Recurse -Force build
+
 # A relative path the file system provider names is from where the line is.
 powershell finds=delete | cd C:\\Windows; Remove-Item -Recurse FileSystem::System32
 powershell finds=delete | cd C:\\Windows; Remove-Item Microsoft.PowerShell.Core\\FileSystem::System32 -Recurse

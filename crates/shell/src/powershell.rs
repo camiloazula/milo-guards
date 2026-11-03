@@ -388,7 +388,15 @@ impl Walker<'_> {
                     .is_some_and(|key| EVENTS.contains(&key) || key == "set-psbreakpoint")
                     .then(|| self.split.begin_later());
                 let job = key.as_deref() == Some("start-job");
+                // A thread job and a `-Parallel` block run in a runspace of
+                // their own, whose location stacks are empty.
+                let stacks = self
+                    .own_runspace(key.as_deref(), own.clone())
+                    .then(|| self.split.take_locations());
                 self.command_children(node, own.clone(), level, job);
+                if let Some(stacks) = stacks {
+                    self.split.restore_locations(stacks);
+                }
                 if let Some(began) = later {
                     self.split.end_later(began, false);
                 }
@@ -410,6 +418,10 @@ impl Walker<'_> {
             // what it holds again with other values.
             "foreach_statement" | "for_statement" | "while_statement" | "do_statement"
             | "function_statement" => {
+                // A function named as a location cmdlet stands in for it.
+                if node.kind() == "function_statement" && self.names_location(node) {
+                    self.split.lose_locations();
+                }
                 self.split.repeats += 1;
                 self.children(node, stage, level);
                 self.split.repeats -= 1;
@@ -575,6 +587,8 @@ impl Walker<'_> {
         let outer = self.split.dir_snapshot();
         let began = self.split.begin_later();
         self.split.apart += 1;
+        // Its location stacks are its own, and empty.
+        self.split.take_locations();
         if let Some(folder) = folder {
             self.split.enter(folder, Shell::PowerShell);
         }
@@ -586,6 +600,35 @@ impl Walker<'_> {
             self.split.unplace(began);
         }
         self.split.restore_dir(outer);
+    }
+
+    /// Whether a command among `own` named `key` runs its blocks in a
+    /// runspace of its own: `Start-ThreadJob`, and `ForEach-Object
+    /// -Parallel`.
+    fn own_runspace(&self, key: Option<&str>, own: Range<usize>) -> bool {
+        match key {
+            Some("start-threadjob") => true,
+            Some("foreach-object") => self.split.units.get(own).is_some_and(|units| {
+                units
+                    .iter()
+                    .filter(|unit| unit.key().as_deref() == Some("foreach-object"))
+                    .flat_map(|unit| &unit.args)
+                    .filter_map(parameter)
+                    .map(|name| name.trim_end_matches(':').to_ascii_lowercase())
+                    .any(|name| name.len() > 1 && "parallel".starts_with(&name))
+            }),
+            _ => false,
+        }
+    }
+
+    /// Whether a function definition is named as a location cmdlet
+    /// (`function Pop-Location { }`, `function global:popd { }`).
+    fn names_location(&self, node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        let name = node
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "function_name");
+        name.is_some_and(|name| names_location(unit::text(&name, self.source)))
     }
 
     /// A move of the session (or of its process) to a place the guard cannot
@@ -2208,6 +2251,87 @@ pub(crate) const LOCATION: [Param; 4] = [
     Param::value("stackname", &[]),
     Param::switch("passthru", &[]),
 ];
+
+/// Whether every argument of the location cmdlet `key` binds, so that it
+/// runs: each parameter is its own or a common one, named once, and not a
+/// prefix of more than one; a value parameter has its value; and it is given
+/// no more folders than it takes (`Pop-Location` none, `Push-Location` one,
+/// `Set-Location -StackName` none). One that does not bind stops the cmdlet
+/// before it does anything, and the next statement still runs. A splat
+/// (`@a`) may hold any of them, so it is not known to bind.
+pub(crate) fn location_binds(args: &[Arg], key: &str) -> bool {
+    // `Pop-Location` takes no folder: only `-StackName` and `-PassThru`.
+    let own = if key == "pop-location" {
+        &LOCATION[2..]
+    } else {
+        &LOCATION[..]
+    };
+    let all = || own.iter().chain(COMMON.iter());
+    let mut seen: Vec<&str> = Vec::new();
+    let mut folders = 0;
+    let mut ended = false;
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        if arg.text().starts_with('@') && arg.is_unknown() {
+            return false;
+        }
+        if !ended && arg.known() == Some("--") {
+            ended = true;
+            continue;
+        }
+        let Some(name) = parameter(arg).filter(|_| !ended) else {
+            folders += 1;
+            continue;
+        };
+        let colon = name.ends_with(':');
+        let typed = name.trim_end_matches(':').to_ascii_lowercase();
+        let exact =
+            all().find(|param| param.name == typed || param.aliases.contains(&typed.as_str()));
+        let mut prefixed = all().filter(|param| param.starts_with(&typed));
+        let found = exact.or(match (prefixed.next(), prefixed.next()) {
+            (Some(one), None) => Some(one),
+            _ => None,
+        });
+        let Some(param) = found else {
+            return false;
+        };
+        if seen.contains(&param.name) {
+            return false;
+        }
+        seen.push(param.name);
+        if matches!(param.name, "path" | "literalpath") {
+            folders += 1;
+        }
+        let value = if colon {
+            iter.next()
+        } else if param.value {
+            iter.next_if(|next| parameter(next).is_none())
+        } else {
+            Some(arg)
+        };
+        if value.is_none() {
+            return false;
+        }
+    }
+    let most = usize::from(
+        key == "push-location" || (key == "set-location" && !seen.contains(&"stackname")),
+    );
+    folders <= most
+}
+
+/// Whether a function or an alias named `name` stands in for a location
+/// cmdlet (`Pop-Location`, `popd`, `global:cd`), which then may not run.
+pub(crate) fn names_location(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let bare = ["global:", "script:", "local:", "private:"]
+        .iter()
+        .find_map(|scope| lower.strip_prefix(scope))
+        .unwrap_or(&lower);
+    matches!(
+        canonical(bare),
+        "set-location" | "push-location" | "pop-location"
+    )
+}
 
 /// The parameters every cmdlet takes.
 const COMMON: [Param; 12] = [
