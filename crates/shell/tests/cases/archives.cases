@@ -337,6 +337,10 @@ posix finds=delete | tar -cMf x.tar --new-volume-script='rm -rf ~' src
 posix finds=delete | tar -cMf x.tar --info-script='rm -rf ~' src
 posix finds=delete | tar -cf host:x.tar --rsh-command='rm -rf ~' src
 posix finds=delete | sudo tar -xf x.tar --to-command='rm -rf ~'
+# A filter or a checkpoint's command runs from where `-C` left tar.
+posix finds=delete | tar -cf x.tar -C ~ notes.txt --checkpoint=1 --checkpoint-action=exec='rm .bashrc'
+posix finds=delete | tar -xf x.tar -C build --to-command='rm -rf .'
+posix safe | tar -I zstd -cf x.tar.zst -C build .
 posix finds=unknown | tar -xf x.tar --to-command="$CMD"
 posix finds=unknown | tar -xf x.tar --to-command "$CMD"
 posix finds=unknown | tar -cf x.tar -I "$PROG" src

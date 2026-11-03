@@ -73,12 +73,19 @@ impl Checker<'_> {
 /// give them: `tar --to-command`, `-I` and `--use-compress-program`,
 /// `--checkpoint-action=exec=`, `-F`, `--info-script`,
 /// `--new-volume-script` and `--rsh-command`, and `zip -TT`
-/// (`--unzip-command`). One only known when it runs comes as it is.
-pub(crate) fn commands(key: &str, args: &[Arg], shell: Shell) -> Vec<Arg> {
+/// (`--unzip-command`). One only known when it runs comes as it is. With
+/// them, whether `tar` changes folder (`-C`) before it may run one: a
+/// filter or a checkpoint's command runs from where the `-C` before it left
+/// `tar`.
+pub(crate) fn commands(key: &str, args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
     match key {
-        "tar" | "gtar" | "bsdtar" => tar(args, shell, key).commands,
-        "zip" => zip(args, shell).commands,
-        _ => Vec::new(),
+        "tar" | "gtar" | "bsdtar" => {
+            let tar = tar(args, shell, key);
+            let moves = !tar.folders.is_empty();
+            (tar.commands, moves)
+        }
+        "zip" => (zip(args, shell).commands, false),
+        _ => (Vec::new(), false),
     }
 }
 
@@ -300,6 +307,10 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
 }
 
 /// The state of [`tar`] while it reads the arguments.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is one thing an argument of tar may say, read in any order"
+)]
 struct TarRead<'a> {
     shell: Shell,
     key: &'a str,
@@ -482,7 +493,10 @@ fn unknown_long(arg: &Arg) -> Option<(&str, Arg)> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
     // The value as written, for the reason.
-    let value = arg.text().split_once('=').map_or(arg.text(), |(_, value)| value);
+    let value = arg
+        .text()
+        .split_once('=')
+        .map_or(arg.text(), |(_, value)| value);
     plain.then(|| (name, Arg::Unknown(value.to_string())))
 }
 
@@ -830,7 +844,9 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
     let operands: Vec<Arg> = positional.split_off(skip.min(positional.len()));
     let mut members = if operands.is_empty() {
         included
-    } else if included.is_empty() {
+    } else if included.is_empty() || !pairs_fit(&operands, &included) {
+        // Past the bound each operand stands for all it holds, which is no
+        // less than the patterns pick under it.
         operands
     } else {
         // Each pattern picks files under each operand.
@@ -854,6 +870,23 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
         members,
         commands,
     }
+}
+
+/// The most pairs of an operand and a pattern of `zip -i` judged one by
+/// one, and the most bytes they come to: each pair is a path, so a line of
+/// many of both would make a number of paths that grows as their product.
+const ZIP_PAIRS_LIMIT: usize = 1024;
+const ZIP_PAIRS_BYTES: usize = 256 * 1024;
+
+/// Whether every operand can be joined to every pattern within
+/// [`ZIP_PAIRS_LIMIT`] and [`ZIP_PAIRS_BYTES`].
+fn pairs_fit(operands: &[Arg], patterns: &[Arg]) -> bool {
+    let bytes = |args: &[Arg]| args.iter().map(|arg| arg.text().len()).sum::<usize>();
+    let pairs = operands.len().saturating_mul(patterns.len());
+    let joined = bytes(operands)
+        .saturating_mul(patterns.len())
+        .saturating_add(bytes(patterns).saturating_mul(operands.len()));
+    pairs <= ZIP_PAIRS_LIMIT && joined <= ZIP_PAIRS_BYTES
 }
 
 /// What can be read of the start of an argument, as far as it is text: the
@@ -999,13 +1032,14 @@ fn rar_removes(args: &[Arg]) -> Vec<Arg> {
     let Some((command, rest)) = positional.split_first() else {
         return Vec::new();
     };
-    let removes = command.known().map_or(true, |command| {
-        match command.to_ascii_lowercase().as_str() {
-            "m" | "mf" => true,
-            "a" | "u" | "f" => deletes,
-            _ => false,
-        }
-    });
+    let removes =
+        command
+            .known()
+            .is_none_or(|command| match command.to_ascii_lowercase().as_str() {
+                "m" | "mf" => true,
+                "a" | "u" | "f" => deletes,
+                _ => false,
+            });
     if !removes {
         return Vec::new();
     }

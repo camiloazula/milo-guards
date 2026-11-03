@@ -425,9 +425,10 @@ is judged as one: its `$1` and `$@` name a different value each time, only
 known when it runs.
 
 A script handed to a shell is split again, in its own grammar: `bash -c`,
-`eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`, and the command
-`git submodule foreach` runs in each submodule (see Git tags and submodules).
-So is the value
+`eval`, `cmd /c`, `powershell -Command`, `Invoke-Expression`, the command
+`git submodule foreach` runs in each submodule (see Git tags and submodules),
+and the commands an archiver runs through a shell besides packing (see
+Commands an archiver runs). So is the value
 of each `NAME=VALUE` a POSIX `alias` defines: what a call of the name runs,
 read where it is defined, as a function's body is. A nested script
 counts as far as a depth limit, and the text of all the nested scripts read
@@ -1202,7 +1203,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
 | `wipe_disk` | Formats, repartitions or writes over a disk. |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder. |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own; unpacks an archive into such a folder, or to the absolute paths stored in it (`tar -xP`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -1560,7 +1561,12 @@ A caller that used to stop on `killall node` stops seeing it: it was
 An archive unpacked into a folder writes into that folder, and the folder is
 judged as the destination of `cp` is, by where it resolves (see Paths). With
 no folder given, it is the working directory, as moved by a `cd`. The paths
-stored inside the archive are not in the line and are not read.
+stored inside the archive are not in the line and are not read. `tar -P`
+(`--absolute-names`, bsdtar's `--absolute-paths`, any prefix of three letters
+or more) with a mode that extracts keeps them as stored, a leading `/` and
+`..` included, so they land anywhere: `overwrite` ("unpacks to absolute
+paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
+`tar -tPf` and `tar -xOPf` write no file and stay safe.
 
 | Program | Folder | Writes nothing |
 | --- | --- | --- |
@@ -1570,8 +1576,11 @@ stored inside the archive are not in the line and are not read.
 | `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
 
 `tar` takes a long option written as a unique prefix, which the guard reads
-for the modes and `--to-stdout` as well as `--directory`: `--ext` and `--extr`
-are `--extract` (at least three letters; `--to-s` is `--to-stdout`). A tar line
+for the modes and `--to-stdout` as well as `--directory`. A mode is read from
+the shortest prefix no other long option of GNU tar or bsdtar starts with:
+`--cr`, `--ap`, `--up` and `--ge` are `--create`, `--append`, `--update` and
+`--get`, and `--ext` is `--extract`, since `--ex` may be `--exclude`
+(`--to-s` is `--to-stdout`; other options take three letters or more). A tar line
 whose mode is only known when it runs (`tar "$mode" -f x.tar -C ~`, `tar $mode
 -C ~`) is judged as if it extracted, unless a mode letter or long mode is
 read: `tar -czf "$out" -C ~ .` writes no folder, as `-c` is read.
@@ -1582,8 +1591,10 @@ folder that is the workspace, inside it or a temporary file is not risky.
 
 ### Archiving that removes what it archives
 
-Three options make the archiver delete each file once it has packed it:
-`tar --remove-files`, `zip -m` (`--move`) and `7z a`/`7z u` with `-sdel`. The
+Some options make the archiver delete each file once it has packed it:
+`tar --remove-files`, `zip -m` (`--move`), `7z a`/`7z u` with `-sdel`,
+`rar m`/`rar mf` and `rar a`/`u`/`f` with `-df`, `-dr` or `-dw`, and
+`rsync --remove-source-files` (also its old name `--remove-sent-files`). The
 members named on the line are judged as the operands of `rm` are (see
 Paths), with the same reasons: `tar -cf x.tar ~ --remove-files` deletes
 your home directory, `tar -cf x.tar * --remove-files` is judged as `rm -rf *`,
@@ -1595,13 +1606,18 @@ home directory, and the keys in it).
 | Program | Option | Members |
 | --- | --- | --- |
 | `tar`, `gtar`, `bsdtar` | `--remove-files` (a prefix of three letters or more), when the mode makes or adds to an archive: `-c`, `-r`, `-u` or their long forms | the operands, and `--add-file` (`--add-file=f`); an operand after `-C dir` (`-Cdir`, `--directory`) is under `dir`, and a later `-C` is under the one before, up to 512 bytes, past which it is a path known only when it runs; a long option that is a prefix of `--incremental` (`--inc`) or is `--mod` (bsdtar's `--modification-time`) takes no value, though bsdtar's `--include` and GNU's `--mode` do; every operand after `--`; `-T`/`--files-from` name members in a file the line does not show, which is a path known only when it runs |
-| `zip` | `-m` anywhere in a bundle (`-mr`, `-rm`), `--move` | the operands after the archive's name, except those that follow a bare `-x`/`--exclude` up to a lone `@` or the end of the line (`-xpat`, `-x=pat` and `--exclude=pat` are one value and open no list); with none, the patterns that follow a bare `-i`/`--include`; `-@`/`--names-stdin` names members the line does not show; `-db`, `-sb`, `-ws` and `-li` are flags that take no value; `-UN` (`-UN=v`, `-UNv`, `-UN v`) and `--unicode` take a value, which is not an option |
-| `7z`, `7za`, `7zr`, `7zz` | `-sdel` (any case), with command `a` or `u` | the operands after the archive's name, `-i!pattern` (also `-ir!`, `-ir0!`), and `@list` files, whose members the line does not show; with no operand and no `-i`, `a` and `u` pack everything in the working directory, so the member is `*` |
+| `zip` | `-m` anywhere in a bundle (`-mr`, `-rm`), `--move`, also from `ZIPOPT` | the operands after the archive's name, except those that follow a bare `-x`/`--exclude` up to a lone `@` or the end of the line (`-xpat`, `-x=pat` and `--exclude=pat` are one value and open no list); the patterns that follow a bare `-i`/`--include` choose among the files under each operand, so each is judged under each (`zip -mr logs.zip . -i '*.log'` deletes `./*.log`), and with no operand they are the members; with neither, `-u`, `-f` and `-FS` (`--update`, `--freshen`, `--filesync`) take the files the archive lists, which are under the working directory (`*`: `cd ~ && zip -um x.zip` deletes in your home directory); `-@`/`--names-stdin` names members the line does not show; `-db`, `-sb`, `-ws` and `-li` are flags that take no value; `-UN` (`-UN=v`, `-UNv`, `-UN v`) and `--unicode` take a value, which is not an option |
+| `7z`, `7za`, `7zr`, `7zz` | `-sdel` (any case), with command `a` or `u` | the operands after the archive's name, `-i!pattern` (also `-ir!`, `-ir0!`), and `@list` files, whose members the line does not show; with no operand and no `-i`, `a` and `u` pack everything in the working directory, so the member is `*`, unless `-si` (`-si{name}`, any case) packs the input instead of files |
+| `rar` | command `m` or `mf` (any case); `a`, `u` or `f` with `-df`, `-dr` (to the recycle bin) or `-dw` (wiped), any case, anywhere before `--` | the operands after the archive's name, and `@list` files, whose members the line does not show; with none, everything in the working directory (`*`). A command only known when it runs may be `m`, and a switch only known when it runs that may start with `-d` may be `-df` |
+| `rsync` | `--remove-source-files`, `--remove-sent-files` | every source, the operands but the last: one on this machine is judged as `rm` judges it, and one on another (`host:path`) is a `delete` ("deletes files on another machine") |
 
 A `tar` mode that is only known when it runs (`tar "$mode" -f x.tar ~
 --remove-files`) is judged as if it packed. A `tar` option that takes a value
 in the next argument (`--exclude ~`, `--file x.tar`) does not make that value
-a member. An operand only known when it runs is a member known only when it
+a member, and neither does one whose value is only known when it runs
+(`--file="$OUT"`, `--exclude="$SKIP"`): it is that option, read by its name,
+not a member and not the mode (`--directory="$DIR"` moves the members after it
+to a folder only known when it runs). An operand only known when it runs is a member known only when it
 runs; with `zip`, so is a first operand that is, since it may be the archive
 and the members together. A pipeline's input (`ls | xargs zip -m x.zip`) is
 the files the stage before it lists. With `7z`, an argument whose readable
@@ -1623,6 +1639,41 @@ not how the program behaves: `zip -mr x.zip '*git'` is judged as a delete of
 
 `tar` is given the names the shell expands, so `tar -cf x.tar *git
 --remove-files` leaves `.git` as `rm -rf *git` does.
+
+bsdtar (the `tar` of macOS and Windows) has no `--remove-files`: before the
+operands it rejects the option and packs nothing, and after them it reads it as
+the name of a file to pack. A line cannot show which `tar` runs, so the guard
+reads `tar`, `gtar` and `bsdtar` alike, as GNU tar: a cautious choice, not how
+bsdtar behaves (`bsdtar -cf x.tar ~ --remove-files` is `delete`).
+
+`ZIPOPT` holds options `zip` reads before its own. A value the line gives it
+in front of `zip` (`ZIPOPT=-m zip -r x.zip ~`, `env ZIPOPT=-m zip …`), or
+earlier (`export ZIPOPT=-m; zip …`, `ZIPOPT=-m; zip …`, since the variable may
+already be exported), is split at white space and read as `zip`'s first
+options. A value only known when it runs may hold any option: `unknown`
+("gives zip options only known when it runs"). `GZIP`, `XZ_OPT` and `BZIP2`
+are not read: they are options of the compressor `tar` pipes the archive
+through, which can neither delete what `tar` packs nor run a command.
+
+### Commands an archiver runs
+
+`tar` and `zip` can run a command through a shell (`/bin/sh` on a POSIX
+system, `cmd` on Windows) as well as pack. Each such command is split and
+judged as a line of its own, nested under the archiver, so `tar -xf x.tar
+--to-command='rm -rf ~'` is `delete`, and one only known when it runs is
+`unknown` ("runs a command only known when it runs").
+
+| Program | The command |
+| --- | --- |
+| `tar`, `gtar`, `bsdtar` | `--to-command` (a filter for each member), `-I` and `--use-compress-program` (the compressor; `-I` is a file of members to bsdtar, so to `tar`, which may be either, it is both), `--checkpoint-action=exec=…` (a value only known when it runs is a command, unless it starts with an action that runs none: `bell`, `dot`, `.`, `echo`, `sleep`, `totals`, `ttyout`, `wait`), `-F`, `--info-script` and `--new-volume-script` (run at the end of each volume), `--rsh-command` (the remote shell); each long option may be a unique prefix (`--to-com`, `--use-comp`) |
+| `zip` | `-TT command`, `-TTcommand`, `--unzip-command` (`=command`): what tests the archive |
+
+A filter, a checkpoint's command and a volume script run where `tar` is when
+it runs them, which a `-C` before them changes: with any `-C` on the line the
+command is judged from a folder only known when it runs, as `git submodule
+foreach`'s is, and the rest of the line is where it was. `tar -czf x.tgz src`,
+`tar -I zstd -cf x.tar.zst src`, `tar -xf x.tar --to-command=cat` and `zip -T
+-TT 'unzip -tqq' x.zip src` stay safe.
 
 ### Git tags and submodules
 

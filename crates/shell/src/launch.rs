@@ -64,8 +64,13 @@ pub(super) enum Launch {
     /// It reads its commands from its input.
     Reads(Reads),
     /// It is the program the rules judge, and it runs each of these
-    /// commands through `shell` besides (`tar --to-command`, `zip -TT`).
-    Commands(Shell, Vec<Arg>),
+    /// commands through `shell` besides (`tar --to-command`, `zip -TT`),
+    /// from a folder only known when it runs when `moves` (`tar -C`).
+    Commands {
+        shell: Shell,
+        commands: Vec<Arg>,
+        moves: bool,
+    },
     /// It runs `code`, given inline, in `language`.
     Inline(Language, Code),
     /// It runs a script it downloads.
@@ -477,7 +482,11 @@ fn add_launched(
                 }
                 return;
             }
-            Launch::Commands(shell, commands) => {
+            Launch::Commands {
+                shell,
+                commands,
+                moves,
+            } => {
                 let at = split.units.len();
                 split.push(unit);
                 for command in commands {
@@ -495,8 +504,17 @@ fn add_launched(
                     if split.scoped_hidden() {
                         split.hide_for_script();
                     }
+                    // `tar -C dir` runs it from `dir`, or from where the
+                    // line was: which, only the order of the run shows.
+                    let outer_dir = moves.then(|| split.dir_snapshot());
+                    if moves {
+                        split.move_unknown("the folder it runs in");
+                    }
                     let first = split.units.len();
                     unit::script_in(split, &text, shell, depth + 1, false);
+                    if let Some(place) = outer_dir {
+                        split.restore_dir(place);
+                    }
                     split.nest(at..at + 1, first..split.units.len());
                     split.restore_hidden(outer);
                 }
@@ -977,13 +995,19 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         // An archiver that runs commands through a shell besides: `/bin/sh`
         // on a POSIX system, and `cmd` on Windows.
         "tar" | "gtar" | "bsdtar" | "zip" => {
-            let commands = crate::detect::archive_commands(key, args, unit.shell);
+            let (commands, moves) = crate::detect::archive_commands(key, args, unit.shell);
             if commands.is_empty() {
                 Launch::Itself
-            } else if unit.shell == Shell::Posix {
-                Launch::Commands(Shell::Posix, commands)
             } else {
-                Launch::Commands(Shell::Cmd, commands)
+                Launch::Commands {
+                    shell: if unit.shell == Shell::Posix {
+                        Shell::Posix
+                    } else {
+                        Shell::Cmd
+                    },
+                    commands,
+                    moves,
+                }
             }
         }
         "git" => git::launch(args),

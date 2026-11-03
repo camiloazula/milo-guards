@@ -203,7 +203,11 @@ impl Checker<'_> {
                     let (away, here): (Vec<&Arg>, Vec<&Arg>) =
                         sources.iter().copied().partition(|source| remote(source));
                     for source in away {
-                        self.add(Rule::Delete, "deletes files on another machine", Some(source));
+                        self.add(
+                            Rule::Delete,
+                            "deletes files on another machine",
+                            Some(source),
+                        );
                     }
                     self.delete(unit, &here, "deletes");
                 }

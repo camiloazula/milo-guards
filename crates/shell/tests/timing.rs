@@ -296,6 +296,20 @@ fn wrappers_that_build_their_command_are_read_in_time() {
         format!("doppler run{} -- rm", " -p x".repeat(12_000)),
         format!("aws-vault exec{} prod -- rm", " -d 1h".repeat(10_000)),
         format!("ls | xargs sh -c '{}' _", "rm -rf \"$1\"; ".repeat(4_000)),
+        // Archivers: every operand under every pattern of `zip -i`, the
+        // commands `tar` and `zip` run, and the options `ZIPOPT` gives.
+        format!(
+            "zip -m x.zip{} -i{}",
+            " src".repeat(8_000),
+            " '*.log'".repeat(4_000)
+        ),
+        format!("zip -m x.zip{} -i{}", " a".repeat(250), " b".repeat(250)),
+        format!("tar -xf x.tar{}", " --to-command='rm a'".repeat(3_000)),
+        format!("tar -cf x.tar -C a{} src", " -I 'gzip -9'".repeat(4_000)),
+        format!("zip -T{} x.zip src", " -TT 'unzip -t'".repeat(4_000)),
+        format!("{}zip -r x.zip src", "ZIPOPT='-q -m' ".repeat(4_000)),
+        format!("ZIPOPT='{}' zip -r x.zip src", "-q ".repeat(20_000)),
+        format!("rar m x.rar{}", " ~/a".repeat(15_000)),
     ];
     for line in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
