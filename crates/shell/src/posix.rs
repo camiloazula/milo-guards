@@ -2145,10 +2145,11 @@ impl Walker<'_> {
         }
         let outer = self.split.scope_hidden(prefixed);
         // `NODE_OPTIONS=… node -e …`: node reads the value as its options.
-        // The same for `PYTHONPATH=… python3 -c …`.
+        // The same for `PYTHONPATH=… python3 -c …` and `ZIPOPT=… zip`.
         let options = self.split.node_options.len();
         let paths = self.split.python_path.len();
-        let terraform = self.split.tf_cli_args.len();
+        let zip = self.split.zip_env.clone();
+        let terraform = self.split.argument_variables.len();
         let mut cursor = node.walk();
         let assignments: Vec<Node<'_>> = node
             .children(&mut cursor)
@@ -2175,7 +2176,8 @@ impl Walker<'_> {
         self.split.restore_qualified(before);
         self.split.node_options.truncate(options);
         self.split.python_path.truncate(paths);
-        self.split.tf_cli_args.truncate(terraform);
+        self.split.zip_env = zip;
+        self.split.truncate_argument_variables(terraform);
         self.split.unscope_hidden(outer);
     }
 
@@ -2537,29 +2539,29 @@ impl Walker<'_> {
     /// gets then is not read. `export "TF_CLI_ARGS=x"` is noted too, and so
     /// is `export TF_CLI_ARGS` (also `declare -x`) of a name the line gave
     /// no value it reads: `read`, `mapfile` or `printf -v` may have set it,
-    /// so what terraform gets is only known when it runs.
+    /// so what terraform gets is only known when it runs. The same for
+    /// `npm_config_call`, the command `npx` runs.
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
         // The grammar reads a bare name as a variable, not a word.
         if let Some(name) = Some(word.known().unwrap_or(source))
-            .filter(|name| !name.contains('=') && unit::tf_cli_args(name))
+            .filter(|name| !name.contains('=') && unit::read_as_arguments(name))
         {
             let noted = self
                 .split
-                .tf_cli_args
+                .argument_variables
                 .iter()
                 .any(|(noted, _)| noted == name);
             if !noted {
                 self.split
-                    .tf_cli_args
-                    .push((name.to_string(), Arg::Unknown(source.to_string())));
+                    .note_argument_variable(name.to_string(), Arg::Unknown(source.to_string()));
             }
             return;
         }
         if let Some((name, _)) = source
             .split_once('=')
-            .filter(|(name, _)| unit::tf_cli_args(name))
+            .filter(|(name, _)| unit::read_as_arguments(name))
         {
             let value = match word.known() {
                 Some(text) => Arg::Known(
@@ -2569,7 +2571,7 @@ impl Walker<'_> {
                 ),
                 None => Arg::Unknown(source.to_string()),
             };
-            self.split.tf_cli_args.push((name.to_string(), value));
+            self.split.note_argument_variable(name.to_string(), value);
             return;
         }
         match word.known() {
@@ -2582,6 +2584,12 @@ impl Walker<'_> {
                     self.split.python_path.push(Arg::Known(value.to_string()));
                 } else if text == "PYTHONPATH" {
                     self.split.python_path.push(Arg::Unknown(text.to_string()));
+                } else if let Some((name, value)) = text.split_once('=') {
+                    self.split
+                        .zip_env
+                        .set(name, &Arg::Known(value.to_string()), false);
+                } else {
+                    self.split.zip_env.export(text, text);
                 }
             }
             None if source.starts_with("NODE_OPTIONS") => {
@@ -2594,7 +2602,16 @@ impl Walker<'_> {
                     .python_path
                     .push(Arg::Unknown(source.to_string()));
             }
-            None => {}
+            None => match source.split_once('=') {
+                Some((name, _)) => {
+                    self.split
+                        .zip_env
+                        .set(name, &Arg::Unknown(source.to_string()), false);
+                }
+                None => {
+                    self.split.zip_env.export(source, source);
+                }
+            },
         }
     }
 
@@ -2622,26 +2639,35 @@ impl Walker<'_> {
     }
 
     /// Note the value `assignment` gives `NODE_OPTIONS`, `PYTHONPATH`,
-    /// `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>`, when it is one of those
-    /// variables'.
+    /// `ZIPOPT`, `ZIP`, `TF_CLI_ARGS`, `TF_CLI_ARGS_<command>` or
+    /// `npm_config_call`, when it is one of those variables'.
     fn node_options(&mut self, assignment: Node<'_>) {
         let Some(name) = assignment.child_by_field_name("name") else {
             return;
         };
         let name = unit::text(&name, self.source);
-        let terraform = unit::tf_cli_args(name);
-        if name != "NODE_OPTIONS" && name != "PYTHONPATH" && !terraform {
+        let terraform = unit::read_as_arguments(name);
+        if !matches!(name, "NODE_OPTIONS" | "PYTHONPATH" | "ZIPOPT" | "ZIP") && !terraform {
             return;
         }
-        let value = assignment
-            .child_by_field_name("value")
-            .map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
+        let right = assignment.child_by_field_name("value");
+        let value = right.map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
         if terraform {
-            self.split.tf_cli_args.push((name.to_string(), value));
+            self.split.note_argument_variable(name.to_string(), value);
         } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
-        } else {
+        } else if name == "NODE_OPTIONS" {
             self.split.node_options.push(value);
+        } else {
+            // `ZIPOPT+=…` adds to the value the line gave it.
+            let appends = unit::text(&assignment, self.source)
+                .get(name.len()..)
+                .is_some_and(|rest| rest.starts_with("+="));
+            if appends {
+                self.split.zip_env.append(name, &value);
+            } else {
+                self.split.zip_env.set(name, &value, false);
+            }
         }
     }
 

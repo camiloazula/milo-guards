@@ -158,10 +158,13 @@ pub(crate) struct Unit {
     /// in step with `args`, and empty for any other unit, or one that
     /// lost them, in which no argument counts as read this way.
     pub(crate) listed: Vec<bool>,
-    /// The values the line gives `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`
-    /// where it runs, by name (see [`Split::tf_cli_args`]): terraform reads
-    /// them as arguments of its command.
-    pub(crate) tf_cli_args: Vec<(String, Arg)>,
+    /// The values the line gives the variables a program reads as its own
+    /// arguments where it runs, by name (see [`Split::argument_variables`]):
+    /// `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`, which terraform reads as
+    /// arguments of its command, `npm_config_call`, the command `npx`
+    /// runs, and the editor, pager and shell `psql` runs (`PAGER`). Shared with the line's, so a long value is not copied for
+    /// each program.
+    pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
     /// more for a part of the line the grammar reads again (what follows the
@@ -255,7 +258,7 @@ impl Unit {
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
-            tf_cli_args: Vec::new(),
+            argument_variables: Rc::default(),
             depth: 0,
             names: None,
         }
@@ -436,7 +439,17 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
         }
     }
     let lower = base.to_ascii_lowercase();
-    let stem = [".exe", ".com", ".bat", ".cmd"]
+    // PowerShell runs a program's `.ps1` shim by its name (`npx.ps1`), as
+    // the program: one it finds on the path, or names by a full path
+    // (`C:\nodejs\npx.ps1`). A script named by a relative path
+    // (`.\scripts\format.ps1`) is the project's own, and stays the script.
+    let shim = !program.contains(['/', '\\']) || rooted(program);
+    let extensions: &[&str] = if shell == Shell::PowerShell && shim {
+        &[".exe", ".com", ".bat", ".cmd", ".ps1"]
+    } else {
+        &[".exe", ".com", ".bat", ".cmd"]
+    };
+    let stem = extensions
         .iter()
         .find_map(|extension| lower.strip_suffix(extension));
     match (shell, stem) {
@@ -447,6 +460,16 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
         (Shell::PowerShell, None) => crate::powershell::canonical(&lower).to_string(),
         (Shell::Cmd, None) => lower,
         (_, Some(stem)) => stem.to_string(),
+    }
+}
+
+/// Whether the Windows path `path` starts at the root of a drive (`C:\x`,
+/// `\x`, `\\server\share`), not at the folder the line is in.
+fn rooted(path: &str) -> bool {
+    match path.as_bytes() {
+        [b'/' | b'\\', ..] => true,
+        [letter, b':', b'/' | b'\\', ..] => letter.is_ascii_alphabetic(),
+        _ => false,
     }
 }
 
@@ -740,10 +763,41 @@ pub(crate) fn tf_cli_args(name: &str) -> bool {
     name == "TF_CLI_ARGS" || name.starts_with("TF_CLI_ARGS_")
 }
 
-/// The name terraform reads, when `name` is one of [`tf_cli_args`]'s written
-/// in any case, as Windows reads the names of variables
-/// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`).
-pub(crate) fn tf_cli_args_folded(name: &str) -> Option<String> {
+/// Whether npm reads the variable `name` as its `call` setting, the command
+/// `npx` and `npm exec` run in place of a program. npm reads the names of
+/// its `npm_config_` variables in any case (`NPM_CONFIG_CALL`).
+pub(crate) fn npm_call(name: &str) -> bool {
+    name.eq_ignore_ascii_case("npm_config_call")
+}
+
+/// The variables whose value `psql` runs as a command line: the editor of
+/// `\e`, the pager of a long result, and the shell of a bare `\!`.
+pub(crate) const PSQL_PROGRAMS: [&str; 7] = [
+    "EDITOR",
+    "PSQL_EDITOR",
+    "VISUAL",
+    "PAGER",
+    "PSQL_PAGER",
+    "PSQL_WATCH_PAGER",
+    "SHELL",
+];
+
+/// Whether a program reads the variable `name` as arguments or a command
+/// line of its own: terraform's [`tf_cli_args`], npm's [`npm_call`], and the
+/// editor, pager and shell `psql` runs ([`PSQL_PROGRAMS`]). The line's values
+/// of these are noted where it sets them (see [`Split::argument_variables`]).
+pub(crate) fn read_as_arguments(name: &str) -> bool {
+    tf_cli_args(name) || npm_call(name) || PSQL_PROGRAMS.contains(&name)
+}
+
+/// The name a program reads, when `name` is one of [`read_as_arguments`]'s
+/// written in any case, as Windows reads the names of variables
+/// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`, `$env:NPM_CONFIG_CALL`
+/// is `npm_config_call`).
+pub(crate) fn argument_variable(name: &str) -> Option<String> {
+    if npm_call(name) {
+        return Some("npm_config_call".to_string());
+    }
     let upper = name.to_ascii_uppercase();
     if upper == "TF_CLI_ARGS" {
         return Some(upper);
@@ -940,10 +994,18 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
-    /// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given for
-    /// the program being added, by name, noted as `node_options` is:
-    /// terraform reads them as arguments of its command.
-    pub(crate) tf_cli_args: Vec<(String, Arg)>,
+    /// What `ZIPOPT` and `ZIP` hold for the program being added: `zip`
+    /// reads them as options before its own. One value each, which an
+    /// assignment replaces.
+    pub(crate) zip_env: crate::zipopt::ZipEnv,
+    /// The values the variables of [`read_as_arguments`] are given for the
+    /// program being added, by name, noted as `node_options` is: terraform
+    /// reads `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` as arguments of its
+    /// command, npm reads `npm_config_call` as the command `npx` and `npm
+    /// exec` run, and `psql` runs `PAGER`, `EDITOR` and the like as command
+    /// lines. Each unit shares the list (see
+    /// [`Split::note_argument_variable`]).
+    pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many assignments and wrappers hand the program being added an
     /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the
     /// interpreter loads what that environment tells it to, which the code
@@ -1068,6 +1130,10 @@ pub(crate) struct Split {
     /// [`read_again`]): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How much of the values of the variables a program reads as the
+    /// command it runs (`npm_config_call`) has been read as scripts, in
+    /// bytes, one for each (see [`read_from_variable`]).
+    variable_read: usize,
     /// The bytes of text the grammars have parsed for the line, and the
     /// bytes their lexers were handed for it: see [`MAX_LEXED`].
     parsed: usize,
@@ -1437,6 +1503,21 @@ impl Split {
         }
     }
 
+    /// Note the value `value` the line gives the variable `name`, one of
+    /// [`read_as_arguments`]'s. The list is copied only when a unit shares
+    /// it, so a unit is handed the list without copying its values.
+    pub(crate) fn note_argument_variable(&mut self, name: String, value: Arg) {
+        Rc::make_mut(&mut self.argument_variables).push((name, value));
+    }
+
+    /// Keep the first `len` of [`Split::argument_variables`]: those noted
+    /// after are the program's that was added.
+    pub(crate) fn truncate_argument_variables(&mut self, len: usize) {
+        if self.argument_variables.len() > len {
+            Rc::make_mut(&mut self.argument_variables).truncate(len);
+        }
+    }
+
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         self.fold_shell = Some(unit.shell);
@@ -1444,7 +1525,7 @@ impl Split {
         unit.elsewhere.clone_from(&self.elsewhere);
         unit.stayed.clone_from(&self.stayed);
         unit.adrift = self.adrift;
-        unit.tf_cli_args.clone_from(&self.tf_cli_args);
+        unit.argument_variables = Rc::clone(&self.argument_variables);
         self.last_stayed.clear();
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
@@ -4050,6 +4131,25 @@ pub(crate) fn read_again(split: &mut Split, text: &str, why: &str) -> bool {
     true
 }
 
+/// Whether `text`, the value of a variable a program reads as the command
+/// it runs (`npm_config_call='…' npx`), may be read as that command once
+/// more. A line sets the value once and may run it many times (`npx; npx;
+/// …`), each a reading of the whole value: the readings are bounded by the
+/// longest line, as they would be had the line written the command out each
+/// time (`npx -c '…'; npx -c '…'`). Past it, the line is unreadable.
+pub(crate) fn read_from_variable(split: &mut Split, text: &str) -> bool {
+    split.variable_read += text.len() + 1;
+    if split.variable_read > MAX_LEN {
+        split.problem(
+            Rule::Unreadable,
+            "runs the command a variable sets too many times to read",
+            None,
+        );
+        return false;
+    }
+    true
+}
+
 /// Split `text`, run by `shell`, `depth` shells deep, into `split`.
 pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) {
     script_in(split, text, shell, depth, false);
@@ -4243,10 +4343,305 @@ pub(crate) fn has_flag(args: &[Arg], short: Option<char>, long: Option<&str>) ->
     false
 }
 
+/// Whether `arg`, a value only known when it runs, may be several words when
+/// it does, any of which may be an option or another operand: in a POSIX
+/// shell an expansion outside quotes (`$f`, `x$f`, `$(…)`, a backtick), which
+/// the shell splits, and a quoted one that is a list (`"$@"`, `"${a[@]}"`,
+/// `"${!p@}"`); in PowerShell a variable (not `$env:`), a splat (`@a`) or a
+/// subexpression, which hand a program each item of an array as its own
+/// argument; in cmd a `%X%` or `!X!`, quoted or not, which is put in as
+/// text before the program splits its own command line, so a value that
+/// holds a `"` ends the quotes around it; and what a pipeline hands a
+/// program (`xargs`). A quoted expansion in a POSIX shell or PowerShell is
+/// one word (`"$f"`, `"$(…)"`), and so is a known value.
+pub(crate) fn may_split(arg: &Arg, shell: Shell) -> bool {
+    let text = match arg {
+        Arg::Known(_) | Arg::Null => return false,
+        Arg::Input => return true,
+        Arg::Unknown(text) => text.as_str(),
+        Arg::Template { source, .. } => source,
+    };
+    match shell {
+        Shell::Posix => {
+            text.contains("$@")
+                || text.contains("${@")
+                || text.contains("[@]")
+                || (text.contains("${!") && text.contains("@}"))
+                || unquoted_expansion(text)
+        }
+        Shell::PowerShell => {
+            text.starts_with('(')
+                || text.starts_with("@(")
+                || (text.starts_with('$')
+                    && !text
+                        .get(..5)
+                        .is_some_and(|head| head.eq_ignore_ascii_case("$env:")))
+                || (text.starts_with('@') && text.len() > 1)
+        }
+        Shell::Cmd => text.contains(['%', '!']),
+    }
+}
+
+/// Whether a POSIX word holds a `$` or a backtick outside quotes: an
+/// expansion the shell splits into words. `$'…'` and `$"…"` are quotes.
+fn unquoted_expansion(text: &str) -> bool {
+    let mut quote = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            // A backslash keeps the next character, outside quotes and
+            // inside double ones.
+            (Some('"') | None, '\\') => {
+                chars.next();
+            }
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '$') if !matches!(chars.peek(), Some('\'' | '"') | None) => return true,
+            (None, '`') => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The text an argument only known when it runs is sure to start with,
+/// when that makes it an option, one word though it is: its text up to the
+/// first expansion, quotes taken off, when that starts with `-` (or `/`, a
+/// switch, in cmd): `"-$F"`, `-"$F"`, `"--remove-$X"`. In a POSIX shell
+/// also the start of the value a default or an alternate writes out, which
+/// is what the word is when the variable is unset or empty (`"${X:---force}"`,
+/// `"${X:+--force}"`), and the text of an ANSI-C or locale quote, which the
+/// reader keeps as only known when it runs (`$'--force'`, `$"-f"`); an
+/// escape that starts an ANSI-C quote may be any character, a `-` among
+/// them, and gives the empty start: any option. `None` when the word starts
+/// with what an expansion holds (`"$F"`): a rule takes that as a value.
+pub(crate) fn option_start(arg: &Arg, shell: Shell) -> Option<String> {
+    let start = unknown_start(arg, shell)?;
+    let dashes: &[char] = if shell == Shell::Cmd {
+        &['-', '/']
+    } else {
+        &['-']
+    };
+    (start.is_empty() || start.starts_with(dashes)).then_some(start)
+}
+
+/// The text an argument only known when it runs is sure to start with,
+/// whatever that is (see [`option_start`]): `+` for `"+$B"`. `None` for a
+/// known value, and when nothing is written before the first expansion.
+pub(crate) fn unknown_start(arg: &Arg, shell: Shell) -> Option<String> {
+    let text = match arg {
+        Arg::Unknown(text) => text.as_str(),
+        Arg::Template { source, .. } => source,
+        Arg::Known(_) | Arg::Null | Arg::Input => return None,
+    };
+    match shell {
+        Shell::Posix => posix_start(text),
+        Shell::PowerShell => Some(literal_start(text, '`', &['$', '@', '('])),
+        Shell::Cmd => Some(literal_start(text, '^', &['%', '!'])),
+    }
+}
+
+/// The start of a POSIX word up to its first expansion, quotes taken off
+/// (see [`option_start`]). `None` when nothing is written before it and no
+/// default writes it out.
+fn posix_start(text: &str) -> Option<String> {
+    let mut start = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), c) => start.push(c),
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '\\') => start.extend(chars.next()),
+            // Inside double quotes a backslash keeps only `$`, a backtick,
+            // `"` and itself.
+            (_, '\\') => match chars.next() {
+                Some(next @ ('$' | '`' | '"' | '\\')) => start.push(next),
+                Some(next) => {
+                    start.push('\\');
+                    start.push(next);
+                }
+                None => start.push('\\'),
+            },
+            (_, '$') => match chars.peek() {
+                // ANSI-C quoting: its text, up to an escape.
+                Some('\'') if quote.is_none() => {
+                    chars.next();
+                    loop {
+                        match chars.next() {
+                            Some('\'') | None => break,
+                            Some('\\') => return Some(start),
+                            Some(c) => start.push(c),
+                        }
+                    }
+                }
+                // Locale quoting reads as double quotes.
+                Some('"') if quote.is_none() => {
+                    chars.next();
+                    quote = Some('"');
+                }
+                Some('{') if start.is_empty() => {
+                    chars.next();
+                    let mut depth = 1;
+                    let inner: String = chars
+                        .by_ref()
+                        .take_while(|&c| {
+                            match c {
+                                '{' => depth += 1,
+                                '}' => depth -= 1,
+                                _ => {}
+                            }
+                            depth > 0
+                        })
+                        .collect();
+                    return default_start(&inner);
+                }
+                _ => break,
+            },
+            (_, '`') => break,
+            (_, c) => start.push(c),
+        }
+    }
+    (!start.is_empty()).then_some(start)
+}
+
+/// The start of the value a `${NAME:-word}`, `${NAME-word}`, `${NAME:=word}`
+/// or `${NAME:+word}` writes out, `inner` being what is between its braces.
+fn default_start(inner: &str) -> Option<String> {
+    let name = inner
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(inner.len());
+    if name == 0 {
+        return None;
+    }
+    let rest = &inner[name..];
+    let rest = rest.strip_prefix(':').unwrap_or(rest);
+    let word = rest.strip_prefix(['-', '=', '+'])?;
+    posix_start(word)
+}
+
+/// The start of a PowerShell or cmd word up to its first expansion, quotes
+/// taken off, `escape` keeping the character after it (see
+/// [`option_start`]).
+fn literal_start(text: &str, escape: char, expansions: &[char]) -> String {
+    let mut start = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {}
+            c if c == escape => start.extend(chars.next()),
+            c if expansions.contains(&c) => break,
+            c => start.push(c),
+        }
+    }
+    start
+}
+
+/// Whether an argument before `--` that is only known when it runs may be an
+/// option `could` takes, given the start of its text (see [`option_start`]):
+/// one that may split into words when it runs (see [`may_split`]) may be
+/// any option.
+pub(crate) fn may_be_option(args: &[Arg], shell: Shell, could: impl Fn(&str) -> bool) -> bool {
+    args.iter()
+        .take_while(|arg| arg.known() != Some("--"))
+        .any(|arg| {
+            may_split(arg, shell) || option_start(arg, shell).is_some_and(|start| could(&start))
+        })
+}
+
+/// Whether an argument before `--` that is only known when it runs may be
+/// any option (see [`may_be_option`]): a rule that looks for an option that
+/// destroys takes it as given.
+pub(crate) fn unread_option(args: &[Arg], shell: Shell) -> bool {
+    may_be_option(args, shell, |_| true)
+}
+
+/// Whether the POSIX-style option `-short` or `--long` may start with
+/// `start` (see [`option_start`]): `-` and a bundle of letters may go on
+/// with `short`, and `--` with the letters of `long` or a prefix of them,
+/// which a program that takes an abbreviation reads as it. The empty start
+/// and `-` alone, which a second `-` may follow, may be any option.
+pub(crate) fn could_be(start: &str, short: Option<char>, long: Option<&str>) -> bool {
+    if start.is_empty() || start == "-" {
+        return short.is_some() || long.is_some();
+    }
+    if let Some(name) = start.strip_prefix("--") {
+        return long.is_some_and(|long| {
+            long.starts_with(name)
+                || name
+                    .strip_prefix(long)
+                    .is_some_and(|rest| rest.starts_with('='))
+        });
+    }
+    start
+        .strip_prefix('-')
+        .is_some_and(|bundle| short.is_some() && bundle.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// How an option is given: written out, maybe (by an argument only known
+/// when it runs, see [`may_be_option`]), or not at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flagged {
+    Absent,
+    Unread,
+    Written,
+}
+
+impl Flagged {
+    /// `Written` when `written`, else `Unread` when `unread`.
+    pub(crate) fn of(written: bool, unread: bool) -> Self {
+        if written {
+            Self::Written
+        } else if unread {
+            Self::Unread
+        } else {
+            Self::Absent
+        }
+    }
+}
+
+/// How the POSIX-style option `-short` or `--long` is given: written out
+/// ([`has_flag`]), or maybe, by an argument before `--` only known when it
+/// runs that may be it (see [`may_be_option`] and [`could_be`]).
+pub(crate) fn flagged(
+    args: &[Arg],
+    shell: Shell,
+    short: Option<char>,
+    long: Option<&str>,
+) -> Flagged {
+    Flagged::of(
+        has_flag(args, short, long),
+        may_be_option(args, shell, |start| could_be(start, short, long)),
+    )
+}
+
 /// The arguments that are not POSIX-style options: everything after `--`,
 /// and what does not start with `-` before it. `takes_value` names the
 /// options whose next argument is their value, not an operand.
 pub(crate) fn operands<'a>(args: &'a [Arg], takes_value: &[&str]) -> Vec<&'a Arg> {
+    operands_where(args, takes_value, |_| false)
+}
+
+/// As [`operands`], with the value of an option in `takes_value` among them
+/// when it may split into words when it runs (`shred -n $N f`, see
+/// [`may_split`]): a word after the first is an operand.
+pub(crate) fn operands_split<'a>(
+    args: &'a [Arg],
+    takes_value: &[&str],
+    shell: Shell,
+) -> Vec<&'a Arg> {
+    operands_where(args, takes_value, |value| may_split(value, shell))
+}
+
+/// The operands as [`operands`] reads them, and each value of an option in
+/// `takes_value` that `counts` takes as one.
+fn operands_where<'a>(
+    args: &'a [Arg],
+    takes_value: &[&str],
+    counts: impl Fn(&Arg) -> bool,
+) -> Vec<&'a Arg> {
     let mut operands = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -4257,7 +4652,7 @@ pub(crate) fn operands<'a>(args: &'a [Arg], takes_value: &[&str]) -> Vec<&'a Arg
             }
             Some(text) if text.len() > 1 && text.starts_with('-') => {
                 if takes_value.contains(&text) {
-                    iter.next();
+                    operands.extend(iter.next().filter(|value| counts(value)));
                 }
             }
             _ => operands.push(arg),

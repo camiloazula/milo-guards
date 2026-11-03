@@ -99,3 +99,81 @@ fn a_where_is_found_for_every_verb_in_one_pass() {
         format!("psql -c '{opens}{closes}'")
     });
 }
+
+/// Distinct words `make(i)` made for `i` from 0, joined, up to `size` bytes.
+fn numbered(size: usize, make: impl Fn(usize) -> String) -> String {
+    let mut text = String::new();
+    for i in 0.. {
+        let part = make(i);
+        if text.len() + part.len() > size {
+            break;
+        }
+        text.push_str(&part);
+    }
+    text
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn the_files_and_programs_a_client_names_are_read_in_linear_time() {
+    let (shell, paths) = (Shell::Posix, posix());
+    // Each program is a line of its own, judged in full: past a few the
+    // rest are `unknown`, and so are the files past a few.
+    assert_linear("\\! ls 0 \\n \\! ls 1 …", shell, &paths, |size| {
+        format!(
+            "psql <<'EOF'\n{}EOF",
+            numbered(size - 20, |i| format!("\\! ls {i}\n"))
+        )
+    });
+    assert_linear("\\o f0 \\o f1 …", shell, &paths, |size| {
+        format!(
+            "psql -c '{}'",
+            numbered(size - 20, |i| format!("\\o /home/me/f{i} "))
+        )
+    });
+    assert_linear(
+        "psql -c '\\! ls 0'; psql -c '\\! ls 1'; …",
+        shell,
+        &paths,
+        |size| numbered(size, |i| format!("psql -c '\\! ls {i}'; ")),
+    );
+    assert_linear(
+        "echo '\\! ls' | { psql; psql; … }",
+        shell,
+        &paths,
+        |size| format!("echo '\\! ls' | {{ {}}}", filled("psql; ", size, 20)),
+    );
+    assert_linear(
+        "sqlite3 x.db '.shell ls 0' '.shell ls 1' …",
+        shell,
+        &paths,
+        |size| {
+            format!(
+                "sqlite3 x.db {}",
+                numbered(size - 20, |i| format!("'.shell ls {i}' "))
+            )
+        },
+    );
+    // One program as long as the line.
+    assert_linear("psql -c '\\! echo a; echo a; …'", shell, &paths, |size| {
+        format!("psql -c '\\! {}'", filled("echo a; ", size, 20))
+    });
+    // Past the budget the programs are `unknown`.
+    let line = numbered(4_000, |i| format!("psql -c '\\! ls {i}'; "));
+    let found = rules(&line, shell, &paths);
+    assert!(found.contains(&Rule::Unknown), "{found:?}");
+    // A program that runs a client that runs a program, and so on, is read
+    // a few levels deep, and deeper is `unknown`.
+    let mut line = "rm -rf ~".to_string();
+    for _ in 0..8 {
+        line = format!(
+            "sqlite3 x.db \".shell {}\"",
+            line.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+    }
+    let found = rules(&line, shell, &paths);
+    assert!(found.contains(&Rule::Unknown), "{found:?}");
+}

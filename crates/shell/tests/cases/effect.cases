@@ -306,7 +306,7 @@ posix effect=unknown | pushd && ls
 posix effect=unknown | cd ~root && ls
 posix effect=unknown | cd {a,b} && ls
 # Flags that run a program or may write, with an argument only known when it
-# runs.
+# runs. One outside quotes may split into words, `-delete` among them.
 posix effect=unknown | find $dir -name '*.rs'
 posix effect=unknown | find . $filter
 posix effect=unknown | sort $opts names.txt
@@ -865,3 +865,10 @@ cmd effect=unknown | C:\\tools\\dir.exe
 cmd effect=unknown | ls
 cmd effect=unknown | cat a.txt
 cmd effect=unknown | find "x" a.txt
+
+# A finding only an option the line does not show turns on is not known to
+# change anything: the line is not understood.
+posix effect=unknown | git tag $TAG
+posix effect=unknown | sed "-$I" s/a/b/ f.txt
+posix effect=unknown | find ~ -name x "$A"
+posix effect=changes | git push origin "+$B"

@@ -75,6 +75,10 @@ struct Added<'a> {
     target: Option<Value<'a>>,
     /// Whether anything narrows what it matches.
     narrowed: bool,
+    /// How many words only known when they run it holds that are no
+    /// option's value: each may be a match, or, while no target is named,
+    /// the target (`-jACCEPT`).
+    unknown: usize,
 }
 
 impl<'a> Added<'a> {
@@ -144,11 +148,13 @@ impl<'a> Added<'a> {
             .chain
             .as_ref()
             .is_some_and(|chain| chain.may_be(&["INPUT", "FORWARD"]));
-        let accepts = self
-            .target
-            .as_ref()
-            .is_some_and(|target| target.may_be(&["ACCEPT"]));
-        into && accepts && !self.narrowed
+        // With no target named, one word only known when it runs may be
+        // it, and the others may narrow the rule.
+        let (accepts, matches) = match &self.target {
+            Some(target) => (target.may_be(&["ACCEPT"]), self.unknown),
+            None => (self.unknown > 0, self.unknown.saturating_sub(1)),
+        };
+        into && accepts && !self.narrowed && matches == 0
     }
 }
 
@@ -163,14 +169,16 @@ enum Opt<'a> {
 /// match, or only matches of everything (`-s 0.0.0.0/0`, `-i +`, a
 /// comment) or of every service (`-p all`, `-p tcp`), and counters to start
 /// from (`-c 0 0`). A match only known when it runs is taken to narrow it,
-/// as a rule's other values are.
+/// as a rule's other values are, but while the rule names no target, a word
+/// only known when it runs may be the target (`iptables -I INPUT $x`, with
+/// `$x` as `-jACCEPT`).
 pub(super) fn opens_everything(args: &[Arg]) -> bool {
     let mut rule = Added::default();
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else {
-            // A word only known when it runs may be a match.
-            rule.narrowed = true;
+            // A word only known when it runs may be a match, or the target.
+            rule.unknown += 1;
             continue;
         };
         if text == "--" {

@@ -1,11 +1,14 @@
 //! The rules about files: what a line deletes, moves, copies and writes.
 
-use super::{downloads_to, or_here, sources_and_destination, Checker, COPY_VALUED};
-use crate::launch::{find_targets, perl_edits};
+use super::{
+    dd_outputs, downloads_to, or_here, sources_and_destination, Checker, CONTENTS, COPY_VALUED,
+};
+use crate::launch::{find_targets, find_unread_primary, perl_edits};
 use crate::path::{Access, Place};
 use crate::powershell::Params;
 use crate::unit::{
-    has_flag, has_switch, operands, plain, switch_names, switch_value, Arg, Scope, Unit,
+    could_be, flagged, has_flag, has_switch, may_be_option, operands, operands_split, plain,
+    switch_names, switch_value, unread_option, Arg, Flagged, Scope, Unit,
 };
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::{glob, verbatim};
@@ -23,7 +26,7 @@ impl Checker<'_> {
             "rm" | "unlink" | "srm" => self.delete(unit, &operands(args, &[]), "deletes"),
             "shred" => self.delete(
                 unit,
-                &operands(args, &["-n", "-s", "--iterations", "--size"]),
+                &operands_split(args, &["-n", "-s", "--iterations", "--size"], shell),
                 "shreds",
             ),
             // Delete tools that come as packages (`npx rimraf dist`): the
@@ -36,11 +39,20 @@ impl Checker<'_> {
                     self.delete(unit, &operands(args, &[]), "deletes");
                 }
             }
+            // An argument only known when it runs that may be the option
+            // that deletes (`-delete`, `--delete`, `/MIR`) or edits in place
+            // (`-i`) is taken as given, and the finding says it may: one
+            // that may split into words, one that starts with `-`, and in
+            // find's expression any that is not a test's value.
             "find" if shell == Shell::Posix => {
-                if args.iter().any(|arg| arg.known() == Some("-delete")) {
+                let flagged = Flagged::of(
+                    args.iter().any(|arg| arg.known() == Some("-delete")),
+                    unread_option(args, shell) || find_unread_primary(args),
+                );
+                self.flagged(flagged, |checker| {
                     let found = find_targets(args);
-                    self.delete(unit, &found.iter().collect::<Vec<_>>(), "deletes");
-                }
+                    checker.delete(unit, &found.iter().collect::<Vec<_>>(), "deletes");
+                });
             }
             "del" | "erase" if shell == Shell::Cmd => {
                 let targets = builtin(key, args);
@@ -67,7 +79,8 @@ impl Checker<'_> {
 
             // Moving and copying: what is moved away, and where it lands.
             "mv" if shell != Shell::PowerShell => {
-                let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
+                let (sources, destination) =
+                    sources_and_destination(args, &["-S", "--suffix"], shell);
                 self.move_away(unit, &sources, "moves");
                 if let Some(destination) = destination {
                     self.copy_to(
@@ -84,7 +97,9 @@ impl Checker<'_> {
                     && (has_flag(args, Some('r'), Some("recursive"))
                         || has_flag(args, Some('R'), None)
                         || has_flag(args, Some('a'), Some("archive")));
-                if let (sources, Some(destination)) = sources_and_destination(args, &COPY_VALUED) {
+                if let (sources, Some(destination)) =
+                    sources_and_destination(args, &COPY_VALUED, shell)
+                {
                     let leaves = leaves(unit, &sources);
                     self.copy_to(shell, unit.scope(), &leaves, &destination, recursive);
                 }
@@ -93,7 +108,8 @@ impl Checker<'_> {
                 // A link reaches its target through a name inside the
                 // workspace, so a later write or delete of the link lands on
                 // whatever it points at.
-                let (sources, destination) = sources_and_destination(args, &["-S", "--suffix"]);
+                let (sources, destination) =
+                    sources_and_destination(args, &["-S", "--suffix"], shell);
                 for source in &sources {
                     self.links_to(shell, unit.scope(), source);
                 }
@@ -171,12 +187,19 @@ impl Checker<'_> {
                     .filter(|arg| !valued(arg, &ROBOCOPY_LOGS) && !valued(arg, &["save", "job"]))
                     .collect();
                 if let Some(destination) = operands.get(1) {
-                    if has_switch(args, "mir") || has_switch(args, "purge") {
-                        self.delete(unit, &[destination], "deletes files in");
-                    }
+                    let flagged = Flagged::of(
+                        has_switch(args, "mir") || has_switch(args, "purge"),
+                        unread_option(args, shell),
+                    );
+                    self.flagged(flagged, |checker| {
+                        checker.delete(unit, &[destination], "deletes files in");
+                    });
                     // What it names after the two folders is what it copies;
                     // with none, every file of the first.
-                    let named = leaves(unit, &operands[2..]);
+                    let named: Vec<String> = leaves(unit, &operands[2..])
+                        .into_iter()
+                        .filter(|leaf| *leaf != CONTENTS)
+                        .collect();
                     let leaves = if named.is_empty() {
                         vec!["*".to_string()]
                     } else {
@@ -189,16 +212,44 @@ impl Checker<'_> {
             }
             "rsync" => {
                 let operands = rsync_operands(args);
+                // `--remove-source-files` deletes each file it has sent, on
+                // this machine or on the one a source is on.
+                if operands.len() >= 2
+                    && args.iter().any(|arg| {
+                        matches!(
+                            arg.known(),
+                            Some("--remove-source-files" | "--remove-sent-files")
+                        )
+                    })
+                {
+                    let sources = &operands[..operands.len() - 1];
+                    let (away, here): (Vec<&Arg>, Vec<&Arg>) =
+                        sources.iter().copied().partition(|source| remote(source));
+                    for source in away {
+                        self.add(
+                            Rule::Delete,
+                            "deletes files on another machine",
+                            Some(source),
+                        );
+                    }
+                    self.delete(unit, &here, "deletes");
+                }
                 if operands.len() >= 2 {
                     if let Some(destination) =
                         operands.last().filter(|destination| !remote(destination))
                     {
-                        if args
-                            .iter()
-                            .any(|arg| arg.known().is_some_and(|text| text.starts_with("--delete")))
-                        {
-                            self.delete(unit, &[destination], "deletes files in");
-                        }
+                        let flagged = Flagged::of(
+                            args.iter().any(|arg| {
+                                arg.known().is_some_and(|text| text.starts_with("--delete"))
+                            }),
+                            may_be_option(args, shell, |start| {
+                                could_be(start, None, Some("delete"))
+                                    || start.starts_with("--delete")
+                            }),
+                        );
+                        self.flagged(flagged, |checker| {
+                            checker.delete(unit, &[destination], "deletes files in");
+                        });
                         let recursive = has_flag(args, Some('r'), Some("recursive"))
                             || has_flag(args, Some('a'), Some("archive"));
                         let sources = &operands[..operands.len() - 1];
@@ -316,13 +367,13 @@ impl Checker<'_> {
 
             // Unpacking an archive writes into the folder it unpacks to;
             // packing one with `--remove-files`, `-m` or `-sdel` deletes
-            // what it packs.
+            // what it packs, as `rar m` does.
             "tar" | "gtar" | "bsdtar" | "7z" | "7za" | "7zr" | "7zz" => {
                 self.unpack(unit, key);
                 self.pack_and_remove(unit, key);
             }
             "unzip" | "expand-archive" => self.unpack(unit, key),
-            "zip" => self.pack_and_remove(unit, key),
+            "zip" | "rar" => self.pack_and_remove(unit, key),
 
             // Writing into files.
             "truncate" => {
@@ -349,10 +400,13 @@ impl Checker<'_> {
                     self.make_folder(shell, unit.scope(), target, Access::Content);
                 }
             }
-            "sed" if has_flag(args, Some('i'), Some("in-place")) => {
-                for file in sed_files(args) {
-                    self.write(shell, unit.scope(), file, "edits");
-                }
+            "sed" => {
+                let flagged = flagged(args, shell, Some('i'), Some("in-place"));
+                self.flagged(flagged, |checker| {
+                    for file in sed_files(args) {
+                        checker.write(shell, unit.scope(), file, "edits");
+                    }
+                });
             }
             "perl" if shell == Shell::Posix => {
                 for file in perl_edits(args).unwrap_or_default() {
@@ -492,14 +546,18 @@ impl Checker<'_> {
                     self.write_as(shell, unit.scope(), target, "changes", Access::Item);
                 }
             }
+            // An output only known when it runs may be a disk: an unknown
+            // output of `cp` is a write, and one of `dd` writes over a disk.
             "dd" => {
-                for arg in args {
-                    if let Some(file) = arg.known().and_then(|text| text.strip_prefix("of=")) {
-                        self.write(
-                            shell,
-                            unit.scope(),
-                            &Arg::Known(file.to_string()),
-                            "writes to",
+                for file in dd_outputs(args, shell) {
+                    let place = self.place_into(shell, unit.scope(), &file, Access::Content);
+                    if file.known().is_some() && place != Place::Unknown {
+                        self.write(shell, unit.scope(), &file, "writes to");
+                    } else {
+                        self.add(
+                            Rule::WipeDisk,
+                            "writes over a disk or file only known when it runs",
+                            Some(&file),
                         );
                     }
                 }
@@ -913,7 +971,8 @@ fn folder_of(before: &str) -> String {
 /// The name each source lands as inside a folder it is copied into: its last
 /// part. A source that is not known, what a pipeline hands on, or what `find`
 /// found (`-exec cp {} dest \;`) lands as a name that could be anything (`*`),
-/// and `.` or `..` (the contents of a folder) has no name of its own.
+/// and `.` or `..` (the contents of a folder), `~` and the root have no name
+/// of their own the line shows: each is [`CONTENTS`].
 fn leaves(unit: &Unit, sources: &[&Arg]) -> Vec<String> {
     let shell = unit.shell;
     let found = unit.wrappers.iter().any(|wrapper| wrapper == "find");
@@ -939,7 +998,7 @@ fn leaves(unit: &Unit, sources: &[&Arg]) -> Vec<String> {
                 .into_iter()
                 .map(
                     |text| match text.trim_end_matches(separators).rsplit(separators).next() {
-                        None | Some("" | "." | ".." | "~") => None,
+                        None | Some("" | "." | ".." | "~") => Some(CONTENTS.to_string()),
                         Some(name) => Some(name.to_string()),
                     },
                 )

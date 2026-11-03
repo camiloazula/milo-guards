@@ -8,7 +8,7 @@ mod noise;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use common::{disagreements, posix};
+use common::{assert_linear, disagreements, filled, posix};
 use milo_guards_shell::{classify, effect, Rule, Shell};
 use noise::{lossy, paths_for, Lcg, SHELLS, WIDE_PIECES};
 
@@ -306,6 +306,77 @@ fn wrappers_that_build_their_command_are_read_in_time() {
         format!("doppler run{} -- rm", " -p x".repeat(12_000)),
         format!("aws-vault exec{} prod -- rm", " -d 1h".repeat(10_000)),
         format!("ls | xargs sh -c '{}' _", "rm -rf \"$1\"; ".repeat(4_000)),
+        // Archivers: every operand under every pattern of `zip -i`, the
+        // commands `tar` and `zip` run, and the options `ZIPOPT` gives.
+        format!(
+            "zip -m x.zip{} -i{}",
+            " src".repeat(8_000),
+            " '*.log'".repeat(4_000)
+        ),
+        format!("zip -m x.zip{} -i{}", " a".repeat(250), " b".repeat(250)),
+        format!("tar -xf x.tar{}", " --to-command='rm a'".repeat(3_000)),
+        format!("tar -cf x.tar -C a{} src", " -I 'gzip -9'".repeat(4_000)),
+        format!("zip -T{} x.zip src", " -TT 'unzip -t'".repeat(4_000)),
+        format!("{}zip -r x.zip src", "ZIPOPT='-q -m' ".repeat(4_000)),
+        format!("ZIPOPT='{}' zip -r x.zip src", "-q ".repeat(20_000)),
+        // A value read again at each of many `zip` calls: one too long to
+        // split, one as long as the guard splits, and many assignments.
+        format!(
+            "export ZIPOPT='{}'; {}",
+            "-q ".repeat(10_000),
+            "zip x; ".repeat(5_000)
+        ),
+        format!(
+            "export ZIPOPT='{}'; {}",
+            "-q ".repeat(64),
+            "zip x; ".repeat(9_000)
+        ),
+        format!(
+            "export ZIP='{}'; {}",
+            "\"-q\" ".repeat(64),
+            "zip x; ".repeat(9_000)
+        ),
+        format!("{}{}", "ZIPOPT=-q; ".repeat(4_000), "zip x; ".repeat(3_000)),
+        format!(
+            "{}{}",
+            "ZIPOPT+=-q; ".repeat(4_000),
+            "zip x; ".repeat(2_000)
+        ),
+        format!("rar m x.rar{}", " ~/a".repeat(15_000)),
+        // Package and environment runners: words of yarn taken off, options
+        // a table does not list (each may take the word after it), lines
+        // run side by side, nested runners.
+        format!("yarn{} rimraf ~", " workspace a".repeat(5_000)),
+        format!("yarn{} exec rm", " workspaces foreach -A".repeat(2_500)),
+        format!("uvx{} rimraf ~", " --a x".repeat(10_000)),
+        format!("pipx run{} rimraf ~", " -q".repeat(20_000)),
+        format!("concurrently {}", "'rm -rf ~' ".repeat(5_000)),
+        format!("npm-run-all {}", "'a:*' ".repeat(10_000)),
+        format!("{}rm -rf ~", "poetry run ".repeat(5_000)),
+        format!("{}rm -rf ~", "corepack npx ".repeat(4_000)),
+        format!("{}rm -rf ~", "npx cross-env A=1 ".repeat(3_000)),
+        format!("mise exec{} -- rm -rf ~", " a@1".repeat(12_000)),
+        // A command set once in the environment and run by each `npx`, and
+        // placeholders each filled in with every word passed on.
+        format!(
+            "export npm_config_call='{}'; {}",
+            "rm -rf ~; ".repeat(4_800),
+            "npx; ".repeat(200)
+        ),
+        format!(
+            "export npm_config_call='rm -rf ~'; {}",
+            "npx; ".repeat(12_000)
+        ),
+        format!(
+            "concurrently -P '{}' -- {}",
+            "rm {@}; ".repeat(2_000),
+            "a ".repeat(12_000)
+        ),
+        format!(
+            "{}rm -rf ~",
+            "micromamba --log-level info run ".repeat(1_500)
+        ),
+        format!("micromamba{} run rm -rf ~", " --a x".repeat(10_000)),
     ];
     for line in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -530,6 +601,87 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
     }
 }
 
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
+    let _serial = serial();
+    // The variables of a line are read once for the whole of it, and the
+    // ones that may reach the session are followed from one to the next once
+    // each; a chain of members or calls is walked down only as deep as a
+    // tree is; a value is read for blocks only as deep as a limit; and the
+    // letters of numbers are made lower case in one pass, subexpressions in
+    // strings only as deep as a limit.
+    let limit = if cfg!(debug_assertions) {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_millis(250)
+    };
+    let fit = |unit: &str, head: &str, tail: &str| {
+        let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
+        format!("{head}{}{tail}", unit.repeat(count))
+    };
+    let rows = [
+        fit("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
+        fit("$v = 1; ", "", "Invoke-Command $v"),
+        fit("$v = { 1 }; Invoke-Command $v; ", "", ""),
+        fit(".a()", "$x", ""),
+        fit(".a()", "$ExecutionContext", ""),
+        fit(".a", "$ExecutionContext", " = $b"),
+        fit("[0]", "$ExecutionContext.InvokeCommand", ".Value = $b"),
+        fit(".Add(1, $b)", "$PSDefaultParameterValues", ""),
+        fit("@{e=", "Get-ChildItem | Sort-Object ", ""),
+        fit("@{e=@{e=1}}, ", "Get-ChildItem | Sort-Object ", "x"),
+        fit(" -replace 'a', $b", "'a'", ""),
+        fit(" -replace 'a', 'b'", "'a'", ""),
+        fit("1MB ", "echo ", ""),
+        fit("1MB+", "", "1"),
+        fit("\"$(1MB)\" ", "echo ", ""),
+        fit("\"$(", "echo ", ""),
+        fit(".SessionStateProxy", "$x", ".$h = $b"),
+        fit(".$h", "$x.InvokeCommand", " = $b"),
+        fit(
+            "[0]",
+            "$x",
+            ".psobject.Properties['CommandNotFoundAction'].Value = $b",
+        ),
+        fit(
+            "$a = $e; $e = $a; ",
+            "$e = $ExecutionContext; ",
+            "$a.$m.$h = $b",
+        ),
+        fit("Name, ", "Get-ChildItem | Select-Object ", "x"),
+        fit("Name, ", "Compare-Object $a $c -Property ", "x"),
+        fit(" -split $b", "'a'", ""),
+        fit("Invoke-Command; ", "", ""),
+        fit(
+            "$h.Add(1, 2); ",
+            "$h = @{}; ",
+            "Get-ChildItem | Select-Object $h",
+        ),
+        fit("$o | Add-Member ScriptMethod X $b; ", "", ""),
+        fit(
+            "-Value $b ",
+            "Add-Member -MemberType ScriptMethod -Name X ",
+            "",
+        ),
+    ];
+    for line in &rows {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let paths = paths_for(Shell::PowerShell);
+        let started = std::time::Instant::now();
+        let _ = classify(line, Shell::PowerShell, &paths);
+        let took = started.elapsed();
+        assert!(took < limit, "{took:?} for {:?}", &line[..20]);
+    }
+}
+
 /// A chain of PowerShell assignments, each to a variable of its own
 /// (`$a0 = $a1 = … gc .env`), as long as a line may be.
 fn distinct_assignments() -> String {
@@ -543,4 +695,93 @@ fn distinct_assignments() -> String {
         line += &next;
     }
     line + tail
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn values_only_known_when_they_run_are_read_in_linear_time() {
+    let _serial = serial();
+    // Each value only known when it runs is read once: as an output of
+    // `dd`, an operand an option's value adds, a destination, and an
+    // option that destroys or changes a setting, split into words or
+    // starting with a `-`.
+    let (shell, paths) = (Shell::Posix, posix());
+    for (head, part, tail) in [
+        ("dd if=a ", "of=$x bs=$b ", ""),
+        ("tar -cf x.tar ", "--exclude $e -C $d ", "--remove-files"),
+        ("tar -cf x.tar ", "\"--$x\" ", "src"),
+        ("zip -m x.zip ", "-b $t ", "src"),
+        ("shred ", "-n $n ", "x"),
+        ("mv ", "-S $x ", "a b"),
+        ("cp ", "--target-directory=\"$t\" ", "a"),
+        ("git push ", "$f ", "origin main"),
+        ("git push ", "\"-$f\" \"${x:---force}\" ", "origin main"),
+        ("find ~ -name x ", "\"$a\" ", ""),
+        ("docker image prune ", "$f ", ""),
+        ("terraform apply ", "$f ", ""),
+        ("iptables ", "-s $ip ", ""),
+    ] {
+        assert_linear(&format!("{head}{part}…"), shell, &paths, |size| {
+            format!(
+                "{head}{}{tail}",
+                filled(part, size, head.len() + tail.len())
+            )
+        });
+    }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn machine_settings_given_many_patterns_names_or_options_are_read_in_time() {
+    let _serial = serial();
+    // Each unit pattern is tested against the units that protect the
+    // machine and the ones it needs, each name copied into a folder against
+    // the files SELinux reads (the folder placed once), and each option of
+    // a settings program read once: a line at the length limit of them is
+    // read in time that grows with its length.
+    let limit = if cfg!(debug_assertions) {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_millis(250)
+    };
+    let fit = |unit: &str, head: &str, tail: &str| {
+        let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
+        format!("{head}{}{tail}", unit.repeat(count))
+    };
+    let rows = [
+        (
+            Shell::Posix,
+            fit("'*a*b*c*d*e*f*g*h*i*j*k*l*m*n*o*p' ", "systemctl stop ", ""),
+        ),
+        (Shell::Posix, fit("'[a-z]?*[0-9]' ", "systemctl edit ", "")),
+        (Shell::Posix, fit("? ", "systemctl stop ", "")),
+        (Shell::Posix, fit("d*@x* ", "sv down ", "")),
+        (Shell::Posix, fit("conf* ", "cp ", " /etc/selinux/")),
+        (Shell::Posix, fit("s* ", "cp -r ", " /etc/")),
+        (Shell::Posix, fit("$x ", "auditctl -k ", "")),
+        (Shell::Posix, fit("-v ", "efibootmgr ", "")),
+        (Shell::Posix, fit("-nv ", "iptables ", "")),
+        (Shell::Posix, fit("a=b ", "sysctl ", "")),
+        (Shell::Posix, fit("x ", "semanage fcontext ", "")),
+        (Shell::Posix, fit("--info ALL ", "grubby ", "")),
+        (Shell::PowerShell, fit("x ", "service ", " stop")),
+    ];
+    for (shell, line) in &rows {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let paths = paths_for(*shell);
+        let started = std::time::Instant::now();
+        let _ = classify(line, *shell, &paths);
+        let took = started.elapsed();
+        assert!(took < limit, "{took:?} for {:?} in {shell:?}", &line[..20]);
+    }
 }

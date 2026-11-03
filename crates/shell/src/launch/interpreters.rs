@@ -445,19 +445,37 @@ fn bun_inline(text: &str) -> bool {
 /// arguments as a shell script; a file or a subcommand is its own business.
 pub(super) fn bun(unit: &Unit, input: bool) -> Launch {
     let evals = unit.args.iter().filter_map(Arg::known).any(bun_evals);
-    only_runs(
-        unit,
-        evals || input,
-        with_code("bun", unit, bun_launch(unit, input)),
-    )
+    // `bun run -e CODE` is `bun -e CODE`: the code is read without the
+    // subcommand in front of it. `bun run` loads `.env` first, so the code
+    // is not all bun is given.
+    let mut args = unit.args.clone();
+    let mut run = false;
+    if let Some(first) = after_options(&args, &BUN_VALUES) {
+        if args[first].known() == Some("run") {
+            args.remove(first);
+            run = true;
+        }
+    }
+    let launch = match with_code("bun", &args, bun_launch(unit, input)) {
+        Launch::Inline(language, code) if run => Launch::Inline(
+            language,
+            inline::Code {
+                plain: false,
+                ..code
+            },
+        ),
+        launch => launch,
+    };
+    only_runs(unit, evals || input, launch)
 }
 
 /// A `bun` or `deno` line that reads inline code (`bun -e CODE`, `deno eval
 /// CODE`) runs the code the guard reads, as it does for node and python;
 /// when the arguments do not say where the code is, the line reads its
-/// input as it did.
-fn with_code(key: &str, unit: &Unit, launch: Launch) -> Launch {
-    match (&launch, inline::code(key, &unit.args)) {
+/// input as it did. `args` are the line's, with the code where `key` reads
+/// it.
+fn with_code(key: &str, args: &[Arg], launch: Launch) -> Launch {
+    match (&launch, inline::code(key, args)) {
         (Launch::Reads(Reads::Interpreter), Some(code)) => {
             Launch::Inline(inline::Language::JavaScript, code)
         }
@@ -578,12 +596,12 @@ fn bun_subcommand(unit: &Unit, first: usize, input: bool) -> Launch {
             .map(|at| first + 1 + at)
         {
             // A code flag among the options of `run` (`bun -F x run -e
-            // CODE`) is code given inline, read as `bun -e CODE` is.
-            Some(at)
-                if args[first + 1..at]
-                    .iter()
-                    .filter_map(Arg::known)
-                    .any(bun_evals) =>
+            // CODE`, also with the code joined to it: `-e'CODE'`,
+            // `--eval=CODE`) is code given inline, read as `bun -e CODE` is.
+            at if args[first + 1..at.unwrap_or(args.len())]
+                .iter()
+                .filter_map(Arg::known)
+                .any(bun_evals) =>
             {
                 Launch::Reads(Reads::Interpreter)
             }
@@ -620,7 +638,7 @@ pub(super) fn deno(unit: &Unit, input: bool) -> Launch {
     only_runs(
         unit,
         input,
-        with_code("deno", unit, deno_launch(unit, input)),
+        with_code("deno", &unit.args, deno_launch(unit, input)),
     )
 }
 
@@ -644,6 +662,22 @@ fn deno_launch(unit: &Unit, input: bool) -> Launch {
         "eval" => Launch::Reads(Reads::Interpreter),
         "repl" => repl(unit, input),
         "x" => runner("deno", unit),
+        // `deno task --eval 'cmd'` runs its words as a line of deno's own
+        // shell, which reads POSIX.
+        "task" => {
+            let rest = &args[first + 1..];
+            match after_options(rest, &DENO_TASK_VALUES) {
+                Some(at)
+                    if rest[..at]
+                        .iter()
+                        .filter_map(Arg::known)
+                        .any(|text| text == "--eval") =>
+                {
+                    Launch::Script(Shell::Posix, join(&rest[at..]))
+                }
+                _ => Launch::Itself,
+            }
+        }
         "run" | "watch" => args
             .get(first + 1..)
             .and_then(|rest| after_options(rest, &DENO_VALUES))
@@ -651,6 +685,9 @@ fn deno_launch(unit: &Unit, input: bool) -> Launch {
         _ => deno_target(unit, first),
     }
 }
+
+/// The options of `deno task` that take the next word.
+const DENO_TASK_VALUES: [&str; 5] = ["--cwd", "-c", "--config", "-f", "--filter"];
 
 /// What `deno run` does with the script at `at`: its input is read as code,
 /// an npm specifier is a package whose program runs, a file is its own
