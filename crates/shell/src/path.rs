@@ -820,6 +820,12 @@ fn is_device(arg: &Arg, shell: Shell) -> bool {
             .is_some_and(|text| device(text, shell).is_some())
 }
 
+/// Whether `text` names a device that holds nothing to read: the null
+/// device, or in Windows the console (`NUL`, `/dev/null`, `CON`).
+pub(crate) fn null_device(text: &str, shell: Shell) -> bool {
+    device(text, shell) == Some(Place::Null)
+}
+
 /// A device a path names, by its spelling: the core's.
 fn device(text: &str, shell: Shell) -> Option<Place> {
     milo_guards_core::spelling::device(text, flavour(shell))

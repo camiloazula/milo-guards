@@ -429,73 +429,134 @@ fn compile<'a>(re: &'a Re, program: &mut Vec<Inst<'a>>) {
     }
 }
 
-/// Whether the regular expression can match one of `names`: searched for in
-/// the name, or all of it when `exact`. An expression that cannot be read
-/// counts as matching. A `/` in it ends a folder, as a command line's
-/// program starts where its folder does, unless the expression is .NET's
-/// (`dotnet`): a process name there is never a path, so a `/` is a plain
-/// character.
-pub(super) fn matches_any(
+/// Which of `tables` hold a name the regular expression can match: searched
+/// for in the name, or all of it when `exact`. The expression is read once
+/// for every table. An expression that cannot be read counts as matching. A
+/// `/` in it ends a folder, as a command line's program starts where its
+/// folder does, unless the expression is .NET's (`dotnet`): a process name
+/// there is never a path, so a `/` is a plain character.
+pub(super) fn matches_any<const N: usize>(
     pattern: &str,
-    names: &[&str],
+    tables: [&[&str]; N],
     exact: bool,
     ignore_case: bool,
     dotnet: bool,
-) -> bool {
+) -> [bool; N] {
     let Some(re) = parse(pattern, !dotnet) else {
-        return true;
+        return [true; N];
     };
-    search(&re, names, (exact, ignore_case, false))
+    search(&re, tables, (exact, ignore_case, false))
 }
 
-/// Whether the regular expression, searched for in a whole command line as
-/// `pkill -f` does, can match the command line of a process that starts as
-/// one of `programs` (their paths, with the arguments they usually start
-/// with) and is given arguments that are not known: a match that began in
-/// the path and can go on into a space and the arguments counts. A `/` is a
-/// plain character here, since the program is not what the expression is
-/// compared with. An expression that
-/// cannot be read counts as matching.
-pub(super) fn matches_command_line(
+/// Which of `tables` hold the command line of a process the regular
+/// expression, searched for in a whole command line as `pkill -f` does, can
+/// match: each table lists programs (their paths, with the arguments they
+/// usually start with) that are given arguments that are not known, so a
+/// match that began in the path and can go on into a space and the
+/// arguments counts. A `/` is a plain character here, since the program is
+/// not what the expression is compared with. An expression that cannot be
+/// read counts as matching.
+pub(super) fn matches_command_line<const N: usize>(
     pattern: &str,
-    programs: &[&str],
+    tables: [&[&str]; N],
     exact: bool,
     ignore_case: bool,
-) -> bool {
+) -> [bool; N] {
     let Some(re) = parse(pattern, false) else {
-        return true;
+        return [true; N];
     };
-    search(&re, programs, (exact, ignore_case, true))
+    search(&re, tables, (exact, ignore_case, true))
 }
 
-/// Whether the expression can match any of `names`; `flags` are `exact`,
-/// `ignore_case` and `open` (see `run`).
-fn search(re: &Re, names: &[&str], flags: (bool, bool, bool)) -> bool {
+/// Which of `tables` hold a name the expression can match; `flags` are
+/// `exact`, `ignore_case` and `open` (see `run`). The expression is compiled
+/// once, and the machine's sets are kept from one name to the next.
+fn search<const N: usize>(re: &Re, tables: [&[&str]; N], flags: (bool, bool, bool)) -> [bool; N] {
     let mut program = Vec::new();
     compile(re, &mut program);
     program.push(Inst::Match);
-    let mut seen = vec![0_u32; program.len()];
-    let mut generation = 0;
-    names.iter().any(|name| {
-        let name: Vec<char> = name.chars().collect();
-        run(&program, &name, flags, &mut seen, &mut generation)
+    let (_, ignore_case, open) = flags;
+    // A name without a character every match holds is not matched, so the
+    // machine is not run over it; an open match may find it past the name.
+    let wanted = if open { None } else { required(re) };
+    let lacks = |name: &str| {
+        wanted.is_some_and(|wanted| {
+            !name
+                .chars()
+                .any(|c| c == wanted || (ignore_case && c.eq_ignore_ascii_case(&wanted)))
+        })
+    };
+    let mut scratch = Scratch {
+        seen: vec![0; program.len()],
+        generation: 0,
+        name: Vec::new(),
+        entering: Vec::new(),
+        threads: Vec::new(),
+        stack: Vec::new(),
+    };
+    tables.map(|names| {
+        names.iter().any(|name| {
+            if lacks(name) {
+                return false;
+            }
+            scratch.name.clear();
+            scratch.name.extend(name.chars());
+            run(&program, flags, &mut scratch)
+        })
     })
 }
 
-/// Run the program over `name`, in time proportional to the program's size
-/// times the name's length: the places it can be at after each character are
-/// kept as a set, never followed one by one. With `open`, the name is only
-/// the start of what is searched: a match that began in it and can go on into a
-/// space and what follows counts.
+/// A character every match of the expression holds, where one is spelled
+/// out on the way every match takes: the first such of a sequence, the one
+/// of a run, and the one all branches of an alternation share.
+fn required(re: &Re) -> Option<char> {
+    match re {
+        Re::Char(c) => Some(*c),
+        Re::Seq(items) => items.iter().find_map(required),
+        Re::Plus(inner) => required(inner),
+        Re::Alt(branches) => {
+            let mut each = branches.iter().map(required);
+            let first = each.next()??;
+            each.all(|c| c == Some(first)).then_some(first)
+        }
+        Re::Any | Re::Set(_) | Re::Start | Re::End | Re::Star(_) | Re::Opt(_) => None,
+    }
+}
+
+/// What a run of the machine works in, kept from one name to the next so
+/// that a run allocates nothing once the first has grown it: the name's
+/// characters, the generation each instruction was last reached in, the
+/// places entered before the next character, the places it can be at, and
+/// the places still to follow.
+struct Scratch {
+    seen: Vec<u32>,
+    generation: u32,
+    name: Vec<char>,
+    entering: Vec<usize>,
+    threads: Vec<usize>,
+    stack: Vec<usize>,
+}
+
+/// Run the program over `scratch.name`, in time proportional to the
+/// program's size times the name's length: the places it can be at after
+/// each character are kept as a set, never followed one by one. With
+/// `open`, the name is only the start of what is searched: a match that
+/// began in it and can go on into a space and what follows counts.
 fn run(
     program: &[Inst<'_>],
-    name: &[char],
     (exact, ignore_case, open): (bool, bool, bool),
-    seen: &mut [u32],
-    generation: &mut u32,
+    scratch: &mut Scratch,
 ) -> bool {
-    let mut entering: Vec<usize> = Vec::new();
-    let mut stack = Vec::new();
+    let Scratch {
+        seen,
+        generation,
+        name,
+        entering,
+        threads,
+        stack,
+    } = scratch;
+    entering.clear();
+    stack.clear();
     for at in 0..=name.len() {
         // A search starts anywhere; an exact match only at the start.
         let carried = entering.len();
@@ -503,7 +564,7 @@ fn run(
             entering.push(0);
         }
         *generation += 1;
-        let mut threads = Vec::new();
+        threads.clear();
         let mut going = 0;
         for (index, &start) in entering.iter().enumerate() {
             if index == carried {
@@ -556,11 +617,13 @@ fn run(
         let Some(&c) = name.get(at) else {
             return false;
         };
-        entering = threads
-            .into_iter()
-            .filter(|&pc| takes(program, pc, c, ignore_case))
-            .map(|pc| pc + 1)
-            .collect();
+        entering.clear();
+        entering.extend(
+            threads
+                .iter()
+                .filter(|&&pc| takes(program, pc, c, ignore_case))
+                .map(|&pc| pc + 1),
+        );
     }
     false
 }
