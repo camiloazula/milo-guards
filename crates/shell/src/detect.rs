@@ -82,50 +82,9 @@ pub(crate) struct Judged {
 }
 
 pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
-    let mut checker = Checker {
-        split,
-        resolver,
-        found: split.findings.clone(),
-        written: HashSet::new(),
-        unplaced_write: false,
-        patterns: Vec::new(),
-        unsure_names: HashSet::new(),
-        anywhere: false,
-        downloaders: HashMap::new(),
-        producers: HashMap::new(),
-        stages: HashMap::new(),
-        scans_keys: None,
-        data: data::Cache::default(),
-        lengths: HashMap::new(),
-        pipelines: HashMap::new(),
-        flow: send::Flow::default(),
-    };
-    // Indexed once, so each unit's pipeline questions are lookups, not
-    // scans of every unit.
-    for (at, unit) in split.units.iter().enumerate() {
-        if let Some(stage) = unit.stage {
-            if unit
-                .key()
-                .is_some_and(|key| DOWNLOADERS.contains(&key.as_str()))
-            {
-                checker
-                    .downloaders
-                    .entry(stage.pipeline)
-                    .and_modify(|first| *first = (*first).min(stage.index))
-                    .or_insert(stage.index);
-            }
-            checker
-                .producers
-                .entry((stage.pipeline, stage.index))
-                .or_insert(at);
-            checker
-                .stages
-                .entry((stage.pipeline, stage.index))
-                .or_default()
-                .push(at);
-            let length = checker.lengths.entry(stage.pipeline).or_insert(0);
-            *length = (*length).max(stage.index + 1);
-        }
+    let mut checker = Checker::new(split, resolver);
+    checker.found.clone_from(&split.findings);
+    for unit in &split.units {
         let by_cmdlet = writes_by_cmdlet(unit);
         for target in written_by(unit) {
             checker.written(unit.dir.as_ref(), &target, unit.shell);
@@ -280,6 +239,59 @@ struct Checker<'a> {
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,
+}
+
+impl<'a> Checker<'a> {
+    /// A checker of `split` that has found nothing yet, with the stages of
+    /// its pipelines indexed once, so each unit's pipeline questions are
+    /// lookups, not scans of every unit.
+    fn new(split: &'a Split, resolver: &'a Resolver) -> Self {
+        let mut checker = Checker {
+            split,
+            resolver,
+            found: Vec::new(),
+            written: HashSet::new(),
+            unplaced_write: false,
+            patterns: Vec::new(),
+            unsure_names: HashSet::new(),
+            anywhere: false,
+            downloaders: HashMap::new(),
+            producers: HashMap::new(),
+            stages: HashMap::new(),
+            scans_keys: None,
+            data: data::Cache::default(),
+            lengths: HashMap::new(),
+            pipelines: HashMap::new(),
+            flow: send::Flow::default(),
+        };
+        for (at, unit) in split.units.iter().enumerate() {
+            let Some(stage) = unit.stage else {
+                continue;
+            };
+            if unit
+                .key()
+                .is_some_and(|key| DOWNLOADERS.contains(&key.as_str()))
+            {
+                checker
+                    .downloaders
+                    .entry(stage.pipeline)
+                    .and_modify(|first| *first = (*first).min(stage.index))
+                    .or_insert(stage.index);
+            }
+            checker
+                .producers
+                .entry((stage.pipeline, stage.index))
+                .or_insert(at);
+            checker
+                .stages
+                .entry((stage.pipeline, stage.index))
+                .or_default()
+                .push(at);
+            let length = checker.lengths.entry(stage.pipeline).or_insert(0);
+            *length = (*length).max(stage.index + 1);
+        }
+        checker
+    }
 }
 
 impl Checker<'_> {

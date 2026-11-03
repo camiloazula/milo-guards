@@ -811,6 +811,34 @@ pub(crate) fn brace_list(text: &str) -> bool {
     }
 }
 
+/// Whether `text` holds a brace expansion bash and zsh spell out into words:
+/// a brace list, or a sequence expression (`{1..3}`, `{a..c}`, `{1..9..2}`).
+pub(crate) fn brace_expansion(text: &str) -> bool {
+    brace_list(text)
+        || text.match_indices('{').any(|(open, _)| {
+            text.get(open + 1..)
+                .and_then(|rest| rest.split_once('}'))
+                .is_some_and(|(inner, _)| sequence(inner))
+        })
+}
+
+/// Whether `inner`, the text between a `{` and its `}`, is a sequence
+/// expression: two integers or two single characters, and an integer step.
+fn sequence(inner: &str) -> bool {
+    let number = |part: &str| {
+        let digits = part.strip_prefix(['-', '+']).unwrap_or(part);
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    let single = |part: &str| part.chars().count() == 1;
+    let parts: Vec<&str> = inner.split("..").collect();
+    let (from, to, step) = match parts.as_slice() {
+        [from, to] => (*from, *to, None),
+        [from, to, step] => (*from, *to, Some(*step)),
+        _ => return false,
+    };
+    step.is_none_or(number) && ((number(from) && number(to)) || (single(from) && single(to)))
+}
+
 /// `path` as seen from `dir`, where an earlier `cd` moved: a relative path
 /// is joined to it, and is unknown when where it moved is.
 pub(crate) fn within(dir: Option<&Arg>, path: &Arg, shell: Shell) -> Arg {

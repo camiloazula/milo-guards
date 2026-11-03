@@ -384,8 +384,8 @@ fn seven_zip(args: &[Arg]) -> Option<Vec<Arg>> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let (text, known) = match arg {
-            Arg::Known(text) => (text, true),
-            Arg::Unknown(text) | Arg::Template { source: text, .. } => (text, false),
+            Arg::Known(text) => (text.as_str(), true),
+            Arg::Unknown(_) | Arg::Template { .. } => (arg.text(), false),
             Arg::Input | Arg::Null => continue,
         };
         // Switches are not case-sensitive; `-ao` is another switch.
