@@ -817,8 +817,9 @@ impl Walker<'_> {
             return;
         };
         let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
+        let node_options = name.eq_ignore_ascii_case("NODE_OPTIONS");
         let terraform = unit::argument_variable(name);
-        if !zip && terraform.is_none() {
+        if !zip && !node_options && terraform.is_none() {
             return;
         }
         let name = name.to_string();
@@ -845,6 +846,9 @@ impl Walker<'_> {
         };
         match terraform {
             Some(name) => self.split.note_argument_variable(name, value),
+            // `$env:NODE_OPTIONS='--require ./x.js'`: every node a later
+            // program starts loads it first.
+            None if node_options => self.split.node_options.push(value),
             None => {
                 self.split.zip_env.set(&name, &value, true);
             }
@@ -877,6 +881,9 @@ impl Walker<'_> {
             if let Some(name) = name {
                 self.split
                     .note_argument_variable(name, Arg::Unknown(text.to_string()));
+            }
+            if rest.eq_ignore_ascii_case("NODE_OPTIONS") {
+                self.split.node_options.push(Arg::Unknown(text.to_string()));
             }
             self.split
                 .zip_env
@@ -3049,6 +3056,61 @@ impl Walker<'_> {
         sends
     }
 
+    /// A .NET call that unpacks an archive into a folder
+    /// (`[IO.Compression.ZipFile]::ExtractToDirectory('x.zip', $HOME)`,
+    /// `[Formats.Tar.TarFile]::ExtractToDirectory(…)`,
+    /// `$zip.ExtractToDirectory(dir)`) is judged as `Expand-Archive` into that
+    /// folder, and one that unpacks an entry into a file
+    /// (`$entry.ExtractToFile(path)`,
+    /// `[IO.Compression.ZipFileExtensions]::ExtractToFile($e, path)`) as
+    /// `Out-File` of that file: the second argument of a static call (`::`),
+    /// which takes the archive or the entry first, and the first of one
+    /// called on it (`.`). The operator, not the object, tells them apart, as
+    /// a type may be held in a variable (`$t::ExtractToDirectory(…)`) or in
+    /// parentheses; when it cannot be read, both of the first two arguments
+    /// are judged.
+    fn unpack_call(
+        &mut self,
+        node: Node<'_>,
+        method: &str,
+        children: &[Node<'_>],
+        stage: Option<Stage>,
+    ) {
+        let (program, parameter) = match method {
+            "extracttodirectory" | "extracttodirectoryasync" => {
+                ("Expand-Archive", "-DestinationPath")
+            }
+            "extracttofile" | "extracttofileasync" => ("Out-File", "-FilePath"),
+            _ => return,
+        };
+        let mut cursor = node.walk();
+        let operator = node
+            .children(&mut cursor)
+            .find(|child| matches!(child.kind(), "::" | "."))
+            .map(|child| child.kind());
+        let arguments = self.call_arguments(children);
+        let targets: Vec<Arg> = match operator {
+            Some("::") => arguments.into_iter().skip(1).take(1).collect(),
+            Some(_) => arguments.into_iter().take(1).collect(),
+            None => arguments.into_iter().take(2).collect(),
+        };
+        let names = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .map(|list| variables(*list, self.source))
+            .unwrap_or_default();
+        for target in targets {
+            let mut unit = Unit::new(
+                Shell::PowerShell,
+                Arg::Known(program.to_string()),
+                vec![Arg::Known(parameter.to_string()), target],
+                stage,
+            );
+            unit.names = Some(names.clone());
+            self.split.push(unit);
+        }
+    }
+
     /// A .NET method call that changes files or the system
     /// (`[IO.Directory]::Delete(…)`, `(Get-Item ~).Delete()`): its arguments
     /// are expressions the guard does not resolve, so the call is risky
@@ -3073,6 +3135,7 @@ impl Walker<'_> {
             return false;
         };
         let sends = self.secret_call(&method, &children, stage);
+        self.unpack_call(node, &method, &children, stage);
         // A member of the session reached by a way the guard cannot name
         // (`$ExecutionContext.InvokeCommand.psobject.…`) may be a hook or a
         // method that runs code.
@@ -3182,6 +3245,9 @@ impl Walker<'_> {
             let named = blocks::first_string(&children).map(|name| self.string(name));
             if let Some(Arg::Known(name)) = &named {
                 let value = Arg::Unknown(unit::text(&node, self.source).to_string());
+                if name.eq_ignore_ascii_case("NODE_OPTIONS") {
+                    self.split.node_options.push(value.clone());
+                }
                 self.split.zip_env.set(name, &value, true);
             }
             let name = match named {

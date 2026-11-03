@@ -1116,6 +1116,11 @@ fn closes_group(name: Node<'_>, source: &str) -> bool {
 /// runs where the expansion was.
 pub(crate) const OPAQUE: &str = "$__v";
 
+/// What stands for a program's input when it is a process substitution
+/// that downloads (`python3 < <(curl -s https://x)`): an interpreter that
+/// reads it as code runs what it downloads.
+pub(crate) const DOWNLOADED_INPUT: &str = "<downloaded input>";
+
 struct Walker<'a> {
     source: &'a str,
     /// Where `source` had a `(D)` glob qualifier taken out (see
@@ -1984,6 +1989,15 @@ impl Walker<'_> {
         {
             nodes.pop();
         }
+        // `bash <(curl -s https://x)`: a process substitution whose commands
+        // download, run as a script, is a download.
+        for arg in &nodes {
+            if arg.kind() == "process_substitution" && self.downloads(*arg) {
+                self.split
+                    .downloads
+                    .insert(unit::text(arg, self.source).to_string());
+            }
+        }
         // The `}` that closes a group a `coproc` opened runs nothing.
         if self.split.coproc_groups > 0 && nodes.is_empty() && closes_group(name, self.source) {
             self.split.coproc_groups -= 1;
@@ -2456,7 +2470,11 @@ impl Walker<'_> {
                     .find(|child| !child.is_named())
                     .map(|child| unit::text(&child, self.source));
                 if operator.is_some_and(|operator| operator.starts_with('<')) {
-                    inputs.push(None);
+                    let downloads = redirect
+                        .child_by_field_name("destination")
+                        .filter(|to| to.kind() == "process_substitution")
+                        .is_some_and(|to| self.downloads(to));
+                    inputs.push(downloads.then(|| Arg::Unknown(DOWNLOADED_INPUT.to_string())));
                 }
             }
             _ => {}
@@ -2657,6 +2675,22 @@ impl Walker<'_> {
         } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
         } else if name == "NODE_OPTIONS" {
+            // `NODE_OPTIONS+=…` adds to the value the line gave it, which
+            // may make an option of the two (`--req` and `uire`).
+            let appends = unit::text(&assignment, self.source)
+                .get(name.len()..)
+                .is_some_and(|rest| rest.starts_with("+="));
+            let value = if appends {
+                match (self.split.node_options.values().last(), &value) {
+                    (Some(Arg::Known(before)), Arg::Known(after)) => {
+                        Arg::Known(format!("{before}{after}"))
+                    }
+                    (None, _) => value,
+                    _ => Arg::Unknown(unit::text(&assignment, self.source).to_string()),
+                }
+            } else {
+                value
+            };
             self.split.node_options.push(value);
         } else {
             // `ZIPOPT+=…` adds to the value the line gave it.
@@ -3138,6 +3172,39 @@ impl Walker<'_> {
                     .push(Unit::new(Shell::Posix, cat, vec![target], None));
             }
         }
+    }
+
+    /// Whether `substitution`, a process substitution, runs a program that
+    /// downloads (`<(curl -s https://x)`, also as a stage of a pipeline or
+    /// in a list: `<(curl -s https://x | gunzip)`). Only its own commands
+    /// are read, a few levels down, so each node is read a bounded number of
+    /// times however the line nests.
+    fn downloads(&self, substitution: Node<'_>) -> bool {
+        let mut pending = vec![(substitution, 0)];
+        while let Some((node, level)) = pending.pop() {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                match child.kind() {
+                    "command" => {
+                        let downloader = child
+                            .child_by_field_name("name")
+                            .and_then(|name| self.arg(name).known().map(str::to_string))
+                            .is_some_and(|name| {
+                                crate::detect::DOWNLOADERS
+                                    .contains(&unit::key(&name, Shell::Posix).as_str())
+                            });
+                        if downloader {
+                            return true;
+                        }
+                    }
+                    "pipeline" | "list" | "redirected_statement" if level < 4 => {
+                        pending.push((child, level + 1));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     /// The file a redirect names, and whether it feeds input (`<`) rather

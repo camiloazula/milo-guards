@@ -2,8 +2,8 @@
 //! and judges every path by where it resolves.
 
 use crate::launch::{
-    after_run, find_targets, is_stdin, powershell_file, uv_script, BUN_VALUES, DENO_VALUES,
-    INTERPRETERS, SHELLS,
+    after_run, find_targets, is_interpreter, is_node, is_stdin, options, own_args, powershell_file,
+    uv_script, Options, BUN_VALUES, DENO_VALUES, SHELLS,
 };
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
@@ -49,7 +49,7 @@ const ELEVATORS: [&str; 8] = [
 /// Builtins that start no program: they print, test, move or set a variable,
 /// so a `BASH_ENV` file is not run for them (one set in front of a special
 /// builtin stays set for the rest of the line: see `startup::SPECIAL`).
-const STARTS_NOTHING: [&str; 21] = [
+pub(crate) const STARTS_NOTHING: [&str; 21] = [
     "echo", "printf", "true", "false", ":", "cd", "export", "unset", "set", "pwd", "test", "[",
     "read", "declare", "typeset", "local", "readonly", "shift", "exit", "return", "wait",
 ];
@@ -1115,12 +1115,16 @@ impl Checker<'_> {
             return;
         }
         let runner = SHELLS.contains(&key)
-            || INTERPRETERS.contains(&key)
+            || is_interpreter(key)
             || key == "uv"
-            || key.starts_with("python3.")
             || (unit.shell == Shell::Posix && matches!(key, "source" | "."));
         if !runner {
             return;
+        }
+        // `node -r ./s.js main.js`: a module loaded before the script runs as
+        // the script does.
+        for module in preloaded(key, &unit.args) {
+            self.runs_written(unit, &module, unit.dir.as_ref());
         }
         let Some(script) = script_operand(key, &unit.args) else {
             return;
@@ -2085,6 +2089,82 @@ fn separators(shell: Shell) -> &'static [char] {
     }
 }
 
+/// The files the interpreter `key` loads before its script: node's (and
+/// `tsx`'s and `ts-node`'s) `-r`, `--require`, `--import`, `--loader` and
+/// `--experimental-loader` before the script, php's `auto_prepend_file`, the
+/// libraries ruby's `-r` and perl's `-M` load, and bun's and deno's
+/// `--preload`, `-r`, `--require` and `--import` anywhere before a `--`.
+fn preloaded(key: &str, args: &[Arg]) -> Vec<Arg> {
+    if is_node(key) || key == "php" {
+        return options(key, args).preloads;
+    }
+    if key == "ruby" || key == "perl" {
+        return libraries(key, &options(key, args));
+    }
+    if key != "bun" && key != "deno" {
+        return Vec::new();
+    }
+    const LOADS: [&str; 4] = ["--preload", "-r", "--require", "--import"];
+    let mut found = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        if LOADS.contains(&text) {
+            found.extend(iter.next().cloned());
+        } else if let Some((option, value)) = text.split_once('=') {
+            if LOADS.contains(&option) {
+                found.push(Arg::Known(value.to_string()));
+            }
+        }
+    }
+    found
+}
+
+/// The files ruby's `-r` and perl's `-M` may load: the library looked up in
+/// each `-I` folder, with its extension (`-r s` is `s.rb`, `-MFoo::Bar=x` is
+/// `Foo/Bar.pm`), and for ruby a path (`-r ./s`, `-r/tmp/s.rb`) from where
+/// the line is.
+fn libraries(key: &str, read: &Options) -> Vec<Arg> {
+    let mut found = Vec::new();
+    for library in &read.requires {
+        let Some(text) = library.known() else {
+            found.push(library.clone());
+            continue;
+        };
+        let name = if key == "perl" {
+            let name = text
+                .trim_start_matches('-')
+                .split(['=', ' '])
+                .next()
+                .unwrap_or_default();
+            format!("{}.pm", name.replace("::", "/"))
+        } else if std::path::Path::new(text)
+            .extension()
+            .is_some_and(|extension| extension == "rb")
+        {
+            text.to_string()
+        } else {
+            format!("{text}.rb")
+        };
+        let path = key == "ruby"
+            && (name.starts_with("./") || name.starts_with("../") || name.starts_with('/'));
+        if path {
+            found.push(Arg::Known(name));
+            continue;
+        }
+        for folder in &read.includes {
+            found.push(match folder.known() {
+                Some(folder) => Arg::Known(format!("{}/{name}", folder.trim_end_matches('/'))),
+                None => folder.clone(),
+            });
+        }
+    }
+    found
+}
+
 /// The script a shell or interpreter runs from a file: its first operand
 /// after its options and their values; `None` for a module (`python -m`).
 fn script_operand<'a>(key: &str, args: &'a [Arg]) -> Option<&'a Arg> {
@@ -2101,7 +2181,11 @@ fn script_operand<'a>(key: &str, args: &'a [Arg]) -> Option<&'a Arg> {
         "bun" => &BUN_VALUES,
         "deno" => &DENO_VALUES,
         _ if SHELLS.contains(&key) => &["-o", "+o", "-O", "+O", "--rcfile", "--init-file"],
-        _ => &["-W", "-X", "-r", "--require", "--import", "--loader"],
+        // An interpreter's script is read with its own table of options.
+        _ => {
+            let args = own_args(key, args);
+            return options(key, args).script.map(|at| &args[at]);
+        }
     };
     let args = match key {
         "bun" | "deno" => after_run(key, args),
