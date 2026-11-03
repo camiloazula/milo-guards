@@ -629,3 +629,20 @@ posix finds=unknown | echo x > *.log; bash b.log
 # The same in PowerShell, whose runs are also read with each extension.
 powershell safe | sc *.log x; .\\b
 powershell finds=unknown | sc *.b* x; .\\b
+
+# A module node, bun or deno loads before the script (`-r`, `--require`,
+# `--import`, `--loader`, `--preload`) runs as the script does: one the line
+# writes is a script nobody can read.
+posix finds=unknown | echo x > s.js && node -r ./s.js main.js
+posix finds=unknown | echo x > s.js && node --require ./s.js main.js
+posix finds=unknown | echo x > s.js && node --require=./s.js main.js
+posix finds=unknown | echo x > s.mjs && node --import ./s.mjs main.js
+posix finds=unknown | echo x > s.mjs && node --loader ./s.mjs main.js
+posix finds=unknown | echo x > s.js && bun --preload ./s.js main.ts
+posix finds=unknown | echo x > s.js && bun -r ./s.js main.ts
+posix finds=unknown | echo x > s.js && deno run --preload ./s.js main.ts
+posix finds=unknown | echo x > s.ts && tsx --require ./s.ts main.ts
+posix finds=unknown | echo x > s.js && node -r ./s.js -e 'console.log(1)'
+# Another file.
+posix safe | echo x > s.js && node -r ./t.js main.js
+posix safe | node -r ./s.js main.js

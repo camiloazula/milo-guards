@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use crate::detect::STARTS_NOTHING;
 use crate::dotglob;
 use crate::extended;
 use crate::inline::{self, Code, Language};
@@ -27,8 +28,8 @@ use find::find_exec;
 pub(crate) use find::find_targets;
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
 pub(crate) use interpreters::{
-    after_run, code_options, perl_edits, valued_options, BUN_VALUES, DENO_VALUES, INTERPRETERS,
-    SHELLS,
+    after_run, code_options, is_node, is_python, options, own_args, perl_edits, py_picks_three,
+    valued_options, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
 use wrappers::{
@@ -74,6 +75,10 @@ pub(super) enum Launch {
     Inline(Language, Code),
     /// It runs a script it downloads.
     Downloaded,
+    /// It runs a script only known when it runs: a variable, a substitution,
+    /// a process substitution, which is a download when what it runs
+    /// downloads (`python3 <(curl …)`).
+    Unread(Arg),
     /// It runs commands the grammar cannot read, said in the reason.
     Opaque(&'static str),
     /// The line reads two ways and each is judged, so the riskier one
@@ -188,9 +193,9 @@ fn sets_environment(key: &str, own: &[Arg]) -> bool {
 /// folder outside the workspace where its imports look.
 fn loads_foreign(key: &str, unit: &Unit, split: &Split) -> bool {
     match inline::language(key) {
-        Some(Language::JavaScript) if matches!(key, "node" | "nodejs") => {
+        Some(Language::JavaScript) if is_node(key) => {
             inline::loads_foreign_code(&unit.args)
-                || inline::options_load_foreign_code(&split.node_options)
+                || inline::options_load_foreign_code(split.node_options.values())
         }
         Some(Language::Python) => inline::path_loads_foreign_code(&split.python_path),
         _ => false,
@@ -342,6 +347,19 @@ fn add_launched(
                     find_exec(split, &unit, depth);
                 }
                 let execs = first..split.units.len();
+                // `NODE_OPTIONS='--require ./x.js' npm test`: every node the
+                // program starts loads the module first, code the line does
+                // not show. A builtin that starts nothing starts no node.
+                if !STARTS_NOTHING.contains(&key.as_str()) {
+                    if let Some(value) = split.node_options.preload() {
+                        let value = value.text().to_string();
+                        split.problem(
+                            Rule::Unknown,
+                            "loads code through NODE_OPTIONS that the guard does not read",
+                            Some(&value),
+                        );
+                    }
+                }
                 let at = split.units.len();
                 split.push(unit);
                 split.nest(execs, at..at + 1);
@@ -550,11 +568,7 @@ fn add_launched(
                             split.restore_hidden(outer.or(split.hidden_snapshot()));
                         }
                     }
-                    other => split.problem(
-                        Rule::Unknown,
-                        "runs a script only known when it runs",
-                        Some(other.text()),
-                    ),
+                    other => unread_script(split, &other),
                 }
                 return;
             }
@@ -587,6 +601,11 @@ fn add_launched(
             }
             Launch::Downloaded => {
                 split.problem(Rule::RunDownloaded, "runs a downloaded script", None);
+                split.push(unit);
+                return;
+            }
+            Launch::Unread(script) => {
+                unread_script(split, &script);
                 split.push(unit);
                 return;
             }
@@ -624,6 +643,20 @@ fn add_launched(
         None,
     );
     split.push(unit);
+}
+
+/// A script only known when it runs: a download when it is a process
+/// substitution that downloads (`bash <(curl …)`), and not read otherwise.
+fn unread_script(split: &mut Split, script: &Arg) {
+    if split.downloads.contains(script.text()) {
+        split.problem(Rule::RunDownloaded, "runs a downloaded script", None);
+    } else {
+        split.problem(
+            Rule::Unknown,
+            "runs a script only known when it runs",
+            Some(script.text()),
+        );
+    }
 }
 
 /// The name and value of each alias `alias NAME=VALUE…` defines: every word
@@ -995,7 +1028,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // where it did before: under any but cmd, and anywhere when
         // something is piped into it or a file is redirected onto it.
         key if INTERPRETERS.contains(&key) || key.starts_with("python3.") => {
-            interpreter(key, args, posix || input)
+            interpreter(key, args, posix, input)
         }
         "cmd" => cmd(args, unit.shell),
         "powershell" | "pwsh" => powershell(args),

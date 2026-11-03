@@ -322,6 +322,8 @@ impl Checker<'_> {
                 self.pack_and_remove(unit, key);
             }
             "unzip" | "expand-archive" => self.unpack(unit, key),
+            // `python3 -m zipfile -e a.zip DIR`.
+            key if crate::launch::is_python(key) => self.unpack(unit, key),
             "zip" => self.pack_and_remove(unit, key),
 
             // Writing into files.

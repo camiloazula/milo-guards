@@ -1963,6 +1963,15 @@ impl Walker<'_> {
         {
             nodes.pop();
         }
+        // `bash <(curl -s https://x)`: a process substitution whose commands
+        // download, run as a script, is a download.
+        for arg in &nodes {
+            if arg.kind() == "process_substitution" && self.downloads(*arg) {
+                self.split
+                    .downloads
+                    .insert(unit::text(arg, self.source).to_string());
+            }
+        }
         // The `}` that closes a group a `coproc` opened runs nothing.
         if self.split.coproc_groups > 0 && nodes.is_empty() && closes_group(name, self.source) {
             self.split.coproc_groups -= 1;
@@ -3059,6 +3068,39 @@ impl Walker<'_> {
                     .push(Unit::new(Shell::Posix, cat, vec![target], None));
             }
         }
+    }
+
+    /// Whether `substitution`, a process substitution, runs a program that
+    /// downloads (`<(curl -s https://x)`, also as a stage of a pipeline or
+    /// in a list: `<(curl -s https://x | gunzip)`). Only its own commands
+    /// are read, a few levels down, so each node is read a bounded number of
+    /// times however the line nests.
+    fn downloads(&self, substitution: Node<'_>) -> bool {
+        let mut pending = vec![(substitution, 0)];
+        while let Some((node, level)) = pending.pop() {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                match child.kind() {
+                    "command" => {
+                        let downloader = child
+                            .child_by_field_name("name")
+                            .and_then(|name| self.arg(name).known().map(str::to_string))
+                            .is_some_and(|name| {
+                                crate::detect::DOWNLOADERS
+                                    .contains(&unit::key(&name, Shell::Posix).as_str())
+                            });
+                        if downloader {
+                            return true;
+                        }
+                    }
+                    "pipeline" | "list" | "redirected_statement" if level < 4 => {
+                        pending.push((child, level + 1));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     /// The file a redirect names, and whether it feeds input (`<`) rather

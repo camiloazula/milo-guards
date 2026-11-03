@@ -6,6 +6,7 @@
 //! deletes the members named on the line, judged like the operands of `rm`.
 
 use super::Checker;
+use crate::launch::{is_python, options, own_args};
 use crate::path::within;
 use crate::powershell::Params;
 use crate::unit::{Arg, Unit};
@@ -20,6 +21,7 @@ impl Checker<'_> {
             "unzip" => unzip(args),
             "7z" | "7za" | "7zr" | "7zz" => seven_zip(args),
             "expand-archive" => Some(expand_archive(args)),
+            key if is_python(key) => python_unpack(key, args),
             _ => None,
         };
         for folder in folders.unwrap_or_default() {
@@ -327,6 +329,33 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
         removes: removes_files && (pack || mode_unknown),
         folders,
         members,
+    }
+}
+
+/// The folder `python -m zipfile -e ARCHIVE FOLDER` and `python -m tarfile
+/// -e ARCHIVE [FOLDER]` unpack into (`--extract`, and any prefix of it
+/// `argparse` takes); `tarfile` unpacks into the working directory when it
+/// names none. Any other module, or a line without `-e`, unpacks nothing.
+fn python_unpack(key: &str, args: &[Arg]) -> Option<Vec<Arg>> {
+    let args = own_args(key, args);
+    let read = options(key, args);
+    let (module, start) = read.module?;
+    let module = module.known()?;
+    if module != "zipfile" && module != "tarfile" {
+        return None;
+    }
+    let mut words = args.get(start..)?.iter().skip_while(|arg| {
+        !arg.known()
+            .is_some_and(|text| text == "-e" || (text.len() >= 3 && "--extract".starts_with(text)))
+    });
+    words.next()?;
+    let operands: Vec<&Arg> = words
+        .filter(|arg| !arg.known().is_some_and(|text| text.starts_with('-')))
+        .collect();
+    match (module, operands.get(1)) {
+        (_, Some(folder)) => Some(vec![(*folder).clone()]),
+        ("tarfile", None) => Some(vec![Arg::Known(".".to_string())]),
+        _ => None,
     }
 }
 

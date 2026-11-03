@@ -14,6 +14,7 @@
 #[cfg(feature = "inline")]
 use milo_guards_code::{is_data_url, is_foreign_module};
 
+use crate::launch;
 use crate::unit::Arg;
 
 #[cfg(feature = "inline")]
@@ -28,13 +29,34 @@ pub(crate) use milo_guards_code::Language;
 #[cfg(not(feature = "inline"))]
 pub(crate) use off::{apply_all, apply_input, is_data_url, is_foreign_module, Language};
 
-/// The language of the code a program runs, by its name.
+/// The language of the code a program runs, by its name. TypeScript is read
+/// with the JavaScript grammar: what it does not parse is not read whole.
 pub(crate) fn language(key: &str) -> Option<Language> {
     match key {
-        "python" | "python2" | "python3" => Some(Language::Python),
-        "node" | "nodejs" | "bun" | "deno" => Some(Language::JavaScript),
+        "python" | "python2" | "python3" | "py" | "pypy" | "pypy3" | "ipython" => {
+            Some(Language::Python)
+        }
+        "node" | "nodejs" | "tsx" | "ts-node" | "bun" | "deno" => Some(Language::JavaScript),
         key if key.starts_with("python3.") => Some(Language::Python),
         _ => None,
+    }
+}
+
+/// The interpreters whose code is never read whole: `ipython` runs the
+/// startup files of its profile first, and `tsx` and `ts-node` read a
+/// `tsconfig.json`, which can name modules to load: code the line does not
+/// show.
+const NEVER_WHOLE: [&str; 3] = ["ipython", "tsx", "ts-node"];
+
+/// Whether the Python `key` names may be Python 2, or one whose built-in
+/// modules are not known to be the ones of `python3`: `python2`, `python`
+/// (Python 2 on some systems), `pypy` and `pypy3`, and `py` unless its first
+/// word picks Python 3.
+fn maybe_python2(key: &str, args: &[Arg]) -> bool {
+    match key {
+        "python" | "python2" | "pypy" | "pypy3" => true,
+        "py" => !launch::py_picks_three(args),
+        _ => false,
     }
 }
 
@@ -78,14 +100,16 @@ pub(crate) struct Code {
 /// `None` when they do not, or when what comes before it cannot be told from
 /// the code's own arguments; the caller then reads the line as it did before.
 pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Code> {
+    let python2 = maybe_python2(key, args);
+    let args = launch::own_args(key, args);
     let found = match language(key)? {
         Language::Python => python_code(args),
         Language::JavaScript if key == "deno" => deno_code(args),
-        Language::JavaScript => script_code(args, matches!(key, "node" | "nodejs")),
+        Language::JavaScript => script_code(args, launch::is_node(key)),
     }?;
     Some(Code {
-        plain: is_plain(key, args),
-        python2: matches!(key, "python" | "python2"),
+        plain: !NEVER_WHOLE.contains(&key) && is_plain(key, args),
+        python2,
         ..found
     })
 }
@@ -98,9 +122,10 @@ fn is_plain(key: &str, args: &[Arg]) -> bool {
         return false;
     };
     let flags: &[&str] = match key {
-        "node" | "nodejs" | "bun" => &["-e", "-p", "--eval", "--print"],
+        "bun" => &["-e", "-p", "--eval", "--print"],
         "deno" => &["eval"],
-        key if key.starts_with("python") => &["-c"],
+        key if launch::is_node(key) => &["-e", "-p", "--eval", "--print"],
+        key if launch::is_python(key) => &["-c"],
         _ => &[],
     };
     code.known().is_some() && flag.known().is_some_and(|flag| flags.contains(&flag))
@@ -327,6 +352,29 @@ pub(crate) fn options_load_foreign_code(values: &[Arg]) -> bool {
     })
 }
 
+/// Whether a value `NODE_OPTIONS` is given loads a module (`--require`,
+/// `-r`, `--import`, `--loader`, `--experimental-loader`): node loads it
+/// before any script, in every node the program it is set for starts. Node
+/// splits the value on spaces and drops its double quotes; a value only known
+/// when it runs may load one.
+pub(crate) fn preloads(value: &Arg) -> bool {
+    let Some(text) = value.known() else {
+        return true;
+    };
+    text.split(char::is_whitespace).any(|word| {
+        let word = word.replace('"', "");
+        let name = word
+            .strip_prefix("--")
+            .map(|long| long.split_once('=').map_or(long, |(name, _)| name))
+            .map(|name| name.replace('_', "-"));
+        word == "-r"
+            || matches!(
+                name.as_deref(),
+                Some("require" | "import" | "loader" | "experimental-loader")
+            )
+    })
+}
+
 /// Whether the values `PYTHONPATH` is given in front of python (a prefix
 /// assignment, `env PYTHONPATH=…`, an `export` before it) name a folder
 /// outside the workspace: python looks there for an import, and runs the
@@ -409,11 +457,13 @@ pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
         "-I", "-E", "-d", "-c", "-z", "-f", "-l", "-e", "-B", "-R", "-F", "-S", "-t", "-a",
     ];
     let mut others = false;
-    let flags: &[&str] = if key.starts_with("python") {
+    let flags: &[&str] = if launch::is_python(key) {
         &["--version", "-V", "-VV", "--help", "-h"]
+    } else if launch::is_node(key) {
+        &["--version", "-v", "--help", "-h"]
     } else {
         match key {
-            "node" | "nodejs" | "bun" => &["--version", "-v", "--help", "-h"],
+            "bun" => &["--version", "-v", "--help", "-h"],
             "deno" => &["--version", "-V", "--help", "-h"],
             _ => {
                 others = true;
