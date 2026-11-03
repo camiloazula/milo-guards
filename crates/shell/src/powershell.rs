@@ -760,7 +760,7 @@ impl Walker<'_> {
             .get(..4)
             .filter(|head| head.eq_ignore_ascii_case("env:"))
             .and_then(|_| name.get(4..))
-            .and_then(unit::tf_cli_args_folded)
+            .and_then(unit::argument_variable)
         else {
             return;
         };
@@ -785,7 +785,7 @@ impl Walker<'_> {
             }
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
-        self.split.tf_cli_args.push((name, value));
+        self.split.note_argument_variable(name, value);
     }
 
     /// `Set-Item env:TF_CLI_ARGS …`, `New-Item -Path Env:\TF_CLI_ARGS_apply
@@ -806,14 +806,13 @@ impl Walker<'_> {
                 continue;
             };
             let rest = rest.trim_start_matches(['\\', '/']);
-            let name = unit::tf_cli_args_folded(rest).or_else(|| {
+            let name = unit::argument_variable(rest).or_else(|| {
                 rest.contains(['*', '?', '['])
                     .then(|| "TF_CLI_ARGS".to_string())
             });
             if let Some(name) = name {
                 self.split
-                    .tf_cli_args
-                    .push((name, Arg::Unknown(text.to_string())));
+                    .note_argument_variable(name, Arg::Unknown(text.to_string()));
             }
         }
     }
@@ -2986,14 +2985,14 @@ impl Walker<'_> {
         // to a value the guard does not read.
         if method == "setenvironmentvariable" {
             let name = match blocks::first_string(&children).map(|name| self.string(name)) {
-                Some(Arg::Known(name)) => unit::tf_cli_args_folded(&name),
+                Some(Arg::Known(name)) => unit::argument_variable(&name),
                 _ => Some("TF_CLI_ARGS".to_string()),
             };
             if let Some(name) = name {
-                self.split.tf_cli_args.push((
+                self.split.note_argument_variable(
                     name,
                     Arg::Unknown(unit::text(&node, self.source).to_string()),
-                ));
+                );
             }
         }
         if let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) {

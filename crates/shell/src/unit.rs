@@ -158,10 +158,13 @@ pub(crate) struct Unit {
     /// in step with `args`, and empty for any other unit, or one that
     /// lost them, in which no argument counts as read this way.
     pub(crate) listed: Vec<bool>,
-    /// The values the line gives `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`
-    /// where it runs, by name (see [`Split::tf_cli_args`]): terraform reads
-    /// them as arguments of its command.
-    pub(crate) tf_cli_args: Vec<(String, Arg)>,
+    /// The values the line gives the variables a program reads as its own
+    /// arguments where it runs, by name (see [`Split::argument_variables`]):
+    /// `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`, which terraform reads as
+    /// arguments of its command, and `npm_config_call`, the command `npx`
+    /// runs. Shared with the line's, so a long value is not copied for
+    /// each program.
+    pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
     /// more for a part of the line the grammar reads again (what follows the
@@ -255,7 +258,7 @@ impl Unit {
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
-            tf_cli_args: Vec::new(),
+            argument_variables: Rc::default(),
             depth: 0,
             names: None,
         }
@@ -436,7 +439,17 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
         }
     }
     let lower = base.to_ascii_lowercase();
-    let stem = [".exe", ".com", ".bat", ".cmd"]
+    // PowerShell runs a program's `.ps1` shim by its name (`npx.ps1`), as
+    // the program: one it finds on the path, or names by a full path
+    // (`C:\nodejs\npx.ps1`). A script named by a relative path
+    // (`.\scripts\format.ps1`) is the project's own, and stays the script.
+    let shim = !program.contains(['/', '\\']) || rooted(program);
+    let extensions: &[&str] = if shell == Shell::PowerShell && shim {
+        &[".exe", ".com", ".bat", ".cmd", ".ps1"]
+    } else {
+        &[".exe", ".com", ".bat", ".cmd"]
+    };
+    let stem = extensions
         .iter()
         .find_map(|extension| lower.strip_suffix(extension));
     match (shell, stem) {
@@ -447,6 +460,16 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
         (Shell::PowerShell, None) => crate::powershell::canonical(&lower).to_string(),
         (Shell::Cmd, None) => lower,
         (_, Some(stem)) => stem.to_string(),
+    }
+}
+
+/// Whether the Windows path `path` starts at the root of a drive (`C:\x`,
+/// `\x`, `\\server\share`), not at the folder the line is in.
+fn rooted(path: &str) -> bool {
+    match path.as_bytes() {
+        [b'/' | b'\\', ..] => true,
+        [letter, b':', b'/' | b'\\', ..] => letter.is_ascii_alphabetic(),
+        _ => false,
     }
 }
 
@@ -725,10 +748,28 @@ pub(crate) fn tf_cli_args(name: &str) -> bool {
     name == "TF_CLI_ARGS" || name.starts_with("TF_CLI_ARGS_")
 }
 
-/// The name terraform reads, when `name` is one of [`tf_cli_args`]'s written
-/// in any case, as Windows reads the names of variables
-/// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`).
-pub(crate) fn tf_cli_args_folded(name: &str) -> Option<String> {
+/// Whether npm reads the variable `name` as its `call` setting, the command
+/// `npx` and `npm exec` run in place of a program. npm reads the names of
+/// its `npm_config_` variables in any case (`NPM_CONFIG_CALL`).
+pub(crate) fn npm_call(name: &str) -> bool {
+    name.eq_ignore_ascii_case("npm_config_call")
+}
+
+/// Whether a program reads the variable `name` as arguments of its own:
+/// terraform's [`tf_cli_args`], and npm's [`npm_call`]. The line's values
+/// of these are noted where it sets them (see [`Split::argument_variables`]).
+pub(crate) fn read_as_arguments(name: &str) -> bool {
+    tf_cli_args(name) || npm_call(name)
+}
+
+/// The name a program reads, when `name` is one of [`read_as_arguments`]'s
+/// written in any case, as Windows reads the names of variables
+/// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`, `$env:NPM_CONFIG_CALL`
+/// is `npm_config_call`).
+pub(crate) fn argument_variable(name: &str) -> Option<String> {
+    if npm_call(name) {
+        return Some("npm_config_call".to_string());
+    }
     let upper = name.to_ascii_uppercase();
     if upper == "TF_CLI_ARGS" {
         return Some(upper);
@@ -918,10 +959,13 @@ pub(crate) struct Split {
     /// as `node_options` is. Python puts each folder in it where an import
     /// looks, and runs its `sitecustomize` before any code it is given.
     pub(crate) python_path: Vec<Arg>,
-    /// The values `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are given for
-    /// the program being added, by name, noted as `node_options` is:
-    /// terraform reads them as arguments of its command.
-    pub(crate) tf_cli_args: Vec<(String, Arg)>,
+    /// The values the variables of [`read_as_arguments`] are given for the
+    /// program being added, by name, noted as `node_options` is: terraform
+    /// reads `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` as arguments of its
+    /// command, and npm reads `npm_config_call` as the command `npx` and
+    /// `npm exec` run. Each unit shares the list (see
+    /// [`Split::note_argument_variable`]).
+    pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many assignments and wrappers hand the program being added an
     /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the
     /// interpreter loads what that environment tells it to, which the code
@@ -1046,6 +1090,10 @@ pub(crate) struct Split {
     /// [`read_again`]): a line that makes the same script be read again and
     /// again must come back unreadable, not take forever.
     nested_read: usize,
+    /// How much of the values of the variables a program reads as the
+    /// command it runs (`npm_config_call`) has been read as scripts, in
+    /// bytes, one for each (see [`read_from_variable`]).
+    variable_read: usize,
     /// The bytes of text the grammars have parsed for the line, and the
     /// bytes their lexers were handed for it: see [`MAX_LEXED`].
     parsed: usize,
@@ -1398,6 +1446,21 @@ impl Split {
         }
     }
 
+    /// Note the value `value` the line gives the variable `name`, one of
+    /// [`read_as_arguments`]'s. The list is copied only when a unit shares
+    /// it, so a unit is handed the list without copying its values.
+    pub(crate) fn note_argument_variable(&mut self, name: String, value: Arg) {
+        Rc::make_mut(&mut self.argument_variables).push((name, value));
+    }
+
+    /// Keep the first `len` of [`Split::argument_variables`]: those noted
+    /// after are the program's that was added.
+    pub(crate) fn truncate_argument_variables(&mut self, len: usize) {
+        if self.argument_variables.len() > len {
+            Rc::make_mut(&mut self.argument_variables).truncate(len);
+        }
+    }
+
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
         self.fold_shell = Some(unit.shell);
@@ -1405,7 +1468,7 @@ impl Split {
         unit.elsewhere.clone_from(&self.elsewhere);
         unit.stayed.clone_from(&self.stayed);
         unit.adrift = self.adrift;
-        unit.tf_cli_args.clone_from(&self.tf_cli_args);
+        unit.argument_variables = Rc::clone(&self.argument_variables);
         self.last_stayed.clear();
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
@@ -3845,6 +3908,25 @@ pub(crate) fn read_again(split: &mut Split, text: &str, why: &str) -> bool {
     split.nested_read += text.len() + 1;
     if split.nested_read > MAX_NESTED_READ {
         split.problem(Rule::Unreadable, why, None);
+        return false;
+    }
+    true
+}
+
+/// Whether `text`, the value of a variable a program reads as the command
+/// it runs (`npm_config_call='…' npx`), may be read as that command once
+/// more. A line sets the value once and may run it many times (`npx; npx;
+/// …`), each a reading of the whole value: the readings are bounded by the
+/// longest line, as they would be had the line written the command out each
+/// time (`npx -c '…'; npx -c '…'`). Past it, the line is unreadable.
+pub(crate) fn read_from_variable(split: &mut Split, text: &str) -> bool {
+    split.variable_read += text.len() + 1;
+    if split.variable_read > MAX_LEN {
+        split.problem(
+            Rule::Unreadable,
+            "runs the command a variable sets too many times to read",
+            None,
+        );
         return false;
     }
     true

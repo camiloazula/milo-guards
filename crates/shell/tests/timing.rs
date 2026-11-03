@@ -306,6 +306,40 @@ fn wrappers_that_build_their_command_are_read_in_time() {
         format!("doppler run{} -- rm", " -p x".repeat(12_000)),
         format!("aws-vault exec{} prod -- rm", " -d 1h".repeat(10_000)),
         format!("ls | xargs sh -c '{}' _", "rm -rf \"$1\"; ".repeat(4_000)),
+        // Package and environment runners: words of yarn taken off, options
+        // a table does not list (each may take the word after it), lines
+        // run side by side, nested runners.
+        format!("yarn{} rimraf ~", " workspace a".repeat(5_000)),
+        format!("yarn{} exec rm", " workspaces foreach -A".repeat(2_500)),
+        format!("uvx{} rimraf ~", " --a x".repeat(10_000)),
+        format!("pipx run{} rimraf ~", " -q".repeat(20_000)),
+        format!("concurrently {}", "'rm -rf ~' ".repeat(5_000)),
+        format!("npm-run-all {}", "'a:*' ".repeat(10_000)),
+        format!("{}rm -rf ~", "poetry run ".repeat(5_000)),
+        format!("{}rm -rf ~", "corepack npx ".repeat(4_000)),
+        format!("{}rm -rf ~", "npx cross-env A=1 ".repeat(3_000)),
+        format!("mise exec{} -- rm -rf ~", " a@1".repeat(12_000)),
+        // A command set once in the environment and run by each `npx`, and
+        // placeholders each filled in with every word passed on.
+        format!(
+            "export npm_config_call='{}'; {}",
+            "rm -rf ~; ".repeat(4_800),
+            "npx; ".repeat(200)
+        ),
+        format!(
+            "export npm_config_call='rm -rf ~'; {}",
+            "npx; ".repeat(12_000)
+        ),
+        format!(
+            "concurrently -P '{}' -- {}",
+            "rm {@}; ".repeat(2_000),
+            "a ".repeat(12_000)
+        ),
+        format!(
+            "{}rm -rf ~",
+            "micromamba --log-level info run ".repeat(1_500)
+        ),
+        format!("micromamba{} run rm -rf ~", " --a x".repeat(10_000)),
     ];
     for line in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
