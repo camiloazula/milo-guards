@@ -180,8 +180,10 @@ Hidden`, `-Credential`, `-WorkingDirectory`, `-Verb`, `-RedirectStandardInput`,
 of `-ArgumentList` are joined into one command line that the program splits as
 it does after `--%` (`Start-Process psql -ArgumentList '-c "DROP TABLE t"'` is
 `drop_data`); and `-RedirectStandardOutput` and `-RedirectStandardError` write
-their file, as a redirect does. So do the words that
-run the command after them in a POSIX shell: `command`, `builtin`, zsh's
+their file, as a redirect does. A wrapper's option that starts the program in
+another folder (`env -C`, `start /d`, `Start-Process -WorkingDirectory`) is
+followed (see [Where a line is](#where-a-line-is)). The words that run the
+command after them in a POSIX shell come off too: `command`, `builtin`, zsh's
 precommand modifiers `noglob`, `nocorrect` and `-` (they take no options, so
 `noglob -- rm` runs a program named `--`), and `coproc`. `busybox` and the
 multi-call firewall programs `xtables-nft-multi`, `xtables-legacy-multi` and
@@ -378,8 +380,10 @@ each with the options it reads and those of them that take a value, as
   whether the line it is started from quotes an argument with a space is not
   on the line, so both are read and the riskier counts: `wsl pwsh -c
   "Remove-Item C:\Windows -Recurse"` runs `Remove-Item` as one script, and
-  `wsl 'rm -rf ~'` may run `rm -rf ~`. The folder `--cd` names is not
-  followed.
+  `wsl 'rm -rf ~'` may run `rm -rf ~`. The shell starts in the folder
+  `--cd` names, read as a Linux path: `~` is the home directory, and an
+  absolute Windows path is where WSL mounts it (`C:\Windows` is
+  `/mnt/c/Windows`), so `wsl --cd C:\Windows rm -rf System32` is `delete`.
 
 GNU **`parallel`** runs a command once for each value: its options, the
 command, then the values after `:::` (or the files after `::::`, or `-a`),
@@ -413,11 +417,12 @@ does not know (a long one may be shortened to an unambiguous start, as
 `env -S` splits its string into words that are `env`'s own arguments again,
 with the arguments after it (`env -S 'rm -rf' ~`): GNU env puts them back
 among its arguments, so they may hold its options and assignments as well
-as the command (`env -S'-i X=1 rm -rf ~'`). The guard reads `env` with them
-as a POSIX line. The string may be attached (`env -S'rm -rf ~'`, `env
--iS'…'`), and `--split-string=` and a shorter start of the long name
-(`--split=…`, `--s`) are the same. A string with one of its own escapes
-(`\_` for a space, `\c`, `${NAME}`) is not read: `Unreadable`.
+as the command (`env -S'-i X=1 rm -rf ~'`). The guard reads `env` again with
+them in the string's place. The string may be attached (`env -S'rm -rf ~'`,
+`env -iS'…'`), and `--split-string=` and a shorter start of the long name
+(`--split=…`, `--s`) are the same. The string is split as `env` splits it,
+its own escapes too (`\_` for a space, `\c` to end it); how a `${NAME}` in it
+and a string `env` refuses are read is under [Where a line is](#where-a-line-is).
 
 A script that `xargs` or `parallel` hands to a shell (`xargs -n1 sh -c 'docker
 rm -f "$1"' _`) runs once for each item it reads, as a loop body runs, so it
@@ -693,6 +698,105 @@ line leaves things, whichever is more conservative and needs the least state:
   it stands, when the trap is set, and is a placeholder variable in the text
   the action is read from, so it is not read twice.
 
+### Aliases and functions a PowerShell line sets
+
+A PowerShell line can give a command a new name and then use it:
+`Set-Alias x Remove-Item; x -Recurse -Force ~` deletes the home directory.
+Before its commands are judged, the walk reads every name the line sets,
+anywhere in it (`Walker::define`, kept in `powershell::Aliases`):
+
+- **An alias**: `Set-Alias` and `New-Alias` (also `sal` and `nal`), with the
+  name and the command given by name or by position (`-Name` first, then
+  `-Value`), and the other parameters skipped with their values
+  (`-Description`, `-Option`, `-Scope`); `Set-Item` (also `si`) on items of
+  the `Alias:` drive (`Set-Item Alias:x Remove-Item`, also `-Path Alias:\x
+  -Value …`, `-LiteralPath`, a list of paths, each set), which is an
+  `overwrite` of an item outside the workspace as well; and an assignment to
+  `$alias:x` or `${alias:x}`. The arguments are bound as PowerShell binds
+  them (`Walker::bound_args`): a list (`-Option ReadOnly,AllScope`) is one
+  argument, so it moves neither the name nor the command, and a bare `--`
+  ends the parameters, so `Set-Alias -- x Remove-Item` sets `x`. In an
+  assignment to several targets (`$alias:x, $y = 'Remove-Item', 1`) each
+  target takes the value in its place, the last one what is left; a target
+  whose value cannot be paired so (the value is not a list written out, or
+  its items are not one for each target) is set to something only known
+  when it runs. A target may be in parentheses (`($alias:x) = …`,
+  `($alias:x, $y) = …`), as PowerShell takes one; any other variable of the
+  `Alias:` or `Function:` drive on the left side that is not read as a target
+  sets its name to what is only known when it runs, so a spelling the guard
+  does not read fails closed.
+  Other writes to the `Alias:` and `Function:` drives (`New-Item`,
+  `Set-Content`, a path after `cd Alias:`) are not read as names, and are
+  that `overwrite`.
+- **A function whose body is only known when it runs**: an assignment to
+  `$function:f` or `${function:f}` (a scope in front, `$function:global:f`,
+  is taken off) of anything but a block written out (`$b`, a string, which
+  PowerShell turns into a block). A block written out (`${function:f} = {
+  … }`), like `function f { … }`, is read where it stands, as its body is
+  judged as if it stood on the line.
+
+A command whose program is a name the line sets (in any case, also after `&`)
+is then judged as its own program and as each command the name may stand
+for, every one of them, the riskier counting: an alias that is set in a
+branch, or that PowerShell refuses (a read-only built-in alias, a name the
+line made read-only, `-WhatIf`), leaves the name what it was, so the name
+itself is always one reading. `Set-Alias ls Remove-Item; ls -Recurse -Force
+~` is the `delete` of `~` though `ls` is `Get-ChildItem`; `Set-Alias ll
+Get-ChildItem; ll` stays safe. Each reading is a unit of its own, built from
+the same arguments by the rules of its program, so an alias to `pwsh`,
+`Start-Process`, `Invoke-Command` or `iex` is read as that cmdlet is (its
+script, its script block, a download it runs); the readings past the first
+are read as if in a branch, since they may not be what runs. A target that
+is a name the line sets too is followed (`Set-Alias y x`), as PowerShell
+looks an alias up again when it runs, each name once. Two commands with the
+same key are one reading. A block is read as running apart from the session
+(a `Start-Job`'s, a `Start-ThreadJob`'s, a `ForEach-Object -Parallel` one's)
+only when every reading runs it so: `Set-Alias x Start-Job; x { cd ~ };
+Remove-Item -Recurse -Force *` may run the block in the session, which then
+moves the line home.
+
+As the names are read from the whole line first, a command written before
+the name is set is judged by it too, which matters for one that runs after it
+(in a function body, a loop or a `trap`): `function f { x -Recurse -Force ~
+}; Set-Alias x Remove-Item; f` is a `delete`. A name set by a script the line
+runs (`Invoke-Expression 'Set-Alias x Remove-Item'`) is read when that script
+is, so a command of that name judged before is not judged by it: `unknown`,
+with the reason `sets an alias or function for a command the line may have
+run already`. The names are one table for the whole line, a child shell's
+(`pwsh -c "Set-Alias …"`) among them, though a child cannot change what its
+parent runs: `Get-ChildItem; pwsh -c "Set-Alias Get-ChildItem Get-Date"` is
+`unknown` by that reason. It is rare, and fails closed.
+
+`unknown`, as what cannot be read:
+
+- an alias to a command only known when it runs (`Set-Alias x $t`, `Set-Item
+  Alias:x $t`, `$alias:x = $t`, a splat that may hold the value): a command
+  of the name is `runs an alias the line sets to a command only known when it
+  runs`;
+- a function whose body is only known when it runs: a command of the name is
+  `runs a function the line sets to a block only known when it runs`;
+- an alias whose name is only known when it runs (`Set-Alias $n Remove-Item`,
+  `Set-Alias @p`), or not given at all, as `Set-Alias`, `New-Alias` and
+  `Set-Item` also take it from the properties of what the pipeline hands them
+  (`$o | Set-Alias`, `$o | Set-Item`), which may be any command after it;
+  and `Import-Alias` (also `ipal`), which sets every alias in a file the line
+  may have written itself (`'x,Remove-Item' | Set-Content a.csv; Import-Alias
+  a.csv; x -Recurse -Force ~`): `sets an alias whose name is only known when
+  it runs`.
+
+A name set to something only known when it runs, with no command of that
+name, is safe: `Set-Alias x $t` alone runs nothing. A line reads at most 64
+names (the same name set to the same command again counts once), past which
+it is `unknown` (`sets more aliases and functions than the guard reads`),
+and adds at most 256 readings in all, past which it is `unreadable` (`runs
+commands through more aliases than the guard reads`): each reading is one
+more unit to judge, so the work stays bounded however many times a name is
+used. What a name stands for is worked out once, with the key of each
+target taken when it is set, so a command of a name costs one lookup however
+many targets of its own key the name has. A module's aliases and functions,
+and the names a profile sets, are not read; only what the line itself
+writes.
+
 ### Values read again as code
 
 bash reads some values a second time, and runs the code it finds in them
@@ -823,6 +927,49 @@ overwrite of a file only known when it runs. `$null` is the device only in
 PowerShell, and only as the null value itself. In a POSIX shell it is the variable
 `null`, only known when it runs; in cmd, and quoted in PowerShell (`'$null'`), it
 is a file name like any other, joined to where the `cd` went.
+
+A wrapper or a runner that starts its command in a folder of its own option
+moves that command, and only it: its relative paths, the script it runs and
+the code it is given are judged from that folder, as after a `cd` that ran,
+and the rest of the line from where it was (`env -C / true; rm -rf etc` is
+safe). The options read so are `env -C DIR` (`--chdir`), `sudo -D` and `run0
+-D` (`--chdir`), pnpm's `-C` and `--dir`, yarn's and bun's `--cwd`, uv's
+`--directory`, PowerShell's `Start-Process -WorkingDirectory` and `pwsh` or
+`powershell -WorkingDirectory` for the script given with `-Command`, and cmd's
+`start /d DIR` (`/dDIR`), which names the drive too, and `wsl --cd DIR`, a
+Linux path (see [Wrappers and scripts](#wrappers-and-scripts)): `env -C ~ rm -rf .ssh`,
+`pnpm --dir ~ exec rimraf .ssh` and `start /d C:\Windows cmd /c rd /s /q
+System32` are `delete`, `env -C sub make` and `start /d build cmd /c del
+x.obj` are safe. When one is given more than once, the last counts. A folder
+only known when it runs makes the command's relative paths known only when
+they run.
+
+Each is read the way its program reads its options. `env` and `sudo` read
+theirs as `getopt_long` does: in a bundle (`env -iC DIR`, `sudo -nD DIR`),
+with the value joined (`-CDIR`), and a long option by any prefix that names it
+alone (`env --ch DIR`, `sudo --chd DIR`). `env -S STRING` (`--split-string`,
+also `-S'…'`) splits the string into words, as `env` does, and reads them again
+as its own arguments in its place, so `env -S '-C / rm -rf etc'` is `delete`. A
+`${NAME}` in it, outside single quotes, is filled in from `env`'s environment,
+so the word it stands in is only known when it runs (`env -S 'rm -rf ${HOME}'`
+deletes a path only known when it runs). A string `env` refuses (any other
+`$`, an escape it does not know, a quote left open) runs nothing, since GNU's
+and BSD's `env` both stop there; it is still read as the shell line it looks
+like, so `env -S 'rm -rf $HOME'` stays `delete`. BSD's `env -P altpath` and
+FreeBSD's `-L` and `-U user[/class]` take a value, so `env -P /bin -C / rm -rf
+etc` is `delete`. `pwsh` takes any prefix of `-WorkingDirectory` from `-wo`
+on, and `-wd`, also joined with a colon (`-wo:DIR`), and drops a second
+leading dash before it matches a parameter, as pwsh does (`--wd DIR`, `--c`).
+npm's and npx's `--prefix` (`-C`) is read as npm reads its options, so
+`--prefi` too. A cmd line reads what `bun --cwd DIR` starts as it reads what
+`bun` starts without it.
+
+Two of them name a project rather than the folder the command runs in, and
+whether the runner also starts the command there has changed between
+versions, so the command is judged from both folders: `uv run --project DIR`,
+and npm's and npx's `--prefix` for what `npm exec` runs (npm 11 runs it where
+the line is). So `npm --prefix a/b/c exec rimraf ../..` is `delete`, as is
+`npm --prefix ~ exec rimraf .ssh`.
 
 A redirect on a `cd` (`chdir`, `pushd`, `Set-Location`) is opened before the
 command runs, so its file is placed from the folder the command starts in, not
@@ -1192,6 +1339,71 @@ Not read, so the caller has to account for them: an option set by `~/.zshenv`
 or `~/.bashrc`, a `BASH_ENV` file, an inherited `GLOBIGNORE` or `BASHOPTS`
 from the environment the guard's caller runs in.
 
+### Extended patterns
+
+With zsh's `extendedglob` on, `#`, `##`, `^` and `~` in an unquoted word are
+parts of a pattern: `x#` is any number of `x` and `x##` one or more, `^x` is
+any name but `x` (to the end of its part, so `^foo/bar` is `bar` in every
+folder but `foo`), and `x~y` is what `x` matches and `y` does not. So `rm -rf
+.gi#t` and `rm -rf .g^x` delete `.git`. Read as plain names they do not.
+zsh does not glob a word whose only operator is `~` (`.git~x` is that name),
+but the guard reads `x~y` as `x` all the same: `rm -rf .git~x` is judged as
+the delete of `.git`, which costs only a word that names nothing.
+
+- **On.** `setopt extendedglob` (any case, any underscores:
+  `EXTENDED_GLOB`), `unsetopt noextendedglob`, `set -o extendedglob`,
+  `setopt -m` with any pattern, an option name only known when it runs,
+  `emulate`'s `-o extendedglob` before its `-c` (`emulate -L zsh -o
+  extendedglob`: `-L` does not limit it outside a function), an assignment to
+  zsh's `options` table that names it or a key only known when it runs and is
+  not `off` (`options[extendedglob]=on`, `options+=(extendedglob on)`),
+  `source` and `.` (the file may set it), and a zsh started with `-o
+  extendedglob`, `--extendedglob` or `--extended-glob`. Off by the opposite
+  switches, where the line is sure to run them in this shell, as for zsh's
+  `globdots` (see Hidden names); it reaches as far, and a subshell or a script
+  in a process of its own gives it back as it was.
+- **Both readings.** bash has no such option and `setopt` fails there, so the
+  line may be run either way: a command with a word the option reads another
+  way is judged twice, with the word as written and with it as zsh reads it,
+  and the riskier counts (a fork, as for `bun`, counted against the same 32
+  per line, past which the line is unreadable). `curl -F f=@~/.aws/credentials`
+  is still the send of a key, though zsh reads that word as `f=@` but not
+  `/.aws/credentials`. A redirect target zsh reads another way is opened both
+  ways too (`echo x > .gi#t/config`), and a listing piped on hands on what
+  each reading lists (`ls -d .gi#t | xargs rm -rf` deletes `.git`): every
+  listing at the stage before the delete is read, not only the first. A
+  `cd`, `pushd` or `popd` is not read
+  twice, since the second would start where the first went: a word the option
+  changes in it is only known when it runs.
+- **zsh's reading** is a plain pattern that takes every name zsh's does:
+  `x#` and `x##` are `*` (`.gi#t` is `.g*t`), `^` and the rest of its part
+  are `*` (`.g^x` is `.g*`), and `x~y` is `x` (`*.o~*.c` is `*.o`, which still
+  cannot match a hidden name). The finding names that pattern. A single `#`
+  on plain characters that start a name may leave them out, so a dot after
+  them starts the name: `x#.git` matches `.git` and `x.git`, and is read as
+  two patterns, `.git` and `*.git`, each judged (a third reading, one more
+  fork). A wildcard or a bracket that starts a name never takes its dot,
+  even repeated (`[x]#.git` is not `.git`), so it reads as `*`. A leading dot
+  repeated (`.#git` is `git` and `.git`), a second such split in the word,
+  or a group (`(a|b)#`, `(#i)`) has no plain pattern that takes what it
+  does, so the word is a place only known when it runs. A quoted or escaped
+  operator (`'.gi#t'`, `.gi\#t`) is itself, a `~` that starts the word is
+  the home folder, and one in a bracket (`[~]`) is a member. What an
+  expansion gives is itself too (zsh reads its value as a pattern only with
+  `globsubst`), but the rest of the word is still read: `$PWD/.gi#t` is
+  `$PWD/.g*t`. When the value is only known when it runs and the rest of the
+  word holds an operator, the word is a place only known when it runs.
+  Where each bracket closes is found in one pass from the end of the word, so
+  a long run of `[` that never closes is read in linear time.
+- **Bodies.** A function body or a loop may run after the option is on, so
+  when the line turns it on anywhere, the line is read again with the words in
+  them read as zsh reads them: `f() { rm -rf .gi#t; }; setopt extendedglob;
+  f`.
+
+Not read: the option set by an rc file (a plain word is read as written
+then, so `rm -rf .gi#t` alone is safe), the script of `emulate -c`, a `for`
+list, and the program's own name.
+
 ## The rules
 
 A rule reads a unit's program, its flags, its operands and its redirects. It
@@ -1360,7 +1572,11 @@ moved no line between safe and risky. Each item below says which rule it is:
   `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, while a `launchctl
   kill` or `stop` whose target is only known when it runs is `stop_unknown`;
   the target of any other label (`gui/501/com.me.worker`) is the user's own.
-  `systemctl restart` is not a stop and stays safe.
+  `systemctl restart` is not a stop and stays safe. A name or pattern
+  that matches the process of a daemon that protects the machine
+  (`killall auditd`, `pkill firewalld`), and a `launchctl kill` or `stop`
+  of such a daemon's label (`com.apple.alf`), is `system_settings` (see
+  [Machine settings on macOS and Linux](#machine-settings-on-macos-and-linux)).
 - **A name only known when it runs (`stop_unknown`).** `killall $NAME`,
   `pkill "$PATTERN"`, `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
@@ -1841,7 +2057,28 @@ of their strictest, so each family below was added on that test.
   are not read as `--user` or `--system` either: one walk of the arguments
   skips the values and finds those two (`systemctl -p --user disable x` is
   a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
-  `-p`/`--property` value the same way.
+  `-p`/`--property` value the same way. The other init systems are read the
+  same way: `rc-update del` (or `delete`, or a verb only known when it runs),
+  `update-rc.d name disable` or `remove`, and `chkconfig name off` or
+  `chkconfig --del name` (`-d` on SUSE, with `--level` skipped) take a service out of what
+  starts at boot, as `systemctl disable` does, whatever the service;
+  `rc-update add`, `update-rc.d name defaults` or `enable` and `chkconfig
+  name on` are safe. Some `systemctl` verbs change many units at once:
+  `isolate` starts a target and stops every unit it does not want, so it is
+  risky whatever the target (and also `stop_system` for `poweroff`,
+  `reboot`, `halt`, `kexec`, `soft-reboot`, `rescue`, `emergency`,
+  `shutdown`, `exit`, `final` and the runlevels that are their aliases,
+  `runlevel0`, `runlevel1` and `runlevel6`, as `systemctl poweroff` and
+  `rescue` are), and without a target it is an error and safe;
+  `set-default` to a target other than `graphical`, `multi-user` or the
+  runlevels that alias them (`runlevel2` to `runlevel5`), with or without
+  `.target`, or to one only known when it runs, changes what the computer boots into;
+  `preset-all` enables and disables units by the preset files. `edit`,
+  `revert` and `preset` of a unit that protects the machine (below), a
+  pattern or a unit only known when it runs change how that protection
+  runs; of any other unit (`systemctl edit nginx`) they are safe, as is
+  `get-default`. These follow `--user` as `disable` does: `systemctl --user
+  isolate x.target` changes only the user's own session and is safe.
 - **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
   stop` are safe, because `stop docker` is a common development step, and
   `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
@@ -1850,18 +2087,80 @@ of their strictest, so each family below was added on that test.
   `launchctl kill TERM system/com.apple.WindowServer`), which is `stop_system`
   as stopping the process is (see
   [Stopping processes by name](#stopping-processes-by-name)). The other is a unit
-  that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
-  `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
+  that protects the machine (the firewalls, `apparmor`, `auditd`,
+  `fail2ban` and the antivirus and endpoint daemons listed below), whose
+  stopping is the same
   as turning that protection off, so it is risky. `systemctl kill` sends
   SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
   refuses `stop`, so `kill` is how it is stopped), so it is read through the
   same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
   'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
-  (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
+  (`systemctl stop 'firewall*'`) is risky too, and so is one given to any
+  other service manager (`sv down /etc/service/*`, `cd /etc/service && sv
+  down *`), which the shell expands against the files. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
+  An action stops the service when it is `stop`, a BSD spelling of it
+  (`onestop`, `forcestop`, `faststop`, `quietstop`), `force-stop`, `kill`,
+  or one of the actions the firewall and `AppArmor` scripts take their
+  protection down with, `flush` (`service netfilter-persistent flush`) and
+  `teardown` (`service apparmor teardown`). Every other service manager
+  is read as `service`: a program run from an init script folder
+  (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
+  placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
+  as `/etc/init.d/ufw stop`, is the service of its name with its first
+  operand as the action. So is the script a shell runs (`sh
+  /etc/init.d/ufw stop`, `bash -x …`, and `cd /etc/init.d && sh ufw stop`,
+  since a shell reads a script named without a folder from the working
+  folder) or the line sources (`. /etc/init.d/ufw stop`, `source …`), the
+  operands after it being the script's; a shell given `-c` runs a line,
+  which is read as one. `invoke-rc.d name action` and `rc-service name
+  action` (whose `-e` and `-r` take a name) read the same, except that
+  `invoke-rc.d --query` only asks whether the action would be allowed and
+  `rc-service -U` (`--user`) runs the user's own services, as `systemctl
+  --user` does; runit's `sv
+  command service...` stops each service when the command is `stop`,
+  `shutdown`, `force-stop`, `force-shutdown`, or starts with the letters
+  `sv` reads as down, exit or pause (`d`, `D`, `x`, `X`, `e`, `E`, `p`), or
+  is only known when it runs, and a service given as a folder
+  (`/etc/service/ufw`) is the last part. `/etc/init.d/nginx restart`,
+  `rc-service docker stop` and `sv down nginx` are safe; `/etc/init.d/ssh
+  stop` and `sv down sshd` are `stop_system`. The protecting units are the
+  firewalls (`firewalld`, `ufw`, `nftables`, `iptables`, `ip6tables`,
+  `netfilter-persistent`, and the BSDs' `pf` and `ipfw`), `apparmor`,
+  `auditd`, `fail2ban`, and the common antivirus and endpoint daemons
+  (`clamav-daemon`, `clamav-freshclam`, `clamav-clamd`, `clamd`,
+  `freshclam`, `mdatp`, `falcon-sensor`, `sentinelone`, `osqueryd`,
+  `wazuh-agent`, `ossec`); a unit is compared without `.service` and
+  without its instance (`clamd@scan`). Stopping the daemon's process is the
+  same: `killall` and `pkill` of a name that is, or a pattern that matches,
+  `auditd`, `firewalld`, `clamd`, `freshclam`, `mdatp`, `wdavdaemon`,
+  `falcon-sensor`, `falcond`, `osqueryd`, `wazuh-agentd`, `sentineld`,
+  `ossec-agentd`, or on a Mac `socketfilterfw`, `syspolicyd`, `XProtect`,
+  `XprotectService`, `endpointsecurityd`, `com.crowdstrike.falcon.Agent`
+  and Little Snitch's daemon and network extension, is `system_settings`
+  (`pkill firewalld`, `killall auditd`, `pkill audit`, and `pkill agent`,
+  which matches `wazuh-agentd`). `pkill -f` also searches the command
+  lines these daemons usually run with (`/usr/sbin/firewalld --nofork
+  --nopid`), so a pattern that runs past a name into its arguments
+  (`pkill -f 'auditd '`) is risky too. `ufw` and `apparmor` are left out,
+  since neither runs as a process (`ufw` loads the rules and exits,
+  AppArmor lives in the kernel), and so is `fail2ban-server`: `pkill`
+  searches each name for its pattern, and `pkill app` and `pkill server`
+  are everyday work. Each pattern is read once for the processes the
+  system needs and the ones that protect it, as a line may give thousands.
+  `launchctl kill` and `stop` of a daemon that protects a Mac are a
+  bootout of it: a label that is, or starts with and a dot, `com.apple.alf`
+  (the application firewall), `com.apple.auditd`, `com.apple.syspolicyd`
+  (Gatekeeper), `com.apple.xprotect`, `com.apple.xprotectframework`,
+  `com.apple.endpointsecurity`,
+  `com.crowdstrike`, `com.microsoft.wdav`, `com.sentinelone` or
+  `at.obdev.littlesnitchd`, without case (`launchctl kill 9
+  system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
+  A `kill` whose ids come from a substitution (`kill $(pidof auditd)`) is
+  `stop_unknown`, as every such `kill` is.
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
   `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
   `listbackups`, `status`, `startbackup` and `enable` are safe.
@@ -1884,8 +2183,11 @@ of their strictest, so each family below was added on that test.
   persistent-apps`), a path in the workspace or the user's own folder,
   `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
 
-`hostname` and `service` are read in POSIX shells only: in PowerShell and cmd
-they are Windows programs and are left alone.
+`hostname`, `service` and `sv` are read in POSIX shells only: in PowerShell
+and cmd they are Windows programs or aliases (`sv` is PowerShell's
+`Set-Variable`) and are left alone. An init script is read in PowerShell too
+(`& '/etc/init.d/ufw' stop`, `Start-Process /etc/init.d/ufw stop`), since pwsh
+on Linux runs a path under `/etc/init.d` as the script it is; cmd never does.
 
 ### The rule enum is exhaustive on purpose
 
@@ -2688,11 +2990,17 @@ A line is never safe because the guard gave up on it. These come back risky:
   `runs code the guard does not read fully`, unless it is found to do
   something worse (see [Inline code](#inline-code)).
 - A .NET call that deletes, writes or starts a program.
+- A PowerShell command whose name the line sets to something only known
+  when it runs: an alias to a command not written out (`Set-Alias x $t; x`),
+  a function whose body is not a block written out (`$function:f = $b; f`),
+  an alias whose name is not written out (`Set-Alias $n Remove-Item`), and a
+  name a script the line runs sets after a command of that name was judged
+  (see [Aliases and functions a PowerShell line sets](#aliases-and-functions-a-powershell-line-sets)).
 - PowerShell code known only when it runs: a script block that is not written
   out where a cmdlet takes it (`Invoke-Command $b`, `-ScriptBlock $b`, `Start-Job`,
   `Start-ThreadJob`, `Register-ScheduledJob`, `Set-PSBreakpoint -Action`,
   `-Process`/`-Begin`/`-End`/`-RemainingScripts` and the first block of
-  `ForEach-Object`, `Where-Object -FilterScript`, `New-Module`,
+  `ForEach-Object`, `Where-Object -FilterScript`, `New-Module` (also `nmo`),
   `Measure-Command`, `Trace-Command -Expression`), a hook set on `$ExecutionContext.InvokeCommand` (by
   assignment or its `set_` method, `LocationChangedAction` among them), and code built
   from text (`[scriptblock]::Create(…)`, `NewScriptBlock`, `InvokeScript`,
@@ -4540,7 +4848,9 @@ a nasty line against a 200 ms bound;
   ones of several levels, are timed the same, as are `parallel` lines that
   would build megabytes of jobs and the other wrappers that read their words
   as a command (`wsl`, `env -S`, `nix run`, the secret runners), at the
-  length limit.
+  length limit, and PowerShell lines at the length limit that use a name the
+  line sets as an alias, to a hundred commands or to one, in every command
+  after it.
 - **The limits.** (In `tests/limits.rs`, another binary of its own, for the
   same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,

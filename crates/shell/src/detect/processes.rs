@@ -103,6 +103,67 @@ const SYSTEM_COMMAND_LINES: [&str; 17] = [
     "/usr/lib/systemd/systemd-logind",
 ];
 
+/// The processes of the daemons that protect the machine, as they are named
+/// when they run: the audit daemon, firewalld, `ClamAV`, Microsoft Defender
+/// (`mdatp`, `wdavdaemon`), `CrowdStrike` Falcon, `osquery`, Wazuh,
+/// `SentinelOne`, and on a Mac the application firewall, Gatekeeper's policy
+/// daemon, `XProtect`, Endpoint Security and Little Snitch. Stopping one
+/// turns that protection off, as stopping its service does. `ufw` and
+/// `AppArmor` are left out, as they never run as a process (`ufw` loads the
+/// rules and exits, `AppArmor` lives in the kernel), and so is
+/// `fail2ban-server`: `pkill` searches a name for its pattern, and `pkill
+/// app` and `pkill server` are everyday work.
+const PROTECTING_PROCESSES: [&str; 21] = [
+    "auditd",
+    "firewalld",
+    "clamd",
+    "freshclam",
+    "mdatp",
+    "wdavdaemon",
+    "falcon-sensor",
+    "falcond",
+    "osqueryd",
+    "wazuh-agentd",
+    "sentineld",
+    "ossec-agentd",
+    "socketfilterfw",
+    "syspolicyd",
+    "XProtect",
+    "XprotectService",
+    "endpointsecurityd",
+    "com.crowdstrike.falcon.Agent",
+    "Little Snitch Daemon",
+    "Little Snitch Network Extension",
+    "at.obdev.littlesnitch.networkextension",
+];
+
+/// The command lines the protecting processes usually start with, as
+/// [`SYSTEM_COMMAND_LINES`] are for the system's: `pkill -f` searches these
+/// as a whole, so a pattern that runs past a daemon's name into its
+/// arguments (`'auditd '`, `'firewalld --nofork'`) stops it.
+const PROTECTING_COMMAND_LINES: [&str; 20] = [
+    "/sbin/auditd",
+    "/usr/sbin/auditd",
+    "/usr/sbin/firewalld --nofork --nopid",
+    "/usr/sbin/clamd",
+    "/usr/bin/freshclam",
+    "/opt/microsoft/mdatp/sbin/wdavdaemon",
+    "/opt/CrowdStrike/falcond",
+    "/opt/CrowdStrike/falcon-sensor",
+    "/usr/bin/osqueryd",
+    "/opt/osquery/bin/osqueryd",
+    "/var/ossec/bin/wazuh-agentd",
+    "/var/ossec/bin/ossec-agentd",
+    "/Library/Sentinel/sentinel-agent.bundle/Contents/MacOS/sentineld",
+    "/usr/libexec/ApplicationFirewall/socketfilterfw",
+    "/usr/libexec/syspolicyd",
+    "/usr/libexec/endpointsecurityd",
+    "/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect",
+    "/System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService",
+    "/Library/CS/falcond",
+    "/Library/Little Snitch/Little Snitch Daemon.bundle/Contents/MacOS/Little Snitch Daemon",
+];
+
 /// `Stop-Process`'s own parameters.
 const STOP_PROCESS: [Param; 7] = [
     Param::value("name", &["processname"]),
@@ -235,10 +296,27 @@ impl Checker<'_> {
         };
         if everything {
             self.add(Rule::StopSystem, "stops every process", Some(name));
-        } else if names_system_process(text, kind) {
+            return;
+        }
+        let [system, protecting] = names_process(
+            text,
+            kind,
+            [
+                (&SYSTEM_PROCESSES[..], &SYSTEM_COMMAND_LINES[..]),
+                (&PROTECTING_PROCESSES[..], &PROTECTING_COMMAND_LINES[..]),
+            ],
+        );
+        if system {
             self.add(
                 Rule::StopSystem,
                 "stops a process the system needs",
+                Some(name),
+            );
+        }
+        if protecting {
+            self.add(
+                Rule::SystemSettings,
+                "stops a service that protects the system",
                 Some(name),
             );
         }
@@ -1054,14 +1132,31 @@ pub(super) fn is_system_label(target: &str) -> bool {
 /// Whether `text` names a process the system needs, or (for a wildcard
 /// or a regular expression) matches one.
 fn names_system_process(text: &str, kind: Names) -> bool {
+    let [system] = names_process(
+        text,
+        kind,
+        [(&SYSTEM_PROCESSES[..], &SYSTEM_COMMAND_LINES[..])],
+    );
+    system
+}
+
+/// Which of `tables` hold a process `text` names, or (for a wildcard or a
+/// regular expression) matches. Each table is the names of processes, as
+/// they run and without `.exe`, and the command lines they usually run
+/// with, which `pkill -f` also searches. A pattern is read once for all the
+/// tables, as a line may give thousands of them.
+fn names_process<const N: usize>(
+    text: &str,
+    kind: Names,
+    tables: [(&[&str], &[&str]); N],
+) -> [bool; N] {
+    let names = tables.map(|(names, _)| names);
     match kind {
         // `killall` picks a process by its file when the name has a folder in
         // it (`/sbin/init`): the last part is the name.
         Names::Literal => {
-            let name = text.rsplit('/').next().unwrap_or(text);
-            SYSTEM_PROCESSES
-                .iter()
-                .any(|system| process_name(system) == process_name(name))
+            let name = process_name(text.rsplit('/').next().unwrap_or(text));
+            names.map(|processes| is_one_of(&name, processes))
         }
         Names::Regex {
             exact,
@@ -1073,31 +1168,48 @@ fn names_system_process(text: &str, kind: Names) -> bool {
             // brackets, and its folder when it is a command line's program,
             // compared whole (`Explorer`, `explorer.exe`); and the
             // expression itself, which may match the name in part.
-            text.split('|').any(|alternative| {
-                let bare = alternative.trim_matches(['^', '$', '(', ')']);
-                let name = bare.rsplit('/').next().unwrap_or(bare);
-                SYSTEM_PROCESSES
-                    .iter()
-                    .any(|system| process_name(system) == process_name(name))
-            }) || regex::matches_any(text, &SYSTEM_PROCESSES, exact, ignore_case, dotnet)
-                // `-f` searches the whole command line, whose program is not
-                // the last part of a path the pattern spells.
-                || (full
-                    && regex::matches_command_line(
-                        text,
-                        &SYSTEM_COMMAND_LINES,
-                        exact,
-                        ignore_case,
-                    ))
+            let alternatives: Vec<String> = text
+                .split('|')
+                .map(|alternative| {
+                    let bare = alternative.trim_matches(['^', '$', '(', ')']);
+                    process_name(bare.rsplit('/').next().unwrap_or(bare))
+                })
+                .collect();
+            let mut found =
+                names.map(|processes| alternatives.iter().any(|name| is_one_of(name, processes)));
+            if found.contains(&false) {
+                let matched = regex::matches_any(text, names, exact, ignore_case, dotnet);
+                found = std::array::from_fn(|at| found[at] || matched[at]);
+            }
+            // `-f` searches the whole command line, whose program is not
+            // the last part of a path the pattern spells.
+            if full && found.contains(&false) {
+                let lines = tables.map(|(_, lines)| lines);
+                let matched = regex::matches_command_line(text, lines, exact, ignore_case);
+                found = std::array::from_fn(|at| found[at] || matched[at]);
+            }
+            found
         }
         Names::Wildcard => {
             let pieces = wildcard_pieces(&process_name(text));
-            SYSTEM_PROCESSES.iter().any(|system| {
-                let name: Vec<char> = process_name(system).chars().collect();
-                wildcard_matches(&pieces, &name)
+            let mut name = Vec::new();
+            names.map(|processes| {
+                processes.iter().any(|known| {
+                    name.clear();
+                    name.extend(known.chars().map(|c| c.to_ascii_lowercase()));
+                    wildcard_matches(&pieces, &name)
+                })
             })
         }
     }
+}
+
+/// Whether `name`, already in the form [`process_name`] gives, is one of
+/// `processes`, which are written without `.exe`.
+fn is_one_of(name: &str, processes: &[&str]) -> bool {
+    processes
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(name))
 }
 
 /// One piece of a wildcard.
@@ -1150,7 +1262,8 @@ fn wildcard_matches(pieces: &[Piece], name: &[char]) -> bool {
         .iter()
         .filter(|piece| !matches!(piece, Piece::Star))
         .count();
-    if needed > name.len() {
+    // Without a star, it takes exactly that many.
+    if needed > name.len() || (needed == pieces.len() && needed != name.len()) {
         return false;
     }
     // The positions in `pieces` the matching can be at, after the name so

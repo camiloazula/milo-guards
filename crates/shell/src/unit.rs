@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::dotglob;
 use crate::effect::Kind;
+use crate::extended;
 use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
 
@@ -434,16 +435,22 @@ pub(crate) enum Flag {
 /// -s dotglob`, `GLOBIGNORE`) and zsh's (`setopt globdots`). Each has its own
 /// off switch, which is an error in the other shell and so clears only its
 /// own; hidden names match when either is on.
+///
+/// zsh's `extendedglob` (see [`crate::extended`]) is kept with them: it
+/// does not make a wildcard match a leading dot, but reaches as far and is
+/// given back the same way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Hidden {
     bash: bool,
     zsh: bool,
+    extended: bool,
 }
 
 impl Hidden {
     const ON: Self = Self {
         bash: true,
         zsh: true,
+        extended: false,
     };
 
     fn any(self) -> bool {
@@ -455,6 +462,7 @@ impl Hidden {
         Self {
             bash: self.bash || other.bash,
             zsh: self.zsh || other.zsh,
+            extended: self.extended || other.extended,
         }
     }
 }
@@ -835,6 +843,13 @@ pub(crate) struct Split {
     /// Whether the line ever turned the option on, in this shell or in a
     /// script it ran, even if it turned it off again.
     ever_dotglob: bool,
+    /// Whether the line ever turned zsh's `extendedglob` on, in this shell or
+    /// in a script it ran, even if it turned it off again.
+    ever_extended: bool,
+    /// Whether the line is read a second time because it turns
+    /// `extendedglob` on and has a function body or a loop, which may run
+    /// after that: what they hold is read with it on (see [`split`]).
+    extended_bodies: bool,
     /// Each function the line defines, by name, with the units of its body:
     /// a call runs them, handed the call's input.
     pub(crate) function_bodies: Vec<(String, Range<usize>)>,
@@ -877,6 +892,10 @@ pub(crate) struct Split {
     moved: usize,
     /// The actions that run later in this shell (a `trap`'s script).
     later: Vec<Later>,
+    /// Where the line was before each folder a wrapper started its program
+    /// in (see [`Self::start_in`]), to put it back once that program is
+    /// read.
+    folders: Vec<Place>,
     /// How much nested script text has been read, in bytes (and one for
     /// each script), and how much of the line has been read again (see
     /// [`read_again`]): a line that makes the same script be read again and
@@ -900,6 +919,9 @@ pub(crate) struct Split {
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
+    /// The aliases and functions a PowerShell line sets, which a command of
+    /// that name may run (see [`crate::powershell::Aliases`]).
+    pub(crate) powershell_aliases: crate::powershell::Aliases,
 }
 
 /// What the line does to `PWD`, read from the whole line.
@@ -1245,6 +1267,20 @@ impl Split {
                     Some(false) => self.show(flag, certain),
                     None => {}
                 }
+            }
+        }
+        if let Some(on) = unit
+            .key()
+            .filter(|_| unit.shell == Shell::Posix)
+            .and_then(|key| extended::change(&key, &unit.args))
+        {
+            if on {
+                self.extend_glob();
+            } else if dotglob::in_shell(&unit.wrappers, Flag::Zsh)
+                && unit.stage.is_none()
+                && self.branches == 0
+            {
+                self.dotglob.extended = false;
             }
         }
         if self.bodies > 0 {
@@ -2394,8 +2430,22 @@ impl Split {
     /// shell's own. The shell is not known, and a function body the line
     /// exports may run in it, so both flags go on.
     pub(crate) fn hide_for_script(&mut self) {
-        self.dotglob = Hidden::ON;
+        self.dotglob = self.dotglob.or(Hidden::ON);
         self.ever_dotglob = true;
+    }
+
+    /// Turn zsh's `extendedglob` on for the rest of the shell, or for a
+    /// script started with it (`zsh -o extendedglob -c '…'`).
+    pub(crate) fn extend_glob(&mut self) {
+        self.dotglob.extended = true;
+        self.ever_extended = true;
+    }
+
+    /// Whether the words of what comes next are read as zsh reads them
+    /// with `extendedglob` on: it is on, or the line turns it on somewhere
+    /// and this is a function body or a loop, which may run after.
+    pub(crate) fn extended_glob(&self) -> bool {
+        self.dotglob.extended || (self.extended_bodies && self.bodies > 0)
     }
 
     /// Note that the line defines the function `name`.
@@ -2619,6 +2669,72 @@ impl Split {
             .unwrap_or_default()
         {
             code.dir = Some(moved.clone());
+        }
+    }
+
+    /// Start what a wrapper runs in `target`, the folder its own option
+    /// names (`env -C DIR`, `pnpm --dir DIR`, `Start-Process
+    /// -WorkingDirectory DIR`, `start /d DIR`), read as a `shell` path: every
+    /// folder the line may be in moves there, as for a `cd` that ran. The
+    /// wrapper fails rather than run its program anywhere else. The move is
+    /// that program's alone: [`Self::leave_folders`] puts the line back.
+    pub(crate) fn start_in(&mut self, target: &Arg, shell: Shell) {
+        self.folders.push(self.dir_snapshot());
+        if shell == Shell::Cmd {
+            // `start /d` names the whole folder: its drive too, and a network
+            // path is on a drive the line does not name.
+            match target.known() {
+                Some(text) if text.starts_with(r"\\") || text.starts_with("//") => {
+                    self.change_drive(None);
+                }
+                Some(text) => {
+                    if let Some(letter) = crate::path::drive_of(text) {
+                        self.change_drive(Some(letter));
+                    }
+                }
+                None => self.change_drive(None),
+            }
+        }
+        let dir = self.moved_to(self.dir.as_ref(), target, shell);
+        let elsewhere: Vec<Option<Arg>> = self
+            .elsewhere
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        let stayed: Vec<Option<Arg>> = self
+            .stayed
+            .iter()
+            .map(|from| Some(self.moved_to(from.as_ref(), target, shell)))
+            .collect();
+        // As for a `cd`: the folder holds code when the target does, or when
+        // the folder did and the target was put after it.
+        let target_text = target.known();
+        self.dir_code = match &dir {
+            Arg::Known(text) => {
+                target_text.is_none_or(holds_code)
+                    || (self.dir_code && target_text != Some(text.as_str()))
+            }
+            _ => true,
+        };
+        self.pwd.unplain |= self.dir_code;
+        self.dir = Some(dir);
+        self.set_elsewhere(elsewhere);
+        self.set_stayed(stayed);
+    }
+
+    /// How many folders wrappers have started their programs in and the
+    /// line is still in, to give to [`Self::leave_folders`].
+    pub(crate) fn folders_mark(&self) -> usize {
+        self.folders.len()
+    }
+
+    /// Put the line back where it was before the folders wrappers started
+    /// their programs in since `mark` (see [`Self::start_in`]).
+    pub(crate) fn leave_folders(&mut self, mark: usize) {
+        if mark < self.folders.len() {
+            let mut left = self.folders.split_off(mark);
+            let place = left.swap_remove(0);
+            self.restore_dir(place);
         }
     }
 
@@ -3296,11 +3412,41 @@ pub(crate) fn split(
         };
         script(&mut split, command, shell, 0);
     }
+    // A function body or a loop may run after the line turns `extendedglob`
+    // on, wherever it is written: read the line again, reading their words
+    // with it on.
+    if split.ever_extended
+        && !(split.in_body.is_empty()
+            && split.write_in_body.is_empty()
+            && split.read_in_body.is_empty())
+    {
+        start_again_extended(&mut split);
+        script(&mut split, command, shell, 0);
+    }
     split.hide_bodies();
     split.settle_later();
     split.settle_functions();
     split.settle_pwd();
     split
+}
+
+/// Clear `split` for a second read of the line that reads the words of its
+/// function bodies and loops with `extendedglob` on, keeping what it was
+/// started with. A function of its own, so that the `Split` it builds is
+/// not held on the stack while [`split`] reads the line: the walk of a
+/// deeply nested line needs all of it.
+#[inline(never)]
+fn start_again_extended(split: &mut Split) {
+    let fresh = Split {
+        psdrive: split.psdrive,
+        extended_bodies: true,
+        drive: split.drive,
+        home_drive: split.home_drive,
+        ..Split::default()
+    };
+    let effect = split.kept.on;
+    *split = fresh;
+    split.kept.on = effect;
 }
 
 /// Whether `text`, a script or inline code `depth` levels deep, may be read:
