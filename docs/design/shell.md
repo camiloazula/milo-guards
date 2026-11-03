@@ -1419,7 +1419,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
-| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy; on macOS and Linux also security switches, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
+| `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy; on macOS and Linux also security switches, the kernel's settings, the boot loader, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
 | `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads, through a pipe or `Invoke-Expression`. |
@@ -1921,6 +1921,11 @@ for `iptables`), no `rmtcomputergrp=` or `rmtusrgrp=`, no `security=` but
 `enable=no`. An operand only known when it runs may narrow it, as for
 `iptables`. The same line is judged the same in cmd and in PowerShell.
 
+A command word only known when it runs may be one that changes the
+machine: `reg %verb% HKLM\x` and `sc %verb% x` are risky, and so is any
+`bcdedit` argument only known when it runs (`bcdedit $x`); `reg query`, `sc
+query` and `bcdedit /enum` stay safe.
+
 ### Machine settings on macOS and Linux
 
 `system_settings` also covers the changes to the machine that `sudo` does not
@@ -1929,14 +1934,50 @@ a setting and a user's own settings stay safe. Callers treat the rule as one
 of their strictest, so each family below was added on that test.
 
 - **Security switches.** `spctl --master-disable`, `--global-disable` and
-  `--disable` (Gatekeeper); `csrutil disable`, `authenticated-root disable`
-  and `enable --without …` (System Integrity Protection); `setenforce` to
-  anything but `1` or `Enforcing`; any write to `/etc/selinux/config` or
-  `/etc/sysconfig/selinux`, whatever the program (a redirect, `tee`, `sed -i`,
-  `cp`); `nvram` that sets, deletes or clears a variable (`boot-args`). A
-  value only known when it runs is risky. `spctl --master-enable`, `csrutil
-  status`, `setenforce 1`, `getenforce`, `nvram -p` and reading the files are
-  safe.
+  `--disable` (Gatekeeper), `spctl kext-consent disable` and `add` (kernel
+  extensions load without the user's consent) and `spctl developer-mode
+  enable-terminal` (the terminal's programs skip Gatekeeper); `csrutil
+  disable`, `authenticated-root disable` and `enable --without …` (System
+  Integrity Protection); `setenforce` to anything but `1` or `Enforcing`;
+  any write to `/etc/selinux/config` or `/etc/sysconfig/selinux`, whatever
+  the program (a redirect, `tee`, `sed -i`, `cp`), a file copied or moved
+  into their folder at their name (`cp config /etc/selinux/`, or a name
+  that is a pattern or only known when it runs), and a folder copied whole
+  that lands on one of those folders (`cp -r selinux /etc/`); any
+  `setsebool` of a boolean and any `semanage` that adds, deletes or
+  modifies (`-a`, `-d`, `-m`, `-D`, and `module -r`) or `import`s
+  (`SELinux`'s policy; `semanage … -l` and `export` read it); `aa-disable`
+  and `aa-complain` of a profile, `aa-teardown`, and `apparmor_parser -R`
+  (`--remove`) and `-C` (`--complain`) (AppArmor); `auditctl -D` (every
+  audit rule), `-e` with anything but `1` or `2`, and `-R` (rules from a
+  file the line does not show); `sysctl -w`, a `name=value` operand, `-p`,
+  `-f` and `--system` (the kernel's settings, such as
+  `kernel.randomize_va_space`); `nvram` that sets, deletes or clears a
+  variable (`boot-args`). A value only known when it runs is risky.
+  `spctl --master-enable`, `spctl --status`, `kext-consent status`, `csrutil
+  status`, `setenforce 1`, `getenforce`, `getsebool -a`, `aa-status`,
+  `auditctl -l` and `-s`, `sysctl -a` and `sysctl name`, `nvram -p` and
+  reading the files are safe.
+- **Boot settings.** `grubby` with any option but those that read
+  (`--info`, `--default-kernel`, `--default-index`, `--default-title`,
+  `--bootloader-probe`), as `grubby --update-kernel ALL --args selinux=0`;
+  `efibootmgr` with any option but `-v`, `-q`, `--help` and `--version` (it
+  lists the entries alone; `-B` deletes one, `-o` sets the order, `-n` the next);
+  `grub-set-default` and `grub-reboot` (and their `grub2-` names) given an
+  entry. Each is `changes how the computer starts`.
+- **An option only known when it runs.** Every program these rules read
+  takes an argument only known when it runs that may be an option as a
+  change: it may be the one that turns a protection off (`spctl $x`,
+  `iptables $flag`, `auditctl $flag`, `firewall-cmd $x`, `pfctl $x`,
+  `socketfilterfw $x`, `networksetup $x`, `scutil $x`). One that is the
+  value of the option before it (`iptables -s $ip`, `pfctl -s $what`,
+  `auditctl -k $key`) is not. `iptables` refuses a second command, so once
+  the line names one (`-A`, `-L`, `-P`) an argument only known when it runs
+  cannot add one (`iptables -A INPUT $x -j DROP` is safe; `iptables -t nat
+  $x` is not). The programs whose command word comes first read one only
+  known when it runs as before (`systemctl $verb x`, `defaults $verb x`),
+  and `systemctl --user` with an argument only known when it runs is read
+  as system-wide, since that argument may be `--system`.
 - **The firewall.** `iptables` and `ip6tables`, and `ebtables` and
   `arptables`, which take the same commands (and their `-legacy` and
   `-nft` builds), with `-F`/`--flush` (`ebtables --init-table` too),
@@ -2048,7 +2089,11 @@ of their strictest, so each family below was added on that test.
   is a plist inside the workspace: `launchctl unload ./x.plist` and
   `launchctl bootout gui/501 ./x.plist` are safe, `bootout gui/501/com.x`
   (a label), `bootout system/…`, and any plist in `/Library/LaunchDaemons` or
-  `~/Library/LaunchAgents` are not. `launchctl unload -D domain` unloads
+  `~/Library/LaunchAgents` are not. A domain only known when it runs is a
+  user's when what it starts with says so (`gui/$UID`, `user/$(id -u)`), and
+  may be `system` otherwise (`$domain`). `launchctl config system|user KEY
+  VALUE` sets what launchd starts services with, for good, and is risky
+  (`changes how the system starts services`). `launchctl unload -D domain` unloads
   every plist in that search path (`-D system`, `-D all`), so it is risky
   whatever the domain. A command word only known when it runs
   (`systemctl $verb x`) is risky. `systemctl` options that take a value
@@ -2096,9 +2141,16 @@ of their strictest, so each family below was added on that test.
   same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
   'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
-  (`systemctl stop 'firewall*'`) is risky too, and so is one given to any
-  other service manager (`sv down /etc/service/*`, `cd /etc/service && sv
-  down *`), which the shell expands against the files. For `service name action`, an
+  is tested against the units that protect the machine and the ones it
+  needs: one that may match a protecting unit (`systemctl stop 'firewall*'`,
+  `'*'`, `'clamd@*'`, `'ufw.*'`) is risky, and so is one given to any other
+  service manager (`sv down /etc/service/*`, `cd /etc/service && sv down
+  *`), which the shell expands against the files. A unit is matched by its
+  name, its name with `.service`, and the name before its instance, without
+  case; a `[…]` set counts as any one character and a brace list the shell
+  expands (`{ufw,nginx}`) as a `*`. One that may match a unit the system
+  needs (`'systemd-logi*'`) is `stop_system`, and one that matches neither
+  (`systemctl stop 'docker*'`) is everyday work. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
@@ -2178,14 +2230,22 @@ of their strictest, so each family below was added on that test.
   and the verbs `hostnamectl` has since systemd 249 (`hostname`,
   `icon-name`, `chassis`, `deployment`, `location`) when given a value
   (`hostnamectl hostname newname`; with none they print); `hostname name`
-  and `hostname -F`. An application's own keys
+  and `hostname -F`. A key that keeps a protection on is not an
+  application's own: writing, deleting or renaming `LSQuarantine` of
+  `com.apple.LaunchServices` (or its file), which has Gatekeeper check what
+  is downloaded, or a key only known when it runs there, is risky (`changes
+  the quarantine of downloaded files`). An application's own keys
   (`defaults write com.example.app key value`, `defaults delete com.apple.dock
-  persistent-apps`), a path in the workspace or the user's own folder,
-  `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
+  persistent-apps`), a path in the user's own folder, `defaults read`,
+  `pmset -g` and the `-get`/`-list` options are safe. A domain given as a
+  path in the workspace is a file of the workspace's own, whatever the verb
+  (`defaults delete ./Info.plist`, `defaults import ./Info.plist x.plist`).
 
-`hostname`, `service` and `sv` are read in POSIX shells only: in PowerShell
-and cmd they are Windows programs or aliases (`sv` is PowerShell's
-`Set-Variable`) and are left alone. An init script is read in PowerShell too
+`sv` is read in POSIX shells only: in PowerShell it is `Set-Variable`. pwsh
+on Linux and macOS runs the native `hostname` and `service`, so they are
+read in PowerShell as in POSIX (`hostname newname` and `service ufw stop`
+are risky there too); in cmd, `hostname` is Windows' own, which sets
+nothing, and there is no `service`. An init script is read in PowerShell too
 (`& '/etc/init.d/ufw' stop`, `Start-Process /etc/init.d/ufw stop`), since pwsh
 on Linux runs a path under `/etc/init.d` as the script it is; cmd never does.
 

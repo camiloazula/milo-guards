@@ -512,3 +512,56 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
         }
     }
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn machine_settings_given_many_patterns_names_or_options_are_read_in_time() {
+    let _serial = serial();
+    // Each unit pattern is tested against the units that protect the
+    // machine and the ones it needs, each name copied into a folder against
+    // the files SELinux reads (the folder placed once), and each option of
+    // a settings program read once: a line at the length limit of them is
+    // read in time that grows with its length.
+    let limit = if cfg!(debug_assertions) {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_millis(250)
+    };
+    let fit = |unit: &str, head: &str, tail: &str| {
+        let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
+        format!("{head}{}{tail}", unit.repeat(count))
+    };
+    let rows = [
+        (
+            Shell::Posix,
+            fit("'*a*b*c*d*e*f*g*h*i*j*k*l*m*n*o*p' ", "systemctl stop ", ""),
+        ),
+        (Shell::Posix, fit("'[a-z]?*[0-9]' ", "systemctl edit ", "")),
+        (Shell::Posix, fit("? ", "systemctl stop ", "")),
+        (Shell::Posix, fit("d*@x* ", "sv down ", "")),
+        (Shell::Posix, fit("conf* ", "cp ", " /etc/selinux/")),
+        (Shell::Posix, fit("s* ", "cp -r ", " /etc/")),
+        (Shell::Posix, fit("$x ", "auditctl -k ", "")),
+        (Shell::Posix, fit("-v ", "efibootmgr ", "")),
+        (Shell::Posix, fit("-nv ", "iptables ", "")),
+        (Shell::Posix, fit("a=b ", "sysctl ", "")),
+        (Shell::Posix, fit("x ", "semanage fcontext ", "")),
+        (Shell::Posix, fit("--info ALL ", "grubby ", "")),
+        (Shell::PowerShell, fit("x ", "service ", " stop")),
+    ];
+    for (shell, line) in &rows {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let paths = paths_for(*shell);
+        let started = std::time::Instant::now();
+        let _ = classify(line, *shell, &paths);
+        let took = started.elapsed();
+        assert!(took < limit, "{took:?} for {:?} in {shell:?}", &line[..20]);
+    }
+}

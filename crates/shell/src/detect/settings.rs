@@ -6,12 +6,16 @@
 
 pub(super) mod firewall;
 
-use super::processes::{is_system_label, is_system_unit};
+use super::processes::{
+    is_system_label, is_system_unit, unit_pattern_matches, unit_pattern_stops_system,
+};
 use super::{script_operand, Checker};
 use crate::launch::SHELLS;
 use crate::path::{Access, Place};
 use crate::unit::{has_flag, operands, Arg, Unit};
 use crate::{Rule, Shell};
+use milo_guards_core::spelling::glob;
+use milo_guards_core::Flavour;
 
 /// Units that protect the machine: stopping one turns protection off, as
 /// disabling the firewall does. The firewalls, the mandatory access control
@@ -208,6 +212,64 @@ const SYSTEMCTL_LONG: [&str; 26] = [
     "legend",
 ];
 
+/// Long options of `spctl` whose value is the next argument.
+const SPCTL_LONG: [&str; 4] = ["type", "label", "context", "priority"];
+
+/// Short options of `pfctl` whose value is the rest of the bundle or the
+/// next argument.
+const PFCTL_VALUED: &str = "aDfFikKopsTtxX";
+
+/// The reason for a firewall program given an option only known when it
+/// runs.
+const FIREWALL_UNKNOWN: &str = "changes the firewall in a way only known when it runs";
+
+/// Preference keys that keep a protection of the machine on, with their
+/// domain and the reason a change of one gives: `LSQuarantine` marks what is
+/// downloaded so that Gatekeeper checks it before it first runs.
+const PROTECTING_DEFAULTS: [(&str, &str, &str); 1] = [(
+    "com.apple.LaunchServices",
+    "LSQuarantine",
+    "changes the quarantine of downloaded files",
+)];
+
+/// Short options of `apparmor_parser` whose value is the rest of the bundle
+/// or the next argument.
+const APPARMOR_SHORT: &str = "IbfmMoLODj";
+
+/// Long options of `apparmor_parser` whose value is the next argument.
+const APPARMOR_LONG: [&str; 15] = [
+    "Include",
+    "base",
+    "subdomainfs",
+    "match-string",
+    "features-file",
+    "ofile",
+    "cache-loc",
+    "Optimize",
+    "dump",
+    "jobs",
+    "max-jobs",
+    "config-file",
+    "kernel-features",
+    "compile-features",
+    "policy-features",
+];
+
+/// Short options of `auditctl` whose value is the rest of the bundle or the
+/// next argument.
+const AUDITCTL_VALUED: &str = "aAbCdefFkmpqrRSwW";
+
+/// Short options of `semanage`'s subcommands (but `module`) whose value is
+/// the rest of the bundle or the next argument.
+const SEMANAGE_VALUED: &str = "tsrfpLRPeT";
+
+/// The reason for a change to `SELinux`'s mode, booleans or policy.
+const SELINUX_CHANGES: &str = "changes SELinux settings";
+
+/// The reason for a change to the boot loader or the firmware's boot
+/// entries.
+const BOOT_CHANGES: &str = "changes how the computer starts";
+
 /// Files that hold `SELinux`'s mode, where a write turns it off at boot.
 const SELINUX_FILES: [&str; 2] = ["/|etc/selinux/config", "/|etc/sysconfig/selinux"];
 
@@ -290,6 +352,9 @@ struct Walk<'a> {
     /// The long options given as options, as written and without their
     /// `=value`: an argument that is another option's value is not one.
     longs: Vec<&'a str>,
+    /// Whether an argument only known when it runs is not an option's
+    /// value: it may be an option itself.
+    unknown: bool,
 }
 
 /// Walks `args` the way `getopt_long` does.
@@ -297,6 +362,7 @@ fn getopt_walk<'a>(args: &'a [Arg], shorts: &str, longs: &[&str]) -> Walk<'a> {
     let mut walk = Walk {
         operands: Vec::new(),
         longs: Vec::new(),
+        unknown: false,
     };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -306,24 +372,66 @@ fn getopt_walk<'a>(args: &'a [Arg], shorts: &str, longs: &[&str]) -> Walk<'a> {
                 break;
             }
             Some(text) if text.len() > 1 && text.starts_with('-') => {
-                let takes_next = match text.strip_prefix("--") {
-                    Some(name) => {
-                        walk.longs.push(name.split('=').next().unwrap_or(name));
-                        !name.contains('=') && longs.iter().any(|full| is_option(name, full, 1))
-                    }
-                    None => text[1..]
-                        .char_indices()
-                        .find(|(_, letter)| shorts.contains(*letter))
-                        .is_some_and(|(at, letter)| at + letter.len_utf8() == text.len() - 1),
-                };
-                if takes_next {
+                if let Some(name) = text.strip_prefix("--") {
+                    walk.longs.push(name.split('=').next().unwrap_or(name));
+                }
+                if takes_value(text, shorts, longs) {
                     iter.next();
                 }
             }
-            _ => walk.operands.push(arg),
+            Some(_) => walk.operands.push(arg),
+            None => {
+                walk.unknown = true;
+                walk.operands.push(arg);
+            }
         }
     }
     walk
+}
+
+/// Whether `text`, an option as written, takes the next argument as its
+/// value, to a program that reads its options with `getopt_long`: a long
+/// one in `longs` (or a prefix of it) without `=`, or a bundle whose first
+/// letter in `shorts` that takes a value is its last.
+fn takes_value(text: &str, shorts: &str, longs: &[&str]) -> bool {
+    match text.strip_prefix("--") {
+        Some(name) => !name.contains('=') && longs.iter().any(|full| is_option(name, full, 1)),
+        None => text
+            .get(1..)
+            .unwrap_or_default()
+            .char_indices()
+            .find(|(_, letter)| shorts.contains(*letter))
+            .is_some_and(|(at, letter)| at + letter.len_utf8() == text.len() - 1),
+    }
+}
+
+/// Whether `args` hold an argument only known when it runs that may be an
+/// option: one before `--` that is not the value of the option before it.
+/// `valued` says whether a known option, as written, takes the next
+/// argument as its value. Such an argument may be the option that turns a
+/// protection off (`spctl $x`, `iptables $flag`), so a program that reads
+/// one is changed in a way only known when it runs.
+fn unknown_option(args: &[Arg], valued: impl Fn(&str) -> bool) -> bool {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some("--") => return false,
+            Some(text) => {
+                if text.len() > 1 && text.starts_with('-') && valued(text) {
+                    iter.next();
+                }
+            }
+            None => return true,
+        }
+    }
+    false
+}
+
+/// For a program with many options, some of them from modules it loads
+/// (`iptables -m tcp --dport`): any option may take the next argument as
+/// its value.
+fn any_option(_: &str) -> bool {
+    true
 }
 
 /// The arguments that are not options, for a program that reads them with
@@ -333,9 +441,10 @@ fn getopt_operands<'a>(args: &'a [Arg], shorts: &str, longs: &[&str]) -> Vec<&'a
 }
 
 /// Whether a unit name is a pattern, which `systemctl` matches against the
-/// loaded units.
+/// loaded units, or holds a brace list, which the shell expands to several
+/// (`{ufw,nginx}`).
 fn is_pattern(name: &str) -> bool {
-    name.contains(['*', '?', '['])
+    name.contains(['*', '?', '[', '{'])
 }
 
 /// One word of an `nft` command: its text in lower case, or `None` when it
@@ -426,6 +535,44 @@ fn base_name(key: &str) -> &str {
         .unwrap_or(key)
 }
 
+/// Whether `iptables` arguments name a command (`-A`, `-L`, `--flush`).
+/// The program refuses a second one, so once a command is named an
+/// argument only known when it runs cannot add one: without one, it may be
+/// any (`iptables $flag`). A bundle is read up to its first letter that
+/// takes a value (`-nL`, but not `-jACCEPT`).
+fn names_tables_command(args: &[Arg]) -> bool {
+    const COMMANDS: [&str; 13] = [
+        "append",
+        "check",
+        "delete",
+        "insert",
+        "replace",
+        "list",
+        "list-rules",
+        "flush",
+        "zero",
+        "new-chain",
+        "delete-chain",
+        "policy",
+        "rename-chain",
+    ];
+    args.iter()
+        .filter_map(Arg::known)
+        .take_while(|text| *text != "--")
+        .any(|text| match text.strip_prefix("--") {
+            Some(name) => {
+                let name = name.split('=').next().unwrap_or(name);
+                COMMANDS.iter().any(|full| is_option(name, full, 3))
+            }
+            None => text.strip_prefix('-').is_some_and(|bundle| {
+                bundle
+                    .chars()
+                    .take_while(|letter| !"tpsdiojgmcwW".contains(*letter))
+                    .any(|letter| "ACDIRLSFZNXPE".contains(letter))
+            }),
+        })
+}
+
 /// The programs that read the rules of a firewall as `iptables` does.
 const TABLES: [&str; 4] = ["iptables", "ip6tables", "ebtables", "arptables"];
 
@@ -449,6 +596,16 @@ fn unit_name(name: &str) -> &str {
 /// Whether `name` is one of the units that protect the machine.
 fn protects(name: &str) -> bool {
     PROTECTORS.contains(&unit_name(&name.to_ascii_lowercase()))
+}
+
+/// Whether `name` is one of the units that protect the machine, or a
+/// pattern that may match one.
+fn may_protect(name: &str) -> bool {
+    if is_pattern(name) {
+        unit_pattern_matches(name, &PROTECTORS)
+    } else {
+        protects(name)
+    }
 }
 
 impl Checker<'_> {
@@ -478,7 +635,9 @@ impl Checker<'_> {
             "pfctl" => self.pfctl(args),
             "socketfilterfw" => self.socketfilterfw(args),
             "systemctl" => self.systemctl(args),
-            "service" if unit.shell == Shell::Posix => self.service(args),
+            // pwsh on Linux and macOS runs the native `service` and
+            // `hostname`; cmd's `hostname` is Windows', which sets nothing.
+            "service" if unit.shell != Shell::Cmd => self.service(args),
             // `--query` only asks whether the action would be allowed.
             "invoke-rc.d" => {
                 if !args.iter().any(|arg| arg.known() == Some("--query")) {
@@ -496,7 +655,7 @@ impl Checker<'_> {
             "pmset" => self.pmset(args),
             "networksetup" | "systemsetup" => self.set_options(args),
             "scutil" => {
-                if has_long(args, "set", 3) {
+                if has_long(args, "set", 3) || unknown_option(args, any_option) {
                     self.add(
                         Rule::SystemSettings,
                         "changes the computer's name or network settings",
@@ -505,7 +664,29 @@ impl Checker<'_> {
                 }
             }
             "hostnamectl" | "timedatectl" => self.set_commands(args, key),
-            "hostname" if unit.shell == Shell::Posix => self.hostname(args),
+            "hostname" if unit.shell != Shell::Cmd => self.hostname(args),
+            "aa-disable" | "aa-complain" if !operands(args, &["-d", "--dir"]).is_empty() => {
+                self.add(Rule::SystemSettings, "turns off an AppArmor profile", None);
+            }
+            "aa-teardown" if !has_flag(args, Some('h'), Some("help")) => {
+                self.add(Rule::SystemSettings, "turns off AppArmor", None);
+            }
+            "apparmor_parser" => self.apparmor_parser(args),
+            "auditctl" => self.auditctl(args),
+            // Every boolean is a switch of the machine's policy.
+            "setsebool" if !operands(args, &[]).is_empty() => {
+                self.add(Rule::SystemSettings, SELINUX_CHANGES, None);
+            }
+            "semanage" => self.semanage(args),
+            "sysctl" => self.sysctl(args),
+            "grubby" => self.grubby(args),
+            "efibootmgr" => self.efibootmgr(args),
+            // The entry the computer starts next, or always.
+            "grub-set-default" | "grub2-set-default" | "grub-reboot" | "grub2-reboot"
+                if !operands(args, &["--boot-directory"]).is_empty() =>
+            {
+                self.add(Rule::SystemSettings, BOOT_CHANGES, None);
+            }
             _ => {}
         }
     }
@@ -519,20 +700,91 @@ impl Checker<'_> {
             .iter()
             .any(|file| file.eq_ignore_ascii_case(&key))
         {
-            self.add(
+            self.add(Rule::SystemSettings, SELINUX_CHANGES, Some(target));
+        }
+    }
+
+    /// `spctl`: turning Gatekeeper off, letting kernel extensions load
+    /// without the user's consent (`kext-consent disable`, or `add` of a
+    /// team), and letting the terminal's programs skip Gatekeeper
+    /// (`developer-mode enable-terminal`). An option or a command word only
+    /// known when it runs may be any of them.
+    /// A file copied or moved into a folder lands there at its own name
+    /// (`cp config /etc/selinux/`), and a folder copied whole replaces what
+    /// is below where it lands (`cp -r selinux /etc/`): either may be a
+    /// file `SELinux` reads its mode from. `leaves` are the names of what is
+    /// copied; one that is a pattern may be any. The folder is placed once,
+    /// however many there are.
+    pub(super) fn selinux_landing(
+        &mut self,
+        (shell, dir): (Shell, Option<&Arg>),
+        (folder, leaves): (&str, &[&str]),
+        recursive: bool,
+        destination: &Arg,
+    ) {
+        let Some(key) = self
+            .resolver
+            .file_key(dir, &Arg::Known(folder.to_string()), shell)
+        else {
+            return;
+        };
+        let lands = SELINUX_FILES.iter().any(|file| {
+            // The path of the file below the folder.
+            let below = if key.ends_with('|') {
+                file.strip_prefix(key.as_str())
+            } else {
+                file.strip_prefix(key.as_str())
+                    .and_then(|below| below.strip_prefix('/'))
+            };
+            let Some(below) = below else { return false };
+            let name = match below.split_once('/') {
+                None => below,
+                Some((first, _)) if recursive => first,
+                Some(_) => return false,
+            };
+            leaves
+                .iter()
+                .any(|leaf| glob::matches(leaf, name, Flavour::Posix, true))
+        });
+        if lands {
+            self.add_once(
                 Rule::SystemSettings,
-                "changes SELinux settings",
-                Some(target),
+                SELINUX_CHANGES.to_string(),
+                destination,
             );
         }
     }
 
     fn spctl(&mut self, args: &[Arg]) {
-        if has_long(args, "master-disable", 8)
+        let reason = if has_long(args, "master-disable", 8)
             || has_long(args, "global-disable", 8)
             || has_long(args, "disable", 1)
         {
-            self.add(Rule::SystemSettings, "turns off Gatekeeper", None);
+            Some("turns off Gatekeeper")
+        } else {
+            let walk = getopt_walk(args, "t", &SPCTL_LONG);
+            // The action after the command word, in lower case, or `None`
+            // when it is only known when it runs.
+            let action = walk
+                .operands
+                .get(1)
+                .map(|arg| arg.known().map(str::to_ascii_lowercase));
+            let named = match (first_word(&walk.operands), action) {
+                (Word::Is(sub), Some(action)) if sub == "kext-consent" => action
+                    .is_none_or(|action| matches!(action.as_str(), "disable" | "add"))
+                    .then_some("lets kernel extensions load without consent"),
+                (Word::Is(sub), Some(action)) if sub == "developer-mode" => action
+                    .is_none_or(|action| action.starts_with("enable"))
+                    .then_some("lets programs skip Gatekeeper"),
+                _ => None,
+            };
+            named.or_else(|| {
+                walk.unknown
+                    .then_some("changes Gatekeeper in a way only known when it runs")
+            })
+        };
+        if let Some(reason) = reason {
+            self.add(Rule::SystemSettings, reason, None);
         }
     }
 
@@ -594,6 +846,8 @@ impl Checker<'_> {
             self.add(Rule::SystemSettings, "changes the firewall", None);
         } else if firewall::opens_everything(args) {
             self.add(Rule::SystemSettings, firewall::OPENS, None);
+        } else if !names_tables_command(args) && args.iter().any(|arg| arg.known().is_none()) {
+            self.add(Rule::SystemSettings, FIREWALL_UNKNOWN, None);
         }
     }
 
@@ -611,6 +865,8 @@ impl Checker<'_> {
         }
         if firewall::zone_opens(args) {
             self.add(Rule::SystemSettings, firewall::OPENS, None);
+        } else if unknown_option(args, any_option) {
+            self.add(Rule::SystemSettings, FIREWALL_UNKNOWN, None);
         }
     }
 
@@ -727,7 +983,7 @@ impl Checker<'_> {
         let mut risky = false;
         let mut loads = false;
         let mut parses = false;
-        for (letter, given) in short_options(args, "aDfFikKopsTtxX") {
+        for (letter, given) in short_options(args, PFCTL_VALUED) {
             risky |= match (letter, given) {
                 ('d', _) => true,
                 ('F', Given::Attached(modifier)) => flushes(modifier),
@@ -741,6 +997,8 @@ impl Checker<'_> {
             self.add(Rule::SystemSettings, "changes the firewall", None);
         } else if loads && !parses {
             self.add(Rule::SystemSettings, firewall::REPLACES, None);
+        } else if unknown_option(args, |text| takes_value(text, PFCTL_VALUED, &[])) {
+            self.add(Rule::SystemSettings, FIREWALL_UNKNOWN, None);
         }
     }
 
@@ -761,6 +1019,8 @@ impl Checker<'_> {
             });
         if off {
             self.add(Rule::SystemSettings, "turns the firewall off", None);
+        } else if unknown_option(args, any_option) {
+            self.add(Rule::SystemSettings, FIREWALL_UNKNOWN, None);
         }
     }
 
@@ -781,7 +1041,9 @@ impl Checker<'_> {
                 user = false;
             }
         }
-        if user {
+        // An argument only known when it runs may be `--system`, after
+        // `--user`.
+        if user && !walk.unknown {
             return;
         }
         let words = walk.operands;
@@ -852,9 +1114,7 @@ impl Checker<'_> {
                 ),
                 "edit" | "revert" | "preset" => {
                     for unit in units {
-                        let protecting = unit
-                            .known()
-                            .is_none_or(|name| is_pattern(name) || protects(name));
+                        let protecting = unit.known().is_none_or(may_protect);
                         if protecting {
                             self.add(
                                 Rule::SystemSettings,
@@ -872,17 +1132,27 @@ impl Checker<'_> {
     /// One service a stop names: the unit that runs a process the system
     /// needs (`systemd-logind`) ends the session it serves, and stopping one
     /// that protects the machine, or one only known when it runs, turns
-    /// that protection off. A pattern (`firewall*`, `/etc/service/*`) may
-    /// match one that protects the machine: `systemctl` matches it against
-    /// the loaded units, and the shell expands it against the files. Any
-    /// other is everyday work.
+    /// that protection off. A pattern (`firewall*`, `/etc/service/*`) is
+    /// tested against the names of both: `systemctl` matches it against the
+    /// loaded units, and the shell expands it against the files. Any other
+    /// is everyday work (`docker*`).
     fn stop_service(&mut self, verb: &str, unit: &Arg) {
         match unit.known() {
-            Some(name) if is_pattern(name) && !protects(name) => self.add(
-                Rule::SystemSettings,
-                format!("{verb} services that may protect the system"),
-                Some(unit),
-            ),
+            Some(name) if is_pattern(name) => {
+                if unit_pattern_matches(name, &PROTECTORS) {
+                    self.add(
+                        Rule::SystemSettings,
+                        format!("{verb} services that may protect the system"),
+                        Some(unit),
+                    );
+                } else if unit_pattern_stops_system(name) {
+                    self.add(
+                        Rule::StopSystem,
+                        format!("{verb} services the system may need"),
+                        Some(unit),
+                    );
+                }
+            }
             Some(name) if is_system_unit(unit_name(name)) => self.add(
                 Rule::StopSystem,
                 format!("{verb} a process the system needs"),
@@ -1101,6 +1371,18 @@ impl Checker<'_> {
             }
             return;
         }
+        // `config system|user KEY VALUE` sets what launchd starts every
+        // service with, for good.
+        if sub == "config" {
+            if !rest.is_empty() {
+                self.add(
+                    Rule::SystemSettings,
+                    "changes how the system starts services",
+                    None,
+                );
+            }
+            return;
+        }
         let paths: &[&Arg] = match sub.as_str() {
             // `-D domain` unloads every plist in that search path.
             "unload" => {
@@ -1117,10 +1399,18 @@ impl Checker<'_> {
                 }
                 rest
             }
-            // The first operand is the domain: `system`, `gui/501`.
+            // The first operand is the domain: `system`, `gui/501`. One only
+            // known when it runs is a user's when its known start says so
+            // (`gui/$UID`).
             "bootout" => {
                 let system = rest.first().is_none_or(|domain| {
-                    domain.known().is_none_or(|text| text.starts_with("system"))
+                    domain.known().map_or_else(
+                        || {
+                            let start = literal_start(domain);
+                            !(start.starts_with("gui/") || start.starts_with("user/"))
+                        },
+                        |text| text.starts_with("system"),
+                    )
                 });
                 if system {
                     &[]
@@ -1197,6 +1487,18 @@ impl Checker<'_> {
             .filter_map(Arg::known)
             .any(|text| matches!(text, "-g" | "-globalDomain" | "-app"));
         let rest = &words[1..];
+        // A domain given as a path in the workspace is a file of the
+        // workspace's own (`defaults delete ./Info.plist`).
+        let own_file = !domain_option
+            && rest.first().is_some_and(|domain| {
+                domain.known().is_some_and(|text| text.contains('/'))
+                    && self
+                        .place(unit.shell, unit.scope(), domain, Access::Item)
+                        .harmless()
+            });
+        if own_file {
+            return;
+        }
         // `import` replaces the domain's whole content, and `delete` with no
         // key deletes all of it.
         let deletes_all = verb == "delete" && rest.len() + usize::from(domain_option) <= 1;
@@ -1213,6 +1515,10 @@ impl Checker<'_> {
             return;
         }
         if domain_option {
+            return;
+        }
+        if let Some(reason) = protecting_default(&verb, rest) {
+            self.add(Rule::SystemSettings, reason, rest.first().copied());
             return;
         }
         if let Some(domain) = rest.first() {
@@ -1282,7 +1588,8 @@ impl Checker<'_> {
             .iter()
             .any(|prefix| lower.starts_with(prefix))
         });
-        if sets {
+        // Each setting is an option, followed by its values.
+        if sets || unknown_option(args, any_option) {
             self.add(
                 Rule::SystemSettings,
                 "changes system or network settings",
@@ -1336,4 +1643,202 @@ impl Checker<'_> {
             self.add(Rule::SystemSettings, "changes the computer's name", None);
         }
     }
+
+    /// `apparmor_parser -R` removes a profile and `-C` loads it in complain
+    /// mode, where it no longer enforces anything.
+    fn apparmor_parser(&mut self, args: &[Arg]) {
+        let off = short_options(args, APPARMOR_SHORT)
+            .iter()
+            .any(|(letter, _)| matches!(letter, 'R' | 'C'))
+            || has_long(args, "remove", 3)
+            || has_long(args, "complain", 5);
+        if off {
+            self.add(Rule::SystemSettings, "turns off an AppArmor profile", None);
+        } else if unknown_option(args, |text| {
+            takes_value(text, APPARMOR_SHORT, &APPARMOR_LONG)
+        }) {
+            self.add(
+                Rule::SystemSettings,
+                "changes AppArmor in a way only known when it runs",
+                None,
+            );
+        }
+    }
+
+    /// `auditctl -D` deletes every audit rule, `-e` with anything but `1`
+    /// (on) or `2` (on and locked) turns auditing off, and `-R` loads rules
+    /// from a file the line does not show, which may delete them all.
+    fn auditctl(&mut self, args: &[Arg]) {
+        let mut off = false;
+        let mut loads = false;
+        for (letter, given) in short_options(args, AUDITCTL_VALUED) {
+            let keeps_on = |mode: &str| matches!(mode, "1" | "2");
+            match (letter, given) {
+                ('D', _) => off = true,
+                ('e', Given::Attached(mode)) => off |= !keeps_on(mode),
+                ('e', Given::Next(mode)) => off |= mode.known().is_none_or(|mode| !keeps_on(mode)),
+                ('R', _) => loads = true,
+                _ => {}
+            }
+        }
+        let reason = if off {
+            "turns off auditing"
+        } else if loads {
+            "replaces the audit rules"
+        } else if unknown_option(args, |text| takes_value(text, AUDITCTL_VALUED, &[])) {
+            "changes auditing in a way only known when it runs"
+        } else {
+            return;
+        };
+        self.add(Rule::SystemSettings, reason, None);
+    }
+
+    /// `semanage`: a subcommand that adds, deletes or modifies a piece of
+    /// `SELinux`'s policy (`permissive -a`, `boolean -m`, `module -r`), and
+    /// `import`, change it; listing and `export` do not. A word only known
+    /// when it runs may be any of them.
+    fn semanage(&mut self, args: &[Arg]) {
+        let Some(first) = args.first() else { return };
+        let changes = match first.known().map(str::to_ascii_lowercase) {
+            None => true,
+            Some(sub) if sub == "import" => true,
+            Some(sub) if sub == "export" || sub.starts_with('-') => false,
+            Some(sub) => {
+                let module = sub == "module";
+                let (letters, longs, valued): (&str, &[&str], &str) = if module {
+                    ("ard", &["add", "remove", "disable"], "")
+                } else {
+                    (
+                        "admD",
+                        &["add", "delete", "modify", "deleteall"],
+                        SEMANAGE_VALUED,
+                    )
+                };
+                let rest = &args[1..];
+                short_options(rest, valued)
+                    .iter()
+                    .any(|(letter, _)| letters.contains(*letter))
+                    || long_names(rest)
+                        .any(|name| longs.iter().any(|full| is_option(name, full, 3)))
+            }
+        };
+        if changes || args.iter().any(|arg| arg.known().is_none()) {
+            self.add(Rule::SystemSettings, SELINUX_CHANGES, None);
+        }
+    }
+
+    /// `sysctl` sets a kernel setting with `-w` or a `name=value` operand,
+    /// and loads them from a file with `-p` (`-f` on the BSDs) or
+    /// `--system`; a name alone reads it.
+    fn sysctl(&mut self, args: &[Arg]) {
+        let walk = getopt_walk(args, "r", &["pattern"]);
+        let writes = short_options(args, "r")
+            .iter()
+            .any(|(letter, _)| matches!(letter, 'w' | 'p' | 'f'))
+            || walk.longs.iter().any(|name| {
+                is_option(name, "write", 2)
+                    || is_option(name, "load", 2)
+                    || is_option(name, "system", 2)
+            })
+            || walk
+                .operands
+                .iter()
+                .any(|arg| arg.known().is_none_or(|text| text.contains('=')));
+        if writes {
+            self.add(Rule::SystemSettings, "changes kernel settings", None);
+        }
+    }
+
+    /// `grubby` reads the boot entries with `--info` and the `--default-…`
+    /// options; any other option changes them (`--update-kernel ALL --args
+    /// selinux=0`, `--set-default`).
+    fn grubby(&mut self, args: &[Arg]) {
+        let mut iter = args.iter();
+        let mut reads = true;
+        while let Some(arg) = iter.next() {
+            match arg.known() {
+                Some("--info") => {
+                    iter.next();
+                }
+                Some(text) => {
+                    let name = text.split('=').next().unwrap_or(text);
+                    reads &= matches!(
+                        name,
+                        "--info"
+                            | "--default-kernel"
+                            | "--default-index"
+                            | "--default-title"
+                            | "--bootloader-probe"
+                            | "--help"
+                            | "--usage"
+                            | "--version"
+                            | "-h"
+                            | "-?"
+                    );
+                }
+                None => reads = false,
+            }
+        }
+        if !reads {
+            self.add(Rule::SystemSettings, BOOT_CHANGES, None);
+        }
+    }
+
+    /// `efibootmgr` lists the boot entries, alone or with `-v` or `-q`; any
+    /// other option changes them (`-B` deletes one, `-o` the order, `-n`
+    /// the next).
+    fn efibootmgr(&mut self, args: &[Arg]) {
+        let reads = args.iter().all(|arg| {
+            arg.known().is_some_and(|text| {
+                matches!(text, "--verbose" | "--quiet" | "--version" | "--help")
+                    || text.strip_prefix('-').is_some_and(|bundle| {
+                        !bundle.is_empty() && bundle.chars().all(|c| "vqVh".contains(c))
+                    })
+            })
+        });
+        if !reads {
+            self.add(Rule::SystemSettings, BOOT_CHANGES, None);
+        }
+    }
+}
+
+/// The reason for a protecting key `defaults` changes, when `verb` (`write`,
+/// `delete`, `rename`) with the operands after it, `rest`, changes one: the
+/// key is named, only known when it runs, or (a `write` of the domain's
+/// whole content) left out. The domain may be a path to its file.
+fn protecting_default(verb: &str, rest: &[&Arg]) -> Option<&'static str> {
+    let domain = rest.first()?.known()?;
+    let name = domain.trim_end_matches('/');
+    let name = name.rsplit('/').next().unwrap_or(name);
+    let name = name
+        .len()
+        .checked_sub(".plist".len())
+        .filter(|&at| name.is_char_boundary(at) && name[at..].eq_ignore_ascii_case(".plist"))
+        .map_or(name, |at| &name[..at]);
+    let whole = verb == "write" && rest.len() == 2;
+    PROTECTING_DEFAULTS
+        .iter()
+        .find(|(known, key, _)| {
+            known.eq_ignore_ascii_case(name)
+                && (whole
+                    || rest.get(1).is_some_and(|arg| {
+                        arg.known()
+                            .is_none_or(|text| text.eq_ignore_ascii_case(key))
+                    }))
+        })
+        .map(|(_, _, reason)| *reason)
+}
+
+/// The text an argument starts with that is the same however it expands:
+/// all of a known one, and of one only known when it runs, what comes
+/// before its first expansion, quote or wildcard (`gui/` of `gui/$UID`).
+fn literal_start(arg: &Arg) -> &str {
+    let text = match arg {
+        Arg::Template { text, .. } => text.as_str(),
+        _ => arg.text(),
+    };
+    let end = text
+        .find(['$', '`', '"', '\'', '\\', '%', '(', '{', '*', '?', '[', '~'])
+        .unwrap_or(text.len());
+    &text[..end]
 }

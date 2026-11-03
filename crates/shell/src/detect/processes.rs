@@ -1119,6 +1119,143 @@ pub(super) fn is_system_unit(name: &str) -> bool {
     matches!(unit, "ssh" | "dbus") || names_system_process(unit, Names::Literal)
 }
 
+/// Whether a unit pattern, which `systemctl` matches against the unit names
+/// (or a service folder a shell expands against the files), may match one of
+/// `names`: a unit by its name, by its name with `.service` (`ufw.*`), or
+/// by the name before its instance (`clamd@*` matches `clamd@scan`). A
+/// folder before the pattern is left out (`/etc/service/uf*`), and case is
+/// not told apart. A brace list the shell expands (`{ufw,nginx}`) is read
+/// as a `*`, which matches all it can expand to. Each name is read once for
+/// the name and its `.service`, and the reading stops when nothing can
+/// match any more, as a line may give thousands of patterns.
+pub(super) fn unit_pattern_matches(pattern: &str, names: &[&str]) -> bool {
+    let pattern = braces_as_stars(pattern);
+    let pattern = pattern.trim_end_matches('/');
+    let pattern = pattern.rsplit('/').next().unwrap_or(pattern);
+    let mut whole = Matcher::new(wildcard_pieces(&pattern.to_ascii_lowercase()));
+    // The name before the instance, unless the `@` may be inside a set.
+    let mut base = pattern
+        .split_once('@')
+        .filter(|(base, _)| !base.contains('['))
+        .map(|(base, _)| Matcher::new(wildcard_pieces(&base.to_ascii_lowercase())));
+    names.iter().any(|name| {
+        if base.as_mut().is_some_and(|base| base.matches(name, "").0) {
+            return true;
+        }
+        let (as_named, with_suffix) = whole.matches(name, ".service");
+        as_named || with_suffix
+    })
+}
+
+/// `pattern` with each brace list (`{a,b}`, and any nested in it) as a `*`.
+/// A `{` with no `}` after it is a plain character, as the shell reads it;
+/// one whose list is not closed takes the rest of the pattern, which a `*`
+/// matches too.
+fn braces_as_stars(pattern: &str) -> String {
+    let last_close = pattern.rfind('}');
+    let mut out = String::with_capacity(pattern.len());
+    let mut depth = 0_usize;
+    for (at, c) in pattern.char_indices() {
+        if depth > 0 {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+        } else if c == '{' && last_close.is_some_and(|close| close > at) {
+            out.push('*');
+            depth = 1;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A wildcard read against one name after another, with the room it needs
+/// kept between them.
+struct Matcher {
+    pieces: Vec<Piece>,
+    /// The pieces that each take one character.
+    needed: usize,
+    at: Vec<bool>,
+    next: Vec<bool>,
+}
+
+impl Matcher {
+    fn new(pieces: Vec<Piece>) -> Self {
+        let needed = pieces
+            .iter()
+            .filter(|piece| !matches!(piece, Piece::Star))
+            .count();
+        let room = pieces.len() + 1;
+        Self {
+            pieces,
+            needed,
+            at: vec![false; room],
+            next: vec![false; room],
+        }
+    }
+
+    /// Whether the wildcard matches `name`, and whether it matches `name`
+    /// followed by `suffix`, without case, in time proportional to the
+    /// number of pieces times their length.
+    fn matches(&mut self, name: &str, suffix: &str) -> (bool, bool) {
+        let pieces = &self.pieces;
+        let end = pieces.len();
+        let part = name.chars().count();
+        // Every piece but a star takes one character.
+        if self.needed > part + suffix.chars().count() {
+            return (false, false);
+        }
+        let spread = |at: &mut [bool]| {
+            for index in 0..end {
+                if at[index] && matches!(pieces[index], Piece::Star) {
+                    at[index + 1] = true;
+                }
+            }
+        };
+        self.at.fill(false);
+        self.at[0] = true;
+        spread(&mut self.at);
+        let mut first = part == 0 && self.at[end];
+        let text = name.chars().chain(suffix.chars());
+        for (count, c) in text.map(|c| c.to_ascii_lowercase()).enumerate() {
+            self.next.fill(false);
+            let mut alive = false;
+            for (index, piece) in pieces.iter().enumerate() {
+                if !self.at[index] {
+                    continue;
+                }
+                let to = match piece {
+                    Piece::Star => index,
+                    Piece::One => index + 1,
+                    Piece::Char(p) if *p == c => index + 1,
+                    Piece::Char(_) => continue,
+                };
+                self.next[to] = true;
+                alive = true;
+            }
+            if !alive {
+                return (first, false);
+            }
+            spread(&mut self.next);
+            std::mem::swap(&mut self.at, &mut self.next);
+            if count + 1 == part {
+                first = self.at[end];
+            }
+        }
+        (first, self.at[end])
+    }
+}
+
+/// Whether a unit pattern may match a unit that runs a process the system
+/// needs, as [`is_system_unit`] names them.
+pub(super) fn unit_pattern_stops_system(pattern: &str) -> bool {
+    unit_pattern_matches(pattern, &SYSTEM_PROCESSES)
+        || unit_pattern_matches(pattern, &["ssh", "dbus"])
+}
+
 /// Whether a launchd label or target (`com.apple.WindowServer`,
 /// `system/com.apple.WindowServer`, `gui/501/com.apple.cfprefsd.xpc.agent`)
 /// runs a process the system needs: its name is a part of the label.

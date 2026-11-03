@@ -131,15 +131,16 @@ impl Checker<'_> {
             }
 
             // System settings.
+            // A command word only known when it runs may be any of them.
             "reg" => {
-                let sub = plain(args)
-                    .first()
-                    .and_then(|arg| arg.known())
-                    .map(str::to_ascii_lowercase);
-                if matches!(
-                    sub.as_deref(),
-                    Some("delete" | "add" | "import" | "restore" | "load" | "unload" | "copy")
-                ) {
+                let first = plain(args).first().copied();
+                let sub = first.and_then(Arg::known).map(str::to_ascii_lowercase);
+                if first.is_some_and(|arg| arg.known().is_none())
+                    || matches!(
+                        sub.as_deref(),
+                        Some("delete" | "add" | "import" | "restore" | "load" | "unload" | "copy")
+                    )
+                {
                     self.add(
                         Rule::SystemSettings,
                         "changes the registry",
@@ -148,11 +149,13 @@ impl Checker<'_> {
                 }
             }
             "bcdedit" => {
-                let reads = args.iter().filter_map(Arg::known).all(|text| {
-                    matches!(
-                        text.to_ascii_lowercase().as_str(),
-                        "/enum" | "/v" | "/?" | "all" | "active"
-                    )
+                let reads = args.iter().all(|arg| {
+                    arg.known().is_some_and(|text| {
+                        matches!(
+                            text.to_ascii_lowercase().as_str(),
+                            "/enum" | "/v" | "/?" | "all" | "active"
+                        )
+                    })
                 });
                 if !reads {
                     self.add(
@@ -226,11 +229,11 @@ impl Checker<'_> {
                 }
             }
             "sc" if shell != Shell::PowerShell => {
-                let sub = plain(args)
-                    .first()
-                    .and_then(|arg| arg.known())
-                    .map(str::to_ascii_lowercase);
-                if matches!(sub.as_deref(), Some("delete" | "config" | "create")) {
+                let first = plain(args).first().copied();
+                let sub = first.and_then(Arg::known).map(str::to_ascii_lowercase);
+                if first.is_some_and(|arg| arg.known().is_none())
+                    || matches!(sub.as_deref(), Some("delete" | "config" | "create"))
+                {
                     self.add(
                         Rule::SystemSettings,
                         "changes a system service",

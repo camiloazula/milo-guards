@@ -837,6 +837,7 @@ impl Checker<'_> {
         let folder_for_sure = several
             || text.ends_with(separators)
             || matches!(text.rsplit(separators).next(), Some("." | ".."));
+        self.selinux_landing((shell, scope.dir), (folder, leaves), recursive, destination);
         for &leaf in leaves {
             let landing = Arg::Known(format!("{folder}/{leaf}"));
             let place = if recursive {

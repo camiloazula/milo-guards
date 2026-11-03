@@ -368,6 +368,14 @@ cmd finds=wipe_disk | format D: /q
 cmd finds=wipe_disk | diskpart /s wipe.txt
 cmd finds=system_settings | reg delete HKLM\\Software\\Vendor /f
 cmd finds=system_settings | bcdedit /set {current} safeboot minimal
+cmd safe | bcdedit /enum all
+cmd safe | reg query HKLM\\Software\\Vendor
+cmd safe | sc query wuauserv
+cmd finds=system_settings | bcdedit %x%
+cmd finds=system_settings | reg %verb% HKLM\\Software\\Vendor
+cmd finds=system_settings | sc %verb% wuauserv
+powershell finds=system_settings | bcdedit $x
+powershell finds=system_settings | reg $verb HKLM\\Software\\Vendor
 cmd finds=system_settings | vssadmin delete shadows /all /quiet
 cmd finds=system_settings | wmic shadowcopy delete
 cmd finds=system_settings | net user hacker P4ss /add
