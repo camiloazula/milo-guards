@@ -396,12 +396,13 @@ posix finds=delete | tar --ap -f x.tar /etc --remove-files
 posix finds=delete | tar --up -f x.tar ~ --remove-files
 posix finds=overwrite | tar --ge -f x.tar -C ~
 
-# tar with a mode only known when it runs may unpack.
+# tar with a mode only known when it runs may unpack. One outside quotes
+# may split into words, `--remove-files` among them.
 posix safe | tar -czf "$out" -C ~ .
 posix safe | tar -cf "$out" -C ~ "$file"
 posix safe | tar -tf "$a" -C ~
 posix safe | tar "$mode" -f x.tar -C build
-posix safe | tar $mode -f x.tar -C .
+posix finds=delete | tar $mode -f x.tar -C .
 posix safe | tar "$mode" -f x.tar -O -C ~
 posix safe | tar --create -f "$out" -C ~ .
 posix safe | tar -xf x.tar "$file"
@@ -1010,3 +1011,26 @@ posix finds=overwrite reason="unpacks into your home directory" | tar -xf x.tar 
 posix finds=overwrite reason="unpacks into a system folder" | unzip x.zip -d /etc
 posix finds=overwrite reason="unpacks into a folder outside the workspace" | tar -xf x.tar -C ../x
 posix finds=overwrite reason="unpacks into a folder only known when it runs" | tar -xf x.tar -C "$D"
+
+# A value only known when it runs may hide a member or the option that
+# removes what is packed: an expansion outside quotes may split into words,
+# and a quoted one that starts with `-` is an option. A delete only such an
+# option turns on says the program may do it.
+posix finds=delete reason="deletes a path only known when it runs" | tar -cf $A src --remove-files
+posix finds=delete reason="deletes a path only known when it runs" | A='x.tar /etc'; tar -cf $A --remove-files
+posix finds=delete | tar --exclude $E -cf x.tar src --remove-files
+posix finds=delete | tar -cf$A src --remove-files
+posix finds=delete | tar -c --file=$A src --remove-files
+posix finds=delete | tar -c --exclude=$E src --remove-files
+posix safe | tar -c --file="$A" src --remove-files
+posix finds=delete | tar -czf x.tar src $OPTS
+posix finds=delete reason="may delete a path outside the workspace with an option only known when it runs" | tar -cf x.tar ~/src "--$X"
+posix finds=delete | tar -cf x.tar ~/src "--remove-$X"
+posix finds=delete | zip $OPTS x.zip src
+posix finds=delete | zip "-$O" x.zip ~/src
+posix finds=delete | 7z a x.7z src $OPTS
+posix finds=delete | 7z a "-s$O" x.7z ~/src
+posix safe | tar -cf "$A" src
+posix safe | tar -cf "$A" src --remove-files
+posix safe | tar -cf x.tar ~/src "--exclude=$X"
+posix safe | 7z a -p"$PASS" x.7z ~/src

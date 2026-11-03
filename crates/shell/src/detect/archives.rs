@@ -15,7 +15,7 @@ mod unpackers;
 use super::Checker;
 use crate::path::within;
 use crate::powershell::Params;
-use crate::unit::{Arg, Unit};
+use crate::unit::{could_be, may_be_option, may_split, option_start, Arg, Flagged, Unit};
 use crate::{Rule, Shell};
 use std::collections::HashSet;
 
@@ -58,13 +58,14 @@ impl Checker<'_> {
     /// deletes each file it packs once it has packed it.
     pub(super) fn pack_and_remove(&mut self, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
-        let (members, matched) = match key {
+        let ((members, unread), matched) = match key {
             "tar" | "gtar" | "bsdtar" => (tar(args, unit.shell, key).removed(), false),
             "zip" => (zip(args, unit.shell).removed(), true),
-            "7z" | "7za" | "7zr" | "7zz" => (seven_zip_removes(args), true),
-            "rar" => (rar_removes(args), true),
+            "7z" | "7za" | "7zr" | "7zz" => (seven_zip_removes(args, unit.shell), true),
+            "rar" => ((rar_removes(args), false), true),
             _ => return,
         };
+        let before = self.found.len();
         // `7z` and `rar` match a wildcard themselves, quoted or not, and so
         // does `zip` on Windows; `zip` on Unix does so only for `-x`, `-i`,
         // `-R` and names inside the archive, so `zip -m x.zip 'a*'` there
@@ -78,6 +79,10 @@ impl Checker<'_> {
             "deletes",
             matched,
         );
+        // Only an argument that may be the option removes them.
+        if unread {
+            self.hedge(before);
+        }
     }
 }
 
@@ -152,15 +157,18 @@ struct Tar {
     unpacks: bool,
     /// Whether `--remove-files` is given to a mode that makes or adds to an
     /// archive (`-c`, `-r`, `-u`), or to one only known when it runs that
-    /// no mode letter rules out.
-    removes: bool,
+    /// no mode letter rules out: `Unread` when only an argument only known
+    /// when it runs may be `--remove-files` (`$OPTS`, `"--$X"`).
+    removes: Flagged,
     /// Whether `-P` (`--absolute-names`) keeps the paths stored in the
     /// archive as they are, absolute and with their `..`.
     absolute: bool,
     /// The folders `-C`, `--directory` and `--one-top-level` name, in order.
     folders: Vec<Arg>,
     /// The files and folders it is asked to pack, each as seen from where
-    /// the line runs (a member after `-C dir` is under `dir`).
+    /// the line runs (a member after `-C dir` is under `dir`). The value of
+    /// an option that may split into words when it runs (`-f $A`) is one
+    /// too: a word after the first is a member.
     members: Vec<Arg>,
     /// The commands it runs through a shell (see [`commands`]).
     commands: Vec<Arg>,
@@ -179,12 +187,13 @@ impl Tar {
         Some(self.folders)
     }
 
-    /// The members `--remove-files` deletes after packing them.
-    fn removed(self) -> Vec<Arg> {
-        if self.removes {
-            self.members
-        } else {
-            Vec::new()
+    /// The members `--remove-files` deletes after packing them, and
+    /// whether only an argument that may be it does.
+    fn removed(self) -> (Vec<Arg>, bool) {
+        match self.removes {
+            Flagged::Absent => (Vec::new(), false),
+            Flagged::Unread => (self.members, true),
+            Flagged::Written => (self.members, false),
         }
     }
 }
@@ -280,6 +289,17 @@ fn moved(under: Option<&Arg>, folder: &Arg, shell: Shell) -> Arg {
     }
 }
 
+/// The value of an option, taken as a member when it may split into words
+/// when it runs (see [`may_split`]): `-f $A`, with `A='x.tar /etc'`, packs
+/// `/etc`. Whether it was.
+fn split_member(value: &Arg, under: Option<&Arg>, shell: Shell, members: &mut Vec<Arg>) -> bool {
+    let splits = may_split(value, shell);
+    if splits {
+        members.push(within(under, value, shell));
+    }
+    splits
+}
+
 /// What `tar` is asked to do. A mode that only the line's run shows (`tar
 /// "$mode" -f x.tar`) counts as extracting, and as packing. `key` is the
 /// program's name: `-I` is a command to GNU tar and a list of members to
@@ -305,12 +325,19 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
         let Some(text) = arg.known() else {
             // `--file="$OUT"`: an option whose value is only known when it
             // runs is that option, not a member, and not the mode.
+            // Its value may still split into words (`--file=$A`), a member
+            // among them.
             if let Some((name, value)) = unknown_long(arg) {
+                read.split(&value);
                 read.long(name, Some(value), &mut iter);
                 continue;
             }
             read.unknown |= arg.is_unknown();
-            read.members.push(within(read.under.as_ref(), arg, shell));
+            // One that starts as an option (`"--$X"`) is no member, unless
+            // it may split into words (`-cf$A`).
+            if option_start(arg, shell).is_none() || may_split(arg, shell) {
+                read.members.push(within(read.under.as_ref(), arg, shell));
+            }
             continue;
         };
         if text == "--" {
@@ -345,9 +372,19 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
     // With no mode read, an argument that is only known when it runs may be
     // `-x`, or `-c`.
     let mode_unknown = read.unknown && !read.other_mode && !read.extract;
+    let removes = if read.pack || mode_unknown {
+        Flagged::of(
+            read.removes_files,
+            may_be_option(args, shell, |start| {
+                could_be(start, None, Some("remove-files"))
+            }),
+        )
+    } else {
+        Flagged::Absent
+    };
     Tar {
         unpacks: (read.extract || mode_unknown) && !read.other_mode && !read.to_stdout,
-        removes: read.removes_files && (read.pack || mode_unknown),
+        removes,
         absolute: read.absolute,
         folders: read.folders,
         members: read.members,
@@ -402,6 +439,13 @@ const TAR_COMMANDS: [&str; 5] = [
 ];
 
 impl TarRead<'_> {
+    /// The value of an option, taken as a member when it may split into
+    /// words when it runs (see [`split_member`]), which may then hold the
+    /// mode.
+    fn split(&mut self, value: &Arg) {
+        self.unknown |= split_member(value, self.under.as_ref(), self.shell, &mut self.members);
+    }
+
     /// The long option `name`, with the value attached with `=` if any;
     /// one that takes a value and has none attached takes the next argument.
     fn long<'b>(
@@ -446,6 +490,7 @@ impl TarRead<'_> {
         } else if is("directory") || name == "cd" {
             // `--cd` is bsdtar's other name for `-C`.
             if let Some(folder) = value(attached) {
+                self.split(&folder);
                 self.under = Some(moved(self.under.as_ref(), &folder, self.shell));
                 self.folders.push(folder);
             }
@@ -457,15 +502,24 @@ impl TarRead<'_> {
             }
         } else if long_option(name, "files-from", 5) {
             // The members are in a file the line does not show.
-            value(attached);
+            if let Some(list) = value(attached) {
+                self.split(&list);
+            }
             self.members.push(from_list());
         } else if (attached.is_some() || !flag) && TAR_COMMANDS.iter().any(|full| is(full)) {
-            self.commands.extend(value(attached));
+            if let Some(command) = value(attached) {
+                self.split(&command);
+                self.commands.push(command);
+            }
         } else if (attached.is_some() || !flag) && is("checkpoint-action") {
-            self.commands
-                .extend(value(attached).as_ref().and_then(checkpoint_command));
+            if let Some(action) = value(attached) {
+                self.split(&action);
+                self.commands.extend(checkpoint_command(&action));
+            }
         } else if attached.is_none() && !flag && TAR_LONG_VALUES.iter().any(|full| is(full)) {
-            iter.next();
+            if let Some((_, value)) = iter.next() {
+                self.split(value);
+            }
         }
     }
 
@@ -507,6 +561,9 @@ impl TarRead<'_> {
                 } else {
                     iter.next().map(|(_, value)| value.clone())
                 };
+                if let Some(value) = &value {
+                    self.split(value);
+                }
                 match (letter, value) {
                     ('C', Some(folder)) => {
                         self.under = Some(moved(self.under.as_ref(), &folder, self.shell));
@@ -741,6 +798,9 @@ const ZIP_LONG_VALUES: &[&str] = &[
 struct Zip {
     /// Whether `-m` (`--move`) asks it to delete what it adds.
     moves: bool,
+    /// Whether an argument only known when it runs may be `-m` (see
+    /// [`may_be_option`]).
+    unread: bool,
     /// The files it adds: see [`zip`].
     members: Vec<Arg>,
     /// The commands `-TT` (`--unzip-command`) gives it to test the archive.
@@ -748,12 +808,13 @@ struct Zip {
 }
 
 impl Zip {
-    /// The files `-m` deletes after adding them.
-    fn removed(self) -> Vec<Arg> {
-        if self.moves {
-            self.members
+    /// The files `-m` deletes after adding them, and whether only an
+    /// argument that may be it does.
+    fn removed(self) -> (Vec<Arg>, bool) {
+        if self.moves || self.unread {
+            (self.members, !self.moves)
         } else {
-            Vec::new()
+            (Vec::new(), false)
         }
     }
 }
@@ -767,9 +828,14 @@ impl Zip {
 /// the working directory (`*`). `-xpat` and `--exclude=pat` are one value
 /// and open no list. An argument that only a run can show, inside a list,
 /// may end it (it may start with `-` or be `@`), so the list is closed
-/// after it.
+/// after it. The value of an option that may split into words when it runs
+/// is a member too (see [`may_split`]).
 fn zip(args: &[Arg], shell: Shell) -> Zip {
+    let unread = may_be_option(args, shell, |start| {
+        could_be(start, Some('m'), Some("move"))
+    });
     let mut moves = false;
+    let mut split = Vec::new();
     let mut from_input = false;
     // `-u`, `-f` or `-FS`: the archive's own entries, with no names given.
     let mut listed = false;
@@ -831,7 +897,7 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
                     None => iter.next().cloned(),
                 });
             } else if attached.is_none() && ZIP_LONG_VALUES.iter().any(|full| is(full)) {
-                iter.next();
+                split.extend(iter.next().filter(|value| may_split(value, shell)).cloned());
             }
             continue;
         }
@@ -916,6 +982,7 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
             }
             if separate {
                 let value = iter.next();
+                split.extend(value.filter(|value| may_split(value, shell)).cloned());
                 if letter == 'T' {
                     commands.extend(value.cloned());
                 }
@@ -955,8 +1022,10 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
     if from_input {
         members.push(Arg::Unknown("<names read from input>".to_string()));
     }
+    members.extend(split);
     Zip {
         moves,
+        unread,
         members,
         commands,
     }
@@ -1005,9 +1074,15 @@ fn may_be_switch(arg: &Arg) -> bool {
 /// readable start is `-` is a switch whatever follows (`-p"$PASS"`); one
 /// that may be `-i` adds a member only known when it runs. An argument
 /// wholly unknown (`$OPTS`) may be a switch too, so the default `*` stays
-/// among the members when the operands that are known leave none.
-fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
+/// among the members when the operands that are known leave none. One that
+/// may be `-sdel` (see [`may_be_option`]) may delete them; with the members,
+/// whether only such an argument does.
+fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
     let list = || Arg::Unknown("<files from a list>".to_string());
+    let unread = may_be_option(args, shell, |start| {
+        let start = start.to_ascii_lowercase();
+        "-sdel".starts_with(&start) || start.starts_with("-sdel")
+    });
     let mut deletes = false;
     let mut adds = false;
     let mut included = false;
@@ -1084,10 +1159,10 @@ fn seven_zip_removes(args: &[Arg]) -> Vec<Arg> {
     if !included && !input && positional >= 2 && definite <= 2 && all_known {
         members.push(Arg::Known("*".to_string()));
     }
-    if deletes && adds {
-        members
+    if (deletes || unread) && adds {
+        (members, !deletes)
     } else {
-        Vec::new()
+        (Vec::new(), false)
     }
 }
 

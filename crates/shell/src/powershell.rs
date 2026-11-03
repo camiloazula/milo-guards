@@ -10,7 +10,9 @@ use tree_sitter::Node;
 mod aliases;
 mod blocks;
 pub(crate) mod native;
+mod numbers;
 mod spelling;
+mod variables;
 
 pub(crate) use aliases::Aliases;
 use aliases::{Set, Stands};
@@ -25,7 +27,10 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     // A space, quote or dash PowerShell reads as an ASCII one is written as
     // that one, which is all the grammar knows.
     let ascii = spelling::ascii(text);
-    let text = ascii.as_ref();
+    // A number's letters in any case (`1MB`), which the grammar reads only
+    // in lower case.
+    let lowered = numbers::lower(ascii.as_ref());
+    let text = lowered.as_ref();
     let Some(first) = unit::parse(split, text, &language) else {
         return;
     };
@@ -91,6 +96,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         split,
         item: None,
         holds: HashSet::new(),
+        variables: variables::Variables::read(tree.root_node(), text),
         streams: HashSet::new(),
     };
     walker.mark_listings(tree.root_node());
@@ -463,6 +469,8 @@ struct Walker<'a> {
     /// for the whole tree so that each `Stop-Process` reads only the nodes
     /// that lead to a listing.
     holds: HashSet<usize>,
+    /// What the line sets its variables to, where it shows it for certain.
+    variables: variables::Variables,
     /// The variables set from a network stream (`$s = $tcp.GetStream()`),
     /// whose `Write` sends what it is given.
     streams: HashSet<String>,
@@ -620,6 +628,10 @@ impl Walker<'_> {
                 self.redirect(node);
                 self.children(node, None, level);
             }
+            "comparison_expression" | "comparison_argument_expression" => {
+                self.replace(node);
+                self.children(node, stage, level);
+            }
             "invokation_expression" => {
                 // A method call is no unit, and the rules know only some of
                 // them: `effect` cannot say what it does.
@@ -627,8 +639,11 @@ impl Walker<'_> {
                 let first = self.split.units.len();
                 let sends = self.dotnet(node, stage);
                 let own = first..self.split.units.len();
-                // A hook's block, set by its method, runs later.
-                let later = blocks::sets_hook(node, self.source).then(|| self.split.begin_later());
+                // A hook's block, set by its method, runs later, and so does
+                // a default parameter value.
+                let defaults = self.adds_default(node);
+                let later = (blocks::sets_hook(node, self.source) || defaults)
+                    .then(|| self.split.begin_later());
                 self.children(node, stage, level);
                 if let Some(began) = later {
                     self.split.end_later(began, false);
@@ -642,6 +657,7 @@ impl Walker<'_> {
             }
             "assignment_expression" => {
                 blocks::hook(self.split, node, self.source);
+                let named_hook = self.session_member(node);
                 self.env_assignment(node);
                 // `[Environment]::CurrentDirectory = …` moves the process,
                 // whose folder a .NET call and a program the session starts
@@ -650,10 +666,16 @@ impl Walker<'_> {
                 {
                     self.moves_unknown(node);
                 }
-                // A hook's block runs later, when a command is looked up.
-                let later = blocks::assigned_member(node, self.source)
+                // A hook's block runs later, when a command is looked up; a
+                // default parameter value when its command runs; and a block
+                // held in a variable where the line uses the variable.
+                let defaults = self.sets_defaults(node);
+                let later = (blocks::assigned_member(node, self.source)
                     .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
-                    .then(|| self.split.begin_later());
+                    || named_hook
+                    || defaults
+                    || self.variables.runs_later(node))
+                .then(|| self.split.begin_later());
                 let first = self.split.units.len();
                 self.children(node, stage, level);
                 if let Some(began) = later {
@@ -1258,6 +1280,8 @@ impl Walker<'_> {
         // A parameter that ends in a `$`, as its start, its end and the index
         // of its argument: what comes right after it is the rest of its word.
         let mut dangling: Option<(usize, usize, usize)> = None;
+        // Where the element before ends, when no separator follows it.
+        let mut last_end: Option<usize> = None;
         let native = !program_key.as_deref().is_some_and(is_cmdlet);
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
@@ -1361,14 +1385,23 @@ impl Walker<'_> {
                             );
                         }
                     }
-                    _ => self.push_element(
-                        &mut args,
-                        &mut shapes,
-                        element,
-                        program_key.as_deref(),
-                        false,
-                    ),
+                    _ => {
+                        // `Name, @{e=$b}`: the grammar reads a word with the
+                        // comma after it, and what follows is the next item
+                        // of the same list.
+                        let joined = last_end
+                            .and_then(|end| self.source.get(end..element.start_byte()))
+                            .is_some_and(|between| between.trim() == ",");
+                        self.push_element(
+                            &mut args,
+                            &mut shapes,
+                            element,
+                            program_key.as_deref(),
+                            joined,
+                        );
+                    }
                 }
+                last_end = (element.kind() != "command_argument_sep").then(|| element.end_byte());
             }
         }
         // Whether a `ForEach-Object` calls a method that stops a process on
@@ -2362,9 +2395,9 @@ impl Walker<'_> {
                 return true;
             }
             match takes.take() {
-                Some(true) => named_action = Some(is_script_block(element)),
+                Some(true) => named_action = Some(self.block(element)),
                 Some(false) => {}
-                None => positional.push(is_script_block(element)),
+                None => positional.push(self.block(element)),
             }
         }
         if let Some(block) = named_action {
@@ -2378,11 +2411,20 @@ impl Walker<'_> {
     /// and whether it follows a comma.
     fn shape(&self, node: Node<'_>, joined: bool) -> blocks::Shape {
         blocks::Shape {
-            block: is_script_block(node),
+            block: self.block(node),
             splat: is_splat(node, self.source),
             joined,
             listing: self.holds.contains(&node.id()),
+            plain: self.variables.inert(node, self.source),
         }
+    }
+
+    /// Whether `node` is a script block written out, or a variable the line
+    /// sets to one before it (`$sb = { … }; Invoke-Command $sb`): the block is
+    /// read where it is written.
+    fn block(&self, node: Node<'_>) -> bool {
+        is_script_block(node)
+            || self.variables.held(node, self.source) == Some(variables::Held::Block)
     }
 
     fn name(&self, node: Node<'_>) -> Arg {
@@ -2407,7 +2449,14 @@ impl Walker<'_> {
     fn expr(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
         match node.kind() {
-            "generic_token" => Arg::Known(unescape(source)),
+            "generic_token" => match bare_expansion(source) {
+                None => Arg::Known(unescape(source)),
+                Some(runs) => Arg::Template {
+                    text: unescape(source),
+                    source: source.into(),
+                    runs,
+                },
+            },
             "command_parameter" => match quoted_parameter(source) {
                 Some(Parameter {
                     text,
@@ -2985,10 +3034,54 @@ impl Walker<'_> {
         };
         let sends = self.secret_call(&method, &children, stage);
         self.unpack_call(&method, &children, stage);
+        // A member of the session reached by a way the guard cannot name
+        // (`$ExecutionContext.InvokeCommand.psobject.…`) may be a hook or a
+        // method that runs code.
+        if children
+            .first()
+            .is_some_and(|object| self.variables.reaches_session(*object, self.source))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "calls a member of the session only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        // `$x.GetType().GetProperty('CommandNotFoundAction').SetValue($x, $b)`:
+        // a hook named as text, on any object.
+        if children
+            .first()
+            .is_some_and(|object| blocks::names_hook(*object, self.source))
+            && !blocks::any_argument(&children, blocks::written)
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a hook that runs a script block only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        // `.Where($b)` and `.ForEach($b)` run a block on each item.
+        if matches!(method.as_str(), "where" | "foreach")
+            && blocks::first_argument(&children)
+                .is_some_and(|first| !self.variables.inert(first, self.source))
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "runs a script block only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
         let object = children
             .first()
             .map(|object| unit::text(object, self.source).to_ascii_lowercase())
             .unwrap_or_default();
+        // `$t::Create(…)`: a type only known when it runs may be
+        // `[scriptblock]`.
+        let mut cursor = node.walk();
+        let unknown_type = node.children(&mut cursor).any(|child| child.kind() == "::")
+            && children
+                .first()
+                .is_some_and(|object| blocks::unwrap(*object).kind() != "type_literal");
         // A type that touches the file system, registry or network: only
         // then is a generic method (`Copy`, `Open`, `Replace`) a file write,
         // not a string or list method.
@@ -3018,13 +3111,25 @@ impl Walker<'_> {
         if matches!(
             method.as_str(),
             "newscriptblock" | "invokescript" | "expandstring"
-        ) || (method == "create" && object.contains("scriptblock"))
+        ) || (method == "create" && (object.contains("scriptblock") || unknown_type))
         {
             self.split.problem(
                 Rule::Unknown,
                 "builds or runs code the guard does not read",
                 Some(unit::text(&node, self.source)),
             );
+            // Code built from a download runs what it downloads.
+            if children
+                .iter()
+                .find(|child| child.kind() == "argument_list")
+                .is_some_and(|list| self.downloads(*list))
+            {
+                self.split.problem(
+                    Rule::RunDownloaded,
+                    "runs a downloaded script",
+                    Some(unit::text(&node, self.source)),
+                );
+            }
             if let Some(Arg::Known(code)) = blocks::first_string(&children).map(|n| self.string(n))
             {
                 unit::script(self.split, &code, Shell::PowerShell, self.depth + 1);
@@ -3056,6 +3161,188 @@ impl Walker<'_> {
                 .problem(rule, reason, Some(unit::text(&node, self.source)));
         }
         sends
+    }
+
+    /// `$ExecutionContext.InvokeCommand.$h = $b`, `….psobject.Properties[…]
+    /// .Value = $b`: a member of the session set by a way the guard cannot
+    /// name may be a hook, whose block runs for every command. A hook named
+    /// as text (`$x.psobject.Properties['CommandNotFoundAction'].Value =
+    /// $b`) is the hook on any object. True when the assignment sets such a
+    /// hook, whose block runs later.
+    fn session_member(&mut self, node: Node<'_>) -> bool {
+        let Some(target) = blocks::assigned_target(node) else {
+            return false;
+        };
+        if self.variables.reaches_session(target, self.source) {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a member of the session only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        if !blocks::names_hook(target, self.source) {
+            return false;
+        }
+        if !node
+            .child_by_field_name("value")
+            .is_some_and(blocks::written)
+        {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a hook that runs a script block only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        true
+    }
+
+    /// Whether an assignment sets `$PSDefaultParameterValues` or one of its
+    /// entries, which give a command a parameter it runs with: a block for
+    /// `Invoke-Command:ScriptBlock` runs where the command does. A value that
+    /// may be a block only known when it runs is unknown, unless its key is
+    /// written out and names a parameter that never takes one (see
+    /// [`blocks::plain_default`]).
+    fn sets_defaults(&mut self, node: Node<'_>) -> bool {
+        let Some(left) = node.named_child(0) else {
+            return false;
+        };
+        let defaults = variables::root_is(left, self.source, "psdefaultparametervalues");
+        let unread = || {
+            let Some(value) = node.child_by_field_name("value") else {
+                return true;
+            };
+            // `$PSDefaultParameterValues['*:Encoding'] = $enc`
+            if let Some(key) = blocks::assigned_key(left) {
+                return !blocks::plain_default(key, self.source)
+                    && !self.variables.inert(value, self.source);
+            }
+            // `$PSDefaultParameterValues = @{ '*:Encoding' = $enc }`
+            let table = blocks::unwrap(value);
+            if table.kind() == "hash_literal_expression" {
+                let Some(body) = table.named_child(0) else {
+                    return false;
+                };
+                let mut cursor = body.walk();
+                let unread = body.named_children(&mut cursor).any(|entry| {
+                    let mut cursor = entry.walk();
+                    let parts: Vec<Node<'_>> = entry.named_children(&mut cursor).collect();
+                    let key = parts.first().and_then(|key| key.named_child(0));
+                    let value = parts
+                        .last()
+                        .filter(|value| value.kind() != "key_expression");
+                    entry.kind() != "hash_entry"
+                        || !value.is_some_and(|value| {
+                            key.is_some_and(|key| blocks::plain_default(key, self.source))
+                                || self.variables.inert(*value, self.source)
+                        })
+                });
+                return unread;
+            }
+            !self.variables.inert(value, self.source)
+        };
+        if defaults && unread() {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a default parameter value only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        defaults
+    }
+
+    /// Whether a method call adds an entry to `$PSDefaultParameterValues`
+    /// (`.Add(key, value)`, `.set_Item(key, value)`); as for an assignment
+    /// (see [`Self::sets_defaults`]), a value that may be a block only known
+    /// when it runs is unknown.
+    fn adds_default(&mut self, node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        let Some(object) = children.first() else {
+            return false;
+        };
+        if !variables::root_is(*object, self.source, "psdefaultparametervalues") {
+            return false;
+        }
+        let method = children
+            .iter()
+            .find(|child| child.kind() == "member_name")
+            .and_then(|member| blocks::called(*member, self.source));
+        if !matches!(method.as_deref(), Some("add" | "set_item")) {
+            return false;
+        }
+        let values = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .and_then(|list| list.named_child(0));
+        let unread = values.is_some_and(|values| {
+            let mut cursor = values.walk();
+            let mut values = values.named_children(&mut cursor);
+            // `.Add('*:Encoding', $enc)`
+            if values
+                .next()
+                .is_some_and(|key| blocks::plain_default(key, self.source))
+            {
+                return false;
+            }
+            values.any(|value| !self.variables.inert(value, self.source))
+        });
+        if unread {
+            self.split.problem(
+                Rule::Unknown,
+                "sets a default parameter value only known when it runs",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        true
+    }
+
+    /// `'a' -replace 'a', $b`: since PowerShell 6 a replacement may be a
+    /// script block, which runs for each match. One that is not text, a
+    /// number or a block written out may be a block only known when it runs,
+    /// and so may a right side that is not a list written out (`-replace
+    /// $pair`, which may hold a pattern and a block). `-split` takes a block
+    /// as its delimiter, first in its list (`'a,b' -split $b, 2`), and runs
+    /// it for each character.
+    fn replace(&mut self, node: Node<'_>) {
+        let mut cursor = node.walk();
+        let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+        for (at, child) in children.iter().enumerate() {
+            if child.kind() != "comparison_operator" {
+                continue;
+            }
+            let operator = unit::text(child, self.source).to_ascii_lowercase();
+            let split = matches!(operator.as_str(), "-split" | "-isplit" | "-csplit");
+            if !split && !matches!(operator.as_str(), "-replace" | "-ireplace" | "-creplace") {
+                continue;
+            }
+            let Some(right) = children.iter().skip(at + 1).find(|next| next.is_named()) else {
+                continue;
+            };
+            let right = blocks::unwrap(*right);
+            let unread = if right.kind() == "array_literal_expression" {
+                // The pattern of `-replace` is never run; every other value
+                // may be the block.
+                let mut cursor = right.walk();
+                let unread = right
+                    .named_children(&mut cursor)
+                    .skip(usize::from(!split))
+                    .any(|value| !self.variables.inert(value, self.source));
+                unread
+            } else {
+                !self.variables.inert(right, self.source)
+            };
+            if unread {
+                self.split.problem(
+                    Rule::Unknown,
+                    if split {
+                        "splits text with a script block only known when it runs"
+                    } else {
+                        "replaces text with a script block only known when it runs"
+                    },
+                    Some(unit::text(&node, self.source)),
+                );
+            }
+        }
     }
 
     /// A redirect to a file: `>`, `>>`, `2>`, `*>`. A merge (`2>&1`) writes
@@ -3187,7 +3474,7 @@ fn process_by_id(text: &str) -> Option<String> {
 /// `ForEach-Object` calls when it is given the method's name.
 fn dotnet_rule(method: &str, object: &str, file_like: bool) -> Option<(Rule, &'static str)> {
     Some(match method {
-        "invoke" | "invokereturnasis" | "invokewithcontext" => {
+        "invoke" | "invokereturnasis" | "invokewithcontext" | "begininvoke" | "invokeasync" => {
             (Rule::Unknown, "invokes code the guard does not read")
         }
         "delete" | "moveto" | "deletesubkey" | "deletesubkeytree" | "deletevalue" => {
@@ -3344,6 +3631,36 @@ fn attach_colon(args: &mut [Arg]) {
 }
 
 /// PowerShell's escape character is the backtick: `` `$ `` is `$`.
+/// Whether a bare word holds an expansion PowerShell puts its value in, in
+/// argument mode as in a double-quoted string (`of=$d`, `x${d}`,
+/// `x$($d)`): `Some(true)` when one runs a command, `None` when there is
+/// none. A `$` after a backtick or inside single quotes is text, and so is
+/// one that starts no name (`a$`, `$:`).
+fn bare_expansion(source: &str) -> Option<bool> {
+    let mut found = None;
+    let mut single = false;
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => single = !single,
+            '`' if !single => {
+                chars.next();
+            }
+            '$' if !single => match chars.peek() {
+                Some('(') => return Some(true),
+                Some(&next)
+                    if next.is_alphanumeric() || matches!(next, '_' | '{' | '?' | '^' | '$') =>
+                {
+                    found = Some(false);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    found
+}
+
 fn unescape(text: &str) -> String {
     let mut value = String::with_capacity(text.len());
     let mut chars = text.chars();
