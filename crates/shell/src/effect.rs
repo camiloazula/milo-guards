@@ -14,6 +14,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 
+use crate::launch::FIND_VALUED;
 use crate::path::{self, Access, Place, Resolver};
 
 mod git;
@@ -132,7 +133,13 @@ struct Read {
 fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool) -> Read {
     let mut seen = Seen::default();
     for finding in findings {
-        seen.add(rule_effect(finding.rule));
+        // A finding only an option the line does not show turns on is not
+        // known to change anything: the line is not understood.
+        if finding.reason.ends_with(crate::detect::UNREAD_OPTION) {
+            seen.add(Kind::Unknown);
+        } else {
+            seen.add(rule_effect(finding.rule));
+        }
     }
     // What is read but not a unit.
     seen.unknown |= split.kept.opaque;
@@ -827,37 +834,6 @@ fn posix(key: &str, unit: &Unit) -> Kind {
 /// it is the value of a test that takes one (`-name "$p"`) and is quoted.
 fn find(args: &[Arg]) -> Kind {
     const WRITES: [&str; 5] = ["-delete", "-fprint", "-fprint0", "-fprintf", "-fls"];
-    /// The tests whose next argument is a pattern, a number or a type.
-    const VALUED: [&str; 28] = [
-        "-name",
-        "-iname",
-        "-path",
-        "-ipath",
-        "-wholename",
-        "-iwholename",
-        "-lname",
-        "-ilname",
-        "-regex",
-        "-iregex",
-        "-type",
-        "-xtype",
-        "-newer",
-        "-mtime",
-        "-mmin",
-        "-atime",
-        "-amin",
-        "-ctime",
-        "-cmin",
-        "-size",
-        "-perm",
-        "-user",
-        "-group",
-        "-maxdepth",
-        "-mindepth",
-        "-links",
-        "-samefile",
-        "-regextype",
-    ];
     if args
         .iter()
         .filter_map(Arg::known)
@@ -872,7 +848,7 @@ fn find(args: &[Arg]) -> Kind {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.known() {
-            Some(text) if VALUED.contains(&text) => {
+            Some(text) if FIND_VALUED.contains(&text) => {
                 if iter
                     .next()
                     .is_some_and(|value| dashed(value) || !inert(value))

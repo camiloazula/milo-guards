@@ -682,7 +682,7 @@ posix safe | gcloud storage cp $F gs://b/
 posix safe | gcloud storage cp "$F" gs://b/
 posix safe | gcloud storage rsync "$SRC" gs://b
 # Outside quotes it may split into words, an option that deletes among them.
-posix finds=destroy_resources reason="deletes the objects the source does not have" | gcloud storage rsync $SRC gs://b
+posix finds=destroy_resources reason="may delete the objects the source does not have with an option only known when it runs" | gcloud storage rsync $SRC gs://b
 posix safe | gcloud storage mv $A gs://b/
 posix safe | gcloud pubsub topics publish $T --message x
 posix safe | gcloud container images list-tags $IMG
@@ -1109,3 +1109,27 @@ posix rules=destroy_resources first=destroy_resources reason="deletes what a Git
 posix rules=unknown first=unknown reason="calls the GitHub API with a method only known when it runs" | gh api -X "$METHOD" repos/me/x
 posix rules=unknown first=unknown reason="runs a kubecolor command only known when it runs" | kubecolor $x
 posix rules=unknown first=unknown reason="runs an s3cmd command only known when it runs" | s3cmd $x
+
+# An option that destroys may be held in a value only known when it runs:
+# one outside quotes may split into words, and a quoted one that starts
+# with `-` is an option. The finding says what the program may do.
+posix finds=destroy_resources reason="may delete every unused image with an option only known when it runs" | docker image prune $FLAGS
+posix finds=destroy_resources | docker image prune "-$F"
+posix finds=destroy_resources reason="removes unused containers, networks and images" | docker system prune $FLAGS
+posix finds=destroy_resources reason="may delete a compose project's volumes with an option only known when it runs" | docker compose down $FLAGS
+posix finds=destroy_resources reason="may destroy the infrastructure a configuration manages with an option only known when it runs" | terraform apply $TF_ARGS
+posix finds=destroy_resources | terraform apply "-$F"
+posix finds=destroy_resources | terraform apply "-${X:-destroy}"
+posix finds=destroy_resources | aws s3 sync . s3://b $FLAGS
+posix finds=destroy_resources reason="may delete cluster objects the files do not list with an option only known when it runs" | kubectl apply -f $FILE
+posix finds=destroy_resources | kubectl apply -f x.yaml $FLAGS
+posix finds=destroy_resources | kubectl replace -f x.yaml $FLAGS
+posix finds=destroy_resources | oc adm prune images $FLAGS
+posix finds=destroy_resources reason="may leave a swarm, even as its last manager, with an option only known when it runs" | docker swarm leave $FLAGS
+posix finds=destroy_resources | podman kube play x.yaml $FLAGS
+posix finds=destroy_resources | gsutil rsync $FLAGS a gs://b
+posix finds=destroy_resources | nomad job stop $FLAGS web
+posix finds=destroy_resources | terragrunt apply $FLAGS
+posix safe | terraform apply "$PLAN"
+posix safe | docker image prune "$F"
+posix safe | kubectl apply -f "$FILE"

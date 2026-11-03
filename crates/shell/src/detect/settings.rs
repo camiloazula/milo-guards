@@ -6,6 +6,7 @@
 
 pub(super) mod firewall;
 
+use super::hedged;
 use super::processes::{is_system_label, is_system_unit};
 use super::{script_operand, Checker};
 use crate::launch::SHELLS;
@@ -532,7 +533,7 @@ impl Checker<'_> {
         {
             self.add(
                 Rule::SystemSettings,
-                "changes a machine setting only known when it runs",
+                hedged("changes a machine setting"),
                 None,
             );
         }

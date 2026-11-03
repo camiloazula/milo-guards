@@ -8,7 +8,7 @@
 use super::Checker;
 use crate::path::within;
 use crate::powershell::Params;
-use crate::unit::{may_split, unread_option, Arg, Unit};
+use crate::unit::{could_be, may_be_option, may_split, option_start, Arg, Unit};
 use crate::Shell;
 
 impl Checker<'_> {
@@ -31,12 +31,13 @@ impl Checker<'_> {
     /// each file it packs once it has packed it.
     pub(super) fn pack_and_remove(&mut self, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
-        let (members, matched) = match key {
+        let ((members, unread), matched) = match key {
             "tar" | "gtar" | "bsdtar" => (tar(args, unit.shell).removed(), false),
             "zip" => (zip(args, unit.shell), true),
             "7z" | "7za" | "7zr" | "7zz" => (seven_zip_removes(args, unit.shell), true),
             _ => return,
         };
+        let before = self.found.len();
         // `7z` matches a wildcard itself, quoted or not, and so does `zip` on
         // Windows; `zip` on Unix does so only for `-x`, `-i`, `-R` and names inside
         // the archive, so `zip -m x.zip 'a*'` there deletes nothing. A line
@@ -49,6 +50,10 @@ impl Checker<'_> {
             "deletes",
             matched,
         );
+        // Only an argument that may be the option removes them.
+        if unread {
+            self.hedge(before);
+        }
     }
 }
 
@@ -66,9 +71,11 @@ struct Tar {
     unpacks: bool,
     /// Whether `--remove-files` is given to a mode that makes or adds to an
     /// archive (`-c`, `-r`, `-u`), or to one only known when it runs that
-    /// no mode letter rules out. An argument that may split into words when
-    /// it runs (`$OPTS`) may be `--remove-files`.
+    /// no mode letter rules out. An argument only known when it runs that
+    /// may be `--remove-files` (`$OPTS`, `"--$X"`) may remove them.
     removes: bool,
+    /// Whether only such an argument removes them.
+    removes_unread: bool,
     /// The folders `-C`, `--directory` and `--one-top-level` name, in order.
     folders: Vec<Arg>,
     /// The files and folders it is asked to pack, each as seen from where
@@ -91,12 +98,13 @@ impl Tar {
         Some(self.folders)
     }
 
-    /// The members `--remove-files` deletes after packing them.
-    fn removed(self) -> Vec<Arg> {
+    /// The members `--remove-files` deletes after packing them, and
+    /// whether only an argument that may be it does.
+    fn removed(self) -> (Vec<Arg>, bool) {
         if self.removes {
-            self.members
+            (self.members, self.removes_unread)
         } else {
-            Vec::new()
+            (Vec::new(), false)
         }
     }
 }
@@ -224,7 +232,10 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
     while let Some((at, arg)) = iter.next() {
         let Some(text) = arg.known() else {
             unknown |= arg.is_unknown();
-            members.push(within(under.as_ref(), arg, shell));
+            // One that starts as an option (`"--$X"`) is no member.
+            if option_start(arg, shell).is_none() {
+                members.push(within(under.as_ref(), arg, shell));
+            }
             continue;
         };
         if text == "--" {
@@ -344,10 +355,14 @@ fn tar(args: &[Arg], shell: Shell) -> Tar {
     // With no mode read, an argument that is only known when it runs may be
     // `-x`, or `-c`.
     let mode_unknown = unknown && !other_mode && !extract;
-    let removes_files = removes_files || unread_option(args, shell);
+    let removes_unread = !removes_files
+        && may_be_option(args, shell, |start| {
+            could_be(start, None, Some("remove-files"))
+        });
     Tar {
         unpacks: (extract || mode_unknown) && !other_mode && !to_stdout,
-        removes: removes_files && (pack || mode_unknown),
+        removes: (removes_files || removes_unread) && (pack || mode_unknown),
+        removes_unread,
         folders,
         members,
     }
@@ -488,11 +503,15 @@ const ZIP_LONG_VALUES: &[&str] = &[
 /// stand in for them when none is given. `-xpat` and `--exclude=pat` are one
 /// value and open no list. An argument that only a run can show, inside a
 /// list, may end it (it may start with `-` or be `@`), so the list is
-/// closed after it. An argument that may split into words when it runs may
-/// be `-m`, and the value of an option that may is an operand too (see
-/// [`may_split`]).
-fn zip(args: &[Arg], shell: Shell) -> Vec<Arg> {
-    let mut moves = unread_option(args, shell);
+/// closed after it. An argument only known when it runs that may be `-m`
+/// (see [`may_be_option`]) may move them, and the value of an option that
+/// may split into words is an operand too (see [`may_split`]). With the
+/// members, whether only such an argument moves them.
+fn zip(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
+    let unread = may_be_option(args, shell, |start| {
+        could_be(start, Some('m'), Some("move"))
+    });
+    let mut moves = false;
     let mut split = Vec::new();
     let mut from_input = false;
     let mut positional = Vec::new();
@@ -626,8 +645,8 @@ fn zip(args: &[Arg], shell: Shell) -> Vec<Arg> {
             }
         }
     }
-    if !moves {
-        return Vec::new();
+    if !moves && !unread {
+        return (Vec::new(), false);
     }
     // The first operand is the archive, unless it is not known which it is.
     let skip = usize::from(
@@ -643,7 +662,7 @@ fn zip(args: &[Arg], shell: Shell) -> Vec<Arg> {
         members.push(Arg::Unknown("<names read from input>".to_string()));
     }
     members.extend(split);
-    members
+    (members, !moves)
 }
 
 /// What can be read of the start of an argument, as far as it is text: the
@@ -672,10 +691,15 @@ fn may_be_switch(arg: &Arg) -> bool {
 /// that may be `-i` adds a member only known when it runs. An argument
 /// wholly unknown (`$OPTS`) may be a switch too, so the default `*` stays
 /// among the members when the operands that are known leave none. One that
-/// may split into words when it runs may be `-sdel` (see [`may_split`]).
-fn seven_zip_removes(args: &[Arg], shell: Shell) -> Vec<Arg> {
+/// may be `-sdel` (see [`may_be_option`]) may delete them; with the members,
+/// whether only such an argument does.
+fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
     let list = || Arg::Unknown("<files from a list>".to_string());
-    let mut deletes = unread_option(args, shell);
+    let unread = may_be_option(args, shell, |start| {
+        let start = start.to_ascii_lowercase();
+        "-sdel".starts_with(&start) || start.starts_with("-sdel")
+    });
+    let mut deletes = false;
     let mut adds = false;
     let mut included = false;
     let mut positional = 0;
@@ -744,9 +768,9 @@ fn seven_zip_removes(args: &[Arg], shell: Shell) -> Vec<Arg> {
     if !included && positional >= 2 && definite <= 2 && all_known {
         members.push(Arg::Known("*".to_string()));
     }
-    if deletes && adds {
-        members
+    if (deletes || unread) && adds {
+        (members, !deletes)
     } else {
-        Vec::new()
+        (Vec::new(), false)
     }
 }

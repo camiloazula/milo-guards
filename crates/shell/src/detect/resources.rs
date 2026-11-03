@@ -10,9 +10,12 @@
 
 use milo_guards_core::spelling::glob;
 
+use super::hedged;
 use super::Checker;
 use crate::path::brace_list;
-use crate::unit::{has_flag, may_flag, may_split, unread_option, Arg, Split, Unit};
+use crate::unit::{
+    could_be, flagged, has_flag, may_be_option, may_split, unread_option, Arg, Flagged, Split, Unit,
+};
 use crate::{Rule, Shell};
 
 /// What a program's line says.
@@ -21,12 +24,25 @@ enum Say<'a> {
     Safe,
     /// A reason a prompt can show, and the thing it acts on.
     Destroys(&'static str, Option<&'a Arg>),
+    /// As `Destroys`, when only an argument only known when it runs that
+    /// may be the option that destroys turns it on (see [`hedged`]).
+    May(&'static str, Option<&'a Arg>),
     /// The command is only known when it runs; `None` is the usual reason
     /// ("runs a docker command only known when it runs"), `Some` its own.
     Unread(Option<&'static str>),
 }
 
-use Say::{Destroys, Safe, Unread};
+use Say::{Destroys, May, Safe, Unread};
+
+/// `Destroys` for an option written out, `May` for one an argument only
+/// known when it runs may be, and `Safe` without it.
+fn destroys<'a>(flagged: Flagged, reason: &'static str, target: Option<&'a Arg>) -> Say<'a> {
+    match flagged {
+        Flagged::Written => Destroys(reason, target),
+        Flagged::Unread => May(reason, target),
+        Flagged::Absent => Safe,
+    }
+}
 
 impl Say<'_> {
     /// What `self` says, or what `next` says when that is more: a line
@@ -35,8 +51,12 @@ impl Say<'_> {
     fn or_else(self, next: impl FnOnce() -> Self) -> Self {
         match self {
             Destroys(..) => self,
-            Unread(_) => match next() {
+            May(..) => match next() {
                 said @ Destroys(..) => said,
+                _ => self,
+            },
+            Unread(_) => match next() {
+                said @ (Destroys(..) | May(..)) => said,
                 _ => self,
             },
             Safe => next(),
@@ -430,6 +450,7 @@ impl Checker<'_> {
         match said {
             Safe => {}
             Destroys(reason, target) => self.add(Rule::DestroyResources, reason, target),
+            May(reason, target) => self.add(Rule::DestroyResources, hedged(reason), target),
             Unread(Some(reason)) => self.add(Rule::Unknown, reason, None),
             Unread(None) => self.add(
                 Rule::Unknown,
@@ -2476,7 +2497,7 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
     };
     let target = words(after, PRUNE_VALUES).first().copied();
     match (name, sub_name) {
-        ("system", "prune") if may_flag(after, unit.shell, None, Some("volumes")) => {
+        ("system", "prune") if has_flag(after, None, Some("volumes")) => {
             Destroys("removes unused containers, images and volumes", target)
         }
         ("system", "prune") => Destroys("removes unused containers, networks and images", target),
@@ -2486,19 +2507,26 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
         ("container", "rm" | "remove") => remove_containers(after, unit, split),
         ("container", "prune") => Destroys("deletes every stopped container", target),
         ("image", "rm" | "remove") => remove_images(after, unit, split),
-        ("image", "prune") if may_flag(after, unit.shell, Some('a'), Some("all")) => {
-            Destroys("deletes every unused image", target)
-        }
+        ("image", "prune") => destroys(
+            flagged(after, unit.shell, Some('a'), Some("all")),
+            "deletes every unused image",
+            target,
+        ),
         ("network", "prune") => Destroys("deletes unused networks", target),
         ("stack" | "service", "rm" | "remove") => Destroys("removes swarm services", target),
         ("secret", "rm" | "remove") => Destroys("deletes swarm secrets", target),
         ("config", "rm" | "remove") => Destroys("deletes swarm configs", target),
         ("node", "rm" | "remove") => Destroys("removes nodes from a swarm", target),
-        ("swarm", "leave")
-            if may_flag(after, unit.shell, Some('f'), None) || turned_on(after, "force") =>
-        {
-            Destroys("leaves a swarm, even as its last manager", target)
-        }
+        ("swarm", "leave") => destroys(
+            Flagged::of(
+                has_flag(after, Some('f'), None) || turned_on(after, "force"),
+                may_be_option(after, unit.shell, |start| {
+                    could_be(start, Some('f'), Some("force"))
+                }),
+            ),
+            "leaves a swarm, even as its last manager",
+            target,
+        ),
         ("pod", "rm") => remove_containers(after, unit, split),
         ("pod", "prune") => Destroys("deletes every stopped pod", target),
         ("machine", "rm") => Destroys("deletes a virtual machine and its containers", target),
@@ -2507,9 +2535,11 @@ fn engine<'a>(args: &'a [Arg], unit: &Unit, split: &Split) -> Say<'a> {
         }
         ("kube", "down") => Destroys("removes the pods a file created", target),
         // `play kube` is podman's older name for `kube play`.
-        ("kube", "play") | ("play", "kube") if may_flag(after, unit.shell, None, Some("down")) => {
-            Destroys("removes the pods a file created", target)
-        }
+        ("kube", "play") | ("play", "kube") => destroys(
+            flagged(after, unit.shell, None, Some("down")),
+            "removes the pods a file created",
+            target,
+        ),
         _ => Safe,
     }
 }
@@ -2590,10 +2620,10 @@ fn compose(args: &[Arg], shell: Shell) -> Say<'_> {
     let Some(name) = cmd.known() else {
         return Unread(None);
     };
-    let volumes = may_flag(rest, shell, Some('v'), Some("volumes"));
+    let volumes = flagged(rest, shell, Some('v'), Some("volumes"));
     match name {
-        "down" if volumes => Destroys("deletes a compose project's volumes", None),
-        "rm" if volumes => Destroys("removes containers and their volumes", None),
+        "down" => destroys(volumes, "deletes a compose project's volumes", None),
+        "rm" => destroys(volumes, "removes containers and their volumes", None),
         _ => Safe,
     }
 }
@@ -2624,8 +2654,12 @@ fn kubectl(args: &[Arg], shell: Shell) -> Say<'_> {
         };
         match sub.known() {
             Some("drain") => {}
-            Some("prune") if turned_on(after, "confirm") || unread_option(after, shell) => {
-                return Destroys(
+            Some("prune") => {
+                return destroys(
+                    Flagged::of(
+                        turned_on(after, "confirm"),
+                        may_be_option(after, shell, |start| could_be(start, None, Some("confirm"))),
+                    ),
                     "deletes old images, builds or deployments",
                     words(after, KUBECTL_VALUES).first().copied(),
                 )
@@ -2670,10 +2704,12 @@ fn kubectl(args: &[Arg], shell: Shell) -> Say<'_> {
             Replicas::Unread => Unread(Some("scales to a count only known when it runs")),
             Replicas::Other => Safe,
         },
-        "replace" if may_flag(rest, shell, None, Some("force")) => {
-            Destroys("deletes and recreates cluster objects", target)
-        }
-        "apply" if may_flag(rest, shell, None, Some("prune")) => {
+        "replace" => destroys(
+            flagged(rest, shell, None, Some("force")),
+            "deletes and recreates cluster objects",
+            target,
+        ),
+        "apply" if has_flag(rest, None, Some("prune")) => {
             Destroys("deletes cluster objects the files do not list", target)
         }
         // `--force` deletes an object it cannot patch and creates it again.
@@ -2686,6 +2722,11 @@ fn kubectl(args: &[Arg], shell: Shell) -> Say<'_> {
         {
             Destroys("deletes and recreates cluster objects", target)
         }
+        "apply" => destroys(
+            flagged(rest, shell, None, Some("prune")),
+            "deletes cluster objects the files do not list",
+            target,
+        ),
         _ => Safe,
     }
 }
@@ -2829,10 +2870,12 @@ fn terraform_command<'a>(cmd: &Arg, rest: &'a [Arg], unit: &Unit) -> Say<'a> {
 fn apply<'a>(rest: &[Arg], unit: &Unit) -> Say<'a> {
     let (mut args, unread) = tf_cli_args(unit, "apply");
     args.extend_from_slice(rest);
-    if turned_on(&args, "destroy") || unread_option(rest, unit.shell) {
+    if turned_on(&args, "destroy") {
         Destroys(TERRAFORM_DESTROYS, None)
     } else if replaces(&args) {
         Destroys("destroys resources to create them again", None)
+    } else if unread_option(rest, unit.shell) {
+        May(TERRAFORM_DESTROYS, None)
     } else if unread {
         Unread(Some(
             "runs terraform apply with arguments only known when it runs",
@@ -2994,14 +3037,16 @@ fn aws(args: &[Arg], shell: Shell) -> Say<'_> {
         return Safe;
     }
     match (service_name, verb) {
-        ("s3", "rm") if may_flag(args, shell, None, Some("recursive")) => {
+        ("s3", "rm") if has_flag(args, None, Some("recursive")) => {
             Destroys("deletes every object under a prefix", target)
         }
         ("s3", "rm") => Destroys("deletes objects from a bucket", target),
         ("s3", "rb") => Destroys("deletes a bucket", target),
-        ("s3", "sync") if may_flag(args, shell, None, Some("delete")) => {
-            Destroys("deletes the objects the source does not have", target)
-        }
+        ("s3", "sync") => destroys(
+            flagged(args, shell, None, Some("delete")),
+            "deletes the objects the source does not have",
+            target,
+        ),
         (_, "terminate-instances") => Destroys("terminates EC2 instances", target),
         (_, verb)
             if verb.starts_with("delete-")
@@ -3065,18 +3110,20 @@ fn gcloud<'a>(args: &'a [Arg], values: &[&str], shell: Shell) -> Say<'a> {
     let words = words(args, values);
     let storage_rsync = words.first().is_some_and(|w| w.known() == Some("storage"))
         && words.get(1).is_some_and(|w| w.known() == Some("rsync"));
-    if storage_rsync
-        && may_flag(
-            args,
-            shell,
-            None,
-            Some("delete-unmatched-destination-objects"),
-        )
-    {
-        return Destroys(
+    if storage_rsync {
+        let said = destroys(
+            flagged(
+                args,
+                shell,
+                None,
+                Some("delete-unmatched-destination-objects"),
+            ),
             "deletes the objects the source does not have",
             words.get(2).copied(),
         );
+        if !matches!(said, Safe) {
+            return said;
+        }
     }
     said
 }
@@ -3130,10 +3177,9 @@ fn nomad<'a>(args: &'a [Arg], values: &[&str], shell: Shell) -> Say<'a> {
         || {
             let words = words(args, values);
             let at = usize::from(words.first().and_then(|word| word.known()) == Some("job"));
-            if words.get(at).and_then(|word| word.known()) == Some("stop")
-                && (turned_on(args, "purge") || unread_option(args, shell))
-            {
-                Destroys(
+            if words.get(at).and_then(|word| word.known()) == Some("stop") {
+                destroys(
+                    Flagged::of(turned_on(args, "purge"), unread_option(args, shell)),
                     "stops a Nomad job and deletes it",
                     words.get(at + 1).copied(),
                 )
@@ -3215,9 +3261,11 @@ fn gsutil(args: &[Arg], shell: Shell) -> Say<'_> {
     match cmd.known() {
         Some("rm") => Destroys("deletes Cloud Storage objects", target),
         Some("rb") => Destroys("deletes a Cloud Storage bucket", target),
-        Some("rsync") if may_flag(rest, shell, Some('d'), None) => {
-            Destroys("deletes the objects the source does not have", target)
-        }
+        Some("rsync") => destroys(
+            flagged(rest, shell, Some('d'), None),
+            "deletes the objects the source does not have",
+            target,
+        ),
         Some(_) => Safe,
         None => Unread(None),
     }

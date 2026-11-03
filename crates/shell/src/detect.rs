@@ -12,7 +12,9 @@ use milo_guards_core::spelling::glob;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-use crate::unit::{may_split, operands, plain, Arg, Importing, Reads, Scope, Split, Unit};
+use crate::unit::{
+    may_split, operands, plain, unknown_start, Arg, Flagged, Importing, Reads, Scope, Split, Unit,
+};
 use crate::{Finding, Rule, Shell};
 use milo_guards_core::Flavour;
 
@@ -416,6 +418,29 @@ impl Checker<'_> {
             reason: reason.into(),
             target: target.map(|arg| arg.text().to_string()),
         });
+    }
+
+    /// Say of each finding from `before` on that only an option the line
+    /// does not show makes the program do it (see [`hedged`]).
+    fn hedge(&mut self, before: usize) {
+        for finding in self.found.iter_mut().skip(before) {
+            finding.reason = hedged(&finding.reason);
+        }
+    }
+
+    /// What `act` finds, when an option that turns it on is given: as
+    /// found when it is written out, said as what the program may do when
+    /// only an argument only known when it runs may be it (see [`hedged`]).
+    fn flagged(&mut self, flagged: Flagged, act: impl FnOnce(&mut Self)) {
+        let before = self.found.len();
+        match flagged {
+            Flagged::Absent => {}
+            Flagged::Written => act(self),
+            Flagged::Unread => {
+                act(self);
+                self.hedge(before);
+            }
+        }
     }
 
     /// The unit at `at` reads a file the code names without the guard
@@ -1389,6 +1414,65 @@ const COPY_VALUED: [&str; 8] = [
     "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
 ];
 
+/// How a reason ends when only an option the line does not show, an
+/// argument only known when it runs that may be it, makes the program do
+/// what it says: `may force a push with an option only known when it runs`.
+/// `effect` reads such a finding as not understood, not as a change.
+pub(crate) const UNREAD_OPTION: &str = " with an option only known when it runs";
+
+/// The verbs a reason may join to its first with `and` or `or` (`rewrites
+/// or deletes`), which [`hedged`] puts in their plain form too.
+const JOINED_VERBS: [&str; 6] = [
+    "deletes",
+    "recreates",
+    "removes",
+    "destroys",
+    "writes",
+    "throws",
+];
+
+/// `reason`, a finding's, said of what a program may do when only an
+/// option the line does not show turns it on: `deletes a tag` becomes `may
+/// delete a tag with an option only known when it runs`.
+pub(crate) fn hedged(reason: &str) -> String {
+    if reason.ends_with(UNREAD_OPTION) {
+        return reason.to_string();
+    }
+    let mut out = String::from("may");
+    let mut joined = false;
+    for (at, word) in reason.split(' ').enumerate() {
+        out.push(' ');
+        if at == 0 || (joined && JOINED_VERBS.contains(&word)) {
+            out.push_str(&plain_verb(word));
+        } else {
+            out.push_str(word);
+        }
+        joined = matches!(word, "and" | "or");
+    }
+    // A reason with a comma in it (`leaves a swarm, even as its last
+    // manager`) takes one before the option too.
+    if reason.contains(',') {
+        out.push(',');
+    }
+    out.push_str(UNREAD_OPTION);
+    out
+}
+
+/// A verb of the third person in its plain form: `deletes` is `delete`,
+/// `pushes` `push` and `empties` `empty`.
+fn plain_verb(word: &str) -> Cow<'_, str> {
+    if let Some(stem) = word.strip_suffix("ies") {
+        return Cow::Owned(format!("{stem}y"));
+    }
+    if let Some(stem) = word
+        .strip_suffix("es")
+        .filter(|stem| stem.ends_with("sh") || stem.ends_with("ch") || stem.ends_with("ss"))
+    {
+        return Cow::Borrowed(stem);
+    }
+    Cow::Borrowed(word.strip_suffix('s').unwrap_or(word))
+}
+
 /// `mv`/`cp`-style operands: the sources and the destination, with `-t
 /// DIR` (`-tDIR`, `--target-directory[=]DIR`) naming the destination when
 /// given. The value of an option that may split into words when it runs
@@ -1405,7 +1489,10 @@ fn sources_and_destination<'a>(
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known().filter(|_| options) else {
-            operands.push(arg);
+            match unread_target(arg, shell).filter(|_| options) {
+                Some(dir) => target = Some(dir),
+                None => operands.push(arg),
+            }
             continue;
         };
         let mut value = |value: Option<&'a Arg>| {
@@ -1445,6 +1532,28 @@ fn sources_and_destination<'a>(
         }
         _ => (Vec::new(), None),
     }
+}
+
+/// The destination folder an argument only known when it runs names, when
+/// its readable start is `-t` given its value (`--target-directory=$T`,
+/// `--target-directory="$T"`, `-t"$T"`, `-rt$T`): a folder only known when
+/// it runs, the value as written.
+fn unread_target(arg: &Arg, shell: Shell) -> Option<Arg> {
+    let start = unknown_start(arg, shell)?;
+    let written = arg.text();
+    let value = if start.starts_with("--target-directory=") {
+        written.split_once('=')?.1
+    } else {
+        let bundle = start
+            .strip_prefix('-')
+            .filter(|bundle| !bundle.starts_with('-'))?;
+        let letters = bundle.find('t')?;
+        if !bundle[..letters].chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        written.split_once('t')?.1
+    };
+    Some(Arg::Unknown(value.to_string()))
 }
 
 /// The files a unit writes, for matching a script the line then runs.

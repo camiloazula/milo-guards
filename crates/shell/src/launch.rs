@@ -21,7 +21,7 @@ mod tools;
 mod wrappers;
 
 use find::find_exec;
-pub(crate) use find::find_targets;
+pub(crate) use find::{find_targets, find_unread_primary, FIND_VALUED};
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
 pub(crate) use interpreters::{
     after_run, code_options, perl_edits, valued_options, BUN_VALUES, DENO_VALUES, INTERPRETERS,

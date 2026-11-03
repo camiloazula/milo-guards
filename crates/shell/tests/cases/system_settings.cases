@@ -1124,3 +1124,12 @@ posix rules=system_settings first=system_settings reason="changes the computer's
 posix rules=system_settings first=system_settings reason="changes the computer's name" | hostnamectl hostname newname
 posix rules=system_settings first=system_settings reason="changes the computer's clock settings" | timedatectl set-timezone UTC
 posix rules=system_settings first=system_settings reason="changes the computer's name" | hostname newname
+
+# A machine-setting program given an option only known when it runs: one
+# outside quotes may split into words, and a quoted one that starts with
+# `-` is an option.
+posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | iptables $flag
+posix finds=system_settings reason="may change a machine setting with an option only known when it runs" | spctl $x
+posix finds=system_settings | ufw $c
+posix finds=system_settings | csrutil $x
+posix finds=system_settings | iptables "-$F"
