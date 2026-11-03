@@ -23,8 +23,8 @@ pub(crate) use interpreters::{
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
 use wrappers::{
-    cmd, env, env_sets, folder_option, in_folder, powershell, rsh, runner, start, start_process,
-    tmux, xargs,
+    cmd, env, env_sets, folder_option, getopt, in_folder, powershell, rsh, runner, start,
+    start_process, tmux, xargs, Getopt,
 };
 pub(crate) use wrappers::{powershell_file, uv_script, RUNNERS};
 
@@ -482,16 +482,9 @@ fn launch(key: &str, unit: &Unit) -> Launch {
     let args = &unit.args;
     let posix = unit.shell != Shell::Cmd;
     match key {
-        "sudo" | "doas" | "gsudo" | "pkexec" => {
-            let start = after_options(args, SUDO_VALUES);
-            let launch = runs(args, start);
-            // `sudo -D DIR` (`--chdir`) starts the command in `DIR`.
-            if key == "sudo" {
-                started_in(args, start, &["-D", "--chdir"], SUDO_VALUES, launch)
-            } else {
-                launch
-            }
-        }
+        // `sudo -D DIR` (`--chdir`) starts the command in `DIR`.
+        "sudo" => sudo(args),
+        "doas" | "gsudo" | "pkexec" => runs(args, after_options(args, SUDO_VALUES)),
         // systemd's own `sudo`, and a command started as a transient unit.
         "run0" if posix => {
             let start = after_options(args, RUN0_VALUES);
@@ -544,7 +537,7 @@ fn launch(key: &str, unit: &Unit) -> Launch {
         "su" => option_value(args, "-c", "--command").map_or(Launch::Itself, |script| {
             Launch::Script(Shell::Posix, script)
         }),
-        "env" if posix => env(args),
+        "env" if posix => env(unit),
         "nice" if posix => runs(args, after_options(args, &["-n", "--adjustment"])),
         "ionice" if posix => runs(
             args,
@@ -707,8 +700,86 @@ fn launch(key: &str, unit: &Unit) -> Launch {
     }
 }
 
-/// The options of `sudo` (and `doas`, `gsudo`, `pkexec`) that take the next
-/// argument.
+/// `sudo`: its options, read as `getopt_long` reads them (`-nD DIR`,
+/// `--chd DIR`), then the command, which `-D DIR` (`--chdir`) starts in
+/// `DIR`.
+fn sudo(args: &[Arg]) -> Launch {
+    let Some(start) = after_options_by(args, |text, next| getopt(text, next, &SUDO_OPTIONS).0)
+        .filter(|start| *start < args.len())
+    else {
+        return Launch::Itself;
+    };
+    let own = &args[..start];
+    let mut folder = None;
+    let mut at = 0;
+    while let Some(arg) = own.get(at) {
+        at += match arg.known() {
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                let (word, option) = getopt(text, own.get(at + 1), &SUDO_OPTIONS);
+                if let Some(("chdir", value)) = option {
+                    folder = value;
+                }
+                if matches!(word, Word::Value) {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => 1,
+        };
+    }
+    in_folder(folder, Launch::Runs(start))
+}
+
+/// `sudo`'s options (sudo.ws, `sudo --help`).
+const SUDO_OPTIONS: Getopt = Getopt {
+    short: &[
+        ('C', "close-from"),
+        ('D', "chdir"),
+        ('g', "group"),
+        ('h', "host"),
+        ('p', "prompt"),
+        ('R', "chroot"),
+        ('r', "role"),
+        ('T', "command-timeout"),
+        ('t', "type"),
+        ('U', "other-user"),
+        ('u', "user"),
+    ],
+    long: &[
+        ("askpass", false),
+        ("background", false),
+        ("bell", false),
+        ("chdir", true),
+        ("chroot", true),
+        ("close-from", true),
+        ("command-timeout", true),
+        ("edit", false),
+        ("group", true),
+        ("help", false),
+        ("host", true),
+        ("list", false),
+        ("login", false),
+        ("non-interactive", false),
+        ("other-user", true),
+        ("preserve-env", false),
+        ("preserve-groups", false),
+        ("prompt", true),
+        ("remove-timestamp", false),
+        ("reset-timestamp", false),
+        ("role", true),
+        ("set-home", false),
+        ("shell", false),
+        ("stdin", false),
+        ("type", true),
+        ("user", true),
+        ("validate", false),
+        ("version", false),
+    ],
+};
+
+/// The options of `doas`, `gsudo` and `pkexec` (read as `sudo`'s) that take
+/// the next argument.
 const SUDO_VALUES: &[&str] = &[
     "-u",
     "-g",

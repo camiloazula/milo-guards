@@ -10,6 +10,33 @@ posix finds=delete | env --chdir ~ rm -rf .ssh
 posix finds=delete | env -iC / rm -rf etc
 posix finds=delete | env -C/ rm -rf etc
 posix finds=delete | env -C / -S 'rm -rf etc'
+# A long option by any prefix that names it alone, as getopt_long reads it.
+posix finds=delete | env --ch / rm -rf etc
+posix finds=delete | env --chd=/ rm -rf etc
+posix finds=delete | env --c ~ rm -rf .ssh
+posix finds=delete | env --un X -C / rm -rf etc
+# `-S` splits its string into words that env reads again as its own
+# arguments, options and all; also joined to the flag.
+posix finds=delete | env -S '-C / rm -rf etc'
+posix finds=delete | env -S'-C / rm -rf etc'
+posix finds=delete | env --split-string='-C / rm -rf etc'
+posix finds=delete | env --sp '-C / rm -rf etc'
+posix finds=delete | env -iS '-C ~ rm -rf .ssh'
+posix finds=delete | env -S '-C /' rm -rf etc
+posix finds=delete | env -S '--chdir=/ -S "rm -rf etc"'
+posix finds=delete | env -C sub -S '-C / rm -rf etc'
+posix safe | env -S '-C sub make'
+posix safe | env -S 'make test'
+# env's own splitting: `\_` between words, `#` starting a comment, `\c`
+# ending the string, quotes and escapes.
+posix finds=delete | env -S '-C\\_/\\_rm -rf etc'
+posix finds=delete | env -S '-C / rm -rf etc # a comment'
+posix finds=delete | env -S '-C "/" rm -rf "e\\tc" etc\\c ignored'
+posix safe | env -S "echo 'it\\'s' 'a\\\\nb'"
+posix safe | env -S 'echo "a\\_b\\nc" x'
+# A string env cannot split now runs a command only known when it runs.
+posix finds=unknown | env -S '-C ${D} rm -rf build'
+posix finds=unknown | env -S '-C / rm -rf "etc'
 # What the wrapper runs reads its code from there too.
 posix finds=delete | env -C ~ python3 -c "import shutil; shutil.rmtree('.ssh')"
 posix safe | env -C sub make
@@ -19,6 +46,10 @@ posix safe | env -C sub rm -rf build
 posix finds=delete | sudo -D / rm -rf etc
 posix finds=delete | sudo --chdir=/ rm -rf etc
 posix finds=delete | run0 --chdir / rm -rf etc
+posix finds=delete | sudo -nD / rm -rf etc
+posix finds=delete | sudo -nD/ rm -rf etc
+posix finds=delete | sudo --chd / rm -rf etc
+posix finds=delete | sudo -u root --chdir=/ rm -rf etc
 posix rules=elevated | sudo -D sub make
 
 # pnpm's `-C` and `--dir`.
@@ -49,7 +80,8 @@ posix finds=delete | yarn --cwd=/ dlx rimraf etc
 posix safe | yarn --cwd web build
 posix safe | yarn --cwd web exec rm -rf dist
 
-# npm's `--prefix` for `exec`.
+# npm's and npx's `--prefix` (`-C`) names the project; npm 11 runs the
+# command where the line is, so it is judged from both folders.
 posix finds=delete | npm --prefix ~ exec rimraf .ssh
 posix finds=delete | npm exec --prefix=/ -- rimraf etc
 posix finds=delete | npm -C ~ exec rimraf .ssh
@@ -57,6 +89,11 @@ posix finds=delete | npm --prefi ~ exec rimraf .ssh
 posix finds=delete | npx --prefix ~ rimraf .ssh
 posix finds=delete | npx --prefix=/ rimraf etc
 posix finds=delete | npm --prefix ~ exec -c 'rm -rf .ssh'
+posix finds=delete | npm --prefix a/b/c exec rimraf ../..
+posix finds=delete | npm --prefix sub exec rimraf .git
+posix finds=delete | npx -C a/b/c rimraf ../..
+posix finds=delete | npm --prefix a/b/c exec -c 'rm -rf ../..'
+posix finds=delete | npm exec --prefix=a/b/c -- rimraf ../..
 posix safe | npm --prefix web exec vitest
 
 # PowerShell: `Start-Process -WorkingDirectory`, and the folder `pwsh` and
@@ -65,6 +102,11 @@ powershell finds=delete | Start-Process cmd -WorkingDirectory C:\\Windows -Argum
 powershell finds=delete | pwsh -WorkingDirectory C:\\Windows -c "Remove-Item System32 -Recurse"
 powershell finds=delete | powershell -wd C:\\Windows -Command "Remove-Item System32 -Recurse"
 powershell finds=delete | pwsh -wd:C:\\Windows -c "Remove-Item System32 -Recurse"
+# pwsh takes any prefix of `-WorkingDirectory` from `-wo` on.
+powershell finds=delete | pwsh -wo C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh -workingdir C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh -wo:C:\\Windows -c "Remove-Item System32 -Recurse"
+powershell finds=delete | pwsh -WORKINGDIRECTORY:C:\\Windows -c "Remove-Item System32 -Recurse"
 powershell finds=delete | Start-Process -FilePath pwsh -WorkingDirectory C:\\Windows -ArgumentList '-c','Remove-Item System32 -Recurse'
 powershell finds=delete | Start-Process cmd -wo C:\\Windows -ArgumentList '/c rd /s /q System32'
 powershell safe | Start-Process cmd -WorkingDirectory build -ArgumentList '/c del x.obj'

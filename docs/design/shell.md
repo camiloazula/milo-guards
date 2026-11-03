@@ -425,20 +425,35 @@ A wrapper or a runner that starts its command in a folder of its own option
 moves that command, and only it: its relative paths, the script it runs and
 the code it is given are judged from that folder, as after a `cd` that ran,
 and the rest of the line from where it was (`env -C / true; rm -rf etc` is
-safe). The options read so are `env -C DIR` (also `-CDIR`, `-iC DIR` and
-`--chdir`), `sudo -D` and `run0 -D` (`--chdir`), npm's and npx's `--prefix`
-(`-C`, read as npm reads its options, so `--prefi` too) for what `npm exec`
-runs, pnpm's `-C` and `--dir`, yarn's and bun's `--cwd`, uv's `--directory`,
-PowerShell's `Start-Process -WorkingDirectory` and `pwsh` or `powershell
--WorkingDirectory` (`-wd`, `-wd:DIR`) for the script given with `-Command`,
-and cmd's `start /d DIR` (`/dDIR`), which names the drive too: `env -C ~ rm -rf
-.ssh`, `pnpm --dir ~ exec rimraf .ssh` and `start /d C:\Windows cmd /c rd /s
-/q System32` are `delete`, `env -C sub make` and `start /d build cmd /c del
+safe). The options read so are `env -C DIR` (`--chdir`), `sudo -D` and `run0
+-D` (`--chdir`), pnpm's `-C` and `--dir`, yarn's and bun's `--cwd`, uv's
+`--directory`, PowerShell's `Start-Process -WorkingDirectory` and `pwsh` or
+`powershell -WorkingDirectory` for the script given with `-Command`, and cmd's
+`start /d DIR` (`/dDIR`), which names the drive too: `env -C ~ rm -rf .ssh`,
+`pnpm --dir ~ exec rimraf .ssh` and `start /d C:\Windows cmd /c rd /s /q
+System32` are `delete`, `env -C sub make` and `start /d build cmd /c del
 x.obj` are safe. When one is given more than once, the last counts. A folder
 only known when it runs makes the command's relative paths known only when
-they run. `uv run --project DIR` finds its project in `DIR`, and whether it
-runs the command there too has changed between versions of uv, so the
-command is judged from both folders.
+they run.
+
+Each is read the way its program reads its options. `env` and `sudo` read
+theirs as `getopt_long` does: in a bundle (`env -iC DIR`, `sudo -nD DIR`),
+with the value joined (`-CDIR`), and a long option by any prefix that names it
+alone (`env --ch DIR`, `sudo --chd DIR`). `env -S STRING` (`--split-string`,
+also `-S'…'`) splits the string into words, as `env` does, and reads them again
+as its own arguments in its place, so `env -S '-C / rm -rf etc'` is `delete`; a
+string it cannot split now (an expansion such as `${D}`, an escape it does not
+know, a quote left open) runs a command only known when it runs. `pwsh` takes
+any prefix of `-WorkingDirectory` from `-wo` on, and `-wd`, also joined with a
+colon (`-wo:DIR`). npm's and npx's `--prefix` (`-C`) is read as npm reads its
+options, so `--prefi` too.
+
+Two of them name a project rather than the folder the command runs in, and
+whether the runner also starts the command there has changed between
+versions, so the command is judged from both folders: `uv run --project DIR`,
+and npm's and npx's `--prefix` for what `npm exec` runs (npm 11 runs it where
+the line is). So `npm --prefix a/b/c exec rimraf ../..` is `delete`, as is
+`npm --prefix ~ exec rimraf .ssh`.
 
 A redirect on a `cd` (`chdir`, `pushd`, `Set-Location`) is opened before the
 command runs, so its file is placed from the folder the command starts in, not

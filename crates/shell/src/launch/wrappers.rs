@@ -41,60 +41,236 @@ pub(super) fn rsh(args: &[Arg]) -> Option<Arg> {
     None
 }
 
-/// `env`: assignments and options, then the program; `-S` splits a string
-/// into the command. `-C DIR` (`--chdir`) starts it in `DIR`.
-pub(super) fn env(args: &[Arg]) -> Launch {
+/// `env`: assignments and options, then the program. `-C DIR` (`--chdir`)
+/// starts it in `DIR`. `-S STRING` (`--split-string`) splits `STRING` into
+/// words and reads them again as `env`'s own arguments, in its place: the
+/// options in it too (`env -S '-C / rm -rf etc'`). The options are read as
+/// GNU `getopt_long` reads them: in a bundle (`-iC DIR`), with the value
+/// joined (`-CDIR`, `-S'…'`) and a long one by any prefix that names it
+/// alone (`--ch DIR`, `--chd=DIR`).
+pub(super) fn env(unit: &Unit) -> Launch {
+    let args = unit.args.as_slice();
     let mut folder = None;
+    let mut options = true;
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         match arg.known() {
-            Some("-S" | "--split-string") => {
-                return args.get(at + 1).map_or(Launch::Itself, |script| {
-                    in_folder(folder, Launch::Script(Shell::Posix, script.clone()))
-                });
-            }
-            Some("--chdir") => {
-                folder = args.get(at + 1).cloned();
-                at += 2;
-            }
-            Some("-u" | "--unset") => at += 2,
-            Some(text) if text.starts_with("--chdir=") => {
-                folder = Some(Arg::Known(text["--chdir=".len()..].to_string()));
+            Some("--") if options => {
+                options = false;
                 at += 1;
             }
-            Some(text)
-                if text.starts_with('-') || (text.contains('=') && !text.starts_with('=')) =>
-            {
-                // `-C DIR`, also at the end of a bundle of flags (`-iC DIR`)
-                // or with the folder joined to it (`-CDIR`).
-                match env_chdir(text) {
-                    Some("") => {
-                        folder = args.get(at + 1).cloned();
-                        at += 2;
+            // `-` alone is `-i`.
+            Some("-") if options => at += 1,
+            Some(text) if options && text.len() > 1 && text.starts_with('-') => {
+                let (word, option) = getopt(text, args.get(at + 1), &ENV_OPTIONS);
+                let used = if matches!(word, Word::Value) { 2 } else { 1 };
+                match option {
+                    Some(("chdir", value)) => folder = value,
+                    Some(("split-string", value)) => {
+                        return split_string(unit, at, used, value, folder);
                     }
-                    Some(dir) => {
-                        folder = Some(Arg::Known(dir.to_string()));
-                        at += 1;
-                    }
-                    None => at += 1,
+                    _ => {}
                 }
+                at += used;
             }
+            Some(text) if text.contains('=') && !text.starts_with('=') => at += 1,
             _ => return in_folder(folder, Launch::Runs(at)),
         }
     }
     Launch::Itself
 }
 
-/// The folder `env`'s short option `-C` is given in the word `text`: `-C`
-/// alone, or after the flags that take nothing (`-iC`), gives `""`, the
-/// folder being the next word; `-CDIR` gives `DIR`. `None` when the word
-/// holds no `-C`.
-fn env_chdir(text: &str) -> Option<&str> {
-    let bundle = text
-        .strip_prefix('-')
-        .filter(|rest| !rest.starts_with('-'))?;
-    let flags = bundle.trim_start_matches(['i', '0', 'v']);
-    flags.strip_prefix('C')
+/// `env -S STRING` at `at`, the option and its value taking `used` words:
+/// `env` again, with the words of the string in their place. A string only
+/// known when it runs, or one that cannot be split, runs a command only
+/// known when it runs.
+fn split_string(
+    unit: &Unit,
+    at: usize,
+    used: usize,
+    value: Option<Arg>,
+    folder: Option<Arg>,
+) -> Launch {
+    let Some(value) = value else {
+        return Launch::Itself;
+    };
+    let Some(text) = value.known() else {
+        return in_folder(folder, Launch::Script(Shell::Posix, value));
+    };
+    let Some(words) = env_split(text) else {
+        return in_folder(
+            folder,
+            Launch::Script(Shell::Posix, Arg::Unknown(text.to_string())),
+        );
+    };
+    let mut again = unit.clone();
+    again.args = unit.args[..at]
+        .iter()
+        .cloned()
+        .chain(words.into_iter().map(Arg::Known))
+        .chain(
+            unit.args
+                .get(at + used..)
+                .unwrap_or_default()
+                .iter()
+                .cloned(),
+        )
+        .collect();
+    Launch::Replace(Box::new(again))
+}
+
+/// The words `env -S` splits `text` into: at blanks, with `'…'` and `"…"`
+/// quoting, the escapes of `\`, a `#` that starts a word ending the string,
+/// and `\c` ending it too. `None` when `env` would not split it so: an
+/// expansion (`${X}`, `$X`), an escape it does not know, or a quote left
+/// open.
+fn env_split(text: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    // Whether a word has started, though it may be empty (`''`).
+    let mut started = false;
+    let mut quote = None;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, '#') if !started => break,
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (Some(open), c) if c == open => quote = None,
+            (Some('\''), '\\') => match chars.next()? {
+                c @ ('\\' | '\'') => word.push(c),
+                c => {
+                    word.push('\\');
+                    word.push(c);
+                }
+            },
+            (Some('\''), c) => word.push(c),
+            (_, '$') => return None,
+            (_, '\\') => {
+                let escaped = match chars.next()? {
+                    c @ ('\\' | '\'' | '"' | '#' | '$') => c,
+                    '_' if quote.is_none() => {
+                        if started {
+                            words.push(std::mem::take(&mut word));
+                            started = false;
+                        }
+                        continue;
+                    }
+                    '_' => ' ',
+                    'c' if quote.is_none() => break,
+                    'f' => '\u{c}',
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    'v' => '\u{b}',
+                    _ => return None,
+                };
+                word.push(escaped);
+                started = true;
+            }
+            (_, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if started {
+        words.push(word);
+    }
+    Some(words)
+}
+
+/// How a program that reads its options as GNU `getopt_long` does reads
+/// them: the short options that take a value, each with the name of the
+/// long one it stands for, and the long options, each with whether it
+/// takes a value.
+pub(super) struct Getopt {
+    pub(super) short: &'static [(char, &'static str)],
+    pub(super) long: &'static [(&'static str, bool)],
+}
+
+/// `env`'s options (GNU coreutils, and BSD's `-C` and `-S`).
+const ENV_OPTIONS: Getopt = Getopt {
+    short: &[
+        ('a', "argv0"),
+        ('C', "chdir"),
+        ('S', "split-string"),
+        ('u', "unset"),
+    ],
+    long: &[
+        ("argv0", true),
+        ("block-signal", false),
+        ("chdir", true),
+        ("debug", false),
+        ("default-signal", false),
+        ("help", false),
+        ("ignore-environment", false),
+        ("ignore-signal", false),
+        ("list-signal-handling", false),
+        ("null", false),
+        ("split-string", true),
+        ("unset", true),
+        ("version", false),
+    ],
+};
+
+/// How the program `spec` describes reads the word `text`, which starts
+/// with a dash, given the word `next` after it: whether it takes `next`,
+/// and the option that takes a value in it, by its long name, with that
+/// value. A bundle of short options ends at the first that takes a value,
+/// the rest of the word being the value (`-iCDIR`) or, when there is none,
+/// the next word. A long option is named by any prefix of it that no other
+/// starts with, and given its value after `=` or in the next word.
+pub(super) fn getopt(
+    text: &str,
+    next: Option<&Arg>,
+    spec: &Getopt,
+) -> (Word, Option<(&'static str, Option<Arg>)>) {
+    if let Some(long) = text.strip_prefix("--") {
+        let (name, joined) = match long.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (long, None),
+        };
+        let mut prefixed = spec.long.iter().filter(|(full, _)| full.starts_with(name));
+        let found = spec
+            .long
+            .iter()
+            .find(|(full, _)| *full == name)
+            .or_else(|| prefixed.next().filter(|_| prefixed.next().is_none()));
+        return match (found, joined) {
+            (Some(&(full, true)), Some(value)) if !name.is_empty() => (
+                Word::Flag,
+                Some((full, Some(Arg::Known(value.to_string())))),
+            ),
+            (Some(&(full, true)), None) if !name.is_empty() => {
+                (Word::Value, Some((full, next.cloned())))
+            }
+            _ => (Word::Flag, None),
+        };
+    }
+    let bundle = text.strip_prefix('-').unwrap_or(text);
+    for (at, c) in bundle.char_indices() {
+        if let Some(&(_, name)) = spec.short.iter().find(|(short, _)| *short == c) {
+            let rest = &bundle[at + c.len_utf8()..];
+            return if rest.is_empty() {
+                (Word::Value, Some((name, next.cloned())))
+            } else {
+                (Word::Flag, Some((name, Some(Arg::Known(rest.to_string())))))
+            };
+        }
+    }
+    (Word::Flag, None)
 }
 
 /// `launch`, started in `folder` when there is one (see [`Launch::In`]).
@@ -388,8 +564,8 @@ fn powershell_entry_in<'a>(args: &'a [Arg], folder: &mut Option<Arg>) -> Entry<'
             if !value.is_empty() && !param.is_empty() && "file".starts_with(&param) {
                 return Entry::File(file_arg(value, moved));
             }
-            // `-wd:DIR`.
-            if !value.is_empty() && matches!(param.as_str(), "workingdirectory" | "wd") {
+            // `-wd:DIR`, `-wo:DIR`.
+            if !value.is_empty() && working_directory(&param) {
                 *folder = Some(Arg::Known(value.to_string()));
                 moved = true;
                 at += 1;
@@ -439,23 +615,23 @@ fn powershell_entry_in<'a>(args: &'a [Arg], folder: &mut Option<Arg>) -> Entry<'
                 None => Entry::Launch(Launch::Itself),
                 Some(script) => Entry::Launch(Launch::Script(Shell::PowerShell, script.clone())),
             };
-        } else if matches!(
-            name.as_str(),
-            "windowstyle"
-                | "w"
-                | "win"
-                | "configurationname"
-                | "outputformat"
-                | "of"
-                | "o"
-                | "inputformat"
-                | "if"
-                | "workingdirectory"
-                | "wd"
-                | "settingsfile"
-                | "custompipename"
-        ) {
-            if matches!(name.as_str(), "workingdirectory" | "wd") {
+        } else if working_directory(&name)
+            || matches!(
+                name.as_str(),
+                "windowstyle"
+                    | "w"
+                    | "win"
+                    | "configurationname"
+                    | "outputformat"
+                    | "of"
+                    | "o"
+                    | "inputformat"
+                    | "if"
+                    | "settingsfile"
+                    | "custompipename"
+            )
+        {
+            if working_directory(&name) {
                 moved = true;
                 *folder = args.get(at + 1).cloned();
             }
@@ -465,6 +641,14 @@ fn powershell_entry_in<'a>(args: &'a [Arg], folder: &mut Option<Arg>) -> Entry<'
         }
     }
     Entry::Launch(Launch::Reads(Reads::Shell))
+}
+
+/// Whether `name`, a parameter of `pwsh` or `powershell` in lower case,
+/// is `-WorkingDirectory`: `-wd`, or any prefix of it from `-wo` on, as
+/// pwsh matches it.
+fn working_directory(name: &str) -> bool {
+    name == "wd"
+        || (name.len() >= 2 && name.starts_with("wo") && "workingdirectory".starts_with(name))
 }
 
 /// The script `file` names. After `-WorkingDirectory` it is read from a
@@ -879,10 +1063,13 @@ fn pnpm_word(text: &str) -> Word {
 
 /// `launch`, which the runner `key` runs from its arguments `args`, with
 /// the program (or the script) at `end`, started in the folder the runner's
-/// own options before it name: npm's `--prefix` (`-C`), pnpm's `--dir`
-/// (`-C`), yarn's and bun's `--cwd`, uv's `--directory`. `uv run --project
-/// DIR` finds its project in `DIR` and, by the uv in use, may run the
-/// command there or where the line is, so both are judged.
+/// own options before it name: pnpm's `--dir` (`-C`), yarn's and bun's
+/// `--cwd`, uv's `--directory`. `uv run --project DIR` finds its project in
+/// `DIR` and, by the uv in use, may run the command there or where the line
+/// is, so both are judged. So are npm's and npx's `--prefix` (`-C`): it
+/// names the project, and whether `npm exec` runs the command there or
+/// where the line is has changed between versions of npm (npm 11 runs it
+/// where the line is).
 pub(super) fn runner_in(key: &str, args: &[Arg], end: usize, launch: Launch) -> Launch {
     let own = args.get(..end).unwrap_or_default();
     let listed = |names: &[&str], values: &[&str]| {
@@ -894,18 +1081,19 @@ pub(super) fn runner_in(key: &str, args: &[Arg], end: usize, launch: Launch) -> 
             }
         })
     };
-    let launch = match key {
-        "uv" => match listed(&["--project"], UV_VALUES) {
-            Some(project) => Launch::Either(
-                Box::new(Launch::In(project, Box::new(launch.clone()))),
-                Box::new(launch),
-            ),
-            None => launch,
-        },
-        _ => launch,
+    let either = match key {
+        "uv" => listed(&["--project"], UV_VALUES),
+        "npx" | "npm" => prefix_folder(own, key == "npx"),
+        _ => None,
+    };
+    let launch = match either {
+        Some(project) => Launch::Either(
+            Box::new(Launch::In(project, Box::new(launch.clone()))),
+            Box::new(launch),
+        ),
+        None => launch,
     };
     let folder = match key {
-        "npx" | "npm" => prefix_folder(own, key == "npx"),
         "pnpm" | "pnpx" | "pnx" => {
             folder_option(own, &["-C", "--dir"], false, |text, _| pnpm_word(text))
         }
