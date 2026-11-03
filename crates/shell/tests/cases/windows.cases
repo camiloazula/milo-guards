@@ -83,6 +83,10 @@ powershell finds=system_settings | Set-ExecutionPolicy Unrestricted
 powershell finds=system_settings | Set-MpPreference -DisableRealtimeMonitoring $true
 powershell finds=git_remote | git push --force
 powershell finds=git_discard | git reset --hard; git clean -fd
+# git runs what a submodule foreach is given with `sh` on Windows too, and
+# takes a prefix of a long option there as anywhere.
+powershell finds=delete | git submodule foreach 'rm -rf ~'
+powershell finds=git_discard | git reset --h
 powershell finds=delete | cmd /c "rd /s /q %USERPROFILE%"
 powershell finds=delete | git --% x | Remove-Item -Recurse -Force C:\\Users\\me
 powershell finds=delete | Invoke-Command -ScriptBlock { Remove-Item -Recurse C:\\Data }
@@ -210,6 +214,8 @@ cmd finds=unknown | powershell -NoProfile -ExecutionPolicy Bypass -EncodedComman
 cmd finds=delete | set X=1 && rd /s /q C:\\
 cmd finds=unknown | call %SCRIPT%
 cmd finds=git_remote | git push --force origin main
+cmd finds=delete | git submodule foreach "rm -rf ~"
+cmd finds=git_discard | git clean --f
 cmd finds=run_input | type script.txt | cmd
 cmd finds=delete | start "run" cmd /c rd /s /q C:\\
 cmd finds=unreadable | rd /s /q C:\\Users\\me & echo 'VBS

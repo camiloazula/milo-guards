@@ -2,7 +2,7 @@
 //! commands and config, awk, expect, `AppleScript`, compiled .NET.
 
 use super::Checker;
-use crate::launch::{git_global, git_long, Global};
+use crate::launch::{git_global, git_long, is_submodule, Global};
 use crate::unit::{has_flag, operands, Arg, Unit};
 use crate::{Rule, Shell};
 
@@ -128,10 +128,7 @@ impl Checker<'_> {
             "reset" if flag(None, Some("hard")) => {
                 (Rule::GitDiscard, "throws away uncommitted changes")
             }
-            "clean"
-                if (force_needless || flag(Some('f'), Some("force")))
-                    && !flag(Some('n'), Some("dry-run")) =>
-            {
+            "clean" if (force_needless || flag(Some('f'), Some("force"))) && !git_dry_run(rest) => {
                 (Rule::GitDiscard, "deletes untracked files")
             }
             "checkout"
@@ -217,10 +214,16 @@ impl Checker<'_> {
             {
                 (Rule::GitDiscard, "moves a tag, losing where it pointed")
             }
-            "submodule" if first == Some("update") && flag(Some('f'), Some("force")) => {
+            sub if is_submodule(sub)
+                && first == Some("update")
+                && flag(Some('f'), Some("force")) =>
+            {
                 (Rule::GitDiscard, "throws away changes in submodules")
             }
-            "submodule" if first == Some("deinit") && flag(Some('f'), Some("force")) => {
+            sub if is_submodule(sub)
+                && first == Some("deinit")
+                && flag(Some('f'), Some("force")) =>
+            {
                 (Rule::GitDiscard, "throws away a submodule's changes")
             }
             "worktree" if first == Some("remove") && flag(Some('f'), Some("force")) => {
@@ -324,6 +327,43 @@ const EXEC_CONFIG_KEYS: [&str; 11] = [
     "gpg.program",
     "uploadpack.packobjectshook",
 ];
+
+/// Whether `git clean` is left a dry run by its options. git reads them in
+/// order, so the last of `-n`, `--dry-run` and `--no-dry-run` wins, each
+/// also given as a prefix (`--dry`, `--no-d`); a prefix of `--no-` names
+/// several options, so git refuses it, and it is read as a dry run off. The
+/// value of `-e`/`--exclude` is not an option: in `-enx` and in `-e -n` the
+/// `n` is a pattern.
+fn git_dry_run(args: &[Arg]) -> bool {
+    let mut dry = false;
+    let mut words = args.iter().filter_map(Arg::known);
+    while let Some(text) = words.next() {
+        if text == "--" {
+            break;
+        }
+        if text.starts_with("--") {
+            if git_long(text, "dry-run") {
+                dry = true;
+            } else if git_long(text, "no-dry-run") {
+                dry = false;
+            } else if !text.contains('=') && git_long(text, "exclude") {
+                words.next();
+            }
+        } else if let Some(bundle) = text.strip_prefix('-') {
+            if !bundle.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                continue;
+            }
+            let (options, pattern) = bundle.split_once('e').unwrap_or((bundle, ""));
+            if options.contains('n') {
+                dry = true;
+            }
+            if bundle.contains('e') && pattern.is_empty() {
+                words.next();
+            }
+        }
+    }
+    dry
+}
 
 /// A git option: as [`has_flag`], and also a long option given as a prefix
 /// of it, as git takes one (`--h` is `--hard`, see [`git_long`]).

@@ -30,7 +30,8 @@ pub(crate) fn global(args: &[Arg]) -> Global<'_> {
                 configs.extend(args.get(at + 1).and_then(Arg::known));
                 at += 2;
             }
-            "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env" => {
+            "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env"
+            | "--attr-source" => {
                 at += 2;
             }
             text if text.starts_with('-') => at += 1,
@@ -54,6 +55,13 @@ pub(crate) fn is_long(text: &str, long: &str) -> bool {
         .is_some_and(|name| !name.is_empty() && long.starts_with(name))
 }
 
+/// Whether a git subcommand is `submodule`, or `submodule--helper`, the
+/// helper it calls, which runs the same commands (`foreach`, `update`,
+/// `deinit`) when called directly.
+pub(crate) fn is_submodule(sub: &str) -> bool {
+    matches!(sub, "submodule" | "submodule--helper")
+}
+
 /// `git submodule foreach`: git runs its command in each submodule, with a
 /// shell. One argument is a shell line (`git submodule foreach 'rm -rf ~'`);
 /// with several, the first is put in a shell line as written and the others
@@ -63,7 +71,11 @@ pub(crate) fn is_long(text: &str, long: &str) -> bool {
 /// starts with a dash is taken as one too, so what follows is still read.
 pub(super) fn launch(args: &[Arg]) -> Launch {
     let global = global(args);
-    if args.get(global.at).and_then(Arg::known) != Some("submodule") {
+    if !args
+        .get(global.at)
+        .and_then(Arg::known)
+        .is_some_and(is_submodule)
+    {
         return Launch::Itself;
     }
     let rest = args.get(global.at + 1..).unwrap_or_default();
@@ -123,6 +135,13 @@ mod tests {
         assert!(!is_long("--forced", "force"));
         assert!(!is_long("-f", "force"));
         assert!(!is_long("--no-force", "force"));
+    }
+
+    #[test]
+    fn the_submodule_helper_is_a_submodule() {
+        assert!(is_submodule("submodule"));
+        assert!(is_submodule("submodule--helper"));
+        assert!(!is_submodule("submodules"));
     }
 
     #[test]

@@ -1134,8 +1134,11 @@ no tag named. `git submodule deinit -f` (or `--force`) is `git_discard` too:
 it throws away the submodule's changes; without `-f` git refuses when there
 are some. So is `git submodule update -f` ("throws away changes in
 submodules"): it checks the recorded commit out over what each submodule
-holds. Deleting a tag on a remote (`git push --delete origin v1`, `git push
-origin :refs/tags/v1`) is `git_remote`.
+holds. `git submodule--helper`, the helper `git submodule` calls, runs the
+same commands when called directly, so it is read as `git submodule`
+everywhere here (`git submodule--helper update --force`, `git
+submodule--helper foreach 'rm -rf ~'`). Deleting a tag on a remote (`git push
+--delete origin v1`, `git push origin :refs/tags/v1`) is `git_remote`.
 
 `git submodule foreach` runs its command in each submodule with a shell, and
 the guard reads that command as a nested script, as `bash -c`'s: one argument
@@ -1164,8 +1167,14 @@ that keep a line safe too: `git clean -f --d` is a dry run (`--dry-run` is
 the one long option of `clean` that starts with `d`), and `git branch --d x`
 is `git branch -d x`, which refuses a branch that is not merged. A value
 given with `=` is read the same way: `git gc --pr=now` is `--prune=now`.
-git's own options before the subcommand (`-C`, `-c`, `--git-dir`) take no
-prefix.
+git reads its options in order, so an option that keeps a line safe is read
+in order with its `--no-` form: the last of `-n`, `--dry-run` and
+`--no-dry-run` (or a prefix of it, `--no-d`) wins, and `git clean -f -n
+--no-d` deletes. The value of `-e`/`--exclude` is a pattern, not an option,
+so the `n` in `git clean -f -enx` or `-e -n` is no dry run. git's own options
+before the subcommand (`-C`, `-c`, `--git-dir`) take no prefix, and those that
+take a value take the next word as it (`--attr-source HEAD`), so that word is
+not the subcommand.
 
 ### Running a download through `Invoke-Expression`
 

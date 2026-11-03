@@ -19,7 +19,7 @@ mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::find_targets;
-pub(crate) use git::{global as git_global, is_long as git_long, Global};
+pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
 pub(crate) use interpreters::{
     after_run, perl_edits, BUN_VALUES, DENO_VALUES, INTERPRETERS, SHELLS,
 };
