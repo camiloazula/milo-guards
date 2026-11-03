@@ -1945,11 +1945,11 @@ impl Walker<'_> {
 
     /// Add `unit`, and, when zsh reads some of its words another way with
     /// `extendedglob` on (`readings`), the unit with those words as a second
-    /// reading: a line run by bash, where `setopt` fails, reads them as
-    /// written, so each is judged. A `cd` is not read twice, since the
+    /// reading, and a third when a word reads as two patterns: a line run by
+    /// bash, where `setopt` fails, reads them as written, so each is judged. A `cd` is not read twice, since the
     /// second would start where the first went: its words are only known
     /// when it runs.
-    fn add_readings(&mut self, mut unit: Unit, readings: Vec<(usize, Arg)>) {
+    fn add_readings(&mut self, mut unit: Unit, readings: Vec<(usize, Vec<Arg>)>) {
         if readings.is_empty() {
             launch::add(self.split, unit, self.depth);
             return;
@@ -1972,40 +1972,61 @@ impl Walker<'_> {
             launch::add(self.split, unit, self.depth);
             return;
         }
-        let mut other = unit.clone();
+        // One unit with the first reading of each word, and one more with the
+        // second where a word has two (`x#.git`).
+        let mut others = vec![unit.clone()];
         for (at, reading) in readings {
-            if let Some(arg) = other.args.get_mut(at) {
-                *arg = reading;
+            for (one, arg) in reading.into_iter().enumerate() {
+                if one == others.len() {
+                    others.push(others[0].clone());
+                }
+                if let Some(slot) = others.get_mut(one).and_then(|other| other.args.get_mut(at)) {
+                    *slot = arg;
+                }
             }
         }
-        launch::add_either(self.split, unit, other, self.depth);
+        launch::add_either(self.split, unit, others, self.depth);
     }
 
     /// What the word at `node` reads as when zsh reads it with
     /// `extendedglob` on and that differs from the word as written (see
-    /// [`extended::reading`]): a plain pattern, or a place only known when it
-    /// runs. `None` while the option is off, and for a word with nothing the
-    /// option changes or an expansion in it.
-    fn zsh_reading(&self, node: Node<'_>) -> Option<Arg> {
+    /// [`extended::reading`]): a plain pattern, two that take its names
+    /// between them, or a place only known when it runs. `None` while the
+    /// option is off, and for a word with nothing the option changes.
+    fn zsh_reading(&self, node: Node<'_>) -> Option<Vec<Arg>> {
         if !self.split.extended_glob() {
             return None;
         }
         let mut chars = Vec::new();
-        self.word_chars(node, &mut chars)?;
-        Some(match extended::reading(&chars)? {
-            Reading::Pattern(text) if !(text.starts_with('~') && self.split.reassigned("HOME")) => {
-                Arg::Known(text)
+        let mut unknown_value = false;
+        self.word_chars(node, &mut chars, &mut unknown_value)?;
+        let reading = extended::reading(&chars)?;
+        let unknown = || vec![Arg::Unknown(unit::text(&node, self.source).to_string())];
+        if unknown_value {
+            return Some(unknown());
+        }
+        let known = |text: &String| !(text.starts_with('~') && self.split.reassigned("HOME"));
+        Some(match reading {
+            Reading::Pattern(text) if known(&text) => vec![Arg::Known(text)],
+            Reading::Either(hidden, rest) if known(&hidden) && known(&rest) => {
+                vec![Arg::Known(hidden), Arg::Known(rest)]
             }
-            Reading::Pattern(_) | Reading::Unknown => {
-                Arg::Unknown(unit::text(&node, self.source).to_string())
-            }
+            _ => unknown(),
         })
     }
 
     /// The characters of the word at `node`, each with whether the shell
-    /// reads it as written: an escaped or quoted one is itself. `None` for a
-    /// word with an expansion in it, whose value is only known when it runs.
-    fn word_chars(&self, node: Node<'_>, chars: &mut Vec<(char, bool)>) -> Option<()> {
+    /// reads it as written: an escaped or quoted one is itself, and so is
+    /// what an expansion gives (`$PWD/.gi#t`: zsh does not read the value
+    /// as a pattern, but the rest of the word still is one). An expansion
+    /// whose value is only known when it runs stands as one character that is
+    /// itself, and sets `unknown`. `None` for a word of another kind.
+    fn word_chars(
+        &self,
+        node: Node<'_>,
+        chars: &mut Vec<(char, bool)>,
+        unknown: &mut bool,
+    ) -> Option<()> {
         let source = unit::text(&node, self.source);
         match node.kind() {
             "word" | "number" => {
@@ -2021,11 +2042,18 @@ impl Walker<'_> {
                     }
                 }
             }
-            "raw_string" | "string" => {
-                let Arg::Known(text) = self.arg(node) else {
-                    return None;
-                };
-                chars.extend(text.chars().map(|c| (c, false)));
+            "raw_string"
+            | "string"
+            | "simple_expansion"
+            | "expansion"
+            | "command_substitution"
+            | "arithmetic_expansion" => {
+                if let Arg::Known(text) = self.arg(node) {
+                    chars.extend(text.chars().map(|c| (c, false)));
+                } else {
+                    chars.push(('\0', false));
+                    *unknown = true;
+                }
             }
             "concatenation" => {
                 let mut cursor = node.walk();
@@ -2033,7 +2061,7 @@ impl Walker<'_> {
                     if !part.is_named() {
                         return None;
                     }
-                    self.word_chars(part, chars)?;
+                    self.word_chars(part, chars, unknown)?;
                 }
             }
             _ => return None,
@@ -2247,6 +2275,31 @@ impl Walker<'_> {
         })
     }
 
+    /// Whether `assignment` turns zsh's `extendedglob` on through its
+    /// `options` table: `options[extendedglob]=on`, `options+=(extendedglob
+    /// on)` (see [`extended::assigns`]).
+    fn extends_glob(&self, assignment: Node<'_>) -> bool {
+        let Some(name) = assignment.child_by_field_name("name") else {
+            return false;
+        };
+        let name = unit::text(&name, self.source);
+        if !name.starts_with("options") {
+            return false;
+        }
+        let values: Vec<Arg> = match assignment.child_by_field_name("value") {
+            Some(value) if value.kind() == "array" => {
+                let mut cursor = value.walk();
+                value
+                    .named_children(&mut cursor)
+                    .map(|word| self.arg(word))
+                    .collect()
+            }
+            Some(value) => vec![self.arg(value)],
+            None => Vec::new(),
+        };
+        extended::assigns(name, &values)
+    }
+
     /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
     /// `export NODE_OPTIONS` of a value the line set another way: what node
     /// gets then is not read.
@@ -2288,6 +2341,9 @@ impl Walker<'_> {
     fn assignment(&mut self, node: Node<'_>) {
         if self.sets_hiding(node) {
             self.split.hide();
+        }
+        if self.extends_glob(node) {
+            self.split.extend_glob();
         }
         // Set on a line of its own, or after `export`: the programs after it
         // have it, so it stays for the rest of the line.
@@ -2871,10 +2927,10 @@ impl Walker<'_> {
         // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
         // zsh with `extendedglob` on opens what its reading of the word
         // matches; bash, the word as written: both are judged.
-        let reading = self.zsh_reading(destination);
+        let reading = self.zsh_reading(destination).unwrap_or_default();
         if operator == Some("<") {
             self.split.read(Shell::Posix, target.clone());
-            if let Some(reading) = &reading {
+            for reading in &reading {
                 self.split.read(Shell::Posix, reading.clone());
             }
         }
@@ -2887,7 +2943,7 @@ impl Walker<'_> {
         };
         if writes {
             self.split.write(Shell::Posix, target);
-            if let Some(reading) = reading {
+            for reading in reading {
                 self.split.write(Shell::Posix, reading);
             }
         }

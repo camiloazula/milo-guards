@@ -29,8 +29,8 @@ fn named(name: &str) -> Option<bool> {
 /// What the builtin `key` does to the option when run with `args`:
 /// `Some(true)` turns it on, `Some(false)` off, `None` leaves it. `setopt`
 /// and `unsetopt` name it (`extendedglob`, `EXTENDED_GLOB`,
-/// `noextendedglob`), and `set` after `-o` or `+o`. On wins when a line names
-/// it both ways. A name only known when it runs, and a `-m` pattern, which
+/// `noextendedglob`), and `set` and `emulate` after `-o` or `+o`. On wins
+/// when a line names it both ways. A name only known when it runs, and a `-m` pattern, which
 /// may name it, count as on; so does `source` or `.`, whose file the guard
 /// cannot read.
 pub(crate) fn change(key: &str, args: &[Arg]) -> Option<bool> {
@@ -38,9 +38,59 @@ pub(crate) fn change(key: &str, args: &[Arg]) -> Option<bool> {
         "setopt" => options(args, true),
         "unsetopt" => options(args, false),
         "set" => set(args),
+        // `emulate zsh -o extendedglob`: the pairs before its `-c` script.
+        "emulate" => set(script_flags(args)),
         "source" | "." => Some(true),
         _ => None,
     }
+}
+
+/// The words of `emulate` before its `-c` (alone or in a group, `-Lc`):
+/// what comes after is the script it runs and that script's words.
+fn script_flags(args: &[Arg]) -> &[Arg] {
+    let end = args
+        .iter()
+        .position(|arg| {
+            arg.known().is_some_and(|text| {
+                text.starts_with('-') && !text.starts_with("--") && text.contains('c')
+            })
+        })
+        .unwrap_or(args.len());
+    &args[..end]
+}
+
+/// Whether an assignment to zsh's `options` table turns the option on:
+/// `options[extendedglob]=on`, where the key is the option's name in any
+/// case and with any underscores, or only known when it runs, and the value
+/// is not the one that turns it off; and `options=(…)` or `options+=(…)`
+/// that names it or holds a word only known when it runs. `name` is the
+/// assignment's name as written, `values` its value's words.
+pub(crate) fn assigns(name: &str, values: &[Arg]) -> bool {
+    if name == "options" {
+        return values
+            .iter()
+            .any(|value| value.known().is_none_or(|word| named(word).is_some()));
+    }
+    let Some(key) = name
+        .strip_prefix("options[")
+        .and_then(|rest| rest.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let on = if key.contains(['$', '`', '"', '\'', '\\']) {
+        None
+    } else {
+        named(key)
+    };
+    let off = match on {
+        Some(true) => "off",
+        Some(false) => "on",
+        None if key.contains(['$', '`', '"', '\'', '\\']) => "",
+        None => return false,
+    };
+    values
+        .first()
+        .is_none_or(|value| value.known().is_none_or(|word| word != off))
 }
 
 /// Both changes at once, on winning.
@@ -142,6 +192,10 @@ pub(crate) enum Reading {
     /// A plain pattern (`*`, `?`, `[…]`) that matches every name the word
     /// can, and maybe more.
     Pattern(String),
+    /// Two plain patterns that take every name the word can between them:
+    /// one for the names that start with a dot, and one for the rest
+    /// (`x#.git` is `.git`, and `*.git`).
+    Either(String, String),
     /// A pattern no plain one stands for: a leading dot repeated (`.#git`
     /// is `git` and `.git`), a group (`(a|b)#`).
     Unknown,
@@ -223,9 +277,21 @@ fn closes(chars: &[(char, bool)]) -> Vec<Option<usize>> {
 /// - `x#` and `x##` are any number of `x`: read as `*`. When `x` is the dot
 ///   that starts a name (`.#git`), the pattern can match a hidden name and a
 ///   name that is not one, which no plain pattern does: [`Reading::Unknown`].
+///   A single `#` on a plain character that starts a name, or that only such
+///   ones come before, may leave them all out, and a dot after then starts
+///   the name: `x#.git` matches `.git` and `x.git`, so it reads as
+///   [`Reading::Either`], `.git` and `*.git`. A wildcard or a bracket that
+///   starts a name never matches its dot, even repeated (`[x]#.git` is not
+///   `.git`). A second such place in the word is [`Reading::Unknown`].
 /// - `^x` is any name but `x`, to the end of its part: read as `*`.
 /// - A group (`(a|b)`) with any of them is [`Reading::Unknown`].
 pub(crate) fn reading(chars: &[(char, bool)]) -> Option<Reading> {
+    read(chars, true)
+}
+
+/// [`reading`], where `may_split` says whether the word may still be read
+/// as [`Reading::Either`]: once only, so the word is read at most twice.
+fn read(chars: &[(char, bool)], mut may_split: bool) -> Option<Reading> {
     let elements = elements(chars);
     let single = |(start, end): (usize, usize)| (end == start + 1).then(|| chars[start]);
     // What a `~` past the first character leaves out is not read.
@@ -239,6 +305,13 @@ pub(crate) fn reading(chars: &[(char, bool)]) -> Option<Reading> {
     // Where the part being read starts in `out`, where its last element
     // starts, and whether a `^` has taken the rest of it.
     let (mut part, mut last, mut negated) = (0, None::<usize>, false);
+    // Whether what the part holds so far can be left out (`x#`, `x#y#`),
+    // so that what follows may start the name; and that for what came before
+    // its last element, with whether that element is one plain character.
+    let (mut open, mut open_before, mut plain) = (true, true, false);
+    // Where the part starts in `chars`, and the reading of the word with the
+    // names that start with a dot, once it splits.
+    let (mut part_chars, mut hidden) = (0, None::<String>);
     let mut at = 0;
     while at < kept.len() {
         let element = kept[at];
@@ -250,6 +323,8 @@ pub(crate) fn reading(chars: &[(char, bool)]) -> Option<Reading> {
                 part = out.len();
                 last = None;
                 negated = false;
+                open = true;
+                part_chars = element.1;
             }
             _ if negated => {}
             Some(('#', true)) => {
@@ -264,16 +339,38 @@ pub(crate) fn reading(chars: &[(char, bool)]) -> Option<Reading> {
                 }
                 last = Some(out.len() - 1);
                 // `##`
-                if kept
+                let twice = kept
                     .get(at)
-                    .is_some_and(|&next| single(next) == Some(('#', true)))
-                {
+                    .is_some_and(|&next| single(next) == Some(('#', true)));
+                if twice {
                     at += 1;
+                }
+                // `x#.git`: the `x` may be left out, and the dot then starts
+                // the name.
+                open = !twice && open_before && plain;
+                let dot = kept
+                    .get(at)
+                    .filter(|&&next| single(next).is_some_and(|(c, _)| c == '.'));
+                if let Some(&(dot, _)) = dot.filter(|_| open) {
+                    if !may_split {
+                        return Some(Reading::Unknown);
+                    }
+                    may_split = false;
+                    // The word with what can be left out left out: its names
+                    // that start with a dot.
+                    let mut rest = chars[..part_chars].to_vec();
+                    rest.extend_from_slice(&chars[dot..]);
+                    hidden = Some(match read(&rest, false) {
+                        None => rest.iter().map(|(c, _)| c).collect(),
+                        Some(Reading::Pattern(text)) => text,
+                        Some(_) => return Some(Reading::Unknown),
+                    });
                 }
             }
             Some(('^', true)) => {
                 changed = true;
                 negated = true;
+                open = false;
                 if !out[part..].ends_with('*') {
                     out.push('*');
                 }
@@ -282,17 +379,21 @@ pub(crate) fn reading(chars: &[(char, bool)]) -> Option<Reading> {
                 group = true;
                 last = Some(out.len());
                 out.push_str(&text);
+                (open_before, open, plain) = (open, false, false);
             }
-            _ => {
+            other => {
                 last = Some(out.len());
                 out.push_str(&text);
+                let wild = matches!(other, None | Some(('*' | '?', true)));
+                (open_before, open, plain) = (open, false, !wild);
             }
         }
     }
-    match (changed, group) {
-        (false, _) => None,
-        (true, true) => Some(Reading::Unknown),
-        (true, false) => Some(Reading::Pattern(out)),
+    match (changed, group, hidden) {
+        (false, _, _) => None,
+        (true, true, _) => Some(Reading::Unknown),
+        (true, false, Some(hidden)) => Some(Reading::Either(hidden, out)),
+        (true, false, None) => Some(Reading::Pattern(out)),
     }
 }
 
@@ -369,11 +470,44 @@ mod tests {
             ("set", &["-o"], None),
             ("set", &["--", "-o", "extendedglob"], None),
             ("set", &["-e"], None),
+            ("emulate", &["zsh", "-o", "extendedglob"], Some(true)),
+            ("emulate", &["-L", "zsh", "-o", "EXTENDED_GLOB"], Some(true)),
+            (
+                "emulate",
+                &["-LR", "zsh", "+o", "extendedglob"],
+                Some(false),
+            ),
+            ("emulate", &["zsh", "-o", "$option"], Some(true)),
+            ("emulate", &["zsh"], None),
+            ("emulate", &["zsh", "-c", "set -o extendedglob"], None),
+            ("emulate", &["zsh", "-Lc", "x", "-o", "extendedglob"], None),
             ("source", &["./env.sh"], Some(true)),
             (".", &["./env.sh"], Some(true)),
             ("echo", &["extendedglob"], None),
         ] {
             assert_eq!(change(key, &args(words)), want, "{key} {words:?}");
+        }
+    }
+
+    #[test]
+    fn an_assignment_to_the_options_table_names_the_flag() {
+        for (name, words, want) in [
+            ("options[extendedglob]", &["on"][..], true),
+            ("options[EXTENDED_GLOB]", &["on"], true),
+            ("options[extendedglob]", &["$value"], true),
+            ("options[extendedglob]", &[], true),
+            ("options[$name]", &["on"], true),
+            ("options[noextendedglob]", &["off"], true),
+            ("options", &["extendedglob", "on"], true),
+            ("options", &["$x"], true),
+            ("options[extendedglob]", &["off"], false),
+            ("options[noextendedglob]", &["on"], false),
+            ("options[globdots]", &["on"], false),
+            ("options", &["globdots", "on"], false),
+            ("option[extendedglob]", &["on"], false),
+            ("extendedglob", &["on"], false),
+        ] {
+            assert_eq!(assigns(name, &args(words)), want, "{name} {words:?}");
         }
     }
 
@@ -421,14 +555,52 @@ mod tests {
             (".[a-z]#", pattern(".*")),
             ("--grep=^fix", pattern("--grep=*")),
             ("x^y^z", pattern("x*")),
+            // A leading `x#` before no dot, `x##`, and a wildcard or a
+            // bracket repeated, none of which starts a name with a dot.
+            ("x#git", pattern("*git")),
+            ("x##.git", pattern("*.git")),
+            ("[x]#.git", pattern("*.git")),
+            ("?#.git", pattern("*.git")),
+            ("ax#.git", pattern("a*.git")),
+            ("x#[.]git", pattern("*[.]git")),
         ] {
             assert_eq!(read(text), Some(want), "{text}");
         }
     }
 
     #[test]
+    fn a_word_whose_leading_part_may_be_left_out_before_a_dot_reads_two_ways() {
+        for (text, hidden, rest) in [
+            ("x#.git", ".git", "*.git"),
+            ("g#.git", ".git", "*.git"),
+            ("x#.gi#t", ".g*t", "*.g*t"),
+            ("src/g#.git", "src/.git", "src/*.git"),
+            ("~/x#.ssh/id_rsa", "~/.ssh/id_rsa", "~/*.ssh/id_rsa"),
+            ("x#y#.git", ".git", "*.git"),
+            ("\\x#.git", ".git", "*.git"),
+            ("x#'.'git", ".git", "*.git"),
+            ("x#.git~y", ".git", "*.git"),
+        ] {
+            assert_eq!(
+                read(text),
+                Some(Reading::Either(hidden.to_string(), rest.to_string())),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn a_word_whose_reading_no_plain_pattern_takes_is_unknown() {
-        for text in [".#git", ".##git", "x/.#git", "(a|b)#", "(#i).git"] {
+        for text in [
+            ".#git",
+            ".##git",
+            "x/.#git",
+            "(a|b)#",
+            "(#i).git",
+            "x#.git/y#.ssh",
+            "x#.#git",
+            "x#.(a|b)",
+        ] {
             assert_eq!(read(text), Some(Reading::Unknown), "{text}");
         }
     }

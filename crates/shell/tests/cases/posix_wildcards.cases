@@ -680,6 +680,14 @@ posix finds=delete | setopt $option; rm -rf .gi#t
 posix finds=delete | setopt -m '*glob'; rm -rf .gi#t
 posix finds=delete | source ./env.sh; rm -rf .gi#t
 posix finds=delete | setopt extendedglob && rm -rf .gi#t
+posix finds=delete | emulate zsh -o extendedglob; rm -rf .gi#t
+posix finds=delete | emulate -L zsh -o extendedglob; rm -rf .gi#t
+posix finds=delete | options[extendedglob]=on; rm -rf .gi#t
+posix finds=delete | options[EXTENDED_GLOB]=on; rm -rf .gi#t
+posix finds=delete | options+=(extendedglob on); rm -rf .gi#t
+posix finds=delete | options=(extendedglob on); rm -rf .gi#t
+# zsh does not glob a word whose only operator is `~`, but it is judged as
+# what it would match, `.git`, which costs only a word that names nothing.
 posix finds=delete | setopt extendedglob; rm -rf .git~x
 posix finds=delete | setopt extendedglob; rm -rf src/../.gi#t
 posix finds=delete | setopt extendedglob; sudo rm -rf .gi#t
@@ -689,9 +697,27 @@ posix finds=delete | zsh --extended-glob -c 'rm -rf .g^x'
 posix finds=delete | zsh -c 'setopt extendedglob; rm -rf .gi#t'
 posix finds=overwrite | setopt extendedglob; echo x > .gi#t/config
 posix finds=read_secret | setopt extendedglob; cat ~/.ss#h/id_rsa
+# What an expansion gives is itself, but the rest of the word is still a
+# pattern; past an expansion only known when it runs, the place is too.
+posix finds=delete | setopt extendedglob; rm -rf $PWD/.gi#t
+posix finds=delete | setopt extendedglob; rm -rf ${PWD}/.gi#t
+posix finds=read_secret | setopt extendedglob; cat $HOME/.ss#h/id_rsa
+posix finds=delete reason="deletes a path only known when it runs" | setopt extendedglob; rm -rf $(pwd)/.gi#t
+posix finds=delete reason="deletes a path only known when it runs" | setopt extendedglob; rm -rf $dir/.gi#t
+# A listing piped on hands on what zsh lists too.
+posix finds=delete | setopt extendedglob; ls -d .gi#t | xargs rm -rf
 # A leading dot repeated (`.#git`) is `git` and `.git`, which no plain pattern
 # takes both of: the place is only known when it runs.
 posix finds=delete reason="deletes a path only known when it runs" | setopt extendedglob; rm -rf .#git
+# `x#` that starts a name may leave the `x` out, so a dot after it starts the
+# name: `x#.git` is judged as `.git` and as `*.git`.
+posix finds=delete reason="deletes the repository's history" | setopt extendedglob; rm -rf x#.git
+posix finds=delete | setopt extendedglob; rm -rf g#.git
+posix finds=delete reason="deletes a hidden file such as the repository's history" | setopt extendedglob; rm -rf x#.gi#t
+posix finds=delete | setopt extendedglob; rm -rf src/../g#.git
+posix finds=delete reason="deletes a path only known when it runs" | setopt extendedglob; rm -rf x#.git/y#.ssh
+posix finds=overwrite | setopt extendedglob; echo x > x#.git/config
+posix finds=read_secret | setopt extendedglob; cat ~/x#.ssh/id_rsa
 # A `cd` is not read twice: its folder is only known when it runs.
 posix finds=delete | setopt extendedglob; cd .gi#t && rm -rf *
 # The word as written is still judged: bash reads it so.
@@ -710,6 +736,14 @@ posix safe | setopt extendedglob; rm -f *.o~*.c *.a#
 posix safe | setopt extendedglob; rm -rf build~
 posix safe | setopt extendedglob; ls ^*.o
 posix safe | setopt extendedglob; echo a#b
+posix safe | setopt extendedglob; rm -rf x##.git
+posix safe | setopt extendedglob; rm -rf [x]#.git
+posix safe | setopt extendedglob; rm -rf $PWD/build/*.o~*.c
+posix safe | options[extendedglob]=off; rm -rf .gi#t
+posix safe | options[globdots]=on; rm -rf .gi#t
+posix safe | emulate zsh; rm -rf .gi#t
+posix safe | emulate zsh -c 'true' -o extendedglob; rm -rf .gi#t
+posix safe | setopt extendedglob; ls -d *.o~*.c | xargs rm -f
 posix safe | setopt extendedglob; git log --grep=^fix
 posix safe | setopt extendedglob; rm -rf '.gi#t'
 posix safe | setopt extendedglob; rm -rf ".gi#t"

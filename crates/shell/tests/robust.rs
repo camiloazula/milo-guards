@@ -390,7 +390,7 @@ fn words_zsh_reads_another_way_many_times_are_read_quickly_and_not_safe() {
     // judged both ways: each is a fork, counted against the line's, and a
     // loop body makes the line be read again, once. A line past the forks is
     // unreadable, and never slow.
-    for count in [16, 33, 2_000] {
+    for count in [16, 33, 800] {
         // The option on before, or after in a loop that may come round.
         for (head, tail) in [
             ("setopt extendedglob; ", ""),

@@ -1002,12 +1002,18 @@ With zsh's `extendedglob` on, `#`, `##`, `^` and `~` in an unquoted word are
 parts of a pattern: `x#` is any number of `x` and `x##` one or more, `^x` is
 any name but `x` (to the end of its part, so `^foo/bar` is `bar` in every
 folder but `foo`), and `x~y` is what `x` matches and `y` does not. So `rm -rf
-.gi#t` and `rm -rf .g^x` delete `.git`, and `rm -rf .git~x` does too. Read
-as plain names they do not.
+.gi#t` and `rm -rf .g^x` delete `.git`. Read as plain names they do not.
+zsh does not glob a word whose only operator is `~` (`.git~x` is that name),
+but the guard reads `x~y` as `x` all the same: `rm -rf .git~x` is judged as
+the delete of `.git`, which costs only a word that names nothing.
 
 - **On.** `setopt extendedglob` (any case, any underscores:
   `EXTENDED_GLOB`), `unsetopt noextendedglob`, `set -o extendedglob`,
   `setopt -m` with any pattern, an option name only known when it runs,
+  `emulate`'s `-o extendedglob` before its `-c` (`emulate -L zsh -o
+  extendedglob`: `-L` does not limit it outside a function), an assignment to
+  zsh's `options` table that names it or a key only known when it runs and is
+  not `off` (`options[extendedglob]=on`, `options+=(extendedglob on)`),
   `source` and `.` (the file may set it), and a zsh started with `-o
   extendedglob`, `--extendedglob` or `--extended-glob`. Off by the opposite
   switches, where the line is sure to run them in this shell, as for zsh's
@@ -1020,18 +1026,30 @@ as plain names they do not.
   per line, past which the line is unreadable). `curl -F f=@~/.aws/credentials`
   is still the send of a key, though zsh reads that word as `f=@` but not
   `/.aws/credentials`. A redirect target zsh reads another way is opened both
-  ways too (`echo x > .gi#t/config`). A `cd`, `pushd` or `popd` is not read
+  ways too (`echo x > .gi#t/config`), and a listing piped on hands on what
+  each reading lists (`ls -d .gi#t | xargs rm -rf` deletes `.git`): every
+  listing at the stage before the delete is read, not only the first. A
+  `cd`, `pushd` or `popd` is not read
   twice, since the second would start where the first went: a word the option
   changes in it is only known when it runs.
 - **zsh's reading** is a plain pattern that takes every name zsh's does:
   `x#` and `x##` are `*` (`.gi#t` is `.g*t`), `^` and the rest of its part
   are `*` (`.g^x` is `.g*`), and `x~y` is `x` (`*.o~*.c` is `*.o`, which still
-  cannot match a hidden name). The finding names that pattern. A leading dot
-  repeated (`.#git` is `git` and `.git`) or a group (`(a|b)#`, `(#i)`) has no
-  plain pattern that takes what it does, so the word is a place only known
-  when it runs. A quoted or escaped operator (`'.gi#t'`, `.gi\#t`) is itself,
-  a `~` that starts the word is the home folder, and one in a bracket
-  (`[~]`) is a member. A word with an expansion in it is read as written only.
+  cannot match a hidden name). The finding names that pattern. A single `#`
+  on plain characters that start a name may leave them out, so a dot after
+  them starts the name: `x#.git` matches `.git` and `x.git`, and is read as
+  two patterns, `.git` and `*.git`, each judged (a third reading, one more
+  fork). A wildcard or a bracket that starts a name never takes its dot,
+  even repeated (`[x]#.git` is not `.git`), so it reads as `*`. A leading dot
+  repeated (`.#git` is `git` and `.git`), a second such split in the word,
+  or a group (`(a|b)#`, `(#i)`) has no plain pattern that takes what it
+  does, so the word is a place only known when it runs. A quoted or escaped
+  operator (`'.gi#t'`, `.gi\#t`) is itself, a `~` that starts the word is
+  the home folder, and one in a bracket (`[~]`) is a member. What an
+  expansion gives is itself too (zsh reads its value as a pattern only with
+  `globsubst`), but the rest of the word is still read: `$PWD/.gi#t` is
+  `$PWD/.g*t`. When the value is only known when it runs and the rest of the
+  word holds an operator, the word is a place only known when it runs.
   Where each bracket closes is found in one pass from the end of the word, so
   a long run of `[` that never closes is read in linear time.
 - **Bodies.** A function body or a loop may run after the option is on, so
@@ -1040,9 +1058,8 @@ as plain names they do not.
   f`.
 
 Not read: the option set by an rc file (a plain word is read as written
-then, so `rm -rf .gi#t` alone is safe), `emulate -o`, a `for` list, the
-program's own name, and a listing piped on (`ls -d .gi#t | xargs rm`), which
-hands on its words as written.
+then, so `rm -rf .gi#t` alone is safe), the script of `emulate -c`, a `for`
+list, and the program's own name.
 
 ## The rules
 

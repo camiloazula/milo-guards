@@ -128,22 +128,25 @@ fn loads_foreign(key: &str, unit: &Unit, split: &Split) -> bool {
     }
 }
 
-/// Add `unit`, and `other` as a second reading of it: the same command with
-/// its words read as zsh reads them with `extendedglob` on. Each is judged,
-/// so the riskier counts; a fork, as [`Launch::Either`] makes, so a line past
-/// [`MAX_FORKS`] of them is unreadable.
-pub(crate) fn add_either(split: &mut Split, unit: Unit, other: Unit, depth: usize) {
-    if !split.fork(MAX_FORKS) {
-        split.problem(
-            Rule::Unreadable,
-            "reads in too many ways to judge each",
-            Some(unit.program.text()),
-        );
-        add(split, unit, depth);
-        return;
-    }
+/// Add `unit`, and each of `others` as another reading of it: the same
+/// command with its words read as zsh reads them with `extendedglob` on.
+/// Each is judged, so the riskier counts; each is a fork, as
+/// [`Launch::Either`] makes, so a line past [`MAX_FORKS`] of them is
+/// unreadable.
+pub(crate) fn add_either(split: &mut Split, unit: Unit, others: Vec<Unit>, depth: usize) {
+    let program = unit.program.text().to_string();
     add(split, unit, depth);
-    add(split, other, depth);
+    for other in others {
+        if !split.fork(MAX_FORKS) {
+            split.problem(
+                Rule::Unreadable,
+                "reads in too many ways to judge each",
+                Some(&program),
+            );
+            return;
+        }
+        add(split, other, depth);
+    }
 }
 
 fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
