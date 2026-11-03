@@ -15,7 +15,7 @@
 
 mod common;
 
-use common::cases::{self, format, parse, Case, Expect};
+use common::cases::{self, format, parse, Case, Expect, Instead};
 use milo_guards_shell::{Effect, Protected, Reach, Rule, Shell};
 
 /// The cases of `source`, which must be read.
@@ -121,6 +121,55 @@ fn a_case_says_its_shell_paths_answer_and_line() {
 }
 
 #[test]
+fn a_case_says_what_its_finding_says_to_do_instead() {
+    let cases = read(concat!(
+        "posix finds=git_discard instead=\"stash the changes first (`git stash`)\" | git reset --hard\n",
+        "posix first=elevated instead=none | sudo ls\n",
+    ));
+    assert_eq!(
+        cases[0].expect.instead,
+        Some(Instead::Says(
+            "stash the changes first (`git stash`)".to_string()
+        ))
+    );
+    assert_eq!(cases[1].expect.instead, Some(Instead::Nothing));
+    for case in &cases {
+        assert!(cases::wrong(case).is_empty(), "{:?}", cases::wrong(case));
+    }
+    let wrong = cases::wrong(&read("posix first=elevated instead=\"ask first\" | sudo ls\n")[0]);
+    assert!(
+        wrong
+            .iter()
+            .any(|why| why.contains("expected instead Says(\"ask first\")")),
+        "{wrong:?}"
+    );
+}
+
+#[test]
+fn what_a_finding_says_is_one_plain_sentence() {
+    let finding = |reason: &str, instead: Option<&str>| milo_guards_shell::Finding {
+        rule: Rule::Delete,
+        reason: reason.to_string(),
+        target: None,
+        instead: instead.map(str::to_string),
+    };
+    assert!(cases::unsaid(&finding("deletes a file", Some("ask the user"))).is_empty());
+    assert!(cases::unsaid(&finding("deletes a file", None)).is_empty());
+    for (reason, instead) in [
+        ("deletes a file.", None),
+        ("", None),
+        ("deletes a file", Some("")),
+        ("deletes a file", Some("ask the user.")),
+        ("deletes a file", Some("ask. Then wait")),
+        ("deletes a file", Some(" ask the user")),
+        ("deletes a file", Some("ask\nthe user")),
+    ] {
+        let finding = finding(reason, instead);
+        assert_eq!(cases::unsaid(&finding).len(), 1, "{finding:?}");
+    }
+}
+
+#[test]
 fn a_paths_declaration_names_the_paths_a_case_is_judged_on() {
     let cases = read(concat!(
         "paths home cwd=/home/me home=/home/me workspace=/home/me\n",
@@ -181,6 +230,11 @@ fn a_malformed_line_is_refused() {
             "`reason` takes `first`, or `finds` of one rule",
         ),
         ("posix reason=x | rm x\n", "`reason` takes `first`"),
+        ("posix instead=x | rm x\n", "`instead` takes `first`"),
+        (
+            "posix finds=delete instead | rm x\n",
+            "`instead` takes a value",
+        ),
         ("posix safe | ls\\q\n", "t.cases:1: an unknown escape `\\q`"),
         ("posix safe | ls \n", "t.cases:1: a space at the end"),
         ("posix safe | a\tb\n", "t.cases:1: a raw \\t"),

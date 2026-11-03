@@ -165,6 +165,7 @@ pub fn judge(access: Access, path: &str, paths: &Paths) -> Assessment {
                 rule,
                 reason,
                 target: target.clone(),
+                instead: None,
             });
         }
     };

@@ -14,8 +14,9 @@ effect(line, shell, &paths) -> Effect
 caller's `match` on it needs a fallback arm. `paths` comes from
 `Paths::new(cwd, home, workspaces)`.
 The answer is `Safe`, or `Risky` with every finding: a rule, a reason a prompt
-can show, and the argument it is about. The guard reads the line and never runs
-it. It touches neither the file system nor the environment.
+can show, the argument it is about, and, where there is a real way out, what
+to do instead ([below](#what-to-do-instead)). The guard reads the line and
+never runs it. It touches neither the file system nor the environment.
 
 `effect` is a second answer from the same split: does the line only read? See
 [Reads only](#reads-only). `explain` shows how a line was read, for a person
@@ -1761,6 +1762,46 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 The wire names never change. A reason is a few plain words that follow from
 the rule: `deletes your home directory`, `runs code the guard does not read`.
+
+### What to do instead
+
+A finding's `instead` says what to do instead, in the same voice as its
+reason: one short sentence, no trailing period. It is there only where there
+is a real way out, so a caller that refuses a line can pass on more than the
+reason, and an agent that is refused has something other than the same line
+to try. A rule states it beside its reason, in one place (`Said` in
+`src/said.rs`): `Checker::add` and `Split::problem` take a reason alone or a
+reason with its `instead`.
+
+| What is found | `instead` |
+| --- | --- |
+| `git reset --hard`; a `checkout`, `restore` or `switch` that throws changes to files away | "stash the changes first (`git stash`)" |
+| `git clean` that deletes | "list what would go first (`git clean -n`)", with the `-d`, `-x` and `-X` it is given after the `n`: `git clean -fdx` gives `git clean -ndx` |
+| `git branch -D` | "use `git branch -d`, which keeps a branch that is not merged" |
+| `git push` that forces (`-f`, `--force`, a `+` refspec) | "use `git push --force-with-lease`" |
+| a delete of a place beyond the workspace: the home directory, a top-level or system folder, a folder holding the workspace, anywhere else outside it | "delete inside the workspace, or ask the user" |
+| a downloaded script run (`curl … \| sh`, `bash <(curl …)`, `iwr … \| iex`) | "download the script to a file and read it first" |
+| inline code that runs code it downloads | "download the code to a file and read it first" |
+
+Everything else has none: a line that runs as root (`sudo …`) has no safe
+general advice, and nor does a delete of the workspace itself, of a sensitive
+or protected path (which may sit inside the workspace), or of a path only
+known when it runs. A reason said as what the program may do (`may throw
+away …`) or as judged from another folder (`… if a cd before it failed or did
+not run`) keeps its `instead`.
+
+`git push --force-with-lease` rewrites a branch only when nobody pushed to it
+since, so alone it is `git_remote` with its own reason, `rewrites a branch on
+the remote unless someone pushed since`, and no `instead` (with
+`--force-if-includes` too). Beside anything that forces or deletes (`-f`,
+`--force`, a `+` or `:` refspec, `--delete`, `--mirror`, `--prune`), an
+argument only known when it runs that may be `--force`, or a refspec only
+known when it runs, it is read as a plain force: `rewrites or deletes
+branches on the remote`.
+
+The case files hold every finding's reason and `instead` to one plain
+sentence (`unsaid` in `tests/common/cases.rs`): not empty, on one line, no
+space at either end, no trailing period and no second sentence.
 
 ### Stopping processes by name
 

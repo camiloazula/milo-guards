@@ -7,6 +7,7 @@ use crate::launch::{
 };
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
+use crate::said::{Said, DOWNLOAD_FIRST};
 use milo_guards_core::spelling::glob;
 
 use std::borrow::Cow;
@@ -514,12 +515,13 @@ impl Checker<'_> {
         })
     }
 
-    fn add(&mut self, rule: Rule, reason: impl Into<String>, target: Option<&Arg>) {
-        self.found.push(Finding {
-            rule,
-            reason: reason.into(),
-            target: target.map(|arg| arg.text().to_string()),
-        });
+    /// Note a finding of `rule` about `target`: its reason, and what to do
+    /// instead where there is a real way out (see [`Said`]).
+    fn add(&mut self, rule: Rule, said: impl Into<Said>, target: Option<&Arg>) {
+        self.found.push(
+            said.into()
+                .finding(rule, target.map(|arg| arg.text().to_string())),
+        );
     }
 
     /// Say of each finding from `before` on that only an option the line
@@ -657,7 +659,11 @@ impl Checker<'_> {
         });
         match (reads, downloaded) {
             (Reads::Shell | Reads::Interpreter, true) => {
-                self.add(Rule::RunDownloaded, "runs a downloaded script", None);
+                self.add(
+                    Rule::RunDownloaded,
+                    Said::instead("runs a downloaded script", DOWNLOAD_FIRST),
+                    None,
+                );
             }
             (Reads::Shell, false) => {
                 self.add(Rule::RunInput, "runs commands read from its input", None);
@@ -739,11 +745,15 @@ impl Checker<'_> {
                         self.add(Rule::SystemSettings, "changes the registry", Some(&arg));
                     }
                     Place::Disk => self.add(Rule::WipeDisk, format!("{verb} a disk"), Some(&arg)),
-                    place => self.add(
-                        Rule::Delete,
-                        format!("{verb} {}", place.words()),
-                        Some(&arg),
-                    ),
+                    place => {
+                        let reason = format!("{verb} {}", place.words());
+                        let said = if beyond_workspace(place) {
+                            Said::instead(reason, DELETE_INSIDE)
+                        } else {
+                            Said::from(reason)
+                        };
+                        self.add(Rule::Delete, said, Some(&arg));
+                    }
                 }
             }
         }
@@ -1660,6 +1670,20 @@ const JOINED_VERBS: [&str; 6] = [
     "writes",
     "throws",
 ];
+
+/// What to do instead of deleting a place beyond the workspace.
+const DELETE_INSIDE: &str = "delete inside the workspace, or ask the user";
+
+/// Whether `place` is beyond the workspace: the home directory, a top-level
+/// or system folder, a folder holding the workspace, or anywhere else
+/// outside it. Not the workspace itself, nor a sensitive or protected path,
+/// which may sit inside it, nor a place only known when the line runs.
+fn beyond_workspace(place: Place) -> bool {
+    matches!(
+        place,
+        Place::Outside | Place::Home { .. } | Place::Top(_) | Place::Workspace { exact: false }
+    )
+}
 
 /// `reason`, a finding's, said of what a program may do when only an
 /// option the line does not show turns it on: `deletes a tag` becomes `may

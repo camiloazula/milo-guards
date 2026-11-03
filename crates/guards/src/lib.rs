@@ -20,8 +20,8 @@
 //!   words a reason calls it by (`Protected::file`, `Protected::folder`). Touching one is a finding, even inside the workspace.
 //! - [`Assessment`]: [`Safe`](Assessment::Safe), or
 //!   [`Risky`](Assessment::Risky) with a [`Finding`] for each reason.
-//! - [`Finding`]: the rule that found it, a reason a prompt can show, and
-//!   what it is about.
+//! - [`Finding`]: the rule that found it, a reason a prompt can show, what
+//!   it is about, and what to do instead where there is a real way out.
 //! - [`RuleName`]: the trait every guard's rule enum implements, for code
 //!   that handles the rules of any guard alike. Each guard names its enum
 //!   `Rule` (for example `shell::Rule`), which is why the trait is not

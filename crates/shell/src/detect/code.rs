@@ -4,6 +4,7 @@
 use super::hedged;
 use super::Checker;
 use crate::launch::{git_global, git_long, is_submodule, Global};
+use crate::said::Said;
 use crate::unit::{could_be, has_flag, may_be_option, operands, unknown_start, Arg, Unit};
 use crate::{Rule, Shell};
 
@@ -138,10 +139,35 @@ impl Checker<'_> {
         });
         let operands = operands(rest, &[]);
         let first = operands.first().and_then(|arg| arg.known());
+        // What a push that rewrites or deletes says, with `maybe` as below:
+        // a force says to lease instead, and a lease alone (`git push
+        // --force-with-lease`), which rewrites a branch only when nobody
+        // pushed to it since, says so. A lease beside anything that forces,
+        // deletes or is only known when it runs is read as a plain force.
+        let push = |maybe: bool| -> Said {
+            let forces = flag(Some('f'), Some("force"))
+                || (maybe && unread(Some('f'), Some("force")))
+                || operands.iter().any(|arg| refspec_starts(arg, shell, '+'));
+            let leased = flag(None, Some("force-with-lease"))
+                && !unread(Some('f'), Some("force"))
+                && !flag(None, Some("mirror"))
+                && !flag(Some('d'), Some("delete"))
+                && !flag(None, Some("prune"))
+                && operands
+                    .iter()
+                    .all(|arg| arg.known().is_some_and(|text| !text.starts_with(':')));
+            if forces {
+                Said::instead(REWRITES, "use `git push --force-with-lease`")
+            } else if leased {
+                "rewrites a branch on the remote unless someone pushed since".into()
+            } else {
+                REWRITES.into()
+            }
+        };
         // What the line does with the options it shows, or, with `maybe`,
         // with an argument only known when it runs taken as an option that
         // throws work away.
-        let judge = |maybe: bool| -> Option<(Rule, &'static str)> {
+        let judge = |maybe: bool| -> Option<(Rule, Said)> {
             let may = |short: Option<char>, long: Option<&str>| {
                 flag(short, long) || (maybe && unread(short, long))
             };
@@ -149,13 +175,20 @@ impl Checker<'_> {
                 flag(short, long) || (maybe && !listing && unread(short, long))
             };
             Some(match sub {
-                "reset" if may(None, Some("hard")) => {
-                    (Rule::GitDiscard, "throws away uncommitted changes")
-                }
+                "reset" if may(None, Some("hard")) => (
+                    Rule::GitDiscard,
+                    Said::instead("throws away uncommitted changes", STASH_FIRST),
+                ),
                 "clean"
                     if (force_needless || may(Some('f'), Some("force"))) && !git_dry_run(rest) =>
                 {
-                    (Rule::GitDiscard, "deletes untracked files")
+                    (
+                        Rule::GitDiscard,
+                        Said::instead(
+                            "deletes untracked files",
+                            format!("list what would go first (`{}`)", clean_dry_run(rest)),
+                        ),
+                    )
                 }
                 "checkout"
                     if may(Some('f'), Some("force"))
@@ -165,18 +198,18 @@ impl Checker<'_> {
                             .is_some_and(|dashes| dashes + 1 < rest.len())
                         || operands.iter().any(|arg| arg.known() == Some(".")) =>
                 {
-                    (Rule::GitDiscard, "throws away changes to files")
+                    (Rule::GitDiscard, Said::instead(CHANGES, STASH_FIRST))
                 }
                 "restore"
                     if !flag(Some('S'), Some("staged")) || may(Some('W'), Some("worktree")) =>
                 {
-                    (Rule::GitDiscard, "throws away changes to files")
+                    (Rule::GitDiscard, Said::instead(CHANGES, STASH_FIRST))
                 }
                 "switch" if may(None, Some("discard-changes")) || may(Some('f'), Some("force")) => {
-                    (Rule::GitDiscard, "throws away changes to files")
+                    (Rule::GitDiscard, Said::instead(CHANGES, STASH_FIRST))
                 }
                 "stash" if matches!(first, Some("drop" | "clear")) => {
-                    (Rule::GitDiscard, "deletes stashed changes")
+                    (Rule::GitDiscard, "deletes stashed changes".into())
                 }
                 "branch"
                     if deletes(Some('D'), None, lists)
@@ -184,7 +217,10 @@ impl Checker<'_> {
                 {
                     (
                         Rule::GitDiscard,
-                        "deletes a branch even if it is not merged",
+                        Said::instead(
+                            "deletes a branch even if it is not merged",
+                            "use `git branch -d`, which keeps a branch that is not merged",
+                        ),
                     )
                 }
                 "push"
@@ -196,17 +232,15 @@ impl Checker<'_> {
                         || flag(None, Some("prune"))
                         || operands.iter().any(|arg| forced_refspec(arg, shell)) =>
                 {
-                    (
-                        Rule::GitRemote,
-                        "rewrites or deletes branches on the remote",
-                    )
+                    (Rule::GitRemote, push(maybe))
                 }
                 "filter-branch" | "filter-repo" => {
-                    (Rule::GitHistory, "rewrites the repository's history")
+                    (Rule::GitHistory, "rewrites the repository's history".into())
                 }
-                "reflog" if matches!(first, Some("expire" | "delete")) => {
-                    (Rule::GitHistory, "removes what git keeps to undo mistakes")
-                }
+                "reflog" if matches!(first, Some("expire" | "delete")) => (
+                    Rule::GitHistory,
+                    "removes what git keeps to undo mistakes".into(),
+                ),
                 "gc" if (maybe && unread(None, Some("prune")))
                     || rest.iter().filter_map(Arg::known).any(|text| {
                         text.split_once('=').is_some_and(|(name, value)| {
@@ -214,7 +248,10 @@ impl Checker<'_> {
                         })
                     }) =>
                 {
-                    (Rule::GitHistory, "removes what git keeps to undo mistakes")
+                    (
+                        Rule::GitHistory,
+                        "removes what git keeps to undo mistakes".into(),
+                    )
                 }
                 "config" if config_set_executes(rest) => {
                     let alias = operands
@@ -223,12 +260,15 @@ impl Checker<'_> {
                         .find(|word| *word != "set")
                         .is_some_and(|key| key.to_ascii_lowercase().starts_with("alias."));
                     if alias {
-                        (Rule::Unknown, "sets a git alias that runs a command")
+                        (Rule::Unknown, "sets a git alias that runs a command".into())
                     } else {
-                        (Rule::SystemSettings, "sets git config that runs a program")
+                        (
+                            Rule::SystemSettings,
+                            "sets git config that runs a program".into(),
+                        )
                     }
                 }
-                "update-ref" if may(Some('d'), None) => (Rule::GitDiscard, "deletes a ref"),
+                "update-ref" if may(Some('d'), None) => (Rule::GitDiscard, "deletes a ref".into()),
                 // A tag has no reflog to bring it back from.
                 "tag"
                     if deletes(
@@ -237,7 +277,7 @@ impl Checker<'_> {
                         lists || flag(Some('v'), Some("verify")),
                     ) =>
                 {
-                    (Rule::GitDiscard, "deletes a tag")
+                    (Rule::GitDiscard, "deletes a tag".into())
                 }
                 // A tag given again by force moves; where it pointed is gone.
                 "tag"
@@ -246,43 +286,97 @@ impl Checker<'_> {
                         && !flag(Some('l'), Some("list"))
                         && !flag(Some('v'), Some("verify")) =>
                 {
-                    (Rule::GitDiscard, "moves a tag, losing where it pointed")
+                    (
+                        Rule::GitDiscard,
+                        "moves a tag, losing where it pointed".into(),
+                    )
                 }
                 sub if is_submodule(sub)
                     && first == Some("update")
                     && may(Some('f'), Some("force")) =>
                 {
-                    (Rule::GitDiscard, "throws away changes in submodules")
+                    (Rule::GitDiscard, "throws away changes in submodules".into())
                 }
                 sub if is_submodule(sub)
                     && first == Some("deinit")
                     && may(Some('f'), Some("force")) =>
                 {
-                    (Rule::GitDiscard, "throws away a submodule's changes")
+                    (Rule::GitDiscard, "throws away a submodule's changes".into())
                 }
-                "worktree" if first == Some("remove") && may(Some('f'), Some("force")) => {
-                    (Rule::GitDiscard, "deletes a worktree with its changes")
-                }
+                "worktree" if first == Some("remove") && may(Some('f'), Some("force")) => (
+                    Rule::GitDiscard,
+                    "deletes a worktree with its changes".into(),
+                ),
                 _ => return None,
             })
         };
-        if let Some((rule, reason)) = judge(false) {
-            self.add(rule, reason, repository);
-        } else if let Some((rule, reason)) = judge(true) {
-            self.add(rule, hedged(reason), repository);
+        if let Some((rule, said)) = judge(false) {
+            self.add(rule, said, repository);
+        } else if let Some((rule, said)) = judge(true) {
+            let said = Said {
+                reason: hedged(&said.reason),
+                ..said
+            };
+            self.add(rule, said, repository);
         }
     }
 }
 
+/// What a push that rewrites or deletes says, when nothing better is known.
+const REWRITES: &str = "rewrites or deletes branches on the remote";
+
+/// What to do instead of throwing changes away.
+const STASH_FIRST: &str = "stash the changes first (`git stash`)";
+
+/// What a checkout, restore or switch that throws changes away says.
+const CHANGES: &str = "throws away changes to files";
+
 /// Whether a `git push` operand is a refspec that forces (`+main`) or
-/// deletes (`:main`) a branch on the remote: written so, or only known when
-/// it runs and starting so (`"+$B"`, `":$B"`), whatever the rest holds.
+/// deletes (`:main`) a branch on the remote (see [`refspec_starts`]).
 fn forced_refspec(arg: &Arg, shell: Shell) -> bool {
-    let forced = |text: &str| text.starts_with('+') || text.starts_with(':');
+    refspec_starts(arg, shell, '+') || refspec_starts(arg, shell, ':')
+}
+
+/// Whether a `git push` operand starts with `start`: written so, or only
+/// known when it runs and starting so (`"+$B"`), whatever the rest holds.
+fn refspec_starts(arg: &Arg, shell: Shell, start: char) -> bool {
     match arg.known() {
-        Some(text) => forced(text),
-        None => unknown_start(arg, shell).is_some_and(|text| forced(&text)),
+        Some(text) => text.starts_with(start),
+        None => unknown_start(arg, shell).is_some_and(|text| text.starts_with(start)),
     }
+}
+
+/// The dry run of a `git clean` that deletes: `git clean -n`, with the `-d`,
+/// `-x` and `-X` it is given, so it lists what the same clean would delete
+/// in its folders and among the ignored files. Its options are read as
+/// [`git_dry_run`] reads them: the value of `-e`/`--exclude` is a pattern.
+fn clean_dry_run(args: &[Arg]) -> String {
+    let mut options = String::from("n");
+    let mut words = args.iter().filter_map(Arg::known);
+    while let Some(text) = words.next() {
+        if text == "--" {
+            break;
+        }
+        if text.starts_with("--") {
+            if !text.contains('=') && git_long(text, "exclude") {
+                words.next();
+            }
+        } else if let Some(bundle) = text.strip_prefix('-') {
+            if !bundle.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                continue;
+            }
+            let (flags, pattern) = bundle.split_once('e').unwrap_or((bundle, ""));
+            for short in flags.chars().filter(|c| matches!(c, 'd' | 'x' | 'X')) {
+                if !options.contains(short) {
+                    options.push(short);
+                }
+            }
+            if bundle.contains('e') && pattern.is_empty() {
+                words.next();
+            }
+        }
+    }
+    format!("git clean -{options}")
 }
 
 /// Whether awk code runs a command or writes a file: `system`, a single

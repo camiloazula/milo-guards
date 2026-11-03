@@ -54,6 +54,7 @@ mod launch;
 mod path;
 mod posix;
 mod powershell;
+mod said;
 mod startup;
 mod tangled;
 mod unit;
@@ -110,7 +111,9 @@ pub type Assessment = milo_guards_core::Assessment<Rule>;
 
 /// One reason a line is risky: the rule that found it, what it would do in
 /// a few words a permission prompt can show (`deletes your home directory`),
-/// and the argument it is about, as written, where there is one (`~`).
+/// the argument it is about, as written, where there is one (`~`), and what
+/// to do instead where there is a real way out (`delete inside the
+/// workspace, or ask the user`).
 pub type Finding = milo_guards_core::Finding<Rule>;
 
 /// The rules a line is judged by. Each finding names one.

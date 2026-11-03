@@ -11,6 +11,7 @@ use crate::dotglob;
 use crate::extended;
 use crate::inline::{self, Code, Language};
 use crate::powershell::Params;
+use crate::said::{Said, DOWNLOAD_FIRST};
 use crate::startup;
 use crate::unit::{self, has_flag, Arg, Reads, Split, Unit};
 use crate::{Rule, Shell};
@@ -629,7 +630,11 @@ fn add_launched(
                 return;
             }
             Launch::Downloaded => {
-                split.problem(Rule::RunDownloaded, "runs a downloaded script", None);
+                split.problem(
+                    Rule::RunDownloaded,
+                    Said::instead("runs a downloaded script", DOWNLOAD_FIRST),
+                    None,
+                );
                 split.push(unit);
                 return;
             }
@@ -646,7 +651,11 @@ fn add_launched(
                     .as_ref()
                     .is_some_and(|input| input.text() == crate::posix::DOWNLOADED_INPUT) =>
             {
-                split.problem(Rule::RunDownloaded, "runs a downloaded script", None);
+                split.problem(
+                    Rule::RunDownloaded,
+                    Said::instead("runs a downloaded script", DOWNLOAD_FIRST),
+                    None,
+                );
                 split.push(unit);
                 return;
             }
@@ -690,7 +699,11 @@ fn add_launched(
 /// substitution that downloads (`bash <(curl …)`), and not read otherwise.
 fn unread_script(split: &mut Split, script: &Arg) {
     if split.downloads.contains(script.text()) {
-        split.problem(Rule::RunDownloaded, "runs a downloaded script", None);
+        split.problem(
+            Rule::RunDownloaded,
+            Said::instead("runs a downloaded script", DOWNLOAD_FIRST),
+            None,
+        );
     } else {
         split.problem(
             Rule::Unknown,

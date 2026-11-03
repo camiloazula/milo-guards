@@ -13,11 +13,14 @@
 //!   `a/b` is either), `rules=RULES` (exactly these, in order), `first=RULE`
 //!   (the first finding), `lacks=RULES` (none of them), `reason="..."` (the
 //!   reason of the first finding of `first`, or of the one rule of
-//!   `finds`), and `effect=reads_workspace|reads_beyond|changes|unknown`.
-//!   Rules are their wire names, comma separated.
+//!   `finds`), `instead="..."` (what that finding says to do instead, or
+//!   `instead=none` for no advice), and
+//!   `effect=reads_workspace|reads_beyond|changes|unknown`. Rules are their
+//!   wire names, comma separated.
 //!
 //! Every case also goes through [`super::disagreements`]: its `effect`,
-//! `explain` and `effect_paths` agree with `classify`.
+//! `explain` and `effect_paths` agree with `classify`. And every finding's
+//! reason and `instead` are each one plain sentence (see [`unsaid`]).
 //!
 //! A declaration is `paths NAME FIELDS`: `base=MACHINE`, or `cwd=` and
 //! `home=`; `workspace=` (one for each folder, after the base's), and
@@ -64,7 +67,25 @@ pub struct Expect {
     pub first: Option<Rule>,
     pub lacks: Vec<Rule>,
     pub reason: Option<String>,
+    /// What the finding of `reason` says to do instead.
+    pub instead: Option<Instead>,
     pub effect: Option<Effect>,
+}
+
+/// What a case expects a finding to say to do instead.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Instead {
+    /// No advice: `instead=none`.
+    Nothing,
+    /// This advice.
+    Says(String),
+}
+
+impl Instead {
+    /// What `instead` on a finding says this is.
+    fn of(instead: Option<&String>) -> Self {
+        instead.map_or(Self::Nothing, |text| Self::Says(text.clone()))
+    }
 }
 
 impl Expect {
@@ -106,6 +127,11 @@ impl Expect {
         }
         if let Some(reason) = &self.reason {
             words.push(format!("reason={reason:?}"));
+        }
+        match &self.instead {
+            Some(Instead::Says(instead)) => words.push(format!("instead={instead:?}")),
+            Some(Instead::Nothing) => words.push("instead=none".to_string()),
+            None => {}
         }
         if let Some(effect) = self.effect {
             words.push(format!("effect={}", effect_name(effect)));
@@ -197,6 +223,12 @@ pub fn wrong(case: &Case) -> Vec<String> {
         .collect();
     let assessment = classify(line, *shell, paths);
     let findings = assessment.findings();
+    wrong.extend(
+        findings
+            .iter()
+            .flat_map(unsaid)
+            .map(|why| format!("{at}: {why}: {line:?}")),
+    );
     let found: Vec<Rule> = findings.iter().map(|finding| finding.rule).collect();
     let mut missed = Vec::new();
     if expect.safe && !assessment.is_safe() {
@@ -223,17 +255,28 @@ pub fn wrong(case: &Case) -> Vec<String> {
             missed.push(format!("lacks {rule:?}"));
         }
     }
+    // The finding `reason` and `instead` are about: the first, or the one
+    // of the one rule of `finds`.
+    let of = match expect.first {
+        Some(_) => first,
+        None => expect
+            .finds
+            .first()
+            .and_then(|group| group.first())
+            .and_then(|rule| findings.iter().find(|finding| finding.rule == *rule)),
+    };
     if let Some(reason) = &expect.reason {
-        let of = match expect.first {
-            Some(_) => first,
-            None => expect
-                .finds
-                .first()
-                .and_then(|group| group.first())
-                .and_then(|rule| findings.iter().find(|finding| finding.rule == *rule)),
-        };
         if of.map(|finding| finding.reason.as_str()) != Some(reason.as_str()) {
             missed.push(format!("reason {reason:?}"));
+        }
+    }
+    if let Some(instead) = &expect.instead {
+        if of
+            .map(|finding| Instead::of(finding.instead.as_ref()))
+            .as_ref()
+            != Some(instead)
+        {
+            missed.push(format!("instead {instead:?}"));
         }
     }
     if let Some(want) = expect.effect {
@@ -249,6 +292,28 @@ pub fn wrong(case: &Case) -> Vec<String> {
         ));
     }
     wrong
+}
+
+/// What is wrong with what `finding` says: its reason and its `instead`
+/// are each one plain sentence, as a permission prompt shows it: not empty,
+/// on one line, with no space at either end, no trailing period and no
+/// second sentence.
+pub fn unsaid(finding: &milo_guards_shell::Finding) -> Vec<String> {
+    [
+        ("reason", Some(&finding.reason)),
+        ("instead", finding.instead.as_ref()),
+    ]
+    .into_iter()
+    .filter_map(|(field, text)| Some((field, text?)))
+    .filter(|(_, text)| {
+        text.is_empty()
+            || text.trim() != text.as_str()
+            || text.ends_with('.')
+            || text.contains(['\n', '\r'])
+            || text.contains(". ")
+    })
+    .map(|(field, text)| format!("the {field} {text:?} is not one plain sentence"))
+    .collect()
 }
 
 /// The cases of `records`, or every refusal: an unknown word or field, a
@@ -443,6 +508,8 @@ fn answer(expect: &mut Expect, name: &str, value: Option<&str>) -> Result<(), St
                 .collect::<Result<_, _>>()?;
         }
         ("reason", Some(value)) => expect.reason = Some(value.to_string()),
+        ("instead", Some("none")) => expect.instead = Some(Instead::Nothing),
+        ("instead", Some(value)) => expect.instead = Some(Instead::Says(value.to_string())),
         ("effect", Some(value)) => {
             expect.effect = Some(match value {
                 "reads_workspace" => Effect::ReadsOnly(Reach::Workspace),
@@ -453,7 +520,7 @@ fn answer(expect: &mut Expect, name: &str, value: Option<&str>) -> Result<(), St
             });
         }
         ("safe", Some(_)) => return Err("`safe` takes no value".to_string()),
-        ("finds" | "rules" | "first" | "lacks" | "reason" | "effect", None) => {
+        ("finds" | "rules" | "first" | "lacks" | "reason" | "instead" | "effect", None) => {
             return Err(format!("`{name}` takes a value: `{name}=...`"))
         }
         (other, None) => return Err(format!("an unknown word `{other}`")),
@@ -484,7 +551,8 @@ fn whole(expect: &Expect) -> Result<(), String> {
     let risky = !expect.finds.is_empty()
         || expect.rules.is_some()
         || expect.first.is_some()
-        || expect.reason.is_some();
+        || expect.reason.is_some()
+        || expect.instead.is_some();
     if expect.safe && (risky || !expect.lacks.is_empty()) {
         return Err("`safe` takes no other rule field".to_string());
     }
@@ -494,11 +562,16 @@ fn whole(expect: &Expect) -> Result<(), String> {
                 .to_string(),
         );
     }
-    if expect.reason.is_some()
-        && expect.first.is_none()
-        && !(expect.finds.len() == 1 && expect.finds[0].len() == 1)
-    {
-        return Err("`reason` takes `first`, or `finds` of one rule".to_string());
+    for (field, given) in [
+        ("reason", expect.reason.is_some()),
+        ("instead", expect.instead.is_some()),
+    ] {
+        if given
+            && expect.first.is_none()
+            && !(expect.finds.len() == 1 && expect.finds[0].len() == 1)
+        {
+            return Err(format!("`{field}` takes `first`, or `finds` of one rule"));
+        }
     }
     Ok(())
 }

@@ -50,6 +50,17 @@ caller can build one:
   show, such as `deletes your home directory`.
 - `target`: the part of the input it is about, as written, where there is one,
   such as `~`.
+- `instead`: what to do instead, in the same voice as `reason` (one short
+  sentence, no trailing period), where there is a real way out, such as
+  "stash the changes first (`git stash`)" beside `throws away uncommitted
+  changes`. `None` where there is no safe general advice, as for a line that
+  runs as root. A guard sets it only where it has one; the file, URL and
+  secrets guards have none yet.
+
+`Finding` is not `#[non_exhaustive]`: every guard builds one in its own crate,
+and a caller may build one by hand (in a test, say), which a struct literal
+does plainly. So a field added later breaks the code that builds one, as
+`instead` did; nothing is released yet, so that costs no shim.
 
 **`RuleName`** is a trait that a guard's enum of rules implements. The enum is
 the guard's, and each guard calls it `Rule`; the trait is not called `Rule` so

@@ -108,6 +108,7 @@ mod tests {
                 rule,
                 reason: format!("says {word}"),
                 target: None,
+                instead: None,
             })
             .collect();
         if found.is_empty() {

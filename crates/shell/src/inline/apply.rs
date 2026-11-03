@@ -7,6 +7,7 @@ use milo_guards_code::{self as reader, Act, Language};
 
 use super::{shorten, Code};
 use crate::launch;
+use crate::said::Said;
 use crate::unit::{self, Arg, Split, Unit};
 use crate::{Finding, Rule, Shell};
 
@@ -308,6 +309,7 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
                         rule: Rule::Unknown,
                         reason: UNKNOWN_WORD.to_string(),
                         target: Some(word.text().to_string()),
+                        instead: None,
                     });
                 let name = program.known().map(str::to_string);
                 let before = split.units.len();
@@ -334,7 +336,14 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
             Some(&code),
         ),
         Act::Downloaded(code) => {
-            split.problem(Rule::RunDownloaded, "runs code it downloads", Some(&code));
+            split.problem(
+                Rule::RunDownloaded,
+                Said::instead(
+                    "runs code it downloads",
+                    "download the code to a file and read it first",
+                ),
+                Some(&code),
+            );
             split.problem(
                 Rule::Unknown,
                 "runs code the guard does not read",
@@ -430,6 +439,7 @@ fn opened(
         rule: Rule::Unknown,
         reason: reason.to_string(),
         target: Some(shown),
+        instead: None,
     };
     let unit = split.units.get(before..).and_then(|added| {
         added
