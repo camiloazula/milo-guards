@@ -1573,7 +1573,11 @@ moved no line between safe and risky. Each item below says which rule it is:
   `com.apple.cfprefsd.xpc.daemon`) are `stop_system`, while a `launchctl
   kill` or `stop` whose target is only known when it runs is `stop_unknown`;
   the target of any other label (`gui/501/com.me.worker`) is the user's own.
-  `systemctl restart` is not a stop and stays safe.
+  `systemctl restart` is not a stop and stays safe. A name or pattern
+  that matches the process of a daemon that protects the machine
+  (`killall auditd`, `pkill firewalld`), and a `launchctl kill` or `stop`
+  of such a daemon's label (`com.apple.alf`), is `system_settings` (see
+  [Machine settings on macOS and Linux](#machine-settings-on-macos-and-linux)).
 - **A name only known when it runs (`stop_unknown`).** `killall $NAME`,
   `pkill "$PATTERN"`, `xargs pkill`.
 - **A listing into `Stop-Process`.** `Stop-Process` is read by its own
@@ -2115,7 +2119,28 @@ of their strictest, so each family below was added on that test.
   are not read as `--user` or `--system` either: one walk of the arguments
   skips the values and finds those two (`systemctl -p --user disable x` is
   a system-wide disable). `timedatectl -p NTP set-ntp false` skips its
-  `-p`/`--property` value the same way.
+  `-p`/`--property` value the same way. The other init systems are read the
+  same way: `rc-update del` (or `delete`, or a verb only known when it runs),
+  `update-rc.d name disable` or `remove`, and `chkconfig name off` or
+  `chkconfig --del name` (`-d` on SUSE, with `--level` skipped) take a service out of what
+  starts at boot, as `systemctl disable` does, whatever the service;
+  `rc-update add`, `update-rc.d name defaults` or `enable` and `chkconfig
+  name on` are safe. Some `systemctl` verbs change many units at once:
+  `isolate` starts a target and stops every unit it does not want, so it is
+  risky whatever the target (and also `stop_system` for `poweroff`,
+  `reboot`, `halt`, `kexec`, `soft-reboot`, `rescue`, `emergency`,
+  `shutdown`, `exit`, `final` and the runlevels that are their aliases,
+  `runlevel0`, `runlevel1` and `runlevel6`, as `systemctl poweroff` and
+  `rescue` are), and without a target it is an error and safe;
+  `set-default` to a target other than `graphical`, `multi-user` or the
+  runlevels that alias them (`runlevel2` to `runlevel5`), with or without
+  `.target`, or to one only known when it runs, changes what the computer boots into;
+  `preset-all` enables and disables units by the preset files. `edit`,
+  `revert` and `preset` of a unit that protects the machine (below), a
+  pattern or a unit only known when it runs change how that protection
+  runs; of any other unit (`systemctl edit nginx`) they are safe, as is
+  `get-default`. These follow `--user` as `disable` does: `systemctl --user
+  isolate x.target` changes only the user's own session and is safe.
 - **Stopping a service.** `systemctl stop`, `systemctl kill` and `service …
   stop` are safe, because `stop docker` is a common development step, and
   `stop` is not a change to what the system runs at boot; `launchctl stop` and `start`,
@@ -2124,18 +2149,80 @@ of their strictest, so each family below was added on that test.
   `launchctl kill TERM system/com.apple.WindowServer`), which is `stop_system`
   as stopping the process is (see
   [Stopping processes by name](#stopping-processes-by-name)). The other is a unit
-  that protects the machine (`firewalld`, `ufw`, `nftables`, `iptables`,
-  `ip6tables`, `apparmor`, `auditd`, `fail2ban`), whose stopping is the same
+  that protects the machine (the firewalls, `apparmor`, `auditd`,
+  `fail2ban` and the antivirus and endpoint daemons listed below), whose
+  stopping is the same
   as turning that protection off, so it is risky. `systemctl kill` sends
   SIGTERM by default, which ends the daemon as `stop` does (and `auditd`
   refuses `stop`, so `kill` is how it is stopped), so it is read through the
   same rule: `systemctl kill firewalld`, `kill -s KILL auditd` and `kill
   'fire*'` are risky, `kill docker` is safe. `systemctl` matches a
   unit name holding `*`, `?` or `[` against the loaded units, so a pattern
-  (`systemctl stop 'firewall*'`) is risky too. For `service name action`, an
+  (`systemctl stop 'firewall*'`) is risky too, and so is one given to any
+  other service manager (`sv down /etc/service/*`, `cd /etc/service && sv
+  down *`), which the shell expands against the files. For `service name action`, an
   action only known when it runs may be `stop`, so it is risky when the name
   protects the machine or is only known when it runs (`service ufw
   $action`); `service nginx $action` is safe, as `service nginx stop` is.
+  An action stops the service when it is `stop`, a BSD spelling of it
+  (`onestop`, `forcestop`, `faststop`, `quietstop`), `force-stop`, `kill`,
+  or one of the actions the firewall and `AppArmor` scripts take their
+  protection down with, `flush` (`service netfilter-persistent flush`) and
+  `teardown` (`service apparmor teardown`). Every other service manager
+  is read as `service`: a program run from an init script folder
+  (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
+  placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
+  as `/etc/init.d/ufw stop`, is the service of its name with its first
+  operand as the action. So is the script a shell runs (`sh
+  /etc/init.d/ufw stop`, `bash -x …`, and `cd /etc/init.d && sh ufw stop`,
+  since a shell reads a script named without a folder from the working
+  folder) or the line sources (`. /etc/init.d/ufw stop`, `source …`), the
+  operands after it being the script's; a shell given `-c` runs a line,
+  which is read as one. `invoke-rc.d name action` and `rc-service name
+  action` (whose `-e` and `-r` take a name) read the same, except that
+  `invoke-rc.d --query` only asks whether the action would be allowed and
+  `rc-service -U` (`--user`) runs the user's own services, as `systemctl
+  --user` does; runit's `sv
+  command service...` stops each service when the command is `stop`,
+  `shutdown`, `force-stop`, `force-shutdown`, or starts with the letters
+  `sv` reads as down, exit or pause (`d`, `D`, `x`, `X`, `e`, `E`, `p`), or
+  is only known when it runs, and a service given as a folder
+  (`/etc/service/ufw`) is the last part. `/etc/init.d/nginx restart`,
+  `rc-service docker stop` and `sv down nginx` are safe; `/etc/init.d/ssh
+  stop` and `sv down sshd` are `stop_system`. The protecting units are the
+  firewalls (`firewalld`, `ufw`, `nftables`, `iptables`, `ip6tables`,
+  `netfilter-persistent`, and the BSDs' `pf` and `ipfw`), `apparmor`,
+  `auditd`, `fail2ban`, and the common antivirus and endpoint daemons
+  (`clamav-daemon`, `clamav-freshclam`, `clamav-clamd`, `clamd`,
+  `freshclam`, `mdatp`, `falcon-sensor`, `sentinelone`, `osqueryd`,
+  `wazuh-agent`, `ossec`); a unit is compared without `.service` and
+  without its instance (`clamd@scan`). Stopping the daemon's process is the
+  same: `killall` and `pkill` of a name that is, or a pattern that matches,
+  `auditd`, `firewalld`, `clamd`, `freshclam`, `mdatp`, `wdavdaemon`,
+  `falcon-sensor`, `falcond`, `osqueryd`, `wazuh-agentd`, `sentineld`,
+  `ossec-agentd`, or on a Mac `socketfilterfw`, `syspolicyd`, `XProtect`,
+  `XprotectService`, `endpointsecurityd`, `com.crowdstrike.falcon.Agent`
+  and Little Snitch's daemon and network extension, is `system_settings`
+  (`pkill firewalld`, `killall auditd`, `pkill audit`, and `pkill agent`,
+  which matches `wazuh-agentd`). `pkill -f` also searches the command
+  lines these daemons usually run with (`/usr/sbin/firewalld --nofork
+  --nopid`), so a pattern that runs past a name into its arguments
+  (`pkill -f 'auditd '`) is risky too. `ufw` and `apparmor` are left out,
+  since neither runs as a process (`ufw` loads the rules and exits,
+  AppArmor lives in the kernel), and so is `fail2ban-server`: `pkill`
+  searches each name for its pattern, and `pkill app` and `pkill server`
+  are everyday work. Each pattern is read once for the processes the
+  system needs and the ones that protect it, as a line may give thousands.
+  `launchctl kill` and `stop` of a daemon that protects a Mac are a
+  bootout of it: a label that is, or starts with and a dot, `com.apple.alf`
+  (the application firewall), `com.apple.auditd`, `com.apple.syspolicyd`
+  (Gatekeeper), `com.apple.xprotect`, `com.apple.xprotectframework`,
+  `com.apple.endpointsecurity`,
+  `com.crowdstrike`, `com.microsoft.wdav`, `com.sentinelone` or
+  `at.obdev.littlesnitchd`, without case (`launchctl kill 9
+  system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
+  A `kill` whose ids come from a substitution (`kill $(pidof auditd)`) is
+  `stop_unknown`, as every such `kill` is.
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
   `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
   `listbackups`, `status`, `startbackup` and `enable` are safe.
@@ -2158,8 +2245,11 @@ of their strictest, so each family below was added on that test.
   persistent-apps`), a path in the workspace or the user's own folder,
   `defaults read`, `pmset -g` and the `-get`/`-list` options are safe.
 
-`hostname` and `service` are read in POSIX shells only: in PowerShell and cmd
-they are Windows programs and are left alone.
+`hostname`, `service` and `sv` are read in POSIX shells only: in PowerShell
+and cmd they are Windows programs or aliases (`sv` is PowerShell's
+`Set-Variable`) and are left alone. An init script is read in PowerShell too
+(`& '/etc/init.d/ufw' stop`, `Start-Process /etc/init.d/ufw stop`), since pwsh
+on Linux runs a path under `/etc/init.d` as the script it is; cmd never does.
 
 ### The rule enum is exhaustive on purpose
 
@@ -3596,9 +3686,10 @@ up.
 | `sqlite3` | the operands after the file, `-cmd` |
 | `duckdb` | the operands after the file, `-c`, `-s`, `-cmd` |
 | `mongosh`, `mongo` | `--eval` |
-| `redis-cli` | the command and its arguments |
-| `clickhouse-client`, `clickhouse client` | `-q`, `--query` |
+| `redis-cli`, `valkey-cli`, `keydb-cli` | the command and its arguments |
+| `clickhouse-client`, `clickhouse client` | `-q`, `--query`, and every operand (also after `-n`, `--multiquery`) |
 | `sqlcmd` | `-Q`, `-q` (`/Q` too on Windows) |
+| `Invoke-Sqlcmd` (PowerShell) | `-Query`, and every argument no parameter takes |
 | `cqlsh` | `-e`, `--execute` |
 
 Short options bundle (`psql -Atc`), a value may be attached (`-cSQL`,
@@ -3613,6 +3704,29 @@ yargs does) a word that starts with `-` is never the value of any option, and
 --eval 'db.dropDatabase()'` and `clickhouse-client --password --query 'DROP
 TABLE t'` read the statement option after the password. A statement option
 followed by such a word reads the word as the statement too.
+A client that takes statements as operands (`clickhouse-client 'DROP TABLE
+t'`, and `-n 'DROP TABLE t'`, since `-n` takes no value) reads every word that
+is no option and no option's value as one, and an optional value as an operand
+too: `clickhouse-client --password 'DROP TABLE t'` runs the `DROP`.
+
+`Invoke-Sqlcmd` reads its parameters as PowerShell does: any start of a name
+or alias in any case (`-que`), `-Query:'…'`, and the query as its first
+positional parameter (`Invoke-Sqlcmd 'DROP TABLE t'`). A start of several
+names is refused by PowerShell and one of no name takes no value, so the word
+after either is read as a query too; `-InputFile` is a file of statements,
+which runs what the line does not show, as `psql -f` does (`-InputFile nul`
+runs nothing). In PowerShell a parameter word with quotes in
+it (`mysql --execute='DROP TABLE t'`, `psql --command="DROP TABLE t"`) is the
+word with its quotes taken off, as PowerShell hands it to a native program. A
+variable or `$(…)` in it, in a double-quoted part or outside quotes
+(`--command="DROP TABLE $t"`, `--command=$q`), is an expansion, read as a
+POSIX shell's in a statement (below); the grammar ends `--execute=$(…)` and
+`--execute=${q}` at the `$`, and the two parts are read as one word. Every
+argument of a client is read so before its options are, so an option and its
+value in one double-quoted word (`mysql "--execute=DROP TABLE $t"`, `psql
+"-c$q"`) is read as the option it is. A quoted option word the guard cannot
+read (one that holds a `$` or backtick as text) is a statement only known
+when it runs, never left out.
 
 **What destroys.**
 
@@ -3663,17 +3777,60 @@ followed by such a word reads the word as the statement too.
   shortest start no other command has (`.bac`, `.sa`; `.ba` and `.b` are
   not them, and `.bail` is another command). `VACUUM INTO` and `.clone`
   refuse a file that exists and are safe.
-- **Redis.** `FLUSHALL`, `FLUSHDB`, an `EVAL` whose script calls one or calls
+- **Replacing a table.** `CREATE OR REPLACE TABLE` (with `TEMPORARY` or the
+  like between) and ClickHouse's `REPLACE TABLE` drop the table's rows;
+  `REPLACE INTO` adds rows, `CREATE OR REPLACE VIEW` and `FUNCTION` hold no
+  data, and `replace(…)` is a function. `RESTORE DATABASE` and `RESTORE LOG`
+  with a `FROM` write the backup over the database they name (`WITH REPLACE`
+  over any one); without one (`RESTORE DATABASE x WITH RECOVERY`) they read no
+  backup, and `RESTORE HEADERONLY`, `FILELISTONLY` and `VERIFYONLY` read the
+  backup.
+- **SQL run elsewhere.** PostgreSQL's `dblink_exec`, `dblink` and
+  `dblink_send_query` run the SQL they are given in a database they connect
+  to, named plainly or quoted (`"dblink_exec"(…)`): the string after the
+  connection (or the one string) is read as SQL, and an argument that is not a
+  literal or `true`/`false` is `unknown`. The body of a function or procedure
+  (`CREATE [OR REPLACE] FUNCTION … AS $$ … $$`, or a string after `AS`, also
+  with an `E` or `U&` before it) is read as the statements it holds, as a `DO`
+  body is: what calls it (a `SELECT f()`, a trigger) need not be on the line.
+  A `U&'…'` body that spells a character by its code (`\0065`), or names its
+  own escape, is `unknown`.
+- **Redis.** `FLUSHALL`, `FLUSHDB`, `FUNCTION FLUSH` (every function of the
+  server), `SHUTDOWN NOSAVE` (what the server holds and has not saved), an
+  `EVAL` whose script calls one or calls
   `DEL` or `UNLINK` and also `KEYS` or `SCAN` (the commands are the strings it
   calls, so `KEYS[1]`, the keys it is given, is not a listing), and a
   `DEL` or `UNLINK` of keys the line lists: `redis-cli --scan … | xargs
   redis-cli del`, `redis-cli del $(redis-cli keys 'x*')`. `redis-cli del k`
   deletes one key and is safe. `redis-cli --cluster call HOST:PORT COMMAND…`
   runs the command on every node, and is read as the command.
-- **MongoDB.** `dropDatabase`, `dropCollection`, `drop` (as a call or a
-  command key), `deleteMany` and `remove` with no filter or `{}`.
-- **The tools.** `dropdb`, `dropuser`, `mysqladmin drop` and `mariadb-admin
-  drop`, MariaDB's name for it. `mysqladmin` runs a
+- **MongoDB.** `dropDatabase`, `dropCollection`, `drop`, `dropAllUsers` and
+  `dropAllRoles` (as a call, `db.dropAllUsers()` or `db["dropAllUsers"]()`, or
+  a command key, quoted or not), and the `dropAllUsersFromDatabase` and
+  `dropAllRolesFromDatabase` commands; `deleteMany` and `remove` with a filter
+  that picks every document there may be: none, `{}`, one with a spread from a
+  value (`{...f}`, `{a: 1, ...f}`, since `f` may hold any field) or one only
+  known when it runs (`deleteMany(f)`), while an object written out with a
+  field in it (`{a: 1}`) picks. An operation in a list, as `bulkWrite` takes
+  them, that is a `deleteMany` (`{deleteMany: {filter: {}}}`, and the
+  client's `bulkWrite` of mongosh 2.3, `{namespace: "app.users", name:
+  "deleteMany", filter: {}}`) is read by its `filter`. The `delete` command
+  (`runCommand({delete: "users", deletes: [{q: {}, limit: 0}]})`) is read by
+  each of its `deletes`: a `q` that picks every document, without a `limit` of
+  1, deletes them, and deletes not written out may. A key is read as
+  JavaScript takes it: of two keys of one name the last counts, and a spread
+  (`...o`) may set any key or replace one before it, so an object with one is
+  not known to pick or to have a `limit` of 1. `delete` is the command when
+  its object is what `runCommand` or `adminCommand` is given, or is its first
+  key with a name for its value in an object no other call is given; a field
+  named `delete` or `deleteMany` (`find({delete: false})`, `insertOne({deleteMany:
+  1})`) is no command. `deleteOne` deletes one document, as `redis-cli del k`
+  deletes one key, and is safe.
+- **The tools.** `dropdb`, `dropuser`, `pg_dropcluster` (a whole cluster, its
+  data folder with it), `heroku pg:reset` and `supabase db reset` (which
+  empty a hosted or local database and run its migrations again),
+  `mysqladmin drop` and `mariadb-admin drop`, MariaDB's name for it. A line
+  that asks for the help (`--help`, `-h`) runs nothing. `mysqladmin` runs a
   command from any unique start of its name (`mysqladmin proc stat` works),
   so a command word of two letters or more that starts `drop`, in any case,
   is `drop`: `dro`, `dr`.
@@ -3755,12 +3912,18 @@ with an escaped `$` or backtick in it (`psql <<< "SELECT \$( ; DROP TABLE t;
 unquoted here-document with both is: the shell passes the escaped text to the
 client as it is, and the reader would take `\$(`, `\${` and a pair of
 backticks for one expansion that hides the text between them; this covers
-`echo`, `printf` and `Write-Output` too. On PowerShell and
-cmd that is not so: an expansion in a double-quoted word (`$id`, `$(…)`,
-`%id%`) is not read as a word, so any statement with one is `unknown`
-(`psql -c "DELETE FROM t WHERE id = $id"`), even one that would destroy
-(`psql -c "DROP TABLE t; $x"` is `unknown`, not `drop_data`); a single-quoted
-PowerShell word has none. A client command that runs a
+`echo`, `printf` and `Write-Output` too. A PowerShell double-quoted string or
+here-string given to a client as its statement is read the same way, from the
+grammar's reading of it: each variable and `$(…)` in it stands as an expansion,
+so `psql -c "DELETE FROM t WHERE id = $id"` is safe, `psql -c "DROP TABLE
+$t"` is `drop_data` and `psql -c "$verb FROM t"` is `unknown`; a `$(…)` runs
+a command, which prints what it likes, so a statement with one is `unknown`,
+as a POSIX command substitution is. A string that
+holds a `$` or a backtick as text (`` `$ ``, a lone `$`) is `unknown`, since
+the reader would take it for an expansion that hides what follows. On cmd an
+expansion in a double-quoted word (`%id%`) is not read as a word, so any
+statement with one is `unknown` (`psql -c "DROP TABLE t; %x%"` is `unknown`,
+not `drop_data`); a single-quoted PowerShell word has none. A client command that runs a
 program is `unknown` too: `\!` in `psql` and `mysql`, `COPY … PROGRAM`,
 `.shell`, `.system` and `.read |cmd` in `sqlite3` and `duckdb`, `xp_cmdshell`,
 and `system` in `mysql` (it is no command of another client: ClickHouse's
@@ -3814,7 +3977,7 @@ db:migrate`) are safe: the guard reads no program that is not on its list.
 Not read, so the caller has to account for them: a client started by `docker
 run`, `docker compose run`, `kubectl run`, `kubectl debug` or `oc rsh`; what a file of statements holds, even
 one the line writes; stored procedures (`CALL p()`, `EXEC p`),
-whatever they run; the
+whatever they run (a body written on the line is read); the
 text of a prepared statement that is not on the line (`EXECUTE s` after a
 `PREPARE` in an earlier call; one in the same text is read); a `WHERE`
 that is true for every row in a way other than `1`, `TRUE` and `1 = 1`;

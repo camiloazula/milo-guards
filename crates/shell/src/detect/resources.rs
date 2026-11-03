@@ -959,8 +959,9 @@ const VERCEL_VALUES: &[&str] = &[
     "--project",
 ];
 
-/// Options of heroku that take a value.
-const HEROKU_VALUES: &[&str] = &["-a", "--app", "-r", "--remote", "-t", "--team"];
+/// Options of heroku that take a value, before or after its command.
+pub(super) const HEROKU_VALUES: &[&str] =
+    &["-a", "--app", "-r", "--remote", "-t", "--team", "--confirm"];
 
 /// Options of wrangler that take a value.
 const WRANGLER_VALUES: &[&str] = &[
@@ -1173,7 +1174,7 @@ const GH_API_VALUES: &[&str] = &[
 const NETLIFY_VALUES: &[&str] = &["--auth", "--filter"];
 
 /// Options of supabase that take a value.
-const SUPABASE_VALUES: &[&str] = &[
+pub(super) const SUPABASE_VALUES: &[&str] = &[
     "--workdir",
     "--profile",
     "-o",
@@ -1181,6 +1182,7 @@ const SUPABASE_VALUES: &[&str] = &[
     "--network-id",
     "--dns-resolver",
     "--project-ref",
+    "--db-url",
 ];
 
 /// Options of openstack that take a value.
@@ -1380,7 +1382,7 @@ fn helped(args: &[Arg], values: &[&str]) -> bool {
 }
 
 /// Every word that is not an option, in order, as [`command`] reads them.
-fn words<'a>(args: &'a [Arg], values: &[&str]) -> Vec<&'a Arg> {
+pub(super) fn words<'a>(args: &'a [Arg], values: &[&str]) -> Vec<&'a Arg> {
     let mut found = Vec::new();
     let mut rest = args;
     while let Some((word, after)) = command(rest, values) {

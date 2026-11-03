@@ -752,6 +752,13 @@ pub(crate) struct Split {
     /// one is not. Noted while a string is read, which only borrows the
     /// walker.
     splitting: RefCell<Vec<char>>,
+    /// The PowerShell double-quoted strings whose expansions are only known
+    /// when they run, by their source, with the text each holds where every
+    /// expansion stands as `${}` (see [`Split::template`]). `None` for a
+    /// string that holds a `$` or a backtick that is no expansion, which a
+    /// reader of the text would take for one. Noted while a string is read,
+    /// as `splitting` is.
+    templates: RefCell<HashMap<String, Option<(String, bool)>>>,
     /// Whether the shell reading the line has turned on a option that lets a
     /// wildcard match a leading dot, bash's or zsh's. Once on it stays on,
     /// except that a subshell or a script in a process of its own gives it
@@ -2862,6 +2869,31 @@ impl Split {
         }
     }
 
+    /// Note the text the PowerShell double-quoted string `source` holds, its
+    /// expansions standing as `${}`, and whether one of them runs a command
+    /// (`$(…)`), or `None` when it cannot be read so.
+    pub(crate) fn note_template(&self, source: &str, text: Option<(String, bool)>) {
+        self.templates
+            .borrow_mut()
+            .entry(source.to_string())
+            .or_insert(text);
+    }
+
+    /// The PowerShell double-quoted string `source`, whose expansions are only
+    /// known when it runs, as a template: the text it holds with each
+    /// expansion standing as `${}`, which a reader of a database statement
+    /// reads as it reads a POSIX shell's (an expansion is a value, and where
+    /// a statement starts, a statement only known when it runs). `None` when
+    /// `source` is no such string.
+    pub(crate) fn template(&self, source: &str) -> Option<Arg> {
+        let (text, runs) = self.templates.borrow().get(source).cloned().flatten()?;
+        Some(Arg::Template {
+            text,
+            source: source.into(),
+            runs,
+        })
+    }
+
     /// Whether `script` holds a character noted by [`Split::note_splitting`]:
     /// run as code, its words are not the ones the guard's reading of the
     /// text finds. The script need not be a whole noted string: one reached
@@ -3366,13 +3398,14 @@ pub(crate) fn split(
     (drive, home_drive): (Option<char>, Option<char>),
     effect: bool,
 ) -> Split {
-    let mut split = start(drive, home_drive);
+    let mut split = Split::default();
+    start(&mut split, false, (drive, home_drive));
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
     if split.psdrive {
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
-        start_again_psdrive(&mut split);
+        start(&mut split, true, (drive, home_drive));
         script(&mut split, command, shell, 0);
     }
     // A function body or a loop may run after the line turns `extendedglob`
@@ -3393,28 +3426,19 @@ pub(crate) fn split(
     split
 }
 
-/// A `Split` for a line read on `drive`, with the home directory on
-/// `home_drive`. A function of its own, as [`start_again_extended`] is.
+/// Start `split` afresh for a read of the line from the drive `drive` with
+/// home on `home_drive`; `psdrive` says the read knows the drives the line
+/// makes. A function of its own, as [`start_again_extended`] is, so that the
+/// `Split` it builds is not held on the stack while [`split`] reads the line:
+/// the walk of a deeply nested line needs all of it.
 #[inline(never)]
-fn start(drive: Option<char>, home_drive: Option<char>) -> Split {
-    Split {
+fn start(split: &mut Split, psdrive: bool, (drive, home_drive): (Option<char>, Option<char>)) {
+    *split = Split {
         drive,
         home_drive,
-        ..Split::default()
-    }
-}
-
-/// Clear `split` for a second read of the line that knows the drives the
-/// line makes, as [`start_again_extended`] does.
-#[inline(never)]
-fn start_again_psdrive(split: &mut Split) {
-    let fresh = Split {
-        psdrive: true,
-        drive: split.drive,
-        home_drive: split.home_drive,
+        psdrive,
         ..Split::default()
     };
-    *split = fresh;
 }
 
 /// Clear `split` for a second read of the line that reads the words of its
