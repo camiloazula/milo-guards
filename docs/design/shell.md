@@ -208,12 +208,15 @@ is `iptables -F`), and their own names for it too: `main4` is `iptables`,
 `main6` is `ip6tables`, `restore4` and `restore6` are `iptables-restore`
 and `ip6tables-restore`, `save4` and `save6` their `-save`. `nsenter` runs
 the program after its options in another process's namespaces (`nsenter -t
-1 -a systemctl stop sshd` is `systemctl stop sshd`): `-t`, `-N`, `-S`, `-G`
-and `-W` (and `--target`, `--net-socket`, `--setuid`, `--setgid`,
-`--wdns`) take a value, the namespace options take theirs only in the same
-word (`-m/proc/1/ns/mnt`), and `-w` and `-r` (`--wd`, `--root`) start the
-program in a folder of that process's, so where it runs is only known when
-it does.
+1 -a systemctl stop sshd` is `systemctl stop sshd`): `-t`, `-N`, `-S` and
+`-G` (and `--target`, `--net-socket`, `--setuid`, `--setgid`, or a prefix
+that names one alone) take a value, the namespace options, `-r`, `-w` and
+`-W` take theirs only in the same word (`-m/proc/1/ns/mnt`, `-W/srv`), and
+`-w`, `-W` and `-r` (`--wd`, `--wdns`, `--root`) start the program in a
+folder of that process's, as entering its mount namespace does (`-m`,
+`--mount`, `-a`, `--all`), since the kernel then moves it to that
+namespace's root: where it runs is then only known when it does
+(`nsenter -t 1 -m rm -rf etc` deletes a path only known when it runs).
 
 `Start-Process` joins its argument list (`-ArgumentList`, `-Args`, or the
 words after the program) with spaces into one command line, which the program
@@ -2770,32 +2773,38 @@ of their strictest, so each family below was added on that test.
   other safe), and taking a service out of what starts at boot is
   `system_settings` whatever the service, as `systemctl disable` is.
   OpenBSD's `rcctl stop` stops each daemon, and `rcctl disable`, `rcctl set
-  daemon status off` and `rcctl set daemon flags NO` disable it; a command,
-  a variable or a value of `set` only known when it runs may be either, and
-  `start`, `restart`, `check`, `ls`, `get` and `enable` are safe. FreeBSD's
+  daemon status off` disables it; a command, a variable or a value of `set
+  status` only known when it runs may be either, and `start`, `restart`,
+  `check`, `ls`, `get` and `enable` are safe, as is `rcctl set daemon flags
+  NO`, which `rcctl` refuses. FreeBSD's
   `sysrc` disables a service when it sets a `NAME_enable` to anything
   `rc.subr` does not read as on (`YES`, `TRUE`, `ON`, `1`, without case),
-  changes one with `+=` or `-=`, or removes one (`-x`); a word only known
-  when it runs may be such an assignment unless what is known of it names
-  another variable, and an option only known when it runs may be `-x`. `sysrc
-  -c` only checks, and `sysrc -f FILE` of a file in the workspace is the
-  workspace's own (a file elsewhere, or only known when it runs, is not).
-  s6's `s6-svc` stops each service folder under `-d` or `-D`, and under `-p`
-  or `-s STOP` (a pause freezes it, as runit's `sv pause` does), or an
-  option only known when it runs; `-u`, `-r` and the signals that end the
-  process, which s6 starts again, are safe. `s6-rc -d change` (or `-D`, or
+  changes one with `+=` or `-=`, or removes one (`-x`, `-X`); a word only
+  known when it runs may be such an assignment unless what is known of it
+  names another variable, and an option only known when it runs may be `-x`.
+  `sysrc -c` only checks, and `sysrc -f FILE` of a file in the workspace is
+  the workspace's own (a file elsewhere, or only known when it runs, is not,
+  nor is any under `-R` or `-j`, where `sysrc` runs again in that root or
+  jail and reads the file there).
+  s6's `s6-svc` stops each service folder under `-d` or `-D`, and under
+  `-p`, `-P` or `-s STOP` (a pause freezes it, as runit's `sv pause` does),
+  or an option only known when it runs; `-u`, `-r`, `-l` and the signals
+  that end the process, which s6 starts again, are safe, unless `-O`, `-o`
+  or `-Q` says not to start it again: then a signal that ends it (any but
+  `CONT` and `WINCH`) or a restart stops it (`s6-svc -Ot`). `s6-rc -d change` (or `-D`, or
   `stop`) stops each service, `-a` adds every service that is up (`stops
   every system service`), `-p` takes down every service it is not given,
   as `isolate` does, and `-n` is a dry run. `dinitctl stop` and `release`
   stop each service, `signal SIG service` is read as `systemctl kill`,
   `disable` disables it, and `shutdown` is `stop_system`; `-u` (`--user`)
-  is the user's own instance unless a later `-s` (`--system`) or an
+  is the user's own instance unless a later `-s` (`--system`), a socket
+  (`-p`, `--socket-path`), which `dinitctl` uses whatever `-u` says, or an
   argument only known when it runs may name the system's. `insserv -r`
-  (`--remove`, or an option only known when it runs) takes a script out of
-  the boot sequence, unless `-n` makes it a dry run. The legacy `update-rc.d
-  name stop NN runlevel... .` disables the service when a stop group names
-  a runlevel the system runs in (`2` to `5`, or `S`), one only known when it
-  runs, or none (`update-rc.d ssh stop`); stopping it in `0`, `1` and `6`,
+  (`--remove` or a prefix of it, or an option only known when it runs)
+  takes a script out of the boot sequence, unless `-n` makes it a dry run.
+  The legacy `update-rc.d name stop NN runlevel... .` disables the service
+  when a stop group names a runlevel the system runs in (`2` to `5`, or
+  `S`), one only known when it runs, or none (`update-rc.d ssh stop`); stopping it in `0`, `1` and `6`,
   as the old default did, is safe. A script run from a runlevel folder
   (`/etc/rc0.d` to `/etc/rc6.d`, `/etc/rcS.d`, and the same under
   `/etc/rc.d`) is the init script its link names, without the `S` or `K`

@@ -829,6 +829,9 @@ posix safe | rcctl get sshd flags
 posix safe | rcctl enable nginx
 posix safe | rcctl set nginx status on
 posix safe | rcctl set nginx flags -v
+# rcctl refuses `set daemon flags NO`.
+posix safe | rcctl set sshd flags NO
+posix safe | rcctl set sshd flags $f
 posix safe | rcctl
 posix finds=stop_system | rcctl stop sshd
 posix finds=stop_system | rcctl -f stop sshd
@@ -840,7 +843,6 @@ posix finds=system_settings | rcctl disable nginx
 posix finds=system_settings | rcctl disable sshd
 posix finds=system_settings | rcctl set sshd status off
 posix finds=system_settings | rcctl set sshd status $state
-posix finds=system_settings | rcctl set sshd flags NO
 posix finds=system_settings | rcctl set sshd $what off
 posix safe | sysrc sshd_enable=YES
 posix safe | sysrc sshd_enable="yes"
@@ -860,6 +862,13 @@ posix finds=system_settings | sysrc sshd_enable=$x
 posix finds=system_settings | sysrc $name=NO
 posix finds=system_settings | sysrc $assignment
 posix finds=system_settings | sysrc -x sshd_enable
+posix finds=system_settings | sysrc -X sshd_enable
+posix finds=system_settings | sysrc -vX sshd_enable
+# Under `-R` or `-j` sysrc runs again in that root or jail, which reads a
+# relative file there.
+posix finds=system_settings | sysrc -R / -f etc/rc.conf sshd_enable=NO
+posix finds=system_settings | sysrc -f ./rc.conf -R / sshd_enable=NO
+posix finds=system_settings | sysrc -j web -f etc/rc.conf sshd_enable=NO
 posix finds=system_settings | sysrc -j web sshd_enable=NO
 posix finds=system_settings | sysrc -f /etc/rc.conf sshd_enable=NO
 posix finds=system_settings | sysrc -f $file sshd_enable=NO
@@ -868,6 +877,15 @@ posix safe | s6-svc -u /run/service/sshd
 posix safe | s6-svc -r /run/service/sshd
 posix safe | s6-svc -d /run/service/nginx
 posix safe | s6-svc -T 5000 -wd -d /run/service/nginx
+posix safe | s6-svc -t /run/service/sshd
+posix safe | s6-svc -K /run/service/sshd
+posix safe | s6-svc -o /run/service/sshd
+posix safe | s6-svc -O /run/service/sshd
+posix safe | s6-svc -Oc /run/service/sshd
+posix safe | s6-svc -Oy /run/service/sshd
+posix safe | s6-svc -O -s CONT /run/service/sshd
+posix safe | s6-svc -s TERM /run/service/sshd
+posix safe | s6-svc -Ot /run/service/nginx
 posix safe | s6-rc -u change sshd
 posix safe | s6-rc -d change nginx
 posix safe | s6-rc -a list
@@ -876,6 +894,21 @@ posix finds=stop_system | s6-svc -wD -d /run/service/sshd
 posix finds=stop_system | s6-svc -D /run/service/sshd
 posix finds=stop_system | s6-svc -xd /run/service/sshd
 posix finds=stop_system | s6-svc -T 5000 -d /run/service/sshd/
+posix finds=stop_system | s6-svc -p /run/service/sshd
+posix finds=stop_system | s6-svc -P /run/service/sshd
+# After `-O`, `-o` or `-Q` s6 does not start the service again, so a
+# signal that ends it, or a restart, stops it.
+posix finds=stop_system | s6-svc -Ot /run/service/sshd
+posix finds=stop_system | s6-svc -Ok /run/service/sshd
+posix finds=stop_system | s6-svc -O -t /run/service/sshd
+posix finds=stop_system | s6-svc -Or /run/service/sshd
+posix finds=stop_system | s6-svc -Ol /run/service/sshd
+posix finds=stop_system | s6-svc -ot /run/service/sshd
+posix finds=stop_system | s6-svc -QK /run/service/sshd
+posix finds=stop_system | s6-svc -O -s TERM /run/service/sshd
+posix finds=stop_system | s6-svc -Os SIGKILL /run/service/sshd
+posix finds=stop_system | s6-svc -O -s $sig /run/service/sshd
+posix finds=stop_system | s6-svc -sTERM -O /run/service/sshd
 posix finds=stop_system | s6-rc -d change sshd
 posix finds=stop_system | s6-rc stop sshd
 posix finds=system_settings | s6-svc -d /run/service/ufw
@@ -906,12 +939,17 @@ posix finds=system_settings | dinitctl disable nginx
 posix finds=system_settings | dinitctl --from boot disable nginx
 posix finds=system_settings | dinitctl $verb nginx
 posix finds=system_settings | dinitctl --user $x disable web
+# dinitctl uses a socket it is given whatever `-u` says.
+posix finds=stop_system | dinitctl -u -p /run/dinitctl stop sshd
+posix finds=stop_system | dinitctl --socket-path /run/dinitctl --user stop sshd
+posix finds=stop_system | dinitctl -u --socket-path=/run/dinitctl stop sshd
 posix safe | insserv ssh
 posix safe | insserv nginx,start=2,3,4,5
 posix safe | insserv -n -r ssh
 posix finds=system_settings | insserv -r ssh
 posix finds=system_settings | insserv -r nginx
 posix finds=system_settings | insserv --remove ssh
+posix finds=system_settings | insserv --rem ssh
 posix finds=system_settings | insserv -rf /etc/init.d/ssh
 posix finds=system_settings | insserv -p /etc/init.d -r ssh
 posix finds=system_settings | insserv $flag ssh

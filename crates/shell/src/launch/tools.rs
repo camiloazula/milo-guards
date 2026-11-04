@@ -48,23 +48,67 @@ pub(super) fn strace(args: &[Arg]) -> Launch {
 }
 
 /// The short options of `nsenter` that take a value, the rest of the bundle
-/// or the next word: the target process (`-t`), the socket (`-N`), the user
-/// and group ids (`-S`, `-G`) and the working folder in the namespace
-/// (`-W`).
-const NSENTER_VALUED: &str = "tNSGW";
+/// or the next word: the target process (`-t`), the socket (`-N`) and the
+/// user and group ids (`-S`, `-G`).
+const NSENTER_VALUED: &str = "tNSG";
 
 /// The short options of `nsenter` whose value, a namespace's file or a
-/// folder, is only ever the rest of the bundle (`-m/proc/1/ns/mnt`): with
-/// nothing after them they take the target's.
-const NSENTER_ATTACHED: &str = "muinpCUTrw";
+/// folder, is only ever the rest of the bundle (`-m/proc/1/ns/mnt`,
+/// `-W/srv`): with nothing after them they take the target's.
+const NSENTER_ATTACHED: &str = "muinpCUTrwW";
 
 /// The long options of `nsenter` that take the next word as their value.
-const NSENTER_LONG: &[&str] = &["target", "net-socket", "setuid", "setgid", "wdns"];
+const NSENTER_LONG: &[&str] = &["target", "net-socket", "setuid", "setgid"];
+
+/// The long options of `nsenter` that take no value, or one only after `=`.
+const NSENTER_FLAGS: &[&str] = &[
+    "all",
+    "mount",
+    "uts",
+    "ipc",
+    "net",
+    "pid",
+    "cgroup",
+    "user",
+    "time",
+    "user-parent",
+    "root",
+    "wd",
+    "wdns",
+    "env",
+    "no-fork",
+    "preserve-credentials",
+    "keep-caps",
+    "join-cgroup",
+    "follow-context",
+    "help",
+    "version",
+];
+
+/// The short options of `nsenter` that start the program in another working
+/// folder: `-w` and `-W` move it to one, `-r` to the target's root, and
+/// entering a mount namespace (`-m`, or `-a`, every namespace) moves it to
+/// that namespace's root, as the kernel does on `setns`.
+const NSENTER_MOVES: &str = "wWrma";
+
+/// The long options of [`NSENTER_MOVES`].
+const NSENTER_MOVES_LONG: &[&str] = &["wd", "wdns", "root", "mount", "all"];
+
+/// Whether `name`, a long option of `nsenter` as written without its
+/// `=value`, is one of `options`: by its full name, or, as `getopt_long`
+/// reads one, by a prefix of it that is no option's full name.
+fn nsenter_long(name: &str, options: &[&str]) -> bool {
+    let exact = |option: &&str| *option == name;
+    if NSENTER_LONG.iter().chain(NSENTER_FLAGS).any(exact) {
+        return options.iter().any(exact);
+    }
+    !name.is_empty() && options.iter().any(|option| option.starts_with(name))
+}
 
 /// What an option of `nsenter` is, as its `getopt_long` reads it.
 fn nsenter_word(text: &str) -> Word {
     if let Some(name) = text.strip_prefix("--") {
-        return if NSENTER_LONG.contains(&name) {
+        return if !name.contains('=') && nsenter_long(name, NSENTER_LONG) {
             Word::Value
         } else {
             Word::Flag
@@ -87,16 +131,15 @@ fn nsenter_word(text: &str) -> Word {
 }
 
 /// Whether an option of `nsenter` starts the program in another working
-/// folder or root: `-w` and `-r` (`--wd`, `--root`), with a folder or the
-/// target's.
+/// folder ([`NSENTER_MOVES`]).
 fn nsenter_moves(text: &str) -> bool {
     if let Some(name) = text.strip_prefix("--") {
         let name = name.split('=').next().unwrap_or(name);
-        return matches!(name, "wd" | "root");
+        return nsenter_long(name, NSENTER_MOVES_LONG);
     }
     let bundle = text.strip_prefix('-').unwrap_or(text);
     for letter in bundle.chars() {
-        if matches!(letter, 'w' | 'r') {
+        if NSENTER_MOVES.contains(letter) {
             return true;
         }
         if NSENTER_ATTACHED.contains(letter) || NSENTER_VALUED.contains(letter) {
@@ -108,9 +151,9 @@ fn nsenter_moves(text: &str) -> bool {
 
 /// `nsenter` runs the program after its options in the namespaces of
 /// another process, the init process's among them (`nsenter -t 1 -a`).
-/// `-w` and `-r` start it in that process's working folder or root, or in
-/// one they are given inside its namespace, which the line does not show:
-/// where it runs is then only known when it does.
+/// The options of [`NSENTER_MOVES`] start it in a folder of that process's,
+/// or in one they are given inside its namespace, which the line does not
+/// show: where it runs is then only known when it does.
 pub(super) fn nsenter(args: &[Arg]) -> Launch {
     let start = after_options_by(args, |text, _| nsenter_word(text));
     let launch = runs(args, start);

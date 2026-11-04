@@ -48,7 +48,7 @@ fn is_enable(name: &str) -> bool {
 /// Whether a word of `sysrc` takes a service out of what starts at boot:
 /// a `NAME_enable` set to a value that is not on ([`is_yes`]), or changed
 /// with `+=` or `-=`, which leaves a value `rc.subr` does not read as on,
-/// or removed (`removes`, under `-x`). A word only known when it runs is
+/// or removed (`removes`, under `-x` or `-X`). A word only known when it runs is
 /// such a variable unless what is known of it names another one
 /// (`sshd_flags=$f`).
 fn sysrc_disables(word: &Arg, removes: bool) -> bool {
@@ -62,6 +62,22 @@ fn sysrc_disables(word: &Arg, removes: bool) -> bool {
     let changed = name.ends_with(['+', '-']);
     let name = name.trim_end_matches(['+', '-']);
     is_enable(name) && (changed || !whole || !is_yes(value))
+}
+
+/// The options of `s6-svc` that send a signal that ends the process
+/// (`-t` `SIGTERM`, `-k` `SIGKILL`, `-K` `SIGKILL` to its process group, and
+/// `-a`, `-b`, `-q`, `-h`, `-i`, `-1`, `-2`), restart it (`-r`) or reload
+/// it (`-l`, a `-r` to a service that cannot reload), each of which s6
+/// follows with a start unless `-O`, `-o` or `-Q` says not to.
+const S6_SVC_ENDS: &str = "tkKabqhi12rl";
+
+/// Whether a signal `s6-svc -s` sends may end the process: any it accepts
+/// but `CONT` and `WINCH`, by name, with or without `SIG`, or by number
+/// (18 and 28; 19, `CONT` on the BSDs, is [`pauses`]).
+fn ends(signal: &str) -> bool {
+    let upper = signal.to_ascii_uppercase();
+    let name = upper.strip_prefix("SIG").unwrap_or(&upper);
+    !matches!(name, "CONT" | "WINCH" | "18" | "28")
 }
 
 /// Whether a signal `s6-svc -s` sends pauses the service: `STOP`, with or
@@ -118,9 +134,10 @@ pub(super) fn legacy_stops(words: &[&Arg]) -> bool {
 
 impl Checker<'_> {
     /// `rcctl [-df] command daemon...`, OpenBSD's: `stop` stops each daemon,
-    /// and `disable`, `set daemon status off` and `set daemon flags NO` take
-    /// it out of what starts at boot. A command, a variable or a value of
-    /// `set` only known when it runs may be any of them.
+    /// and `disable` and `set daemon status off` take it out of what starts
+    /// at boot. A command, a variable or a value of `set status` only known
+    /// when it runs may be any of them. `rcctl` refuses `set daemon flags
+    /// NO`, so no value of `flags` disables the daemon.
     pub(super) fn rcctl(&mut self, args: &[Arg]) {
         let words = operands(args, &[]);
         let rest = words.get(1..).unwrap_or_default();
@@ -153,9 +170,6 @@ impl Checker<'_> {
                     Some(variable) if variable == "status" => value.is_some_and(|value| {
                         value.is_none_or(|text| !text.eq_ignore_ascii_case("on"))
                     }),
-                    Some(variable) if variable == "flags" => value.is_some_and(|value| {
-                        value.is_none_or(|text| text.eq_ignore_ascii_case("no"))
-                    }),
                     Some(_) => false,
                 };
                 if off {
@@ -170,12 +184,14 @@ impl Checker<'_> {
     /// of `rc.conf`: a word that takes a service out of what starts at boot
     /// ([`sysrc_disables`]) is a disable of it. `-c` only checks whether a
     /// value would change, and a file of the workspace's own (`-f
-    /// ./rc.conf`) is not the system's. An option only known when it runs
-    /// may be `-x`.
+    /// ./rc.conf`) is not the system's, unless `-R` or `-j` has `sysrc` run
+    /// again in another root or a jail, which reads the file there. An
+    /// option only known when it runs may be `-x`.
     pub(super) fn sysrc(&mut self, unit: &Unit) {
         let args = unit.args.as_slice();
         let options = short_options(args, SYSRC_VALUED);
-        if options.iter().any(|(letter, _)| *letter == 'c') {
+        let given = |letters: &[char]| options.iter().any(|(letter, _)| letters.contains(letter));
+        if given(&['c']) {
             return;
         }
         let files: Vec<Arg> = options
@@ -188,6 +204,7 @@ impl Checker<'_> {
             })
             .collect();
         if !files.is_empty()
+            && !given(&['R', 'j'])
             && files.iter().all(|file| {
                 self.place(unit.shell, unit.scope(), file, Access::Item)
                     .harmless()
@@ -196,7 +213,7 @@ impl Checker<'_> {
             return;
         }
         let walk = getopt_walk(args, SYSRC_VALUED, &[]);
-        let removes = walk.unknown || options.iter().any(|(letter, _)| *letter == 'x');
+        let removes = walk.unknown || given(&['x', 'X']);
         if let Some(word) = walk
             .operands
             .iter()
@@ -207,21 +224,28 @@ impl Checker<'_> {
     }
 
     /// `s6-svc [options] servicedir...`: `-d` and `-D` take each service
-    /// down, and `-p` (or `-s STOP`) pauses it, which freezes it. An option
-    /// only known when it runs may be one of them. `-u`, `-r`, `-o` and the
-    /// signals that end the process, which s6 then starts again, are
-    /// everyday work.
+    /// down, and `-p` and `-P` (or `-s STOP`) pause it, which freezes it.
+    /// `-u`, `-r`, `-o` and the signals that end the process, which s6 then
+    /// starts again, are everyday work, but after `-O`, `-o` or `-Q` s6 does
+    /// not start it again, so a signal that ends it ([`ends`]) or a restart
+    /// (`-r`, `-l`) stops it. An option only known when it runs may be any
+    /// of them.
     pub(super) fn s6_svc(&mut self, args: &[Arg]) {
         let walk = getopt_walk(args, S6_SVC_VALUED, &[]);
+        let options = short_options(args, S6_SVC_VALUED);
+        let once = options
+            .iter()
+            .any(|(letter, _)| matches!(letter, 'O' | 'o' | 'Q'));
         let stops = walk.unknown
-            || short_options(args, S6_SVC_VALUED)
-                .iter()
-                .any(|(letter, given)| match (letter, given) {
-                    ('d' | 'D' | 'p', _) => true,
-                    ('s', Given::Attached(signal)) => pauses(signal),
-                    ('s', Given::Next(signal)) => signal.known().is_none_or(pauses),
-                    _ => false,
-                });
+            || options.iter().any(|(letter, given)| match (letter, given) {
+                ('d' | 'D' | 'p' | 'P', _) => true,
+                ('s', Given::Attached(signal)) => pauses(signal) || once && ends(signal),
+                ('s', Given::Next(signal)) => signal
+                    .known()
+                    .is_none_or(|signal| pauses(signal) || once && ends(signal)),
+                ('s', Given::Nothing) => false,
+                (letter, _) => once && S6_SVC_ENDS.contains(*letter),
+            });
         if stops {
             for service in &walk.operands {
                 self.stop_service("stops", service);
@@ -277,10 +301,12 @@ impl Checker<'_> {
     /// each service, `signal SIGNAL service` sends one to it, as `systemctl
     /// kill` does, `disable` takes it out of what starts at boot, and
     /// `shutdown` stops the system. `-u` (`--user`) talks to the user's own
-    /// instance, unless a later `-s` (`--system`), or an option only known
-    /// when it runs, names the system's.
+    /// instance, unless a later `-s` (`--system`), a socket (`-p`,
+    /// `--socket-path`), which `dinitctl` uses whatever `-u` says, or an
+    /// option only known when it runs, names the system's.
     pub(super) fn dinitctl(&mut self, args: &[Arg]) {
         let mut user = false;
+        let mut socket = false;
         let mut unknown = false;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
@@ -289,13 +315,15 @@ impl Checker<'_> {
                 Some("-u" | "--user") => user = true,
                 Some("-s" | "--system") => user = false,
                 Some(text) if DINITCTL_VALUED.contains(&text) => {
+                    socket |= matches!(text, "-p" | "--socket-path");
                     iter.next();
                 }
+                Some(text) if text.starts_with("--socket-path=") => socket = true,
                 Some(_) => {}
                 None => unknown = true,
             }
         }
-        if user && !unknown {
+        if user && !socket && !unknown {
             return;
         }
         let words = operands(args, &DINITCTL_VALUED);
@@ -333,15 +361,16 @@ impl Checker<'_> {
         }
     }
 
-    /// `insserv -r script` (`--remove`) takes a script out of the boot
-    /// sequence, whatever the service; `-n` (`--dryrun`) only shows what it
+    /// `insserv -r script` (`--remove`, or a prefix of it such as `--rem`,
+    /// as `getopt_long` reads one) takes a script out of the boot sequence,
+    /// whatever the service; `-n` (`--dryrun`) only shows what it
     /// would do. An option only known when it runs may be `-r`.
     pub(super) fn insserv(&mut self, args: &[Arg]) {
         if has_flag(args, Some('n'), Some("dryrun")) {
             return;
         }
         let walk = getopt_walk(args, "cop", &["config", "override", "path"]);
-        if walk.unknown || has_flag(args, Some('r'), Some("remove")) {
+        if walk.unknown || has_flag(args, Some('r'), None) || has_long(args, "remove", 3) {
             if let Some(script) = walk.operands.first() {
                 self.disable_service(Some(script));
             }
