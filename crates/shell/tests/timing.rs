@@ -1250,10 +1250,11 @@ fn machine_settings_given_many_patterns_names_or_options_are_read_in_linear_time
     let _serial = serial();
     // Each unit pattern is tested against the units that protect the
     // machine and the ones it needs, each name copied into a folder against
-    // the files SELinux reads (the folder placed once), and each option of
-    // a settings program read once: a line at the length limit of them is
-    // read in time that grows with its length. Each row is the shell, the
-    // part repeated, the head and the tail.
+    // the files SELinux reads (the folder placed once), each service folder
+    // named as `.` placed where it lands, and each option of a settings
+    // program read once: a line at the length limit of them is read in time
+    // that grows with its length. Each row is the shell, the part repeated,
+    // the head and the tail.
     let rows = [
         (
             Shell::Posix,
@@ -1271,6 +1272,13 @@ fn machine_settings_given_many_patterns_names_or_options_are_read_in_linear_time
         (Shell::Posix, ("x ", "semanage fcontext ", "")),
         (Shell::Posix, ("--info ALL ", "grubby ", "")),
         (Shell::PowerShell, ("x ", "service ", " stop")),
+        (Shell::Posix, ("$x ", "service ", " sshd onedisable")),
+        (Shell::Posix, ("-j x ", "service ", " sshd stop")),
+        (Shell::Posix, (". ", "cd /etc/service/sshd && sv down ", "")),
+        (
+            Shell::Posix,
+            (". ", "cd /run/service/sshd && s6-svc -d ", ""),
+        ),
         (Shell::Posix, ("'d*@x*' ", "rcctl stop ", "")),
         (Shell::Posix, ("x_enable=YES ", "sysrc ", "")),
         (Shell::Posix, ("-wd ", "s6-svc ", " /run/service/x")),
