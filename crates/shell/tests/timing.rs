@@ -210,6 +210,16 @@ fn a_line_at_the_length_limit_is_read_in_time() {
             ("pkill -f operands", fit(" x", "pkill -f", "")),
             ("killall operands", fit(" x", "killall", "")),
             ("Stop-Process names", fit(",x", "Stop-Process -Name x", "")),
+            // Each splat of a table the line writes out binds its entries:
+            // as many as a splat binds, and a table too big to bind.
+            (
+                "splats of a table",
+                fit("Set-Content @p; ", &splatted(16), ""),
+            ),
+            (
+                "splats of a big table",
+                fit("Set-Content @p; ", &splatted(1500), ""),
+            ),
         ]
     };
     let mut slowest = (std::time::Duration::ZERO, String::new());
@@ -885,6 +895,8 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
     );
     let any_p = defaults("'Remove-*:P*' = '~'");
     let path = defaults("'Remove-*:Path' = '~'");
+    // The most entries a splat binds.
+    let bound = splatted(16);
     let rows = [
         ("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
         // A splat of a table the line writes out binds what it holds.
@@ -894,6 +906,7 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
             "",
         ),
         ("$q = @{ Path = 'x' }; Set-Content @q; ", "", ""),
+        ("Set-Content @p; ", bound.as_str(), ""),
         ("$v = 1; ", "", "Invoke-Command $v"),
         ("$v = { 1 }; Invoke-Command $v; ", "", ""),
         (".a()", "$x", ""),
@@ -963,6 +976,18 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
             },
         );
     }
+}
+
+/// A PowerShell table of `count` entries, each a key of its own, held in
+/// `$p`: `$p = @{ K0 = 'v'; K1 = 'v'; … }; `.
+fn splatted(count: usize) -> String {
+    format!(
+        "$p = @{{ {} }}; ",
+        (0..count)
+            .map(|at| format!("K{at} = 'v'"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
 }
 
 /// `count` names, each other than the rest: `a0 a1 a2 …`, each with a space

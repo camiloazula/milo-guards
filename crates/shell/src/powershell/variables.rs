@@ -182,6 +182,12 @@ const STORE_ALIASES: [&str; 5] = ["ov", "ev", "wv", "iv", "pv"];
 /// list. A deeper one is only known when it runs.
 const MAX_DEPTH: usize = 16;
 
+/// How many entries a table written out may have for a splat of it to bind
+/// them (see [`table`]): a splat that binds parameters holds a handful, and
+/// a line that splats a big table many times must not bind each entry each
+/// time.
+const MAX_SPLATTED: usize = 16;
+
 impl Variables {
     /// Read the variables the line under `root` sets.
     pub(super) fn read(root: Node<'_>, source: &str) -> Self {
@@ -207,6 +213,12 @@ impl Variables {
         let mut changes = false;
         // Each splat, by name, with where it is and whether it names a scope.
         let mut splats: Vec<(String, usize, bool)> = Vec::new();
+        // The variables the line reads other than by a splat (`f $p`), which
+        // a command given one may change, and whether it runs code that may
+        // set its variables where the guard does not read it (`. ./x.ps1`,
+        // `Import-Module`).
+        let mut given: HashSet<String> = HashSet::new();
+        let mut unread = false;
         // The stages of pipelines after the first, which their input goes to.
         let mut piped: HashSet<usize> = HashSet::new();
         let top = top_level(root);
@@ -227,6 +239,8 @@ impl Variables {
                     // table the line writes out (see below).
                     if text.starts_with('@') {
                         splats.push((normal(text), node.start_byte(), text.contains(':')));
+                    } else if !set {
+                        given.insert(normal(text));
                     }
                     let name = normal(text);
                     if set {
@@ -269,6 +283,12 @@ impl Variables {
                 }
                 "command" => {
                     all &= !sets_variables(node, source, piped.contains(&node.id()));
+                    unread |= node.child(0).is_some_and(|first| {
+                        first.kind() == "command_invokation_operator"
+                            && unit::text(&first, source) == "."
+                    }) || command_name(node, source).is_some_and(|name| {
+                        matches!(super::canonical(&name), "import-module" | "ipmo")
+                    });
                     // `$h | % Add e $b` calls a method of each item.
                     changes |= calls_members(node, source);
                 }
@@ -319,13 +339,17 @@ impl Variables {
         };
         // A splat binds only the parameters its table holds when the line
         // sets it once, before the splat, to a table it writes out, that
-        // nothing changes in place, and none of them stores into a variable.
+        // nothing changes in place, no command is given and no code the
+        // guard does not read may reach, and none of them stores into a
+        // variable.
         let tables: HashMap<&str, &Value> = candidates
             .iter()
             .map(|(name, value)| (name.as_str(), value))
             .collect();
         all &= splats.iter().all(|(name, at, scoped)| {
             !scoped
+                && !unread
+                && !given.contains(name)
                 && sets.get(name) == Some(&1)
                 && !changes
                 && !reached.contains(name)
@@ -579,8 +603,9 @@ fn candidate(node: Node<'_>, source: &str, top: &HashSet<usize>) -> Option<(Stri
 
 /// The parameters a table written out binds when it is splatted (`@{ Path
 /// = 'x'; Value = "y" }`): each key a name, once, and each value text with
-/// nothing in it only known when it runs that does not start with `-`.
-/// `None` for anything else.
+/// nothing in it only known when it runs that does not start with `-`,
+/// and at most [`MAX_SPLATTED`] of them, so the parameters every splat of
+/// it binds stay few. `None` for anything else.
 fn table(value: Node<'_>, source: &str) -> Option<Vec<(String, String)>> {
     let value = blocks::unwrap(value);
     if value.kind() != "hash_literal_expression" {
@@ -616,6 +641,9 @@ fn table(value: Node<'_>, source: &str) -> Option<Vec<(String, String)>> {
             return None;
         }
         entries.push((key, text));
+        if entries.len() > MAX_SPLATTED {
+            return None;
+        }
     }
     Some(entries)
 }

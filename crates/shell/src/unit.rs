@@ -3750,7 +3750,12 @@ impl Split {
         // (A trap function's folders are where the line ends: see
         // [`Self::note_end`].)
         let moved = self.moved;
-        let calls_end = self.calls_end();
+        let calls_end = self
+            .function_runs
+            .iter()
+            .any(|run| run.moved != moved)
+            .then(|| self.calls_end())
+            .flatten();
         let runs: Vec<FunctionRun> = std::mem::take(&mut self.function_runs)
             .into_iter()
             .filter(|run| run.moved != moved && !self.uncalled_since(run, calls_end))
@@ -3821,13 +3826,14 @@ impl Split {
     /// from where the walk has it: `f() { rm -rf build; }; f; (cd sub &&
     /// make)`.
     fn uncalled_since(&self, run: &FunctionRun, calls_end: Option<usize>) -> bool {
-        const HOOKS: [&str; 8] = [
+        const HOOKS: [&str; 9] = [
             "chpwd",
             "precmd",
             "preexec",
             "periodic",
             "zshexit",
             "zshaddhistory",
+            "zsh_directory_name",
             "command_not_found_handle",
             "command_not_found_handler",
         ];
@@ -3845,18 +3851,24 @@ impl Split {
 
     /// One past the last unit that may call a function the line defines:
     /// one named as a function the line defines (any, since one may call
-    /// another), one known only when it runs, or a builtin that runs code
-    /// it is given or loads (`eval`, `source`, `command`). `None` when the
-    /// line may call a function in a way no unit shows: a line that is not
-    /// all POSIX, an action that runs later (a `trap`'s, which may run after
-    /// any `cd`), an alias, a variable that names hooks or holds a prompt
-    /// the shell runs (`chpwd_functions`, `PROMPT_COMMAND`, `PS1`), or a
-    /// function exported to the programs the line starts (`export -f`).
+    /// another), one known only when it runs, a builtin that runs code it is
+    /// given (`eval`, `command`), or one given a word that names such a
+    /// function or is only known when it runs, since a builtin may call a
+    /// function by a name it is given (`mapfile -C f`, `compgen -F f`,
+    /// `complete -F f`, `bind -x '"\C-x": f'`). `None` when the line may
+    /// call a function in a way no unit shows: a line that is not all POSIX,
+    /// an action that runs later (a `trap`'s, which may run after any `cd`),
+    /// an alias, a variable that names hooks or holds a prompt the shell
+    /// runs (`chpwd_functions`, `PROMPT_COMMAND`, `PS1`, zsh's `PROMPT`), a
+    /// function exported to the programs the line starts (`export -f`,
+    /// `set -a`), a file it sources (which may set a trap or a hook), zsh's
+    /// `functions` with an option (`functions -c f g` copies one to a name
+    /// the line does not define, `functions -M f` lets arithmetic call it),
+    /// or zsh's `repeat`, which runs what comes before a `cd` in it again
+    /// after it, though the walk does not read it as a loop.
     fn calls_end(&self) -> Option<usize> {
-        const RUNS: [&str; 13] = [
+        const RUNS: [&str; 11] = [
             "eval",
-            "source",
-            ".",
             "trap",
             "alias",
             "command",
@@ -3868,23 +3880,25 @@ impl Split {
             "add-zsh-hook",
             "zle",
         ];
-        const DECLARES: [&str; 6] = [
-            "export",
-            "declare",
-            "typeset",
-            "local",
-            "readonly",
-            "functions",
-        ];
+        const UNSEEN: [&str; 3] = ["source", ".", "repeat"];
+        let unseen = |name: &str| UNSEEN.contains(&key(name, Shell::Posix).as_str());
+        const DECLARES: [&str; 5] = ["export", "declare", "typeset", "local", "readonly"];
         let hooks = self.reassigned.iter().any(|name| {
             name.ends_with("_functions")
                 || name == "prompt_command"
                 || name == "functions"
                 || name.starts_with("ps")
+                || matches!(name.as_str(), "prompt" | "rprompt" | "sprompt")
+                || name.starts_with("rps")
         });
         if self.ever_later || hooks || self.renames_builtins() {
             return None;
         }
+        let flag = |arg: &Arg, letter: char| {
+            arg.known()
+                .is_none_or(|text| text.starts_with(['-', '+']) && text.contains(letter))
+        };
+        let defined: HashSet<&str> = self.functions.iter().map(String::as_str).collect();
         let mut end = 0;
         for (at, unit) in self.units.iter().enumerate() {
             if unit.shell != Shell::Posix {
@@ -3895,15 +3909,28 @@ impl Split {
                 continue;
             };
             let key = unit.key().unwrap_or_default();
-            if DECLARES.contains(&key.as_str())
-                && unit.args.iter().any(|arg| {
-                    arg.known()
-                        .is_none_or(|text| text.starts_with(['-', '+']) && text.contains('f'))
-                })
-            {
+            let exports = (DECLARES.contains(&key.as_str())
+                && unit.args.iter().any(|arg| flag(arg, 'f')))
+                || (key == "set"
+                    && unit
+                        .args
+                        .iter()
+                        .any(|arg| flag(arg, 'a') || arg.known() == Some("allexport")));
+            let options = key == "functions"
+                && unit
+                    .args
+                    .iter()
+                    .any(|arg| arg.known().is_none_or(|text| text.starts_with(['-', '+'])));
+            if exports || options || unseen(program) || unit.wrappers.iter().any(|w| unseen(w)) {
                 return None;
             }
-            if self.defines_function(program) || RUNS.contains(&key.as_str()) {
+            let names_one = unit.args.iter().any(|arg| {
+                arg.known().is_none_or(|text| {
+                    text.split(|c: char| c.is_whitespace() || "\"';:|&(){}<>=`$,".contains(c))
+                        .any(|word| defined.contains(word))
+                })
+            });
+            if self.defines_function(program) || RUNS.contains(&key.as_str()) || names_one {
                 end = at + 1;
             }
         }

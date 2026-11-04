@@ -554,9 +554,15 @@ impl Walker<'_> {
     /// word (`for.exe`) is one it refuses: the word after the name, read
     /// with the character that ends the name or without it, starts neither
     /// a loop variable (`%`) nor an option (`/`), so cmd reports a syntax
-    /// error and runs nothing for it.
+    /// error and runs nothing for it. The rest of the word must be one
+    /// piece the line shows whole: a word with a part only known when it
+    /// runs, or quoted or expanded apart (`for.;%i in (1) do …`), may start a
+    /// loop variable after the delimiters, and so keeps the built-in reading.
     fn bad_for(&self, reading: &Reading, args: &[Arg]) -> bool {
-        let Some(first) = reading.first.first().and_then(|(first, _)| first.known()) else {
+        let [(first, _)] = reading.first.as_slice() else {
+            return false;
+        };
+        let Some(first) = first.known() else {
             return false;
         };
         let dropped = first.get(1..).unwrap_or_default();

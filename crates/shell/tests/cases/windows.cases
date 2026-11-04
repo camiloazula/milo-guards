@@ -575,6 +575,12 @@ cmd rules=unreadable | call.call rd /s /q C:\\Windows
 cmd finds=unreadable | for. %%i in (1) do rd /s /q C:\\Windows
 cmd finds=unreadable | for./L %%i in (1,1,2) do rd /s /q C:\\Windows
 cmd finds=unreadable | for.%X% in (1) do rd /s /q C:\\Windows
+cmd finds=unreadable | for.;%%i in (1) do rd /s /q C:\\Windows
+cmd finds=unreadable | for.,%%i in (1) do rd /s /q C:\\Windows
+cmd finds=unreadable | for.=%%i in (1) do rd /s /q C:\\Windows
+cmd finds=unreadable | for.;;%%i in (1) do rd /s /q C:\\Windows
+cmd finds=unreadable | for.;%i in (1) do rd /s /q C:\\Windows
+cmd finds=unreadable | for.; %%i in (1) do rd /s /q C:\\Windows
 cmd finds=unreadable | if.exe
 # cmd finds a built-in at the start of a longer word: `echo.x`, `rd/s`,
 # `cmd/c`. A word that may name a program in a folder is read both ways.

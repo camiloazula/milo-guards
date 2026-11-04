@@ -751,15 +751,18 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
     let args = own_args(key, args);
     let (short, long) = code_options(key);
     let read = options(key, args);
-    // Python's words after the script or the module are its own arguments,
-    // not the interpreter's: `python3 -m zipfile -c a.zip src` makes an
-    // archive. Python's table names every short option that takes a value;
-    // past a long option it does not know (`unsure`), the word taken for
-    // the script may be its value, and every word is read.
+    // CPython's words after the script or the module are its own
+    // arguments, not the interpreter's: `python3 -m zipfile -c a.zip src`
+    // makes an archive. Its table names every option that takes a value,
+    // and it refuses one it does not know. Not so for the others that read
+    // python's options: IPython reads its own options after the file (`-c`
+    // there runs code), and PyPy has long options the table does not know
+    // that take a value (`--jit off`), so every word of theirs is read.
+    let cpython = key.starts_with("python") || key == "py";
     let end = read
         .script
         .or(read.module.as_ref().map(|(_, own)| *own))
-        .filter(|_| is_python(key) && !read.unsure)
+        .filter(|_| cpython && !read.unsure)
         .unwrap_or(args.len());
     let code = args.get(..end).unwrap_or(args).iter().any(|arg| {
         arg.known()

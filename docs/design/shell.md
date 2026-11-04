@@ -134,8 +134,10 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   and without it, as `echo` drops it (`bat`; `call.rd /s /q C:\Windows` is
   the `delete` of `rd`); a `for` found so (`for.exe`) whose next word starts
   neither a loop variable (`%`) nor an option (`/`), with that character or
-  without it, is a syntax error cmd refuses, and runs nothing. Any other
-  (`call.`, `for. %%i in …`, `if.exe`) is a `call`, `if` or `for` the guard
+  without it, is a syntax error cmd refuses, and runs nothing, when the rest
+  of the word is one piece the line shows whole (`for.;%%i in …` may start
+  a loop variable after the delimiters). Any other (`call.`, `for. %%i in
+  …`, `for.;%%i in …`, `if.exe`) is a `call`, `if` or `for` the guard
   does not read (below). Any other
   name, quoted or not, is the path of a program, judged by its last part as
   the bare name is (`%SystemRoot%\System32\cmd.exe /c …` is `cmd /c …`).
@@ -960,10 +962,13 @@ and its findings are the line's, since the shell runs it as the same user.
   done` and `for d in */; do (cd "$d" && make); done` stay safe. So does a
   body whose first `cd` since it began comes after it and after every
   command that may call a function: one named as a function the line defines
-  (any, as one may call another), one known only when it runs, or a builtin
-  that runs code (`eval`, `source`, `.`, `command`, `builtin`, `exec`,
-  `trap`, `alias`, `fc`, zsh's `sched`, `autoload`, `add-zsh-hook` and
-  `zle`). Every call is then made before the `cd`, from where the walk has
+  (any, as one may call another), one known only when it runs, a builtin
+  that runs code (`eval`, `command`, `builtin`, `exec`, `trap`, `alias`,
+  `fc`, zsh's `sched`, `autoload`, `add-zsh-hook` and `zle`), or one given a
+  word that names a function the line defines or is only known when it
+  runs, since a builtin may call a function by a name it is given
+  (`mapfile -C f`, `compgen -F f`, `complete -F f`, `bind -x '"\C-x": f'`).
+  Every call is then made before the `cd`, from where the walk has
   it: `f() { rm -rf build; }; f; (cd sub && make)` and `f() { rm -rf build;
   }; f; cd /` are safe, while `… f; cd /; g`, where `g` is a function, `…
   f; cd /; eval "$x"` and `… f; cd /; bash -c f` are not. A `cd` in a loop
@@ -972,13 +977,19 @@ and its findings are the line's, since the shell runs it as the same user.
   done` is not safe. It does not hold
   for a function the shell calls itself (zsh's `TRAP…` functions and hooks,
   `chpwd` on every `cd`, `precmd`, `preexec`, `periodic`, `zshexit`,
-  `zshaddhistory`; `command_not_found_handle` and zsh's
-  `command_not_found_handler`), nor on a line that is not all POSIX, has an
-  action that runs later (a trap), an alias, sets a variable that names
-  hooks or holds a prompt (`chpwd_functions`, `PROMPT_COMMAND`, `PS1`, zsh's
-  `functions`), or exports a function to the programs it starts (`export
-  -f`, `declare -fx`, any flag with an `f` of `export`, `declare`,
-  `typeset`, `local`, `readonly` or `functions`). A loop is
+  `zshaddhistory`, `zsh_directory_name` for `~[x]`;
+  `command_not_found_handle` and zsh's `command_not_found_handler`), nor on
+  a line that is not all POSIX, has an action that runs later (a trap), an
+  alias, sets a variable that names hooks or holds a prompt
+  (`chpwd_functions`, `PROMPT_COMMAND`, `PS1`, zsh's `functions`, `PROMPT`,
+  `RPROMPT`, `RPS1`, `SPROMPT`), exports a function to the programs it
+  starts (`export -f`, `declare -fx`, any flag with an `f` of `export`,
+  `declare`, `typeset`, `local` or `readonly`; `set -a`, `set -o
+  allexport`), sources a file (`source`, `.`: it may set a trap or a hook),
+  uses zsh's `functions` with an option (`functions -c f g` copies a
+  function to a name the line does not define, `functions -M f` lets
+  arithmetic call it), or has zsh's `repeat`, which runs what comes before
+  a `cd` in it again after it. A loop is
   read once, with every `cd` in it one that may not have run, so one whose
   `cd`s come back (`cd crates/shell; …; cd ../..`) is still read from where a
   `cd` that failed or was skipped leaves it, as the same commands written out
@@ -3492,12 +3503,16 @@ a path.
   be read is risky](#what-cannot-be-read-is-risky)) that it writes out with
   a name for each key and, for each value, text with nothing in it only known
   when it runs (no `$`, backtick or quote inside) that does not start with
-  `-`, binds those parameters, and is read as them written out: `$p = @{ Path
+  `-`, with at most 16 entries (a bigger one is not bound, so a line of
+  many splats stays quick), binds those parameters, and is read as them
+  written out: `$p = @{ Path
   = 'x' }; Set-Content @p` is safe and `$p = @{ LiteralPath = '~\.ssh' };
   Remove-Item @p -Recurse` deletes the keys, while a table changed in place
   (`$p.Path = …`, `$p.Add(…)`), set more than once, used before it is set or
-  with a scope (`@global:p`), or with a key that stores into a variable
-  (`OutVariable`) leaves the splat, and every variable of the line, only
+  with a scope (`@global:p`), with a key that stores into a variable
+  (`OutVariable`), given to a command (`f $p`), or on a line that runs code
+  the guard does not read in its scope (a script dot-sourced, `. ./x.ps1`,
+  or `Import-Module`) leaves the splat, and every variable of the line, only
   known when it runs. `Copy-Item` and
   `Move-Item` judge a splat as a possible destination when no `-Destination` is
   named (`Copy-Item @p`, `Copy-Item @p src\a`). A `Get-ChildItem` listing reads
@@ -4191,12 +4206,15 @@ interpreter or a shell reads from its input (`python3 < <(curl -s …)`,
 `bash < <(curl …)`). What `xargs` hands on is the
 files a listing names, and stays a script of the workspace's
 (`… | xargs python3`). The words after the script are its own arguments.
-For Python they are not read for inline code either, after the script or
-after the module of `-m`: `python3 -m zipfile -c a.zip src` makes an
-archive, and `python3 x.py -c 'import os'` hands `x.py` its `-c`. Python's
-table names every short option that takes a value, so the script is where
-it says; past a long option it does not know, which may have taken the word
-read as the script, every word is read as before.
+For CPython (`python`, `python3`, `py`) they are not read for inline code
+either, after the script or after the module of `-m`: `python3 -m zipfile
+-c a.zip src` makes an archive, and `python3 x.py -c 'import os'` hands
+`x.py` its `-c`. CPython's table names every option that takes a value, and
+CPython refuses one it does not know, so the script is where it says. The
+other Pythons have every word read as before: IPython reads its own options
+after the file, where `-c` runs code (`ipython x.py -c …`), and PyPy has
+long options that take a value the table does not know (`pypy3 --jit off
+-c …`).
 
 **Modules that run what they are given.** `python -m MODULE` runs the module
 in place of a script, judged as a script is (`python3 -m pytest` is safe),

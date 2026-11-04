@@ -488,6 +488,15 @@ powershell finds=delete | $p = @{ Path = 'x' }; Remove-Item @global:p
 powershell finds=overwrite | $p = @{ Path = 'x'; OutVariable = 'q' }; Set-Content @p
 powershell finds=overwrite | $p = @{ Path = 'Variable:x'; Value = 'y' }; Set-Item @p
 powershell finds=overwrite | $p = @{ Path = 'x'; Path2 = (Get-Item C:\\Windows) }; Set-Content @p
+# Not when code the guard does not read may set it (a script dot-sourced, a
+# module imported, a command given the table), or the table is too big for a
+# splat to bind.
+powershell finds=delete | $p = @{ Path = 'x' }; . ./x.ps1; Remove-Item @p -Recurse
+powershell finds=delete | $p = @{ Path = 'x' }; Import-Module ./m.psm1; Remove-Item @p -Recurse
+powershell finds=delete | $p = @{ Path = 'x' }; ipmo ./m.psm1; Remove-Item @p -Recurse
+powershell finds=delete | $p = @{ Path = 'x' }; f $p; Remove-Item @p -Recurse
+powershell finds=delete | $p = @{ Path = 'x'; K1 = 'v'; K2 = 'v'; K3 = 'v'; K4 = 'v'; K5 = 'v'; K6 = 'v'; K7 = 'v'; K8 = 'v'; K9 = 'v'; K10 = 'v'; K11 = 'v'; K12 = 'v'; K13 = 'v'; K14 = 'v'; K15 = 'v'; K16 = 'v' }; Remove-Item @p -Recurse
+powershell safe | $p = @{ Path = 'x'; K1 = 'v'; K2 = 'v'; K3 = 'v'; K4 = 'v'; K5 = 'v'; K6 = 'v'; K7 = 'v'; K8 = 'v'; K9 = 'v'; K10 = 'v'; K11 = 'v'; K12 = 'v'; K13 = 'v'; K14 = 'v'; K15 = 'v' }; Set-Content @p
 powershell finds=overwrite | Clear-Content x @p
 powershell finds=overwrite | Add-Content @p
 

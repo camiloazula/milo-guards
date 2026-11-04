@@ -613,6 +613,13 @@ posix safe | python3 x.py -c 'import shutil'
 posix finds=unknown | python3 -c 'import os' -m zipfile
 posix finds=unknown | python3 -m timeit -c 'x'
 posix finds=unknown | node x.js -e 'x'
+# Not so for the Pythons that read options after the script, or have long
+# options with a value the table does not know.
+posix finds=unknown | ipython x.py -c "import shutil; shutil.rmtree('/etc')"
+posix finds=unknown | ipython3 x.py -c "import shutil; shutil.rmtree('/etc')"
+posix finds=unknown | ipython -m zipfile -c "import shutil; shutil.rmtree('/etc')"
+posix finds=unknown | pypy3 --jit off -c "import shutil; shutil.rmtree('/etc')"
+posix finds=unknown | pypy3 --jit threshold=1 -c "import shutil; shutil.rmtree('/etc')"
 
 # An option that takes a value takes the next word: it is not the script, so
 # the interpreter reads its code from its input.
