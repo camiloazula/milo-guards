@@ -511,8 +511,8 @@ posix finds=system_settings | sudo xtables-legacy-multi iptables -F
 # everyday service work are not. An option's value is not the verb or the
 # user switch, and an abbreviated scope switch after `--user` still ends it.
 # (`systemctl stop docker`, `systemctl stop nginx`, `systemctl stop
-# postgresql.service`, `systemctl kill docker` and `service nginx $action`,
-# safe, are in stop_processes.cases.)
+# postgresql.service` and `systemctl kill docker`, safe, are in
+# stop_processes.cases.)
 posix safe | systemctl --user restart web
 posix safe | systemctl --user stop web
 posix safe | systemctl --user disable web
@@ -812,6 +812,73 @@ posix finds=system_settings | service iptables flush
 posix finds=system_settings | service pf onestop
 posix finds=system_settings reason="stops a service that protects the system" | service ufw stop
 
+# FreeBSD's `service NAME disable` and `delete` (and their `one`, `force`,
+# `fast` and `quiet` spellings, and an init script run with them) write
+# rc.conf, as `sysrc NAME_enable=NO` and `sysrc -x NAME_enable` do: they take
+# the service out of what starts at boot, whatever the service. An action
+# only known when it runs may be one of them.
+posix safe | service sshd enable
+posix safe | service sshd onestart
+posix safe | service sshd onestatus
+posix safe | service nginx onestop
+posix safe | service $name status
+posix finds=system_settings reason="disables a system service" | service sshd onedisable
+posix finds=system_settings reason="disables a system service" | service sshd disable
+posix finds=system_settings | service nginx disable
+posix finds=system_settings | service nginx delete
+posix finds=system_settings | service nginx onedelete
+posix finds=system_settings | service nginx forcedisable
+posix finds=system_settings | service nginx quietdisable
+posix finds=system_settings | service nginx fastdisable
+posix finds=system_settings | service nginx ONEDISABLE
+posix finds=system_settings | sudo service sshd onedisable
+posix finds=system_settings | service $name disable
+posix finds=system_settings reason="changes a system service only known when it runs" | service nginx $action
+posix finds=system_settings | /usr/local/etc/rc.d/nginx onedisable
+posix finds=system_settings | /etc/rc.d/sshd disable
+posix finds=system_settings | cd /etc/rc.d && ./sshd disable
+posix finds=system_settings | invoke-rc.d nginx disable
+# `-j jail` and `-E var=value` take a value, which is not the service: the
+# name and the action are the words after it. A word only known when it
+# runs may be such an option, and the word after it its value.
+posix safe | service -j jail nginx onestart
+posix safe | service -E FOO=1 nginx restart
+posix safe | service $opt nginx restart
+posix finds=system_settings reason="disables a system service" | service -E FOO=1 sshd onedisable
+posix finds=system_settings reason="disables a system service" | service -j jail sshd onedisable
+posix finds=system_settings reason="disables a system service" | service -jjail sshd onedisable
+posix finds=system_settings | service -v -j jail sshd disable
+posix finds=stop_system | service -j jail sshd stop
+posix finds=stop_system | service -E FOO=1 sshd stop
+posix finds=system_settings | service -j jail ufw stop
+posix finds=system_settings | service $opt sshd onedisable
+posix finds=system_settings | service $opt FOO=1 sshd onedisable
+posix finds=stop_system | service $opt sshd stop
+powershell finds=system_settings | service sshd onedisable
+
+# A service folder named from inside it (`.`, `..`, `./`) is the folder the
+# line is in, and the service is its name, as when the folder is written out.
+paths svc cwd=/etc/service/sshd home=/home/me workspace=/home/me/work
+posix@svc finds=stop_system | sv down .
+posix@svc safe | sv up .
+posix finds=stop_system | cd /etc/service/sshd && sv down .
+posix finds=stop_system | cd /etc/service/sshd && sv down ./
+posix finds=stop_system | cd /etc/service/sshd/log && sv down ..
+posix finds=stop_system | cd /etc/service && sv down sshd/.
+posix finds=system_settings | cd /etc/service/ufw && sv down .
+posix finds=system_settings | cd $dir && sv down .
+posix safe | cd /etc/service/nginx && sv down .
+posix safe | cd /etc/service/sshd && sv up .
+posix safe | sv down .
+posix finds=stop_system | cd /run/service/sshd && s6-svc -d .
+posix finds=stop_system | cd /run/service/sshd/log && s6-svc -d ..
+posix finds=stop_system | s6-svc -d /run/service/sshd/.
+posix finds=stop_system | s6-svc -d /run/service/sshd/log/..
+posix finds=system_settings | cd /run/service/ufw && s6-svc -d .
+posix finds=system_settings | cd $dir && s6-svc -d .
+posix safe | cd /run/service/nginx && s6-svc -d .
+posix safe | cd /run/service/sshd && s6-svc -u .
+
 # The other service managers read the same way: OpenBSD's `rcctl`, FreeBSD's
 # `sysrc`, s6's `s6-svc` and `s6-rc`, `dinitctl`, `insserv`, the legacy
 # `update-rc.d name stop …`, a script run from a runlevel folder
@@ -988,6 +1055,14 @@ posix finds=system_settings | brew services stop $svc
 posix finds=system_settings | brew services stop --all
 posix finds=system_settings | brew services $verb fail2ban
 posix finds=system_settings | sudo brew services stop fail2ban
+# A subcommand only known when it runs may be `services`, and what follows
+# its command and formulas.
+posix safe | brew install $pkg
+posix safe | brew --verbose services stop postgresql
+posix finds=system_settings reason="changes a system service only known when it runs" | brew $cmd services stop postgresql
+posix finds=system_settings | brew "$cmd" stop fail2ban
+posix finds=system_settings | brew $cmd
+posix finds=system_settings | brew --verbose $cmd services stop postgresql
 
 # nsenter runs its command in another process's namespaces, the init
 # process's among them: what it runs is judged.

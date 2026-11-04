@@ -75,6 +75,8 @@ posix finds=unreadable | echo \\
 posix finds=unreadable | case x
 posix finds=unreadable | ;
 posix finds=unreadable | echo <<EOF
+# PowerShell's grammar reads `<<EOF` as a word, but PowerShell refuses a `<`.
+powershell finds=unreadable | echo <<EOF
 posix finds=unreadable | echo x <<'EOF'\nrm -rf /
 
 # What a shell reads as plain words is safe there.
@@ -83,7 +85,6 @@ cmd safe | echo `ls
 cmd safe | echo $(echo
 cmd safe | echo ${x
 cmd safe | echo (
-powershell safe | echo <<EOF
 powershell safe | echo \\
 posix safe | echo }
 posix safe | echo x <<'EOF'\nrm -rf /\nEOF

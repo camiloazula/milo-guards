@@ -439,12 +439,14 @@ impl Checker<'_> {
             }
             "unzip" | "bsdunzip" | "expand-archive" | "compress-archive" | "cpio" | "gcpio"
             | "bsdcpio" | "ditto" | "pax" | "unrar" | "winrar" | "unar" | "jar" | "aunpack"
-            | "atool" | "apack" => self.archive(unit, key),
+            | "atool" | "apack" | "arepack" => self.archive(unit, key),
             // `python3 -m zipfile -e a.zip DIR`.
             key if crate::launch::is_python(key) => self.archive(unit, key),
             // A compressor replaces the file it is given with the file it
             // writes.
             key if super::compressors::spec(key, shell).is_some() => self.compress(unit, key),
+            // Windows' own `compress` writes its last operand.
+            "compress" => self.windows_compress(unit),
 
             // Writing into files.
             "truncate" => {

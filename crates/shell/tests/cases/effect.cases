@@ -252,6 +252,8 @@ posix effect=changes | git log --format --output=out -1
 posix effect=changes | git show --pretty --output=out
 posix effect=changes | time -oout cat x
 posix effect=changes | time -ao out ls
+posix effect=changes | gtime -o out cat x
+posix effect=reads_workspace | gtime -v cat a.txt
 posix effect=changes | time -p -o out ls
 posix effect=changes | sudo time -o out cat x
 # GNU `sort`, `file` and `less` take a prefix of a long option.

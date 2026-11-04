@@ -110,7 +110,10 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   parameter (`git log --format=%h>..\x.txt`) is read the same way, with the
   part before the `>` kept as the parameter. A `1>` followed by a parameter
   (`git reset 1> --hard`) is `unknown`: the guard keeps the parameter an
-  argument and cannot tell whether it is the file. PowerShell reads `$HOME\.ssh\id` as one word but its
+  argument and cannot tell whether it is the file. The grammar also knows
+  `<` as a redirect, but PowerShell reserves it and refuses the whole line
+  (below, under [What cannot be read is risky](#what-cannot-be-read-is-risky)),
+  so it writes nothing. PowerShell reads `$HOME\.ssh\id` as one word but its
   grammar fails at the backslash, so such a word is put in quotes first. A cmd
   "comment" that hides a command cannot be read.
 - cmd's first word is read as cmd reads it, not where the grammar ends the
@@ -531,7 +534,15 @@ each with the options it reads and those of them that take a value, as
   `nix develop`'s old one, read the same. `nix-shell` runs the shell line `--run` or `--command` gives, the
   last of them as Nix keeps the last, in bash (`nix-shell -p hello --run 'rm
   -rf ~'` is `delete`, `nix-shell --run "$CMD"` is `unknown`); without one
-  it opens a shell. Nix takes any of its settings as an option, so a known
+  it opens a shell. Given a script whose first lines are `#!` and `#!
+  nix-shell` as its first word, it runs that script (shebang mode), the
+  words after it the script's: a first word that may be a file other than
+  a Nix expression (not an option, a `.nix` file, a folder such as `.` or
+  one that ends in `/`, a `<nixpkgs>` path, a URL, or a `channel:` or
+  `flake:` name, which Nix fetches as it does a URL) runs code the guard
+  does not read, `unknown`, beside the reading of the words as nix-shell's
+  own (`nix-shell ./x.sh`, `nix-shell "$f"`; `nix-shell shell.nix` is
+  Safe). Nix takes any of its settings as an option, so a known
   table is read (`-I`, `-j`, `--arg NAME VALUE`, `--option NAME VALUE`, a
   setting turned off, `--no-NAME`, or added to, `--extra-NAME VALUE`, and
   bundled short letters, `-vvL`, `-j4`, as Nix splits them).
@@ -610,6 +621,9 @@ not only the last, which is the one the program keeps.
   POSIX shell without one runs the program, so the option is read whichever
   runs. The options are read as GNU `time` reads them for what it runs too:
   `time -ao log rm -rf ~` and `time --out log rm -rf ~` judge the `rm`.
+  Homebrew installs GNU `time` as `gtime`, read the same, though as a
+  program and never a shell's word (`gtime rm -rf ~` is `delete`, `gtime
+  -o ~/.bashrc ls` is `overwrite`).
 - `script FILE`, the file it records to: the first word after its options,
   after `-c` too, or `typescript` in the folder it runs in when there is
   none (`cd /etc && script` is `overwrite`), unless `-p` plays it back,
@@ -638,7 +652,20 @@ riskier reading counts. `--trim` takes the spaces off the sides of each value
 it names before the value is put in. With no command each
 value is a line of its own, and lines read from the input are its input run
 as a shell runs it. A command of plain words fed its input is read as
-`xargs` reads it (`ls ~ | parallel rm -rf`). A value only known when it runs,
+`xargs` reads it (`ls ~ | parallel rm -rf`). With values from `:::`,
+`::::` or `-a`, `parallel` hands its own input, a pipe or a file redirected
+onto it, to the job: a job whose program, a shell (or `powershell`) or an
+interpreter, is read with its own words as reading what to run from its
+input, or cannot be read, may run what it reads there, so the line reads it
+as a shell or an interpreter reads its input, beside the jobs (`echo 'rm -rf
+~' | parallel sh ::: a` is `run_input`; `echo x | parallel echo ::: a`, `echo
+x | parallel sh -c 'echo {}' ::: a`, `echo x | parallel sh build.sh ::: a`
+and `echo x | parallel python3 x.py ::: a` stay Safe). The program is the
+job's first word as its shell splits it; one a replacement string makes is
+each value, and a value read from a file or only known when it runs may be
+any. A word after it that holds a replacement string, or is only known when
+it runs, may be any too: it is read both as `-` and as a word only known
+when it runs (`echo x | parallel sh {} ::: -s` is `run_input`). A value only known when it runs,
 or read from the input or a file, stands in a line as `"$1"`. Past 256 jobs
 or 32 sources, for jobs whose lines together are longer than the longest
 line (64 KiB, which is as far as they are built), for a replacement string
@@ -2047,7 +2074,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs, also what a search finds in a folder that holds a protected path (`find . -name x -delete`); archives such files with an option that deletes what it archives, or compresses them in place (`gzip ~/.bashrc`). |
 | `wipe_disk` | Formats, repartitions or writes over a disk; `dd` writes to a file only known when it runs ([below](#values-only-known-when-they-run)). |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`, and by default GNU `cpio -i`, `pax -r` and `python -m tarfile -e` without `--filter`) or renamed as it runs (`pax -s`); writes an archive or a compressed file to such a file (`tar -cf ~/.bashrc src`, `gzip -d ~/.bashrc.gz`); applies a patch, checks out paths, copies recursively or unpacks in a folder that holds a protected path, the workspace itself included (`git apply p.diff`, `cp -r tmpl/. .`). |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`, and by default GNU `cpio -i`, `pax -r` and `python -m tarfile -e` without `--filter`) or renamed as it runs (`pax -s`); writes an archive or a compressed file to such a file (`tar -cf ~/.bashrc src`, `gzip -d ~/.bashrc.gz`); applies a patch, checks out paths, moves a branch, copies recursively or unpacks in a folder that holds a protected path, the workspace itself included (`git apply p.diff`, `git pull`, `cp -r tmpl/. .`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -2474,7 +2501,7 @@ paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
 | `unrar`, `rar`, `WinRAR.exe` | `x` and `e` (any case): an operand after the archive's name that ends with `/` or `\`; any other, which may be a folder that exists; `-op<dir>`; the working directory when no operand ends with a separator and no `-op` is given | any other command (`l`, `t`, `p`, `a`) |
 | `unar` | `-o dir`, `-output-directory dir` (one dash or two); the working directory without one; the word after a word only known when it runs that may be `-o` | `-o -` (to the screen) |
 | `jar` | `x`, `-x`, `--extract`: the working directory, and `-C dir`, `--dir dir`, `--dir=dir`, which a JDK from 21 on unpacks into instead | `c`, `t`, `u`, `i`, `--list`, `--describe-module`, `--validate` |
-| `aunpack`, `atool -x` | `-X dir`, `-Xdir`, `--extract-to=dir`, `--extract-to dir`, from `--extract-` on, as Perl's `Getopt::Long` takes a unique prefix (`-X` alone also extracts with `atool`); the working directory without one; the word after a word only known when it runs that may be `-X` | `-S`/`--simulate`; `atool -l`, `-c`, `-d`, `-r` |
+| `aunpack`, `atool -x` | `-X dir`, `-Xdir`, `--extract-to=dir`, `--extract-to dir`, from `--extract-` on, as Perl's `Getopt::Long` takes a unique prefix (`-X` alone also extracts with `atool`); the working directory without one; the word after a word only known when it runs that may be `-X` | `-S`/`--simulate`; `atool -l`, `-c`, `-d`; `arepack` (`atool -r`) unpacks only into a folder of its own |
 | `python -m zipfile`, `python -m tarfile` (any Python of the interpreter table) | `-e ARCHIVE DIR` (`--extract`, any prefix of it): every word after the archive; `tarfile` with no `DIR`, or with the archive attached to the option (`--extract=a.tar`, `-ea.tar`), unpacks into the working directory, and a word after an attached archive, which `argparse` refuses, is judged too; a single-dash word is a bundle of letters, as `argparse` reads it, so `-ve` is `-v -e` | `-l`, `-c`, `-t` (also in a bundle, `-vl`) |
 | .NET `ExtractToDirectory`, `ExtractToFile` (PowerShell) | the second argument of a static call, made with `::` (`[IO.Compression.ZipFile]::ExtractToDirectory('x.zip', $HOME)`, `ZipFileExtensions`, `[Formats.Tar.TarFile]`, a type held in a variable, `$t::ExtractToDirectory(…)`, or in parentheses), the first of one called on an archive or an entry with `.` (`$zip.ExtractToDirectory(dir)`, `$entry.ExtractToFile(path)`), both of the first two when the operator cannot be read; judged as `Expand-Archive -DestinationPath` of the folder, `Out-File -FilePath` of the file | |
 
@@ -2569,9 +2596,24 @@ is the program's output, which a redirect sends on, and writes no file.
 | `7z`, `7za`, `7zr`, `7zz` | `a`, `u`, `d`, `rn` (any case, or a command only known when it runs, said as what it may do): the operand after the command | any other command |
 | `rar`, `WinRAR.exe` | `a`, `m`, `mf`, `u`, `f`, `d`, `c`, `ch`, `k`, `rn`, `rr`, `s` (any case, or a command only known when it runs, said as what it may do): the operand after the command | `unrar`, `x`, `e`, `l`, `t`, `p`, `v` |
 | `ditto` | `-c`: its last operand | |
-| `apack`, `atool -a` (`--add`) | its first operand; `--save-outdir=file` (aunpack too) writes `file`; atool takes a unique prefix of a long name (`--ad`, `--sav`), and a mode only known when it runs may be `-a` or `-x`, said as what it may do | `-S`, `--simulate` written whole |
+| `apack`, `atool -a` (`--add`) | its first operand; `--save-outdir=file` (aunpack too) writes `file`; atool takes a unique prefix of a long name (`--ad`, `--sav`), and a mode only known when it runs may be `-a`, `-r` or `-x`, said as what it may do, and may write any operand | `-S`, `--simulate` written whole |
+| `arepack`, `atool -r` (`--repack`, from `--r`) | its second operand (`arepack a.tgz ~/.bashrc`), or its only one; with `-e` (`--each`, from `--ea`) every operand, each written again beside itself in the format `-F` names, judged by its name as written | `-S`, `--simulate` written whole |
 | `python -m zipfile`, `python -m tarfile` | `-c ARCHIVE …` (`--create`): the archive | |
 | `Compress-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+| .NET `CreateFromDirectory`, `CreateFromDirectoryAsync` (PowerShell) | the second argument (`[IO.Compression.ZipFile]::CreateFromDirectory('src', 'C:\Windows\x.zip')`, `[Formats.Tar.TarFile]`, a type held in a variable), both of the first two when the operator cannot be read; a stream given there is a file only known when it runs | |
+| .NET `ZipFile.Open`, `OpenAsync` (PowerShell) | the first argument of `::Open` on `[…ZipFile]` (`System.IO.Compression.ZipFile`, or its end after a dot, so not `[Evil.ZipFile]`; the mode's type likewise) or on a type only known when it runs (`$t::Open(…)`), with a mode of `Create` or `Update` (`'Create'`, `1`, `[IO.Compression.ZipArchiveMode]::Update`), one only known when it runs, or none | a mode written out as `Read` (`'Read'` in any case, `0`, `[IO.Compression.ZipArchiveMode]::Read`) |
+
+The two .NET calls are judged as `Compress-Archive -DestinationPath` of the
+archive, with `-Path` of the folder `CreateFromDirectory` reads, so
+`…::CreateFromDirectory("$HOME\.ssh", 'build\x.zip')` reads secrets as
+`Compress-Archive` of that folder does. `ZipFile.Open` reads the archive in
+every mode, judged as `Get-Content` of it, so
+`…::Open("$HOME\.ssh\id_rsa", 'Read')` reads a secret as `OpenRead` does.
+`ZipFile.Open` on the type written out is then no other open of a
+file, so `[IO.Compression.ZipFile]::Open('build\x.zip', 'Create')` and
+`…::Open('C:\Windows\x.zip', 'Read')` stay safe, while the generic
+"calls .NET to write or open files" still holds every other type's `Open`
+(`[IO.File]::Open(…)`, `$zipFile::Open()`).
 
 The archive is judged by its name as written: `zip`, `7z`, `rar` and
 `Compress-Archive` add an extension to a name with none, which is not read,
@@ -2611,19 +2653,24 @@ startup file, and `gzip src/a.txt` and `gunzip src/x.gz` stay safe.
 | `lzip`, `plzip`, `lunzip` | `.lz`; `.lz`, `.tlz` | unless `-k` | `-o`, `--output` |
 | `lzop` | `.lzo`; `.lzo`, `.tzo` | with `-U` (`--unlink`, `--delete`) | `-o`, `--output`, `-p` (`--path`, a folder), `-S`, `--suffix` |
 | `brotli` | `.br`; `.br` | with `-j` (`--rm`) | `-o`, `--output`, `-S`, `--suffix` |
+| `pixz` | `.xz`, and `.tar` becomes `.tpxz`; `.tar.xz` and `.tpxz` (to `.tar`), `.xz` | unless `-k`, or a second operand names what it writes; `-c` is ignored | a second operand; `-o` (with an operand, the name it makes wins, and both are judged); `-i` is the input, `-t` says it is no tarball, and `-l` and `-x` (to the screen) write only the file `-o` names |
+| `bzip3` | `.bz3`; `.bz3` | with `--rm` | a second operand, also with `-c`, unless `-B` (`--batch`) makes every operand an input; `-d` (`--decode`) and `-r` (`--recover`) decompress, `-e` (`--encode`) compresses |
+| `zopfli` | `.gz` (`.zlib` with `--zlib`, `.deflate` with `--deflate`, the last one given); it only compresses | never | `-c` alone writes to the screen: it reads only whole options, so `-vc` is none it knows, and every word that starts with `-` is an option, `--` too |
 
 - `-c` (`--stdout`, `--to-stdout`) writes to the screen and deletes nothing,
   unless `-o` names a file: `zstd -c -o x` writes `x` (and deletes with
   `--rm`), and `brotli -o x -c` writes `x` too, so a file `-o` names is
   always judged, the cautious reading of `zstd -o x -c`, which writes to the
-  screen. `zcat`, `xzcat`, `bzcat`, `zstdcat` and `lz4cat` only read. With
+  screen. `pixz` ignores `-c`, and `bzip3` writes a second operand with it.
+  `zcat`, `xzcat`, `bzcat`, `zstdcat` and `lz4cat` only read. With
   no file, or `-`, it reads its input and writes its output: to the screen,
   or to the file `-o` names (`zstd -d -o ~/.bashrc < x.zst`, `lz4 -d -
   ~/.bashrc < x.lz4` write a shell startup file).
 - `-d` (`--decompress`, `--uncompress`, from any prefix of three letters or
   more, as `getopt_long` takes it) decompresses, `-z` (`--compress`)
   compresses, and `-t` (`--test`) and `-l` (`--list`, where the program has
-  it) test or list and write nothing: the last mode given wins, as in `xz`,
+  it) test or list and write nothing but a file `-o` names (`pixz -l -o x`
+  opens `x`): the last mode given wins, as in `xz`,
   `zstd`, `bzip2` and `lz4`, so `xz -t -z ~/.bashrc` and `xz -ld
   ~/.bashrc.xz` delete and write, and `xz -z -t ~/.bashrc` writes nothing.
   GNU `gzip` keeps testing after a later `-d`, which is read the same way,
@@ -2632,7 +2679,17 @@ startup file, and `gzip src/a.txt` and `gunzip src/x.gz` stay safe.
   is said as what it may do (`xz -t "-$M" ~/.bashrc` "may delete …"). A name with none of the suffixes
   the program takes off is judged as written over (the program refuses it,
   but `bzip2` writes `x.out`).
-- `-r` (`--recursive`) compresses every file in each folder it is given:
+- Windows' own `compress` (in cmd and PowerShell, `compress.exe`) keeps
+  the files it compresses and writes its last operand, a file or a folder
+  (`compress.exe -r src C:\Windows\x` writes to a system folder); with one
+  operand (`compress -r x.dll`) it writes that file beside itself, the last
+  letter of an extension of three letters or more made `_` (`x.dl_`), `_`
+  added to a shorter one and `._` to a name with none. Its options start
+  with `-` and take no value; a word only known when it runs is an operand
+  unless it starts with `-`, so `compress -r src\a.txt %OUT%` writes to a
+  file only known when it runs.
+- `-r` (`--recursive`) compresses every file in each folder it is given
+  (but in `pixz`, which has none, and `bzip3`, where it recovers):
   each folder is deleted as `rm` judges it and written into (`gzip -r ~`
   deletes your home directory).
 - A file from a list (`--files`, `--filelist`) or one only known when it runs
@@ -2646,7 +2703,8 @@ startup file, and `gzip src/a.txt` and `gunzip src/x.gz` stay safe.
   program that keeps the file by default (`zstd "--$X" ~/x` "may delete …"),
   or one that names the file, folder or suffix it writes, which is then a
   file only known when it runs ("may write to a file only known when it
-  runs with an option only known when it runs").
+  runs with an option only known when it runs"). One that may choose
+  `zopfli`'s format (`zopfli "--$f" x`) writes the name with each suffix.
 - The long options the guard reads as raising what a line does (decompress,
   delete, name the output, recurse, read a list) are read from a prefix of
   three letters or more; those that lower it (`--keep`, `--stdout`,
@@ -3112,17 +3170,30 @@ of their strictest, so each family below was added on that test.
   `user@1000.service`, `session-3.scope`, `init.scope`, and a pattern that
   may match one, as `'user*'` and `'*.scope'`), is `stop_system`; one that
   matches none (`systemctl stop 'docker*'`) is everyday work. Stopping
-  `system.slice` by its name `stops every system service`. For `service name action`, an
-  action only known when it runs may be `stop`, so it is risky when the name
-  protects the machine or is only known when it runs (`service ufw
-  $action`); `service nginx $action` is safe, as `service nginx stop` is.
+  `system.slice` by its name `stops every system service`.
   An action stops the service when it is `stop`, a BSD spelling of it
   (`onestop`, `forcestop`, `faststop`, `quietstop`), `force-stop`, `kill`,
   or one of the actions the firewall and `AppArmor` scripts take their
   protection down with, `flush` (`service netfilter-persistent flush`) and
-  `teardown` (`service apparmor teardown`). Every other service manager
-  is read as `service`: a program run from an init script folder
-  (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
+  `teardown` (`service apparmor teardown`). An action disables the service
+  when it is FreeBSD's `disable` or `delete`, alone or after a prefix
+  `rc.subr` reads (`one`, `force`, `fast`, `quiet`): `service sshd
+  onedisable` writes `sshd_enable="NO"` to `rc.conf`, as `sysrc
+  sshd_enable=NO` does, and `delete` removes it, as `sysrc -x` does, so
+  either is `system_settings` whatever the service, as `systemctl disable`
+  is. For `service name action`, an action only known when it runs may be a
+  stop or a disable, so it is `system_settings` (`service nginx $action`,
+  `changes a system service only known when it runs`), and also what a stop
+  of that name is (`service sshd $action` is `stop_system` too). FreeBSD's
+  `-j jail` and `-E var=value` take a value, so the name and the action are
+  the words after it (`service -j jail sshd onedisable`, `service -jjail
+  sshd onedisable`); a word only known when it runs before them may be such
+  an option and the word after it its value, so the name and the action may
+  be the words after either (`service $opt sshd onedisable`). Every other
+  service manager is read as `service`, a disable included (`invoke-rc.d
+  nginx disable`, `/usr/local/etc/rc.d/nginx onedisable`): a program run
+  from an init script folder (`/etc/init.d`, `/etc/rc.d/init.d`,
+  `/etc/rc.d`, `/usr/local/etc/rc.d`),
   placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
   as `/etc/init.d/ufw stop`, is the service of its name with its first
   operand as the action. So is the script a shell runs (`sh
@@ -3139,7 +3210,12 @@ of their strictest, so each family below was added on that test.
   `shutdown`, `force-stop`, `force-shutdown`, or starts with the letters
   `sv` reads as down, exit or pause (`d`, `D`, `x`, `X`, `e`, `E`, `p`), or
   is only known when it runs, and a service given as a folder
-  (`/etc/service/ufw`) is the last part. `/etc/init.d/nginx restart`,
+  (`/etc/service/ufw`) is the last part. A folder named from inside it
+  (`.`, `..`, `./`, `sshd/.`) is placed where it lands from where the line
+  is, and the service is that folder's last part: `cd /etc/service/sshd &&
+  sv down .` is `sv down sshd`, and from a folder only known when it runs
+  (`cd $dir && sv down .`) the service is only known when it runs too. s6's
+  `s6-svc` names its folders the same way. `/etc/init.d/nginx restart`,
   `rc-service docker stop` and `sv down nginx` are safe; `/etc/init.d/ssh
   stop` and `sv down sshd` are `stop_system`. The protecting units are the
   firewalls (`firewalld`, `ufw`, `nftables`, `iptables`, `ip6tables`,
@@ -3224,7 +3300,10 @@ of their strictest, so each family below was added on that test.
   known when it runs) stop each formula's service, and `--all` every one
   it runs, any of which may protect the machine: `brew services stop
   postgresql` is safe, `brew services stop fail2ban` and `brew services stop
-  --all` are not. `nsenter` is a wrapper: what it runs in the init
+  --all` are not. A subcommand only known when it runs may be `services`
+  and what follows it its command and formulas, so `brew $cmd services
+  stop postgresql` (and any `brew $cmd`) `changes a system service only
+  known when it runs`. `nsenter` is a wrapper: what it runs in the init
   process's namespaces is judged (`nsenter -t 1 -a systemctl stop sshd` is
   `stop_system`; see [Wrappers and scripts](#wrappers-and-scripts)).
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
@@ -3277,7 +3356,8 @@ Gatekeeper …"). Quoted with nothing before it, it is one
 word, a value (`iptables -A INPUT -s "$ip" -j DROP` is safe). `service`,
 `launchctl` and the other service managers take no option that changes what
 their words do, and their own reading judges each word, an unknown one
-included (`service nginx $action` stays safe).
+included (`service $name status` is safe, and `service nginx $action`
+is the stop or disable it may be).
 
 ### Values only known when they run
 
@@ -3364,6 +3444,50 @@ does not show, and a rule takes the worst it may be:
   a `git_discard`. One whose name is only known when it runs (`git --$o
   status`) may take the next word as its value, so what comes after it is
   `unknown`.
+- **git config.** A `-c` value only known when it runs, or any
+  `--config-env` (`git --config-env core.pager=PAGER log`), whose value git
+  takes from the environment, may set a key whose value git runs
+  (`core.pager=!cmd`, `alias.status=!cmd`, `core.fsmonitor=…`), so `git -c
+  "$cfg" status`, `git -c "core.pager=$p" log` and `git -c "pager.status=$p"
+  status` are `unknown`, "gives git config only known when it runs". It
+  stays safe only where the setting is one word when it runs and what is
+  written of it names, before the `=`, a key whose value git only records
+  or shows: `user.name`, `user.email`, the `author.` and `committer.` name
+  and email, and any key of `color.` and `advice.` (`git -c
+  "user.name=$NAME" commit`, `git --config-env user.email=EMAIL commit`).
+  A word that splits when it runs (`-c user.name=$NAME`, cmd's
+  `%NAME%`) may hand git more of its own options (`-c alias.st=!cmd st`),
+  so it is `unknown` whatever key it starts with. A PowerShell variable is
+  read as one word, as PowerShell 7.3 and later hand it to a native
+  program; Windows PowerShell 5.1 passes arguments the legacy way, where a
+  value that holds a quote and a space can hand git more words, which the
+  guard, here as everywhere, does not model.
+
+  The same holds for config git takes from its environment, which the line
+  sets in front of git, with `env`, or for the rest of the line (`export`,
+  `$env:`, cmd's `set`): `GIT_CONFIG_PARAMETERS`, the variable git hands
+  its `-c` settings to the git it starts in, and the
+  `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` pairs below
+  `GIT_CONFIG_COUNT`. A known value is read as `-c` is
+  (`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0='rm
+  -rf ~' git log` is `unknown`, "runs a command through git config", and
+  `GIT_CONFIG_PARAMETERS="'core.pager=x'"` too, read as git quotes it). A
+  `GIT_CONFIG_PARAMETERS` or a count only known when it runs, one git
+  would not read, a key only known when it runs, a pair the line gives no
+  key (the environment may), or a value only known when it runs of a key
+  not in the list above is `unknown`, "gives git config only known when it
+  runs" (`GIT_CONFIG_PARAMETERS="$x" git status`). A count the line sets
+  reads the pairs below it alone; with none, every pair the line sets is
+  read, since the count may be in the environment.
+
+  `git config KEY VALUE` (and `git config set`) keeps an argument only known
+  when it runs in its place: a key so may be any (`git config "$k"
+  '!rm -rf ~'` is `unknown`, "sets git config only known when it runs"),
+  but alone it is read, unless it splits; a value so is judged by its key:
+  a key whose value git runs is `system_settings` as its known form is
+  (`git config core.pager "$p"`), an alias is `unknown` unless its body is
+  sure to start with a git command (`git config alias.st "status $x"`
+  stays safe), and any other key is read as `-c` is.
 - **What the finding says.** A finding that only such an option turns on
   says what the program may do, not that it does it: `git tag $TAG` is
   `git_discard`, "may delete a tag with an option only known when it runs",
@@ -3440,7 +3564,7 @@ a path.
   matches, and a word only known when it runs any; a read (`Test-Path
   Env:CI`, `Get-ChildItem Env:`) changes none. An item a program reads as
   its arguments or its command (`TF_CLI_ARGS`, `npm_config_call`,
-  `NODE_OPTIONS`, `ZIPOPT`) set by a pattern (`Env:npm_config_*`), a name
+  `NODE_OPTIONS`, `ZIPOPT`, `GIT_CONFIG_PARAMETERS`) set by a pattern (`Env:npm_config_*`), a name
   only known when it runs, the new name of a rename, copy or move of an
   `Env:` item, or a plain name after a location cmdlet goes to the `Env:`
   drive (`cd Env:`) is only known when it runs, as a value set to it by name
@@ -3763,7 +3887,16 @@ guard does not know is not judged as a writer; these are the ones it knows.
   program) edits each file awk reads, every operand after the program but
   `-` and an assignment (`x=1`). Any other library is code the guard does
   not read, `unknown` as `-f script` is; one only known when it runs
-  (`-i "$L"`) is both, the edit said as one that may happen. The options are
+  (`-i "$L"`) is both, the edit said as one that may happen. A shared
+  library gawk loads with `-l`, `--load` or `@load` in the program
+  (`awk -l ./ext.so 1 a`, `awk '@load "ext"; 1' a`) runs native code the
+  line does not show, `unknown` whatever its name (`-l inplace` too, and
+  beside `-i inplace` the edit is still judged). A directive is read as
+  gawk's lexer reads it: `@` is a token of its own, and `include` or `load`
+  after it, past spaces, tabs, carriage returns and backslash-newlines, is
+  the directive (`@ load "ext"`, `@ include "inplace"` the edit); only the
+  whole word counts, so `@loader` is none, and one written in a string or
+  regex (`print "@load"`) is found too, risky and not safe. The options are
   read as gawk's `getopt_long` reads them: a bundle a letter at a time
   (`-bi inplace`, `-Oiinplace`), `f E i l v F e Z` taking the rest of the
   bundle or else the next word and `d D L o p` only the rest; a long option
@@ -3812,7 +3945,7 @@ guard does not know is not judged as a writer; these are the ones it knows.
 | `curl.exe -o C:\Windows\x URL`, `certutil -urlcache -f URL C:\Windows\x`, `Get-Process \| Export-Csv C:\Windows\x.csv`, `sort a \| sponge /etc/x`, `awk -i inplace 1 /etc/x`, `ex -sc wq /etc/x`, `vim -es /etc/x` | `overwrite`: a system folder |
 | `curl.exe -o .envrc URL`, `certutil -decode a.b64 .vscode\tasks.json`, `sponge ~/.bashrc`, `ex -sc wq .envrc`, `ex -sc 'w ~/.bashrc' a` | `overwrite`: a startup file, or one a tool runs on its own |
 | `curl.exe -o out.txt URL`, `certutil -urlcache -f URL out.txt`, `Export-Csv out.csv`, `sponge a`, `awk -i inplace 1 src/a.txt`, `vim -es -c '%s/a/b/g' -c wq src/a.txt` | safe |
-| `awk -i lib 1 a`, `awk --fil s.awk a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `nvim -l s.lua`, `vim -es -c 'e /etc/x' -c wq a`, `echo 'w /etc/x' \| vim -es a` | `unknown` |
+| `awk -i lib 1 a`, `awk --fil s.awk a`, `awk -l ./ext.so 1 a`, `awk '@load "ext"; 1' a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `nvim -l s.lua`, `vim -es -c 'e /etc/x' -c wq a`, `echo 'w /etc/x' \| vim -es a` | `unknown` |
 | `view /etc/hosts`, `vim -R /etc/hosts`, `ex -sc 'w %.bak' -c q src/a.txt`, `ex -s a <<EOF` with `%s/a/b/g` and `wq` | safe |
 
 ### Files a tool runs on its own
@@ -3934,8 +4067,9 @@ and so does a read. With `Protected::folder("/home/me/work/repo/.agent", ..)`:
 | `find . -type f -delete`, `Get-ChildItem -Recurse \| Remove-Item` | `delete`, "deletes the whole workspace": a delete of a folder handed on whole says so |
 | `del /s *.yaml`, `Get-ChildItem *.yaml -Recurse \| Remove-Item`, `Remove-Item *.yaml -Recurse` | `delete`, "deletes the agent's settings": the pattern's last part matches in every folder below |
 | `cd src && git am`, `git stash pop`, `git cherry-pick abc`, `cd src && git checkout HEAD -- :/` | `overwrite`, "may change the agent's settings": git applies them at the top of the work tree |
+| `git pull`, `git merge feature`, `git switch other`, `git rebase main`, `cd src && git checkout feature`, `git reset --keep HEAD~1`, `git bisect good`, `git checkout 'HEAD^{/fix*}'` | `overwrite`, "may change the agent's settings": a branch move rewrites the work tree from its top |
 | `patch -d src -r ../.agent/x -p1 < p.diff`, `patch -d src -B ../.agent/ -p1 < p.diff` | `overwrite`, "writes to the agent's settings": the reject file and the backups |
-| `find src -name '*.o' -delete`, `find . -name '*.yaml' -exec cat {} +`, `patch -d src -p1 < p.diff`, `git apply --check p.diff`, `cp -r tmpl/. dist`, `tar -xf x.tar -C build`, `git checkout -b feature`, `git stash list` | safe: the folder holds no protected path, or nothing is written |
+| `find src -name '*.o' -delete`, `find . -name '*.yaml' -exec cat {} +`, `patch -d src -p1 < p.diff`, `git apply --check p.diff`, `cp -r tmpl/. dist`, `tar -xf x.tar -C build`, `git checkout -b feature`, `git switch -c feature`, `git pull --dry-run`, `git rebase --quit`, `git pull --help`, `git bisect log`, `git stash list` | safe: the folder holds no protected path, or nothing is written |
 
 What a search or a filtered listing hands on from inside a folder (`find .
 -name x`, `Get-ChildItem -Filter`, a wildcard path with `-Recurse`, cmd's
@@ -3974,12 +4108,35 @@ apply` writes nothing with `--cached`, or with `--check`, `--stat`,
 `--numstat` or `--summary` and no `--apply`, which turns the patching back
 on (`git apply --check --apply p.diff` patches).
 
-Decision (epic #41): a branch move (`git pull`, `git merge`, `git switch`,
-`git rebase`, a `git checkout` of a branch) also writes from history the line
-does not show, but it is not read for a protected path. It is on many
-everyday lines, a protected path is often tracked in the repository, and the
-history it brings is the project's own: a finding there would be a finding on
-nearly every branch change. A follow-up ticket weighs it.
+A branch move also writes from history the line does not show, anywhere in
+the work tree, so it is read as `cherry-pick` is, at the top of the work
+tree (#248, which reverses the decision of epic #41 to leave branch moves
+unread): with a protected path there it is `overwrite`, "may change the
+agent's settings", and with none it stays safe. The moves are `git pull`
+but `--dry-run`, which only fetches; `git merge` and `git rebase` but the
+options that only end or show one in progress (`--quit`, `--continue` for a
+merge, `--edit-todo` and `--show-current-patch` for a rebase), while
+`--abort` moves back and a rebase's `--continue` and `--skip` go on
+applying commits; `git switch` given a branch or a start point (`git switch
+other`, `git switch -c new origin/main`), or `--orphan`, which empties the
+work tree, while `git switch -c new` stays where it is; and `git checkout`
+with one operand before `--` that may name a revision and no paths after it
+(`git checkout feature`, `git checkout feature --`, `git checkout -b new
+origin/main`). An operand git refuses as a ref name and no revision
+expression is either (`.`, `./src`, `src/`, a wildcard, a part that starts
+with a dot, a backslash) is a path, read as above, but a commit found by its
+message or a reflog entry, which may hold any of those (`HEAD^{/fix*}`,
+`:/fix`, `main@{1}`), is a revision. `git reset --merge`, the command
+`git merge --abort` runs, moves the work tree, and so does `git reset
+--keep` given a commit. `git bisect` moves it but for the subcommands that
+only show (`log`, `view`, `visualize`, `terms`, `help`) and a `start` that
+checks nothing out: with `--no-checkout`, or given no revision. A word only
+known when it runs may be none, one or several, so a checkout with one is
+read as a move, and so is a bisect; only an option as written stops one,
+and `-h` and `--help` stop every one (`git pull --help`), since git then
+only shows how to use it. A move that may change a protected path says so
+once, though the paths of a checkout may too. Other commands that move the
+work tree (`git stash`, `git sparse-checkout`) are not read this way yet.
 
 How the copy reads its operands: `Copy-Item` and `Move-Item` bind `-Path` at
 position 0 and `-Destination` at position 1, and a comma list of sources is
@@ -4224,7 +4381,8 @@ in place of a script, judged as a script is (`python3 -m pytest` is safe),
 but `timeit` runs the code it is given, `cProfile`, `profile` and `trace` run
 a script under them, and `pdb` and `code` read what to run from the input:
 the REPLs `asyncio`, `IPython`, `bpython` and `ptpython` read it from the
-input as `code` does: these are `unknown`, `runs code the guard does not
+input as `code` does, and so does `xonsh`, the shell `xonsh` is, which runs
+its `-c` code too (`python3 -m xonsh -c 'rm -rf ~'`): these are `unknown`, `runs code the guard does not
 read`, also attached (`-mtimeit`) and after other options. IPython's own
 options are its own table: it reads any `--Class.trait=value` as a setting,
 and some of those run code before the script
@@ -4553,7 +4711,13 @@ A line is never safe because the guard gave up on it. These come back risky:
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
 - Code handed to an interpreter that is not read: Ruby, Perl (beyond
-  `perl -pi`), PHP and Lua, and any code piped into an interpreter, or read
+  `perl -pi`), PHP and Lua, and xonsh's, a shell whose language is Python
+  and its own (`xonsh -c 'rm -rf ~'`, `echo … | xonsh`; a script file it is
+  given, `xonsh build.xsh`, is the workspace's own, as `python3 x.py` is;
+  its `-D`, `--shell-type` and `-st` take a value, and `--rc` every word
+  after it that is not an option, as Python's `argparse` reads them, by a
+  shorter start of their names too, so `xonsh --rc a.xsh build.xsh` has no
+  script and reads its input; `xonsh -V` prints), and any code piped into an interpreter, or read
   from a file it is redirected from, or from a here-document after an option
   that took the next word (`perl -I lib <<'PL'`). A script only known when it
   runs (`python3 $F`, `node <(…)`), a module that runs what it is given
@@ -4802,6 +4966,19 @@ A line is never safe because the guard gave up on it. These come back risky:
   `has a word that may be a redirect the guard cannot read`. A `>` inside a
   closed quote of a word is read as text (`--format="%an <%ae>"`), unless a
   double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
+- A PowerShell line that holds a `<` outside a string, a comment, a braced
+  variable's name (`${a<b}`), a backtick's escape (`` a`<b ``) and what `--%`
+  passes on as it is. PowerShell reserves the operator and refuses the line
+  before any of it runs, in an argument as in an expression: `sort < x.txt`,
+  `sort <x`, `python 0<&3`, `ssh-keygen -C <comment>`, `1 < 2`, `echo
+  <<EOF`. The grammar reads it as an input redirect, a word or part of one
+  (`0<`, then `&3` as a job), so the guard looks for it in the tree: the
+  text of each node that none of its children covers, outside quotes opened
+  there (`--author="Me <m>"` is text), with the text of a string left out
+  but a `$( … )` in it read (`"a$(1 < 2)b"` is refused too). Such a line is
+  `unreadable`, `holds a <, which PowerShell refuses to run`; a merge
+  (`2>&1`) is no `<`, and in cmd `<` is the program's input (`sort <
+  x.txt`, `python 0<&3`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A value only known when it runs that may hide an output of `dd`, an
   operand of a delete, or an option that destroys or changes a machine
@@ -5091,7 +5268,12 @@ Some risks only show when units are read together.
     of it as a file (`-type b`, `c`, `p`, `s` and `D` are false of both);
     options (`-maxdepth`, `-xdev`) are true. `-lname` is read as `-name`.
 - **Git config that makes git run a command.** `-c alias.x=!...`,
-  `core.pager`, `core.sshCommand`, and `git config` setting them. Reading
+  `core.pager`, `core.sshCommand`, the same given through git's
+  environment (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_KEY_<n>`), and `git
+  config` setting them; a `-c` value only known when it runs,
+  `--config-env`, and a key or value of either only known when it runs,
+  unless the key is written out and is one git only records (see [Values
+  only known when they run](#values-only-known-when-they-run)). Reading
   them is fine.
 - **In-place edits.** `perl -pi -e` is an edit like `sed -i`, judged by the
   files it edits, when its code is only substitutions (`s/a/b/g`, `tr/.../.../`)
@@ -5296,7 +5478,8 @@ dist .` packs `dist`.
   or a command's output
   redirected to `/dev/tcp/host/port` or `/dev/udp/…`. Only bash's own redirect
   opens that path: `tee /dev/tcp/…` and `dd of=/dev/tcp/…` open a real path,
-  find none and send nothing. PowerShell has no `<` redirect.
+  find none and send nothing. PowerShell has no `<` redirect: it refuses a
+  line that holds one, which is `unreadable`.
 - **A substitution or a variable.** A sender handed a secret in its own
   arguments: `curl -d "$(cat .env)" url`, `$(<.env)`, a here-document or
   here-string that runs one, `` `…` ``, PowerShell's `-Body (Get-Content f)`;
@@ -6167,26 +6350,72 @@ as do listing and creating (`Get-AzVM`, `Get-S3Bucket`, `New-AzResourceGroup`).
 guard reads the two as the same word.
 
 Other verbs of those modules destroy too, and are `destroy_resources` the
-same way. A `Clear-` or `Reset-` cmdlet of any of the clouds wipes what a
-resource holds or sets it back (`Clear-SQSQueue` purges a queue,
-`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
-`Reset-RDSDBParameterGroup` sets a database's parameters back). An
-`Unregister-` cmdlet of AWS is one of its deregister or disassociate verbs
-(`Unregister-EC2Image`, `Unregister-ECSTaskDefinition`,
-`Unregister-ELB2Target`), and one of Azure takes a provider or a server off a
-subscription (`Unregister-AzResourceProvider`). A `Disable-` cmdlet is one
-when its noun names a key or a backup: it ends in `Key` or `Keys`, or holds
-`Backup` or `Retention` (`Disable-KMSKey`,
+same way. A `Clear-` or `Reset-` cmdlet of Azure, Google Cloud or Microsoft
+Entra and Microsoft 365 wipes what a resource holds or sets it back
+(`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
+`Reset-AzBatchComputeNode` reimages a node, `Reset-GcSqlSslConfig` deletes an
+instance's client certificates, `Clear-MgDeviceManagementManagedDevice` and
+`Clear-MgBetaDeviceManagementManagedDevice` wipe a device,
+`Reset-MgUserAuthenticationMethodPassword` and
+`Reset-EntraStrongAuthenticationMethodByUpn` reset a way to sign in), except
+for the nouns of those modules, read whole, that only set a setting back,
+flush a cache of responses, reset a counter, reboot a gateway or take a
+reaction or a presence off (`Clear-AzCdnEndpointContent`,
+`Reset-AzVirtualNetworkGateway`, `Reset-AzureADMSLifeCycleGroup`,
+`Clear-MgChatMessageReaction`, `Clear-MgUserPresence`,
+`Reset-EntraLifeCycleGroup`). A setting that watches a database is not one of
+them: the cmdlets that remove a server's, database's, workspace's or pool's
+auditing, threat protection or vulnerability assessment settings, or a rule
+baseline tuned by hand, destroy as `Remove-AzSqlServerAudit` does
+(`Reset-AzSynapseSqlAuditSetting`,
+`Reset-AzSynapseSqlAdvancedThreatProtectionSetting`,
+`Clear-AzSqlServerVulnerabilityAssessmentSetting`,
+`Clear-AzSqlDatabaseVulnerabilityAssessmentRuleBaseline`). The lists are checked against the Az 16.5.0
+reference, Google's module and Microsoft Graph's command metadata, and a noun
+of those prefixes no list names stays risky, since its prefix is its cloud's.
+AWS's prefixes are short and other modules' nouns start like them
+(SharePoint's `Clear-SPLogLevel` like `SP`), and most of AWS's `Reset-`
+cmdlets set one attribute back, so an AWS `Clear-` or `Reset-` is read by
+its whole name, from the AWS Tools v5 cmdlet reference and the API operation
+each calls: the ones that wipe data (`Clear-SQSQueue` purges a queue,
+`Clear-EVBConnection` takes a connection's stored authorization off,
+`Reset-NEPTGGraph` empties a graph, `Reset-RDSDBCluster` backtracks a
+database, `Reset-WKSWorkspace` rebuilds a workspace), a credential
+(`Reset-DSUserPassword`, `Reset-IAMServiceSpecificCredential`) or a set of
+values tuned by hand (`Reset-RDSDBParameterGroup`, `Reset-ACTLandingZone`)
+destroy, and the rest stay safe (`Reset-EC2ImageAttribute`,
+`Reset-EC2EbsDefaultKmsKeyId`, `Reset-SSMServiceSetting`,
+`Clear-AGStageCache`, `Reset-CBProjectCache`, `Clear-SPLogLevel`). A new AWS
+cmdlet of those verbs is safe until it is listed. An `Unregister-` cmdlet of
+AWS is one of its deregister or disassociate verbs (`Unregister-EC2Image`,
+`Unregister-ECSTaskDefinition`, `Unregister-ELB2Target`), and one of Azure
+takes a provider or a server off a subscription
+(`Unregister-AzResourceProvider`); Google's and Microsoft Graph's modules have
+none. A `Disable-` cmdlet is one when its noun names a key or a backup: it
+ends in `Key` or `Keys`, or holds `Backup` or `Retention` (`Disable-KMSKey`,
 `Disable-AzRecoveryServicesBackupProtection`,
 `Disable-AzStorageDeleteRetentionPolicy`); `Disable-KMSKeyRotation` is not.
-The AWS cmdlets its terminate verbs are named are: `Stop-EC2Instance` with
-`-Terminate` (by any prefix of the name, in any case; `-Terminate:$false` or
-`:0` is off, a value only known when it runs and a splat may turn it on, and
-the finding then says it may), `Stop-EBEnvironment`, `Stop-EMRJobFlow` and
-`Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion` schedules a
-key's deletion. `Stop-EC2Instance` without `-Terminate` stops instances and
-stays safe, also with a variable as an argument (`-InstanceId $id`), whose
-value is a value whatever it holds; so do `Stop-AzVM` and `Get-EC2Image`.
+AWS also destroys under other verbs, each cmdlet read by its name:
+`Stop-EC2Instance` with `-Terminate` (by any prefix of the name, in any case;
+`-Terminate:$false` or `:0` is off, a value only known when it runs and a
+splat may turn it on, and the finding then says it may); every `Stop-` cmdlet
+AWS's terminate operations are named (`Stop-EBEnvironment`,
+`Stop-EMRJobFlow`, `Stop-ASInstanceInAutoScalingGroup`,
+`Stop-SWFWorkflowExecution`, `Stop-BATServiceJob`, `Stop-EDRSRecoveryInstance`,
+`Stop-SSMSession` and the rest); `Close-ORGAccount`, which closes an account;
+the deletes AWS names with another verb (`Uninstall-SWFWorkflowType`,
+`Dismount-FSXAndDeleteS3AccessPoint`, `Unlock-BAKRecoveryPoint`,
+`Start-TFRRemoteDelete`, `New-PERSDataDeletionJob`, the batch deletes
+`New-BCMPCDeleteBillScenarioCommitmentModification`,
+`New-BCMPCDeleteBillScenarioUsageModification` and
+`New-BCMPCDeleteWorkloadEstimateUsage`, `Set-SMDeleteClusterNode`,
+`Group-CHMVODeletePhoneNumber`, `Start-EBEnvironmentRebuild` and
+`Invoke-NEPTFastReset`); and `Request-KMSKeyDeletion`, which schedules a key's
+deletion. A `Stop-` that cancels stays safe (`Stop-KMSKeyDeletion`,
+`Stop-SSMCommand`, `Stop-CFNUpdateStack`). `Stop-EC2Instance` without
+`-Terminate` stops instances and stays safe, also with a variable as an
+argument (`-InstanceId $id`), whose value is a value whatever it holds; so do
+`Stop-AzVM` and `Get-EC2Image`.
 PowerShell also binds a parameter the line does not write from
 `$PSDefaultParameterValues`. A key written out that names the switch is
 given to the cmdlet as written (see [What cannot be read is
@@ -6330,14 +6559,14 @@ inside the workspace.
 **Wrappers** come off as `classify` takes them off, and what they run decides:
 `sudo cat` reads only. Only the wrappers that just run the next program are
 let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
-`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
+`time`, `gtime`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
 `nocorrect`, `-`, `coproc`, the `{`, `!` and zsh's `repeat` the grammar
 reads as programs before a group (`time { ls; }`, `! { ls; }`, `repeat 3 {
 ls; }` read only), and the `find` a `-exec` makes), and only with
 options the guard knows: any other option makes the line `Unknown`, since it
 could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
 `env -P` changes where programs are found, `env -C` the folder they run in).
-`time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
+`time -o FILE` and `time --output=FILE` (and `gtime`'s) write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 start sessions: those wrap a reader into `Unknown`. So do the other tools that
 run a command (`strace -o` and `script` write files, `parallel` runs many,
@@ -6971,17 +7200,18 @@ are each held to the bound;
   through a character or with bytes no text holds read back lossily, and
   PowerShell and cmd metacharacters. The same noise goes through `effect` and
   `explain`, which must agree with `classify`.
-- **A line left open is risky, and a delete is never safe.** (In `tests/limits.rs`.) Safe is a verdict
-  the guard has to earn, so the tests say what a safe line may be, apart from
-  the guard. A line of plain words, separators and one delete (written for the
-  shell) is never safe: nothing in it can make the delete inert. A line of
-  plain words that ends in a quote, substitution, bracket or here-document left
-  open, or an operator with nothing after it, is never safe either, unless its
-  shell reads that ending as a plain word: the test keeps a list of those per
-  shell (cmd has no single quotes or backticks; PowerShell's grammar reads `<<`
-  as a word, though PowerShell itself refuses the line, so nothing runs), and
-  a table pins both sides. That a line is read at all is not the
-  claim: a program the guard does not know is safe.
+- **A line left open is risky, and a delete is never safe.** (In
+  `tests/limits.rs`.) Safe is a verdict the guard has to earn, so the tests say
+  what a safe line may be, apart from the guard. A line of plain words,
+  separators and one delete (written for the shell) is never safe: nothing in it
+  can make the delete inert. A line of plain words that ends in a quote,
+  substitution, bracket or here-document left open, or an operator with nothing
+  after it, is never safe either, unless its shell reads that ending as a plain
+  word: the test keeps a list of those per shell (cmd has no single quotes or
+  backticks; PowerShell's grammar reads `<<` as a word, but PowerShell refuses a
+  `<`, so the guard calls the line unreadable and it is not on the list), and a
+  table pins both sides. That a line is read at all is not the claim: a program
+  the guard does not know is safe.
 - **A line too long or too nested comes back unreadable** (and `Unknown` for
   `effect`). (In `tests/robust.rs`; `tests/limits.rs` measures where the edges
   are.)

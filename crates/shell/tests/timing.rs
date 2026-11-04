@@ -1559,6 +1559,32 @@ fn values_only_known_when_they_run_are_read_in_linear_time() {
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
+fn powershell_lines_scanned_for_a_refused_less_than_are_read_in_linear_time() {
+    let _serial = serial();
+    // Each node's own text is scanned once for a `<` PowerShell refuses
+    // (`refused_input` in `powershell.rs`): a quote that runs on past a
+    // child, a `<` inside a substitution in a string, and a `<` the grammar
+    // reads as a redirect over and over.
+    let (shell, paths) = (Shell::PowerShell, paths_for(Shell::PowerShell));
+    for (head, part, tail) in [
+        ("echo ", "a\"$a<\" ", ""),
+        ("echo \"", "$(1)<", "\""),
+        ("echo ", "< ", ""),
+    ] {
+        assert_linear(&format!("{head}{part}…"), shell, &paths, |size| {
+            format!(
+                "{head}{}{tail}",
+                filled(part, size, head.len() + tail.len())
+            )
+        });
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() {
     let _serial = serial();
     // Each unit and redirect of a loop with a `cd`, or of a function body a
@@ -1671,10 +1697,11 @@ fn machine_settings_given_many_patterns_names_or_options_are_read_in_linear_time
     let _serial = serial();
     // Each unit pattern is tested against the units that protect the
     // machine and the ones it needs, each name copied into a folder against
-    // the files SELinux reads (the folder placed once), and each option of
-    // a settings program read once: a line at the length limit of them is
-    // read in time that grows with its length. Each row is the shell, the
-    // part repeated, the head and the tail.
+    // the files SELinux reads (the folder placed once), each service folder
+    // named as `.` placed where it lands, and each option of a settings
+    // program read once: a line at the length limit of them is read in time
+    // that grows with its length. Each row is the shell, the part repeated,
+    // the head and the tail.
     let rows = [
         (
             Shell::Posix,
@@ -1692,6 +1719,13 @@ fn machine_settings_given_many_patterns_names_or_options_are_read_in_linear_time
         (Shell::Posix, ("x ", "semanage fcontext ", "")),
         (Shell::Posix, ("--info ALL ", "grubby ", "")),
         (Shell::PowerShell, ("x ", "service ", " stop")),
+        (Shell::Posix, ("$x ", "service ", " sshd onedisable")),
+        (Shell::Posix, ("-j x ", "service ", " sshd stop")),
+        (Shell::Posix, (". ", "cd /etc/service/sshd && sv down ", "")),
+        (
+            Shell::Posix,
+            (". ", "cd /run/service/sshd && s6-svc -d ", ""),
+        ),
         (Shell::Posix, ("'d*@x*' ", "rcctl stop ", "")),
         (Shell::Posix, ("x_enable=YES ", "sysrc ", "")),
         (Shell::Posix, ("-wd ", "s6-svc ", " /run/service/x")),
