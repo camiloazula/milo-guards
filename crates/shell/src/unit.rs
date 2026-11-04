@@ -1437,6 +1437,14 @@ pub(crate) struct Split {
     /// its own. The walk takes such a `}` off as it closes one, and runs
     /// nothing for it.
     pub(crate) open_groups: usize,
+    /// How many lists a zsh `repeat N do` opened that the grammar did not
+    /// see: it reads `do` as a word and the `done` that closes the list as
+    /// a command of its own, which the walk takes off as it closes one, and
+    /// runs nothing for.
+    pub(crate) open_dos: usize,
+    /// Each zsh `repeat` whose body the walk is reading (see
+    /// [`Split::begin_repeat`]).
+    repeating: Vec<Repeating>,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -1607,6 +1615,19 @@ struct BodyStart {
     adrift: bool,
     /// [`Split::relative_moves`] then.
     relative_moves: usize,
+}
+
+/// A zsh `repeat` whose body the walk is reading as a loop's (see
+/// [`Split::begin_repeat`]): how many groups and `do` lists were open
+/// before it, which it closes when they are all that is open again, where
+/// its start is among [`Split::bodies_began`], and whether the command
+/// that starts it has been read.
+#[derive(Debug)]
+pub(crate) struct Repeating {
+    groups: usize,
+    dos: usize,
+    body: usize,
+    read: bool,
 }
 
 /// What the walk added while it read a loop or a function body that may
@@ -3605,6 +3626,115 @@ impl Split {
         });
     }
 
+    /// Note that a zsh `repeat` starts here, whose body runs again and
+    /// again: the command after its count, the group that command opens
+    /// (`repeat 3 { … }`, `repeat 3 time { … }`) or the list after `do`
+    /// (`repeat 3 do …; done`, when `opens_do`). The grammar has no
+    /// `repeat`, so it reads the `{` or `do` and the first command of the
+    /// body as words of the one command, and the rest of the body as the
+    /// commands after it, up to a `}` or `done` of their own. The body is
+    /// read as a loop's (see [`Self::end_body`]) from here to where the walk
+    /// takes that `}` or `done` off, or to the end of the command when it
+    /// opens neither (see [`Self::end_repeats`]). Called before the groups
+    /// the command opens are counted.
+    pub(crate) fn begin_repeat(&mut self, opens_do: bool) {
+        self.branches += 1;
+        self.bodies += 1;
+        self.repeats += 1;
+        self.repeating.push(Repeating {
+            groups: self.open_groups,
+            dos: self.open_dos,
+            body: self.bodies_began.len(),
+            read: false,
+        });
+        self.begin_body();
+        self.open_dos += usize::from(opens_do);
+    }
+
+    /// How many `repeat` bodies are open, for [`Self::end_repeats`].
+    pub(crate) fn repeats_open(&self) -> usize {
+        self.repeating.len()
+    }
+
+    /// Note that the command whose walk began with `open` `repeat` bodies
+    /// open has been read: a `repeat` it started whose body is that
+    /// command alone (`repeat 3 eval '…'`) ends here.
+    pub(crate) fn end_repeats(&mut self, open: usize) {
+        for repeating in self.repeating.iter_mut().skip(open) {
+            repeating.read = true;
+        }
+        self.close_repeats();
+    }
+
+    /// Note that the walk took off a `done` that closes a list a `repeat`
+    /// opened.
+    pub(crate) fn close_do(&mut self) {
+        self.open_dos = self.open_dos.saturating_sub(1);
+        self.close_repeats();
+    }
+
+    /// End each `repeat` body that closes now, the innermost first: its
+    /// command is read, and the groups and lists open are those that were
+    /// open before it.
+    pub(crate) fn close_repeats(&mut self) {
+        while self.repeating.last().is_some_and(|repeating| {
+            repeating.read && repeating.groups == self.open_groups && repeating.dos == self.open_dos
+        }) {
+            if let Some(repeating) = self.repeating.pop() {
+                self.end_repeat(&repeating, true);
+            }
+        }
+    }
+
+    /// End the body of `repeating`, as a loop's when it `closes` where it
+    /// began: with no loop or function body the grammar read begun since
+    /// and still open, nor one that ended since that began before it
+    /// (`while …; do repeat 3 do …; done; …; done`, where the grammar's
+    /// `done` closes the `while`). A body that does not cannot be read.
+    fn end_repeat(&mut self, repeating: &Repeating, closes: bool) {
+        if closes && self.bodies_began.len() == repeating.body + 1 {
+            self.end_body(None);
+        } else {
+            if repeating.body < self.bodies_began.len() {
+                self.bodies_began.remove(repeating.body);
+            }
+            self.problem(
+                Rule::Unreadable,
+                "repeats a body that cannot be read",
+                Some("repeat"),
+            );
+        }
+        self.repeats -= 1;
+        self.bodies -= 1;
+        self.branches -= 1;
+    }
+
+    /// Set aside the `repeat` bodies and `do` lists open, for a script read
+    /// in the middle of them: a body closes in the script it opens in.
+    pub(crate) fn take_repeats(&mut self) -> (Vec<Repeating>, usize) {
+        (
+            std::mem::take(&mut self.repeating),
+            std::mem::take(&mut self.open_dos),
+        )
+    }
+
+    /// Put back what [`Self::take_repeats`] set aside, once the script is
+    /// read: a body or a `do` list it left open is a script the shell does
+    /// not run as written.
+    pub(crate) fn restore_repeats(&mut self, (repeating, dos): (Vec<Repeating>, usize)) {
+        if std::mem::replace(&mut self.open_dos, dos) > 0 {
+            self.problem(
+                Rule::Unreadable,
+                "opens a loop that never closes",
+                Some("do"),
+            );
+        }
+        let left = std::mem::replace(&mut self.repeating, repeating);
+        for repeating in left.iter().rev() {
+            self.end_repeat(repeating, false);
+        }
+    }
+
     /// Note that the redirects written on the definition of the function
     /// whose body was read last come next: each is opened where a call is
     /// made, which [`Self::defined`] works out, so they are not the body's.
@@ -3897,7 +4027,9 @@ impl Split {
     /// `functions` with an option (`functions -c f g` copies one to a name
     /// the line does not define, `functions -M f` lets arithmetic call it),
     /// or zsh's `repeat`, which runs what comes before a `cd` in it again
-    /// after it, though the walk does not read it as a loop.
+    /// after it, and whose body the grammar does not read as one: the walk
+    /// reads it as a loop from the words around it (see
+    /// [`Self::begin_repeat`]).
     fn calls_end(&self) -> Option<usize> {
         const RUNS: [&str; 11] = [
             "eval",
@@ -5382,6 +5514,8 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     // A group a `coproc`, `time`, `!` or `repeat` opens closes in the same
     // script.
     let groups = std::mem::take(&mut split.open_groups);
+    // So does the body of a `repeat`, and a list its `do` opens.
+    let repeats = split.take_repeats();
     // A new process has none of the session's default parameter values;
     // `Invoke-Expression` runs its text with them.
     let defaults = (!here).then(|| std::mem::take(&mut split.powershell_defaults));
@@ -5399,6 +5533,7 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
             Some("{"),
         );
     }
+    split.restore_repeats(repeats);
     split.apart -= usize::from(apart);
     if let Some(defaults) = defaults {
         split.powershell_defaults = defaults;

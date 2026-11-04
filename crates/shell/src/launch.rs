@@ -535,6 +535,11 @@ fn runs_after(split: &mut Split, mut unit: Unit, key: String, start: usize, dept
     // that closes the group is a command of its own to the grammar, and
     // runs nothing.
     if unit.shell == Shell::Posix && (key == "coproc" || starts_command(&key)) {
+        // zsh's `repeat N` runs what comes after its count again and again:
+        // a loop whose body the grammar does not see.
+        if key == "repeat" {
+            split.begin_repeat(own.get(1).and_then(Arg::known) == Some("do"));
+        }
         let program = if opens_group(&key) {
             key.matches('{').count()
         } else {

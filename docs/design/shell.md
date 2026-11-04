@@ -461,7 +461,8 @@ bash's and zsh's `time` (after its `-p`) runs the command after it, past `{`,
 `{` as a program; wherever `{` or `!` is a program, the command after it is
 what runs: `! { rm -rf ~; }` is `Delete`. zsh's `repeat
 N` runs the command or group after its count (`repeat 3 rm -rf ~`, `repeat 3 {
-rm -rf ~; }`), or the list after `do` (`repeat 3 do rm -rf ~; done`). A loop,
+rm -rf ~; }`), or the list after `do` (`repeat 3 do rm -rf ~; done`), N
+times: it is read as a loop (see "Function bodies and loops" below). A loop,
 a conditional or a function after any of them (`time for …`, `! while …`), and
 a `{` stuck to a word (`time {rm -rf ~;}`, `! {rm -rf ~;}`), are cut up by the
 grammar as after `coproc`, and are `Unreadable`: a program named `while`, `if`,
@@ -947,7 +948,25 @@ and its findings are the line's, since the shell runs it as the same user.
   action read later, each command and redirect is still judged from where
   the walk has it too, so what that finds stands (`for i in 1 2; do cat
   ../../.ssh/id_rsa; cd sub; done` reads a key). A path the line names the
-  same wherever it is (`/tmp/build`, `~/build`) is judged as written. The
+  same wherever it is (`/tmp/build`, `~/build`) is judged as written. zsh's
+  `repeat N` is a loop too, whose body the grammar does not see: it reads
+  the `{` or `do` and the first command of the body as words of the one
+  command, the rest as the commands after it, and the `}` or `done` that
+  closes it as a command of its own. The walk reads the body from the
+  `repeat` to where it takes that `}` or `done` off (groups and lists that
+  other words open inside it, `coproc { … }`, `time { … }`, a `repeat`
+  within, close first), or to the end of its command when it opens neither
+  (`repeat 3 eval 'rm -rf build; cd /'`, `repeat 3 time { … }` to its
+  `}`): `repeat 3 { rm -rf build; cd /; }` and `repeat 3 do rm -rf build;
+  cd /; done` delete a top-level folder, while `repeat 3 { ls; }`, `repeat
+  3 ls` and `repeat 3 { rm -rf build; }; cd /` stay safe. A `do` that no
+  `done` closes (`repeat 3 do ls`) is `Unreadable`, `opens a loop that
+  never closes`, as a group that never closes is; so is a body that closes
+  where the grammar has a loop or a function body open that began inside
+  it, or has closed one that began before it (`while true; do repeat 3 do
+  ls; done; cd /; done`, where the grammar's `done` ends the `while`):
+  `repeats a body that cannot be read`. Each body closes in the script it
+  opens in. The
   same holds for PowerShell's `function`, `foreach`, `for`, `while`, `do`,
   `switch` and `ForEach-Object` blocks (a call names a function in any case,
   without its scope: `function global:Build` is called as `build`), and for

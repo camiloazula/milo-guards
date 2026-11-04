@@ -960,6 +960,42 @@ posix finds=delete | while true; do rm -rf build; cd /; done
 posix finds=delete | until false; do rm -rf build; cd /; done
 posix finds=delete | for ((i = 0; i < 2; i++)); do rm -rf build; cd /; done
 posix finds=delete | select x in a b; do rm -rf build; cd /; done
+# zsh's `repeat N` runs its group, the list between `do` and `done`, or its
+# command N times, as a loop does, though the grammar reads `{`, `do` and
+# the command as the words of one command and the rest of the body as the
+# commands after it.
+posix finds=delete reason="deletes a top-level folder" | repeat 3 { rm -rf build; cd /; }
+posix finds=delete reason="deletes a top-level folder" | repeat 3 do rm -rf build; cd /; done
+posix finds=delete reason="deletes a top-level folder" | repeat 3 eval 'rm -rf build; cd /'
+posix finds=delete | repeat 3 time { rm -rf build; cd /; }
+posix finds=delete | repeat 3 ! { rm -rf build; cd /; }
+posix finds=delete | repeat 3 { { rm -rf build; }; cd /; }
+posix finds=delete | repeat 3 { coproc { ls; }; rm -rf build; cd /; }
+posix finds=delete | repeat 3 do coproc { ls; }; rm -rf build; cd /; done
+posix finds=delete | repeat 3 do repeat 2 do rm -rf build; done; cd /; done
+posix finds=delete | repeat 3 { repeat 2 { rm -rf build; }; cd /; }
+posix finds=delete | repeat 3 { rm -rf build; cd /; } | wc -l
+posix finds=delete | true && repeat 3 { rm -rf build; cd /; }
+posix finds=delete | for i in 1 2; do repeat 3 { rm -rf build; }; cd /; done
+posix finds=delete | repeat 3 { ls; for i in 1; do rm -rf build; done; cd /; }
+posix finds=delete | repeat 3 { rm -rf build; cd /; cd tmp; }
+posix finds=delete | bash -c 'repeat 3 { rm -rf build; cd /; }'
+posix finds=overwrite | repeat 2 { echo x > out.txt; cd /; }
+posix finds=overwrite | repeat 2 do echo x > out.txt; cd /; done
+posix finds=read_secret | repeat 2 { cat id_rsa; cd ~/.ssh; }
+posix safe | repeat 3 ls
+posix safe | repeat 3 do ls; done
+posix safe | repeat 3 { rm -rf build; }
+posix safe | repeat 3 { rm -rf build; cd /tmp; }
+posix safe | repeat 3 { ls; (cd /; ls); rm -rf build; }
+posix safe | repeat 3 { rm -rf build; }; cd /
+posix safe | repeat 3 do rm -rf build; done; cd /
+posix safe | repeat 3 cd /; ls
+# A list `do` opens that no `done` closes is not run, and a body that closes
+# where the grammar has another loop open cannot be read.
+posix finds=unreadable | repeat 3 do ls
+posix finds=unreadable | while true; do repeat 3 do ls; done; cd /; done
+posix finds=unreadable | for i in 1; do repeat 3 { ls; done; }
 posix finds=delete | for i in 1 2; do for j in 1; do rm -rf build; done; cd /; done
 posix finds=overwrite | for i in 1 2; do echo x > out.txt; cd /; done
 posix finds=overwrite | f() { echo x > out.txt; }; cd /; f

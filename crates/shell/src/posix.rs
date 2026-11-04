@@ -1103,14 +1103,16 @@ const STATEMENTS: [&str; 18] = [
     "function_definition",
 ];
 
-/// Whether `name`, a command's name, is a bare `}`: the reserved word that
-/// closes a group, which the grammar reads as a command when it did not see
-/// the group open (`coproc { ls; }`). A quoted `'}'` is a program's name.
-fn closes_group(name: Node<'_>, source: &str) -> bool {
+/// Whether `name`, a command's name, is a bare `word`: `}`, the reserved
+/// word that closes a group, or `done`, the one that closes a loop's list,
+/// which the grammar reads as a command when it did not see the group or
+/// the list open (`coproc { ls; }`, `repeat 3 do ls; done`). A quoted `'}'`
+/// is a program's name.
+fn bare_word(name: Node<'_>, source: &str, word: &str) -> bool {
     name.named_child_count() == 1
         && name
             .named_child(0)
-            .is_some_and(|word| word.kind() == "word" && unit::text(&word, source) == "}")
+            .is_some_and(|child| child.kind() == "word" && unit::text(&child, source) == word)
 }
 
 /// What stands for an expansion in a template: a variable the guard cannot
@@ -2212,9 +2214,15 @@ impl Walker<'_> {
                     .insert(unit::text(arg, self.source).to_string());
             }
         }
-        // The `}` that closes a group a `coproc` opened runs nothing.
-        if self.split.open_groups > 0 && nodes.is_empty() && closes_group(name, self.source) {
+        // The `}` that closes a group a `coproc` opened runs nothing, nor
+        // does the `done` that closes the list of a `repeat N do`.
+        if self.split.open_groups > 0 && nodes.is_empty() && bare_word(name, self.source, "}") {
             self.split.open_groups -= 1;
+            self.split.close_repeats();
+            return;
+        }
+        if self.split.open_dos > 0 && nodes.is_empty() && bare_word(name, self.source, "done") {
+            self.split.close_do();
             return;
         }
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
@@ -2997,6 +3005,7 @@ impl Walker<'_> {
     /// (`cd "$(cat ../x)"`), what they run starts where it does.
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let first = self.split.units.len();
+        let repeats = self.split.repeats_open();
         self.command(node, stage);
         let own = first..self.split.units.len();
         self.split.enter_start(&own, plain(node));
@@ -3025,6 +3034,7 @@ impl Walker<'_> {
                 self.split.text_fed(own.clone(), text);
             }
         }
+        self.split.end_repeats(repeats);
     }
 
     /// Walk `redirect`, a redirect of a file on a command whose own units are
