@@ -1120,9 +1120,11 @@ impl Checker<'_> {
     /// when it runs read by the name it ends in (see [`super::named`]),
     /// `curl -T "$PWD/.env"` sending `.env`. The folder may be the home
     /// directory, so a name that is a secret there is read as there:
-    /// `"$x/.ssh/id_rsa"` is `~/.ssh/id_rsa`.
+    /// `"$x/.ssh/id_rsa"` is `~/.ssh/id_rsa`, and so is the file an option
+    /// names after its `=` (`--post-file=$x/.ssh/id_rsa`, and in PowerShell
+    /// `--post-file=$x\.ssh\id_rsa`, which its walk reads so).
     fn named_send<'u>(&self, unit: &'u Unit) -> Cow<'u, Unit> {
-        if unit.shell != Shell::Posix {
+        if unit.shell == Shell::Cmd {
             return Cow::Borrowed(unit);
         }
         let names: Vec<Option<Arg>> = unit
@@ -1131,13 +1133,26 @@ impl Checker<'_> {
             .map(|arg| {
                 let name = super::named_in_unknown_folder(arg)?;
                 let text = name.known()?;
-                let home = Arg::Known(format!("~/{text}"));
-                let secret = !text.starts_with(['/', '~'])
+                // An option with the file attached (`--post-file=$d/.env`)
+                // names it after its `=`.
+                let (option, path) = crate::unit::attached(text).unwrap_or(("", text));
+                let equals = if option.is_empty() { "" } else { "=" };
+                let separator = if unit.shell == Shell::Posix {
+                    '/'
+                } else {
+                    '\\'
+                };
+                let home = Arg::Known(format!("~{separator}{path}"));
+                let secret = !path.starts_with(['/', '\\', '~'])
                     && matches!(
                         self.place(unit.shell, unit.scope(), &home, Access::Item),
                         Place::Sensitive(_, Sensitivity::Secret)
                     );
-                Some(if secret { home } else { name })
+                Some(if secret {
+                    Arg::Known(format!("{option}{equals}~{separator}{path}"))
+                } else {
+                    name
+                })
             })
             .collect();
         if names.iter().all(Option::is_none) {
@@ -2448,6 +2463,21 @@ struct Upload {
     word: bool,
 }
 
+/// The program a bare `curl` or `wget` in PowerShell may be besides
+/// `Invoke-WebRequest`, whose alias it is in Windows PowerShell: pwsh has no
+/// such alias and runs the program itself, so the word is read as both, and
+/// what either sends counts.
+fn native_web(unit: &Unit, key: &str) -> Option<&'static str> {
+    if unit.shell != Shell::PowerShell || key != "invoke-webrequest" {
+        return None;
+    }
+    match crate::unit::key(unit.program.known()?, Shell::Cmd).as_str() {
+        "curl" => Some("curl"),
+        "wget" => Some("wget"),
+        _ => None,
+    }
+}
+
 /// The files a unit uploads, named in its own arguments.
 fn uploads(unit: &Unit, key: &str) -> Vec<Upload> {
     match key {
@@ -2461,10 +2491,16 @@ fn uploads(unit: &Unit, key: &str) -> Vec<Upload> {
             .filter_map(item_file)
             .map(|file| named(file, false))
             .collect(),
-        "invoke-webrequest" | "invoke-restmethod" => parameter(&unit.args, "infile")
-            .into_iter()
-            .map(|arg| Upload { arg, word: true })
-            .collect(),
+        "invoke-webrequest" | "invoke-restmethod" => {
+            let mut files: Vec<Upload> = parameter(&unit.args, "infile")
+                .into_iter()
+                .map(|arg| Upload { arg, word: true })
+                .collect();
+            if let Some(native) = native_web(unit, key) {
+                files.extend(uploads(unit, native));
+            }
+            files
+        }
         "start-bitstransfer" => bits_files(&unit.args),
         // `-Attachments` takes a list of files and mails them.
         "send-mailmessage" => parameter_list(&unit.args, "attachments")

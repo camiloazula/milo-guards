@@ -1856,9 +1856,28 @@ impl Walker<'_> {
                         // word on the list of the argument before, or starts
                         // a list of one, and is not part of it.
                         let item = source.trim_start_matches(',');
+                        let bare = matches!(element.kind(), "generic_token" | "command_parameter");
                         if element.kind() == "generic_token" && item.len() < source.len() {
                             args.push(comma_item(item, source));
                             shapes.push(self.shape(element, after_argument));
+                        } else if let Some(items) = bare.then(|| comma_items(source)).flatten() {
+                            // `--post-file=.env,x`: the grammar reads the word
+                            // whole, but PowerShell ends a bare word at a
+                            // comma, and hands each item on as an argument.
+                            for (index, item) in items.into_iter().enumerate() {
+                                let arg = attached_path(item, self.split)
+                                    .unwrap_or_else(|| comma_item(item, item));
+                                shapes.push(if index == 0 {
+                                    self.shape(element, joined)
+                                } else {
+                                    blocks::Shape {
+                                        joined: true,
+                                        plain: arg.known().is_some(),
+                                        ..blocks::Shape::default()
+                                    }
+                                });
+                                args.push(arg);
+                            }
                         } else {
                             self.push_element(
                                 &mut args,
@@ -2946,18 +2965,14 @@ impl Walker<'_> {
         match node.kind() {
             "generic_token" => match bare_expansion(source) {
                 None => Arg::Known(unescape(source)),
-                Some(false) if let Some(word) = attached_path(source, self.split) => {
-                    Arg::Known(word)
-                }
+                Some(false) if let Some(word) = attached_path(source, self.split) => word,
                 Some(runs) => Arg::Template {
                     text: unescape(source),
                     source: source.into(),
                     runs,
                 },
             },
-            "command_parameter" if let Some(word) = attached_path(source, self.split) => {
-                Arg::Known(word)
-            }
+            "command_parameter" if let Some(word) = attached_path(source, self.split) => word,
             "command_parameter" => match quoted_parameter(source) {
                 Some(Parameter {
                     text,
@@ -5716,25 +5731,73 @@ pub(crate) fn bare_path(source: &str, split: &Split) -> Option<String> {
     Some(format!("{}{}", place_variable(name)?, &source[end..]))
 }
 
-/// The word a native program's option with its value attached is, when the
-/// value is a variable and a path [`bare_path`] spells out
-/// (`--post-file=$HOME\.ssh\id_rsa` is `--post-file=~\.ssh\id_rsa`):
-/// PowerShell expands the variable in it as it does in any bare word, and
-/// the program reads what follows the `=` as a path of its own. An option
-/// is a `-` or `--` and a plain name; anything else in the word stays as it
-/// was read.
-fn attached_path(source: &str, split: &Split) -> Option<String> {
-    let (option, value) = source.split_once('=')?;
-    let name = option.strip_prefix('-')?;
-    let name = name.strip_prefix('-').unwrap_or(name);
-    let plain = name.starts_with(|c: char| c.is_ascii_alphabetic())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
-    if !plain {
+/// The word an option with its value attached is, when the value is a
+/// variable and a path (`--post-file=$HOME\.ssh\id_rsa`): PowerShell
+/// expands the variable in it as it does in any bare word, and the program
+/// reads what follows the `=` as a path of its own. When [`bare_path`] spells
+/// the place out, the word is known, `--post-file=~\.ssh\id_rsa`; when it
+/// does not (a variable that names no place, or one the line sets), the
+/// value is a path under a folder only known when it runs, which the rules
+/// that follow a secret read by the name it ends in, as they read `$d/.env`
+/// in a POSIX shell. An option is a `-` or `--` and a plain name (see
+/// [`unit::attached`]); anything else in the word stays as it was read.
+fn attached_path(source: &str, split: &Split) -> Option<Arg> {
+    let (option, value) = unit::attached(source)?;
+    if !value.starts_with('$') {
         return None;
     }
-    Some(format!("{option}={}", bare_path(value, split)?))
+    if let Some(path) = bare_path(value, split) {
+        return Some(Arg::Known(format!("{option}={path}")));
+    }
+    let chars: Vec<char> = value.chars().collect();
+    if variable_word(&chars, 0)? != chars.len() {
+        return None;
+    }
+    let (_, rest) = value.split_once(['\\', '/'])?;
+    let rest = unescape(rest.trim_start_matches(['\\', '/']));
+    Some(Arg::Template {
+        text: format!("{option}={}/{rest}", crate::posix::OPAQUE),
+        source: source.into(),
+        runs: false,
+    })
+}
+
+/// The items of a bare word the grammar reads whole though it holds a
+/// comma (`--post-file=.env,x`), split at each comma that is not quoted,
+/// escaped, or inside an expansion or brackets: `None` when there is none.
+fn comma_items(source: &str) -> Option<Vec<&str>> {
+    if !source.contains(',') || ends_in_dollar(source) {
+        return None;
+    }
+    let mut items = Vec::new();
+    let mut start = 0;
+    let mut depth = 0_usize;
+    let mut quote = None;
+    let mut chars = source.char_indices();
+    while let Some((at, c)) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') => quote = None,
+            (Some('\''), _) => {}
+            (_, '`') => {
+                chars.next();
+            }
+            (Some('"'), '"') => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '(' | '{' | '[') => depth += 1,
+            (None, ')' | '}' | ']') => depth = depth.saturating_sub(1),
+            (None, ',') if depth == 0 => {
+                items.push(&source[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    if items.is_empty() {
+        return None;
+    }
+    items.push(&source[start..]);
+    Some(items)
 }
 
 #[cfg(test)]

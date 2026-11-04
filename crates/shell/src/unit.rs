@@ -576,6 +576,20 @@ fn rooted(path: &str) -> bool {
     }
 }
 
+/// The option and the value of a word that is an option with its value
+/// attached (`--post-file=f`, `-x=f`): a `-` or `--` and a plain name, then
+/// `=` and the value.
+pub(crate) fn attached(word: &str) -> Option<(&str, &str)> {
+    let (option, value) = word.split_once('=')?;
+    let name = option.strip_prefix('-')?;
+    let name = name.strip_prefix('-').unwrap_or(name);
+    let plain = name.starts_with(|c: char| c.is_ascii_alphabetic())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    plain.then_some((option, value))
+}
+
 /// Whether `text`, a word as the shell expands it, is a wildcard pattern:
 /// it holds a `*` or a `?`, or a `[` with a `]` after it (a `[` alone is a
 /// name, as the program `[` is).
