@@ -97,3 +97,23 @@ fn many_options_and_folders_of_an_unpacker_are_read_quickly() {
         );
     }
 }
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn many_archives_written_are_read_in_linear_time() {
+    for (what, start, part) in [
+        ("tar -c -f ~/a -f ~/b …", "tar -c", " -f ~/a"),
+        ("cpio -o -F ~/a …", "cpio -o", " -F ~/a -O ~/b"),
+        ("pax -w -f ~/a …", "pax -w", " -f ~/a"),
+        ("jar cf … @a …", "jar c", " -f ~/a @x"),
+        ("aunpack -X ~ \"$O\" …", "aunpack", " -X ~ \"$O\" a.zip"),
+        ("zip x.zip -O ~/a …", "zip x.zip", " -O ~/a"),
+    ] {
+        common::assert_linear(what, Shell::Posix, &posix(), |size| {
+            format!("{start}{}", common::filled(part, size, start.len()))
+        });
+    }
+}

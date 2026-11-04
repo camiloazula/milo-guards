@@ -1,0 +1,135 @@
+# Compressors. A compressor run on a file deletes that file and writes the
+# compressed one beside it (`gzip x` writes `x.gz`), and decompressing does
+# the reverse (`gunzip x.gz` writes `x`): the file it deletes is judged as
+# `rm` judges its operands, and the file it writes as any write, so beyond
+# the workspace, a startup file or a protected one is `delete` or
+# `overwrite`. `-c` (`--stdout`) writes to the screen, `-t` and `-l` test
+# and list, and `-k` (`--keep`) keeps the file. `zstd`, `lz4`, `lzop` and
+# `brotli` keep it unless `--rm` (`lzop -U`, `brotli -j`) says not to. The
+# same lines inside the workspace are safe. The format is in
+# CONTRIBUTING.md.
+
+# A compressor deletes the file it is given and writes the one it makes.
+posix finds=delete,overwrite | gzip ~/.bashrc
+posix finds=delete reason="deletes a shell startup file" | xz ~/.bashrc
+posix finds=delete,overwrite | bzip2 ~/.bashrc
+posix finds=delete,overwrite | zstd --rm ~/.bashrc
+posix finds=delete,overwrite | lz4 --rm ~/.bashrc
+posix finds=delete,overwrite | compress ~/.bashrc
+posix finds=delete,overwrite | pigz ~/.bashrc
+posix finds=delete,overwrite | lzma ~/.bashrc
+posix finds=delete,overwrite | lzip ~/.bashrc
+posix finds=delete,overwrite | lzop -U ~/.bashrc
+posix finds=delete,overwrite | lzop --unlink ~/.bashrc
+posix finds=delete,overwrite | brotli -j ~/.bashrc
+posix finds=delete,overwrite | brotli --rm ~/.bashrc
+posix finds=delete,overwrite | gzip -9 ~/notes.txt
+posix finds=delete,overwrite | gzip -- ~/notes.txt
+posix finds=delete,overwrite | cd ~ && gzip notes.txt
+posix finds=delete,overwrite | gzip -f /etc/hosts
+posix finds=delete,overwrite | xz -T 4 ~/notes.txt
+posix finds=delete | gzip ~/*
+posix finds=delete,overwrite | gzip "$f"
+posix finds=delete | gzip .git/config
+posix safe | gzip src/a.txt
+posix safe | gzip -9 src/a.txt
+posix safe | xz src/a.txt
+posix safe | bzip2 src/a.txt
+posix safe | zstd --rm src/a.txt
+posix safe | lz4 --rm src/a.txt
+posix safe | compress src/a.txt
+posix safe | gzip /tmp/a.txt
+posix safe | gzip *.log
+posix safe | xz -T 4 src/a.txt
+
+# Writing to the screen, testing and listing write nothing; keeping the file
+# still writes the compressed one.
+posix safe | gzip -c ~/.bashrc
+posix safe | gzip --stdout ~/.bashrc
+posix safe | gzip --to-stdout ~/.bashrc
+posix safe | xz -dc ~/x.xz
+posix safe | zstd -c ~/x
+posix safe | gzip -t ~/x.gz
+posix safe | gzip -l ~/x.gz
+posix safe | xz --list ~/x.xz
+posix safe | zstd -t ~/x.zst
+posix safe | gzip
+posix safe | gzip -
+posix safe | zcat ~/x.gz
+posix first=overwrite lacks=delete reason="writes to a file outside the workspace" | gzip -k ~/.bashrc
+posix rules=overwrite | gzip --keep ~/.bashrc
+posix rules=overwrite | xz -k ~/.bashrc
+posix rules=overwrite | bzip2 -k ~/.bashrc
+posix safe | gzip -k src/a.txt
+
+# zstd, lz4, lzop and brotli keep the file unless told not to; the file they
+# write is judged still.
+posix rules=overwrite | zstd ~/.bashrc
+posix rules=overwrite | lz4 ~/.bashrc
+posix rules=overwrite | lzop ~/.bashrc
+posix rules=overwrite | brotli ~/.bashrc
+posix safe | zstd src/a.txt
+posix safe | lz4 src/a.txt
+posix safe | brotli src/a.txt
+posix finds=delete reason="may delete a path outside the workspace with an option only known when it runs" | zstd "--$X" ~/notes.txt
+posix finds=delete,overwrite | zstd $OPTS ~/notes.txt
+
+# Decompressing deletes the compressed file and writes the one it held,
+# which may be a startup file.
+posix finds=delete,overwrite | gunzip ~/x.gz
+posix finds=overwrite reason="writes to a shell startup file" | gunzip ~/.bashrc.gz
+posix finds=overwrite reason="writes to a shell startup file" | gzip -d ~/.bashrc.gz
+posix finds=overwrite reason="writes to a shell startup file" | gzip --decompress ~/.bashrc.gz
+posix finds=overwrite reason="writes to a shell startup file" | gzip --decomp ~/.bashrc.gz
+posix finds=overwrite reason="writes to a shell startup file" | unxz ~/.bashrc.xz
+posix finds=overwrite reason="writes to a shell startup file" | bunzip2 ~/.bashrc.bz2
+posix finds=overwrite reason="writes to a shell startup file" | zstd -d ~/.bashrc.zst
+posix finds=overwrite reason="writes to a shell startup file" | unzstd ~/.bashrc.zst
+posix finds=overwrite reason="writes to a shell startup file" | uncompress ~/.bashrc.Z
+posix finds=overwrite reason="writes to a shell startup file" | xz -d -S .bak ~/.bashrc.bak
+posix finds=overwrite | gunzip .envrc.gz
+posix finds=delete,overwrite | gunzip .git/hooks/pre-commit.gz
+posix finds=overwrite | gunzip -S .bak .envrc.bak
+posix finds=overwrite | bunzip2 ~/x
+posix safe | gunzip src/x.gz
+posix safe | gunzip x.tgz
+posix safe | gzip -d -c ~/.bashrc.gz
+
+# The file named to write, a folder to write into and a suffix are judged
+# where they land.
+posix first=overwrite lacks=delete reason="writes to a shell startup file" | zstd -o ~/.bashrc src/a.txt
+posix rules=overwrite | zstd -d -o /etc/hosts x.zst
+posix rules=overwrite | zstd --output-dir-flat ~ src/a.txt
+posix first=overwrite lacks=delete reason="writes to a shell startup file" | zstd -d --output-dir-flat ~ src/.bashrc.zst
+posix rules=overwrite | lzip -o ~/x src/a.txt
+posix rules=overwrite | lzop -p ~ src/a.txt
+posix rules=overwrite | brotli -o ~/x.br src/a.txt
+posix first=overwrite lacks=delete reason="writes to a shell startup file" | lz4 src/a.txt ~/.bashrc
+posix rules=overwrite | lz4 -d x.lz4 /etc/hosts
+posix safe | lz4 -m src/a.txt src/b.txt
+posix safe | lz4 src/a.txt out.lz4
+posix safe | zstd -o out.zst src/a.txt
+posix safe | zstd -o - src/a.txt
+posix safe | zstd -D ~/dict src/a.txt
+posix first=overwrite reason="writes to a shell startup file" | gzip -k -S rc ~/.bash
+posix finds=overwrite | gzip -k -S rc src/.env
+posix safe | gzip -S .bak src/a.txt
+posix finds=overwrite reason="may write to a file only known when it runs with an option only known when it runs" | zstd "-$L" src/a.txt
+
+# A folder given to `-r` has every file in it compressed.
+posix finds=delete reason="deletes your home directory" | gzip -r ~
+posix finds=overwrite reason="writes into your home directory" | gzip -r ~
+posix safe | gzip -r src
+
+# Files from a list, or from the stage before, may be anywhere.
+posix finds=delete,overwrite | xz --files=list.txt
+posix finds=delete,overwrite | zstd --rm --filelist list.txt
+posix finds=delete,overwrite | find ~ -name '*.log' | xargs gzip
+posix finds=delete | ls | xargs gzip
+
+# In PowerShell and cmd, `gzip` is the same program; `compress` there is
+# Windows' own.
+powershell finds=delete,overwrite | gzip C:\\Users\\me\\notes.txt
+cmd finds=delete,overwrite | gzip C:\\Users\\me\\notes.txt
+cmd safe | gzip src\\a.txt
+cmd safe | compress -r src\\a.txt out

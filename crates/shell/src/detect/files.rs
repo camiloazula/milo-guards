@@ -400,22 +400,22 @@ impl Checker<'_> {
                 }
             }
 
-            // Unpacking an archive writes into the folder it unpacks to;
-            // packing one with `--remove-files`, `-m` or `-sdel` deletes
-            // what it packs, as `rar m` does.
-            "tar" | "gtar" | "bsdtar" | "7z" | "7za" | "7zr" | "7zz" => {
-                self.unpack(unit, key);
+            // Unpacking an archive writes into the folder it unpacks to, and
+            // packing one writes the archive; packing with
+            // `--remove-files`, `-m` or `-sdel` deletes what it packs, as
+            // `rar m` does.
+            "tar" | "gtar" | "bsdtar" | "7z" | "7za" | "7zr" | "7zz" | "rar" | "zip" => {
+                self.archive(unit, key);
                 self.pack_and_remove(unit, key);
             }
-            "unzip" | "expand-archive" | "cpio" | "gcpio" | "bsdcpio" | "ditto" | "pax"
-            | "unrar" | "winrar" | "unar" | "jar" => self.unpack(unit, key),
+            "unzip" | "bsdunzip" | "expand-archive" | "compress-archive" | "cpio" | "gcpio"
+            | "bsdcpio" | "ditto" | "pax" | "unrar" | "winrar" | "unar" | "jar" | "aunpack"
+            | "atool" | "apack" => self.archive(unit, key),
             // `python3 -m zipfile -e a.zip DIR`.
-            key if crate::launch::is_python(key) => self.unpack(unit, key),
-            "rar" => {
-                self.unpack(unit, key);
-                self.pack_and_remove(unit, key);
-            }
-            "zip" => self.pack_and_remove(unit, key),
+            key if crate::launch::is_python(key) => self.archive(unit, key),
+            // A compressor replaces the file it is given with the file it
+            // writes.
+            key if super::compressors::spec(key, shell).is_some() => self.compress(unit, key),
 
             // Writing into files.
             "truncate" => {

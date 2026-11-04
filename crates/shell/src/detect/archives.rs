@@ -2,8 +2,11 @@
 //! folder, judged like the destination of `cp`; with no folder given it
 //! unpacks into the working directory, and the paths stored in the archive
 //! cannot be seen from the line and are not read, unless an option keeps
-//! them absolute (`tar -P`). The unpackers other than `tar`, `unzip`, `7z`
-//! and `Expand-Archive` are read in [`unpackers`]. One packed with an option
+//! them absolute (`tar -P`), or the program does so by default (GNU `cpio
+//! -i`, `pax -r`): then they land anywhere. An archive written (`tar -cf
+//! x.tar`, `zip x.zip`, `cpio -o -F x`) is a write of its file. The
+//! archivers other than `tar`, `zip`, `unzip`, `7z`, `Expand-Archive` and
+//! `Compress-Archive` are read in [`unpackers`]. One packed with an option
 //! that removes what it packs (`tar --remove-files`, `zip -m`, `7z a
 //! -sdel`, `rar m`) deletes the members
 //! named on the line, judged like the operands of `rm`. The commands `tar`
@@ -22,36 +25,65 @@ use milo_guards_core::Flavour;
 use std::collections::HashSet;
 
 impl Checker<'_> {
-    /// `tar -x`, `unzip`, `7z x`, `Expand-Archive`, and the unpackers of
-    /// [`unpackers`]: `cpio -i`, `ditto -x`, `pax -r`, `unrar x`, `unar`,
-    /// `jar x`, `python -m zipfile -e`.
-    pub(super) fn unpack(&mut self, unit: &Unit, key: &str) {
+    /// What an archiver writes: the folder `tar -x`, `unzip`, `7z x`,
+    /// `Expand-Archive` and the unpackers of [`unpackers`] (`cpio -i`,
+    /// `ditto -x`, `pax -r`, `unrar x`, `unar`, `jar x`, `aunpack`,
+    /// `python -m zipfile -e`) fill, and the archive `tar -c`, `zip`, `7z
+    /// a`, `rar a`, `Compress-Archive` and the archivers of [`unpackers`]
+    /// (`cpio -o`, `pax -w`, `jar c`, `ditto -c`, `apack`) write.
+    pub(super) fn archive(&mut self, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
-        let unpack = match key {
+        let shell = unit.shell;
+        let archiving = match key {
             "tar" | "gtar" | "bsdtar" => {
-                let tar = tar(args, unit.shell, key);
+                let tar = tar(args, shell, key);
                 // `-P` keeps the leading `/` and the `..` of the paths
                 // stored in the archive: they land wherever those say.
                 let absolute = tar.unpacks && tar.absolute;
-                tar.unpacks_into()
-                    .map(|folders| Unpack::filling(folders).absolute(absolute))
+                let written = tar.written.clone();
+                Archiving {
+                    unpack: tar
+                        .unpacks_into()
+                        .map(|folders| Unpack::filling(folders).absolute(absolute)),
+                    written,
+                    ..Archiving::default()
+                }
             }
-            "unzip" => unzip(args).map(Unpack::filling),
-            "7z" | "7za" | "7zr" | "7zz" => seven_zip(args).map(Unpack::filling),
-            "expand-archive" => Some(Unpack::filling(expand_archive(args))),
-            _ => unpackers::unpack(key, args, unit.shell),
+            "unzip" | "bsdunzip" => Archiving::unpacking(unzip(args).map(Unpack::filling)),
+            "zip" => Archiving::writing(zip(args, shell).written),
+            "7z" | "7za" | "7zr" | "7zz" => Archiving {
+                unpack: seven_zip(args).map(Unpack::filling),
+                written: seven_zip_written(args),
+                ..Archiving::default()
+            },
+            "expand-archive" => Archiving::unpacking(Some(Unpack::filling(expand_archive(args)))),
+            "compress-archive" => Archiving::writing(compress_archive(args)),
+            _ => unpackers::archiving(key, args, shell),
         };
-        let Some(unpack) = unpack else {
-            return;
-        };
-        if let Some(reason) = unpack.anywhere {
-            self.add(Rule::Overwrite, reason, None);
+        if archiving.unread {
+            self.add(
+                Rule::Unknown,
+                "takes arguments from a file the guard does not read",
+                None,
+            );
         }
-        // A folder named again is judged once.
+        if let Some(unpack) = archiving.unpack {
+            if let Some(reason) = unpack.anywhere {
+                self.add(Rule::Overwrite, reason, None);
+            }
+            // A folder named again is judged once.
+            let mut judged = HashSet::new();
+            for folder in &unpack.folders {
+                if judged.insert(folder) {
+                    self.write_folder(shell, unit.scope(), folder, unpack.verb);
+                }
+            }
+        }
+        // `-` is the program's output, which a redirect sends on.
         let mut judged = HashSet::new();
-        for folder in &unpack.folders {
-            if judged.insert(folder) {
-                self.write_folder(unit.shell, unit.scope(), folder, unpack.verb);
+        for archive in &archiving.written {
+            if archive.known() != Some("-") && judged.insert(archive) {
+                self.write(shell, unit.scope(), archive, "writes to");
             }
         }
     }
@@ -84,6 +116,36 @@ impl Checker<'_> {
         // Only an argument that may be the option removes them.
         if unread {
             self.hedge(before);
+        }
+    }
+}
+
+/// What an archiver writes, as far as its arguments show.
+#[derive(Default)]
+struct Archiving {
+    /// Where it unpacks, if it does.
+    unpack: Option<Unpack>,
+    /// The archives it writes, each as written.
+    written: Vec<Arg>,
+    /// Whether it takes arguments from a file the line does not show
+    /// (`jar @opts`).
+    unread: bool,
+}
+
+impl Archiving {
+    /// An archiver that only unpacks, as `unpack` says.
+    fn unpacking(unpack: Option<Unpack>) -> Self {
+        Self {
+            unpack,
+            ..Self::default()
+        }
+    }
+
+    /// An archiver that only writes the archives `written`.
+    fn writing(written: Vec<Arg>) -> Self {
+        Self {
+            written,
+            ..Self::default()
         }
     }
 }
@@ -174,6 +236,11 @@ struct Tar {
     members: Vec<Arg>,
     /// The commands it runs through a shell (see [`commands`]).
     commands: Vec<Arg>,
+    /// The archives it writes: the files `-f` (`--file`) names, when the
+    /// mode makes, adds to or rewrites an archive (`-c`, `-r`, `-u`, `-A`,
+    /// `--delete`), or is only known when it runs and no mode letter rules
+    /// that out.
+    written: Vec<Arg>,
 }
 
 impl Tar {
@@ -214,7 +281,6 @@ const TAR_LONG_VALUES: &[&str] = &[
     "exclude-tag",
     "exclude-tag-all",
     "exclude-tag-under",
-    "file",
     "format",
     "group",
     "group-map",
@@ -321,6 +387,8 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
         under: None,
         members: Vec::new(),
         commands: Vec::new(),
+        rewrites: false,
+        archives: Vec::new(),
     };
     let mut iter = args.iter().enumerate();
     while let Some((at, arg)) = iter.next() {
@@ -384,6 +452,11 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
     } else {
         Flagged::Absent
     };
+    let written = if read.pack || read.rewrites || mode_unknown {
+        read.archives
+    } else {
+        Vec::new()
+    };
     Tar {
         unpacks: (read.extract || mode_unknown) && !read.other_mode && !read.to_stdout,
         removes,
@@ -391,6 +464,7 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
         folders: read.folders,
         members: read.members,
         commands: read.commands,
+        written,
     }
 }
 
@@ -416,6 +490,11 @@ struct TarRead<'a> {
     under: Option<Arg>,
     members: Vec<Arg>,
     commands: Vec<Arg>,
+    /// Whether the mode rewrites an archive it is given: `-A`
+    /// (`--catenate`, `--concatenate`), `--delete`.
+    rewrites: bool,
+    /// The files `-f` (`--file`) names, in order.
+    archives: Vec<Arg>,
 }
 
 /// The modes of `tar` that pack or unpack, each with the fewest letters of
@@ -476,11 +555,16 @@ impl TarRead<'_> {
                 self.other_mode = true;
                 self.pack = true;
             }
-        } else if ["list", "diff", "compare", "delete"]
-            .iter()
-            .any(|mode| is(mode))
-        {
+        } else if ["list", "diff", "compare"].iter().any(|mode| is(mode)) {
             self.other_mode = true;
+        } else if is("delete") || is("catenate") || is("concatenate") {
+            self.other_mode = true;
+            self.rewrites = true;
+        } else if is("file") {
+            if let Some(archive) = value(attached) {
+                self.split(&archive);
+                self.archives.push(archive);
+            }
         } else if long_option(name, "to-stdout", 4) {
             self.to_stdout = true;
         } else if is("remove-files") {
@@ -587,6 +671,7 @@ impl TarRead<'_> {
                     }
                     // The script GNU tar runs at the end of each volume.
                     ('F', value) => self.commands.extend(value),
+                    ('f', Some(archive)) => self.archives.push(archive),
                     _ => {}
                 }
                 if !old_style {
@@ -600,7 +685,11 @@ impl TarRead<'_> {
                     self.other_mode = true;
                     self.pack = true;
                 }
-                't' | 'A' | 'd' => self.other_mode = true,
+                't' | 'd' => self.other_mode = true,
+                'A' => {
+                    self.other_mode = true;
+                    self.rewrites = true;
+                }
                 'O' => self.to_stdout = true,
                 'P' => self.absolute = true,
                 _ => {}
@@ -770,6 +859,23 @@ fn expand_archive(args: &[Arg]) -> Vec<Arg> {
     vec![folder]
 }
 
+/// The archive `Compress-Archive` writes: `-DestinationPath`, or the second
+/// positional argument (the first when `-Path` or `-LiteralPath` is named).
+fn compress_archive(args: &[Arg]) -> Vec<Arg> {
+    let params = Params::read(args);
+    let named = params.values(&["destinationpath"]);
+    if let Some(archive) = named.first() {
+        return vec![(*archive).clone()];
+    }
+    let path_named = !params.values(&["path", "literalpath"]).is_empty();
+    params
+        .positional
+        .get(usize::from(!path_named))
+        .map(|archive| (*archive).clone())
+        .into_iter()
+        .collect()
+}
+
 /// What the arguments of `zip` after the archive's name stand for, while
 /// they are read.
 #[derive(Clone, Copy, PartialEq)]
@@ -812,6 +918,10 @@ struct Zip {
     recurses: Recursion,
     /// The commands `-TT` (`--unzip-command`) gives it to test the archive.
     commands: Vec<Arg>,
+    /// The archives it writes: its first operand, and the one `-O`
+    /// (`--output-file`) names; none when it only shows what an archive
+    /// holds (`-sf`, `--show-files`).
+    written: Vec<Arg>,
 }
 
 impl Zip {
@@ -863,6 +973,8 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
     let mut positional = Vec::new();
     let mut included = Vec::new();
     let mut commands = Vec::new();
+    let mut outputs = Vec::new();
+    let mut shows = false;
     let mut list = None;
     let mut options_done = false;
     let mut iter = args.iter();
@@ -921,12 +1033,20 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
                     Some(command) => Some(Arg::Known(command.to_string())),
                     None => iter.next().cloned(),
                 });
+            } else if is("output-file") {
+                outputs.extend(match attached {
+                    Some(archive) => Some(Arg::Known(archive.to_string())),
+                    None => iter.next().cloned(),
+                });
+            } else if is("show-files") {
+                shows = true;
             } else if attached.is_none() && ZIP_LONG_VALUES.iter().any(|full| is(full)) {
                 split.extend(iter.next().filter(|value| may_split(value, shell)).cloned());
             }
             continue;
         }
         let letters = &text[1..];
+        shows |= letters == "sf";
         let mut before = None;
         for (at, letter) in letters.char_indices() {
             let rest = &letters[at + letter.len_utf8()..];
@@ -1010,14 +1130,24 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
             if separate {
                 let value = iter.next();
                 split.extend(value.filter(|value| may_split(value, shell)).cloned());
-                if letter == 'T' {
-                    commands.extend(value.cloned());
+                match letter {
+                    'T' => commands.extend(value.cloned()),
+                    'O' => outputs.extend(value.cloned()),
+                    _ => {}
                 }
+            } else if letter == 'O' {
+                outputs.push(Arg::Known(rest.to_string()));
             }
             if separate || inside || matches!(letter, 'b' | 'O' | 'P' | 'Z' | 't') {
                 break;
             }
         }
+    }
+    // The archive it writes is its first operand, unless it only shows one.
+    let mut written: Vec<Arg> = positional.first().cloned().into_iter().collect();
+    written.extend(outputs);
+    if shows {
+        written.clear();
     }
     // The first operand is the archive, unless it is not known which it is.
     let skip = usize::from(
@@ -1056,6 +1186,7 @@ fn zip(args: &[Arg], shell: Shell) -> Zip {
         members,
         recurses,
         commands,
+        written,
     }
 }
 
@@ -1145,6 +1276,28 @@ fn may_be_switch(arg: &Arg) -> bool {
     arg.known().is_none()
         && !readable(arg)
             .starts_with(|c: char| c.is_alphanumeric() || matches!(c, '.' | '/' | '~' | '\\' | '_'))
+}
+
+/// The archive `7z a`, `u`, `d` and `rn` write: the operand after the
+/// command. A command only known when it runs may be one of them. An
+/// argument whose readable start is `-` is a switch.
+fn seven_zip_written(args: &[Arg]) -> Vec<Arg> {
+    let mut positional = args.iter().filter(|arg| {
+        let start = readable(arg);
+        !(start.starts_with('-') && start.len() > 1)
+    });
+    let writes = positional.next().is_some_and(|command| {
+        command.known().is_none_or(|command| {
+            matches!(
+                command.to_ascii_lowercase().as_str(),
+                "a" | "u" | "d" | "rn"
+            )
+        })
+    });
+    if !writes {
+        return Vec::new();
+    }
+    positional.next().cloned().into_iter().collect()
 }
 
 /// The files `7z a` and `7z u` delete after adding them, which `-sdel`
@@ -1283,6 +1436,35 @@ fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
     } else {
         (Vec::new(), false)
     }
+}
+
+/// The archive `rar` (and `WinRAR.exe`) writes with a command that makes,
+/// adds to or changes one (`a`, `m`, `mf`, `u`, `f`, `d`, `c`, `ch`, `k`,
+/// `rn`, `rr`, `s`, any case): the operand after the command. A command
+/// only known when it runs may be one of them. Switches are single words
+/// that start with `-`, anywhere before `--`.
+pub(super) fn rar_written(args: &[Arg]) -> Vec<Arg> {
+    let mut options_done = false;
+    let mut positional = args.iter().filter(|arg| {
+        let start = readable(arg);
+        if options_done || !start.starts_with('-') || start.len() < 2 {
+            return true;
+        }
+        options_done |= arg.known() == Some("--");
+        false
+    });
+    let writes = positional.next().is_some_and(|command| {
+        command.known().is_none_or(|command| {
+            matches!(
+                command.to_ascii_lowercase().as_str(),
+                "a" | "m" | "mf" | "u" | "f" | "d" | "c" | "ch" | "k" | "rn" | "rr" | "s"
+            )
+        })
+    });
+    if !writes {
+        return Vec::new();
+    }
+    positional.next().cloned().into_iter().collect()
 }
 
 /// The files `rar` deletes after adding them: those of `m` and `mf`, and of
