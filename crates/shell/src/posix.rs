@@ -2771,7 +2771,7 @@ impl Walker<'_> {
     fn startup(&mut self, node: Node<'_>) -> Option<startup::Startup> {
         let source = self.source;
         let name = startup::variable(unit::text(&node.child_by_field_name("name")?, source));
-        if !startup::VARIABLES.contains(&name) {
+        if !startup::read_here(name) {
             return None;
         }
         let written = node.child_by_field_name("value")?;

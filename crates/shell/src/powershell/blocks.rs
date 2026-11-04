@@ -460,7 +460,7 @@ struct Item<'a> {
 
 /// The nodes the grammar wraps an expression in, each holding one thing when
 /// nothing is applied to it.
-const WRAPPERS: [&str; 19] = [
+pub(super) const WRAPPERS: [&str; 19] = [
     "pipeline",
     "pipeline_chain",
     "logical_expression",
@@ -528,6 +528,9 @@ pub(super) fn check(
     if let Some(table) = PROPERTIES.iter().find(|table| table.names.contains(&key)) {
         properties(split, table, args, shapes, command);
         return false;
+    }
+    if matches!(key, "update-typedata" | "update-formatdata") {
+        type_files(split, args, shapes, command);
     }
     if matches!(key, "add-member" | "update-typedata") {
         script_members(split, key, args, shapes, command);
@@ -901,6 +904,47 @@ fn script_members(split: &mut Split, key: &str, args: &[Arg], shapes: &[Shape], 
         split.problem(
             Rule::Unknown,
             "adds a script member only known when it runs",
+            Some(command),
+        );
+    }
+}
+
+/// The parameters of `Update-TypeData` and `Update-FormatData` that take no
+/// value: a word after one is given by position.
+const TYPE_FILE_SWITCHES: [&str; 9] = [
+    "force", "whatif", "wi", "confirm", "cf", "verbose", "vb", "debug", "db",
+];
+
+/// `Update-TypeData` and `Update-FormatData` load a type or format file
+/// (`-AppendPath`, `-PrependPath`, or first by position): its script members
+/// and blocks run later, whenever an object of the type is used or
+/// formatted, and the guard does not read the file. A file given by any of
+/// them, and a splat, which may give one, are unknown. Without a file they
+/// load again the files the session already has, or add the members the
+/// line writes out (see [`script_members`]).
+fn type_files(split: &mut Split, args: &[Arg], shapes: &[Shape], command: &str) {
+    let mut file = false;
+    let mut iter = args.iter().zip(shapes).peekable();
+    while let Some((arg, shape)) = iter.next() {
+        let Some(name) = parameter(arg).filter(|_| !shape.splat) else {
+            file = true;
+            continue;
+        };
+        if names(&name, &["appendpath", "prependpath"]) {
+            file = true;
+        } else if !names(&name, &TYPE_FILE_SWITCHES)
+            && iter
+                .peek()
+                .is_some_and(|(next, _)| parameter(next).is_none())
+        {
+            iter.next();
+        }
+        while iter.next_if(|(_, next)| next.joined).is_some() {}
+    }
+    if file {
+        split.problem(
+            Rule::Unknown,
+            "loads a type or format file whose scripts run later",
             Some(command),
         );
     }

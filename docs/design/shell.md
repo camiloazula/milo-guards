@@ -865,18 +865,38 @@ and its findings are the line's, since the shell runs it as the same user.
   `BASH_ENV` value known only when it runs, or with `$` or a backtick, is
   `unknown` too, as the file it names is. `read PS4`, `mapfile BASH_ENV` and
   `printf -v PS4 …` give them a value the line does not show: `unknown`.
-  `PROMPT_COMMAND`, `PS0`, `PS1` and `ENV` run only in an interactive shell,
-  which the guard reads as running its input already.
+  `PROMPT_COMMAND`, `PS0` and `PS1` run only in an interactive shell,
+  which the guard reads as running its input already. `ENV` is read only as
+  the file it names (below).
 - **`BASH_ENV=<file>` is running `<file>`.** Every shell the line starts with
   it set (`BASH_ENV=e.sh bash -c true`, `env BASH_ENV=e.sh bash`, `sudo`, or
-  `export BASH_ENV=e.sh` before it) is checked as a shell that runs a script
-  file, as `bash e.sh` is: a file the same line writes (a redirect, `tee`, a
-  download, a copy) is `unknown`, with the reason `runs a script the same line
-  writes`. So is any program that may start a bash, not only a shell:
-  `make` (its recipes run with the makefile's `SHELL`), `./build.sh` (a
-  `#!/bin/bash` line), `npm test`, `git commit` (hooks), a program only known
-  when it runs, and a shell reached through `find -exec`, `npx` and the
-  other wrappers. A builtin that starts nothing (`echo`, `printf`, `true`,
+  `export BASH_ENV=e.sh` before it) runs that file before its own script,
+  which the line does not show: it is `unknown`, with the reason `starts a
+  shell that first runs a file the line does not show`, whatever the file
+  (`BASH_ENV=~/.bashenv bash -c true` too), and a file the same line writes
+  (a redirect, `tee`, a download, a copy) is `unknown` with the reason `runs
+  a script the same line writes` instead. So is any program that may start
+  a bash, not only a shell: `make` (its recipes run with the
+  makefile's `SHELL`), `./build.sh` (a `#!/bin/bash` line), `npm test`, `git
+  commit` (hooks), a program only known when it runs, and a shell reached
+  through `find -exec`, `npx` and the other wrappers; the guard does not
+  know which programs never start one, so `export BASH_ENV=x.sh; ls` is
+  `unknown` too, an accepted false alarm on a rare line. An empty value and
+  the null device (`BASH_ENV=/dev/null`) name no script and stay safe. A
+  POSIX `sh` (also
+  `dash`, `ash`, `ksh`, `mksh`, `yash`, `posh` and the like) runs the file
+  `ENV` names the same way, so `ENV=x.sh sh -c true` is `unknown` too, as is
+  one with a value only known when it runs; every other program leaves
+  `ENV` be, and it is a name many programs give a setting of their own, so
+  `ENV=production make` and `ENV=x bash -c true` stay safe. PowerShell gives
+  the variable to the programs it starts in the same way, by `$env:BASH_ENV
+  = …` (any case of the name, as on Windows), `Set-Item Env:BASH_ENV …` (or
+  `New-Item`, or a name only known when it runs) and
+  `[Environment]::SetEnvironmentVariable` (a name only known when it runs
+  may be `BASH_ENV`), and so does cmd by `set BASH_ENV=…`: there a program
+  that is not a cmdlet or a built-in command (`bash`, `wsl`, `git`, `make`,
+  `Start-Process bash`, cmd's `start` and `call`) is one that may start a
+  bash, and the value is not read as code: the file is what runs. A builtin that starts nothing (`echo`, `printf`, `true`,
   `:`, `cd`, `export`, `pwd`, `test`, `read`, `declare` and the like) does
   not run it, but a `BASH_ENV` in front of a special builtin (`:`, `.`,
   `break`, `continue`, `eval`, `exec`, `exit`, `export`, `readonly`,
@@ -885,8 +905,8 @@ and its findings are the line's, since the shell runs it as the same user.
   as a statement of its own line, as `BASH_ENV=e.sh; bash -c true` is, so
   `BASH_ENV=e.sh :; bash -c true` runs `e.sh` when the line writes it; in
   front of `true` or `echo`, which are not special, it is gone after the
-  command. A file the line does not write is not read, as for `bash
-  e.sh`. A `BASH_ENV` that names standard input (`/dev/stdin`, `/dev/fd/0`,
+  command. The file is never read: a file the line does not write is still
+  one it does not show. A `BASH_ENV` that names standard input (`/dev/stdin`, `/dev/fd/0`,
   `/proc/self/fd/0`) makes that shell read its input as a script, as `bash
   /dev/stdin` does: `curl … | BASH_ENV=/dev/stdin bash -c true` is
   `RunDownloaded` and `BASH_ENV=/dev/stdin bash -c true < x.sh` is
@@ -4025,6 +4045,15 @@ A line is never safe because the guard gave up on it. These come back risky:
   `-NotePropertyValue` or `-NotePropertyMembers`. A type only known when it
   runs, a splat and `Update-TypeData -TypeData` (objects that may hold script
   members) are `unknown`.
+- A PowerShell type or format file. `Update-TypeData` and
+  `Update-FormatData` given a file (`-AppendPath`, `-PrependPath`, by any
+  prefix, or first by position, also after a switch such as `-Force`) load
+  its script members and blocks, which run whenever an object of the type is
+  used or formatted; the guard does not read the file, so the cmdlet is
+  `unknown`, with the reason `loads a type or format file whose scripts run
+  later`, and so is a splat, which may give one. Without a file they load
+  again the files the session already has (`Update-TypeData` alone), or add
+  the members the line writes out (above), and stay as those are judged.
 - A PowerShell replacement that may be a script block. Since PowerShell 6
   `-replace` (also `-ireplace` and `-creplace`) runs a block given as the
   replacement for each match: a replacement that is not text, a number or a
@@ -4043,6 +4072,31 @@ A line is never safe because the guard gave up on it. These come back risky:
   and names, with no wildcard, a parameter that never takes a block
   (`'*:Encoding'`, `'Out-File:Width'`, a common parameter and a few more
   `powershell/blocks.rs` lists).
+- A PowerShell default parameter value of any kind is a parameter of each
+  cmdlet its key matches (`powershell/defaults.rs`, read once for the whole
+  line, wherever on it the value is set, since a command before it may run
+  after it). A key written out, `Cmdlet:Parameter`, gives each cmdlet whose
+  name (an alias read as its cmdlet) its cmdlet part matches, with
+  PowerShell's wildcards and in any case, the parameter by name with the
+  value after its own arguments (`-Path:` and `~`), as if the line wrote it,
+  unless the command names that parameter itself: so
+  `$PSDefaultParameterValues['Remove-Item:Path'] = '~'; Remove-Item -Recurse`
+  deletes the home directory, `'Remove-Item:Path' = $p` deletes a path only
+  known when it runs, and `$PSDefaultParameterValues['Get-ChildItem:Force'] =
+  $true; Get-ChildItem` stays safe. A value written out as text is that
+  text; any other value (a variable, `$true`, an expression, a block, whose
+  result PowerShell takes as the value) is only known when it runs. A key
+  only known when it runs, or one whose parameter part holds a wildcard,
+  gives the value by position instead, and a line that may set defaults the
+  guard does not read (the whole table set to a value only known when it
+  runs, a method only known when it runs, the variable reached any other
+  way, as `$d = $PSDefaultParameterValues`, or named as text, as
+  `Set-Variable PSDefaultParameterValues …`, or more than 16 entries) gives
+  every cmdlet an argument only known when it runs, so its paths are only
+  known when it runs. A key with no parameter part (`Disabled`), `.Remove`
+  and `.Clear` set none, and a program that is no cmdlet takes none. A
+  parameter the command gives by position is not matched against the
+  default, which PowerShell then leaves unused: an accepted false alarm.
 - A PowerShell variable is only known when it runs unless the line shows what
   it holds for certain (`powershell/variables.rs`, read once for the whole
   line before its commands are judged): a variable the line sets once, by a
@@ -5452,11 +5506,14 @@ key's deletion. `Stop-EC2Instance` without `-Terminate` stops instances and
 stays safe, also with a variable as an argument (`-InstanceId $id`), whose
 value is a value whatever it holds; so do `Stop-AzVM` and `Get-EC2Image`.
 PowerShell also binds a parameter the line does not write from
-`$PSDefaultParameterValues`: on a line that sets it (an entry, the whole
-table, `.Add`, or `Set-Variable` by the variable's name), any key may reach
-`Stop-EC2Instance:Terminate` (`'*:Terminate'`, `'Stop-EC2Instance:T*'`), so a
-`Stop-EC2Instance` that does not name the switch may terminate, and the
-finding says so. A default set before the line (in a profile) is not the
+`$PSDefaultParameterValues`. A key written out that names the switch is
+given to the cmdlet as written (see [What cannot be read is
+risky](#what-cannot-be-read-is-risky)): `'*:Terminate' = $true` terminates,
+and `= $false` does not. On a line that sets it in any other way (a key with
+a wildcard in its parameter, `'Stop-EC2Instance:T*'`, a key only known when
+it runs, or `Set-Variable` by the variable's name), a key may reach
+`Stop-EC2Instance:Terminate`, so a `Stop-EC2Instance` that does not name the
+switch may terminate, and the finding says so. A default set before the line (in a profile) is not the
 line's. Nor does the guard read the properties of objects piped to the
 cmdlet, which the AWS Tools bind by property name: the current AWS Tools
 (v4 and v5) have no `-Terminate` on `Stop-EC2Instance` at all, and reading

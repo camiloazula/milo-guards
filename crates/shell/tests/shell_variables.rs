@@ -1,8 +1,9 @@
 //! Variables a shell runs or expands later. `PS4` and `BASH_ENV` hold text a
 //! shell runs later: `$(…)` in `PS4` runs with each `set -x` line, and
 //! `BASH_ENV` is expanded and then run as a script by every non-interactive
-//! bash, so a `BASH_ENV` file the line writes is a script it runs, by anything
-//! that may start bash (inline code among them). The value is read as bash
+//! bash, so a `BASH_ENV` file is a script it runs that the line does not
+//! show, by anything that may start bash (inline code among them), and `ENV`
+//! one a POSIX sh runs. The value is read as bash
 //! reads it: prompt escapes decoded, subscripts of the variable, declarations
 //! behind `builtin` and `command`, and `$PWD` as the folder the line moved to,
 //! which is plain only when the line wrote that folder out. Arithmetic,

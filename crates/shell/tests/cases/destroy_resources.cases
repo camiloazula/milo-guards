@@ -1070,19 +1070,21 @@ powershell finds=destroy_resources | Unregister-SCDelegatedAdministrator -Accoun
 powershell finds=destroy_resources | Clear-CSDomain -DomainName d
 powershell finds=destroy_resources | Invoke-Command -ScriptBlock { Unregister-EC2Image -ImageId ami-1 }
 posix finds=destroy_resources | pwsh -c 'Stop-EC2Instance -InstanceId i-1 -Terminate'
-# A default parameter value the line sets may give `Stop-EC2Instance` its
-# `-Terminate`, by any key, by the table or by a cmdlet that sets the
-# variable by its name; one the line names itself stays as it says.
-powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | $PSDefaultParameterValues['Stop-EC2Instance:Terminate']=$true; Stop-EC2Instance -InstanceId i-1
-powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | $PSDefaultParameterValues=@{'*:Terminate'=$true}; Stop-EC2Instance -InstanceId i-1
-powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | $PSDefaultParameterValues.Add('Stop-EC2Instance:Terminate',$true); Stop-EC2Instance i-1
+# A default parameter value the line sets gives `Stop-EC2Instance` its
+# `-Terminate`, by a key that names it (`$false` turns it off), and may by a
+# key with a wildcard in its parameter or by a cmdlet that sets the variable
+# by its name; one the line names itself stays as it says.
+powershell finds=destroy_resources reason="terminates EC2 instances" | $PSDefaultParameterValues['Stop-EC2Instance:Terminate']=$true; Stop-EC2Instance -InstanceId i-1
+powershell finds=destroy_resources reason="terminates EC2 instances" | $PSDefaultParameterValues=@{'*:Terminate'=$true}; Stop-EC2Instance -InstanceId i-1
+powershell finds=destroy_resources reason="terminates EC2 instances" | $PSDefaultParameterValues.Add('Stop-EC2Instance:Terminate',$true); Stop-EC2Instance i-1
 powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | $PSDefaultParameterValues['Stop-EC2Instance:T*']=$true; Stop-EC2Instance i-1
-powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | $global:PSDefaultParameterValues['*:Terminate']=1; Stop-EC2Instance i-1
+powershell finds=destroy_resources reason="terminates EC2 instances" | $global:PSDefaultParameterValues['*:Terminate']=1; Stop-EC2Instance i-1
 powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | Set-Variable PSDefaultParameterValues @{'*:Terminate'=$true}; Stop-EC2Instance i-1
 powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | sv -Name PSDefaultParameterValues -Value @{'*:Terminate'=$true}; Stop-EC2Instance i-1
-posix finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | pwsh -c '$PSDefaultParameterValues["*:Terminate"]=$true; Stop-EC2Instance i-1'
+posix finds=destroy_resources reason="terminates EC2 instances" | pwsh -c '$PSDefaultParameterValues["*:Terminate"]=$true; Stop-EC2Instance i-1'
 powershell finds=destroy_resources reason="terminates EC2 instances" | $PSDefaultParameterValues['*:Terminate']=$false; Stop-EC2Instance i-1 -Terminate
 powershell safe | $PSDefaultParameterValues['*:Terminate']=$true; Stop-EC2Instance i-1 -Terminate:$false
+powershell safe | $PSDefaultParameterValues['*:Terminate']=$false; Stop-EC2Instance i-1
 # Exchange's mobile devices: a wipe of the phone, and a device or a rule
 # for devices taken off the organization. Listing them stays safe.
 powershell finds=destroy_resources reason="wipes a mobile device through Exchange or Microsoft 365" | Clear-ActiveSyncDevice -Identity d -Confirm:$false

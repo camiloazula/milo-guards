@@ -8,6 +8,7 @@ use tree_sitter::Node;
 use crate::launch;
 use crate::path;
 use crate::powershell::native;
+use crate::startup;
 use crate::unit::{self, Arg, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
@@ -987,7 +988,8 @@ impl Walker<'_> {
             written_name.eq_ignore_ascii_case("ZIPOPT") || written_name.eq_ignore_ascii_case("ZIP");
         let node_options = written_name.eq_ignore_ascii_case("NODE_OPTIONS");
         let terraform = unit::argument_variable(written_name);
-        if !zip && !node_options && terraform.is_none() {
+        let startup = startup::named_file(written_name);
+        if !zip && !node_options && terraform.is_none() && !startup {
             return;
         }
         let source = unit::text(&node, self.source);
@@ -1014,6 +1016,11 @@ impl Walker<'_> {
             None
         };
         let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
+        // `set BASH_ENV=x.sh`: a bash the line starts runs the file first.
+        if startup {
+            startup::environment(self.split, Some(written_name), value);
+            return;
+        }
         match terraform {
             Some(name) => self.split.note_argument_variable(name, value),
             // `set NODE_OPTIONS=--require ./x.js`: every node a later
@@ -1130,7 +1137,7 @@ const BUILT_INS: &[&str] = &[
     "rmdir", "set", "setlocal", "shift", "start", "time", "title", "type", "ver", "verify", "vol",
 ];
 
-fn is_built_in(name: &str) -> bool {
+pub(crate) fn is_built_in(name: &str) -> bool {
     BUILT_INS
         .iter()
         .any(|built_in| built_in.eq_ignore_ascii_case(name))

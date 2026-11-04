@@ -9,6 +9,7 @@ use tree_sitter::Node;
 
 mod aliases;
 mod blocks;
+mod defaults;
 pub(crate) mod native;
 mod numbers;
 mod spelling;
@@ -21,6 +22,7 @@ use crate::detect::DOWNLOADERS;
 use crate::launch;
 use crate::path::Made;
 use crate::said::Said;
+use crate::startup;
 use crate::unit::{self, Arg, Between, Listing, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::glob;
@@ -103,10 +105,12 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         variables: variables::Variables::read(tree.root_node(), text),
         streams: HashSet::new(),
         env_location: false,
+        defaults: defaults::Defaults::default(),
     };
     walker.mark_listings(tree.root_node());
     walker.define(tree.root_node());
     walker.session_changes(tree.root_node());
+    walker.read_defaults(tree.root_node());
     walker.walk(tree.root_node(), None, 0);
 }
 
@@ -513,6 +517,9 @@ struct Walker<'a> {
     /// Whether a word names the `Env:` drive itself (`cd Env:`), so an item
     /// cmdlet's plain name may be a variable of the environment.
     env_location: bool,
+    /// The default parameter values the line sets, which each cmdlet they
+    /// match is given (see [`defaults`]).
+    defaults: defaults::Defaults,
 }
 
 impl Walker<'_> {
@@ -836,7 +843,8 @@ impl Walker<'_> {
         let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
         let node_options = name.eq_ignore_ascii_case("NODE_OPTIONS");
         let terraform = unit::argument_variable(name);
-        if !zip && !node_options && terraform.is_none() {
+        let startup = startup::named_file(name);
+        if !zip && !node_options && terraform.is_none() && !startup {
             return;
         }
         let name = name.to_string();
@@ -861,6 +869,12 @@ impl Walker<'_> {
             }
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
+        // `$env:BASH_ENV = 'x.sh'`: a bash the line starts runs the file
+        // first.
+        if startup {
+            startup::environment(self.split, Some(&name), value);
+            return;
+        }
         match terraform {
             Some(name) => self.split.note_argument_variable(name, value),
             // `$env:NODE_OPTIONS='--require ./x.js'`: every node a later
@@ -930,6 +944,13 @@ impl Walker<'_> {
             }
             if is("NODE_OPTIONS") {
                 self.split.node_options.push(value.clone());
+            }
+            // `Set-Item Env:BASH_ENV x.sh`: a bash the line starts runs the
+            // file first.
+            for variable in ["BASH_ENV", startup::SH_ENV] {
+                if is(variable) {
+                    startup::environment(self.split, Some(variable), value.clone());
+                }
             }
             for zip in ["ZIPOPT", "ZIP"] {
                 if is(zip) {
@@ -1722,6 +1743,11 @@ impl Walker<'_> {
                 unit::text(&node, self.source),
                 self.depth,
             );
+        }
+        // `$PSDefaultParameterValues['Remove-Item:Path'] = '~'`: a parameter
+        // the command does not name may come from a default value.
+        if let Some(key) = program_key.as_deref() {
+            self.give_defaults(key, &mut args, &mut shapes);
         }
         // Inside a `ForEach-Object` block, a command takes its place in the
         // pipeline the block is a stage of.
@@ -3474,7 +3500,15 @@ impl Walker<'_> {
                 if name.eq_ignore_ascii_case("NODE_OPTIONS") {
                     self.split.node_options.push(value.clone());
                 }
+                startup::environment(self.split, Some(name), value.clone());
                 self.split.zip_env.set(name, &value, true);
+            } else {
+                // A name only known when it runs may be `BASH_ENV`.
+                startup::environment(
+                    self.split,
+                    None,
+                    Arg::Unknown(unit::text(&node, self.source).to_string()),
+                );
             }
             let name = match named {
                 Some(Arg::Known(name)) => unit::argument_variable(&name),
@@ -3838,7 +3872,7 @@ fn dotnet_rule(method: &str, object: &str, file_like: bool) -> Option<(Rule, &'s
 /// cmdlet) is a cmdlet: a name of an approved verb, a dash and a noun, or a
 /// built-in `-Object` cmdlet (`ForEach-Object`, `Tee-Object`). Any other is
 /// taken for a native program.
-fn is_cmdlet(key: &str) -> bool {
+pub(crate) fn is_cmdlet(key: &str) -> bool {
     key.split_once('-')
         .is_some_and(|(verb, noun)| !noun.is_empty() && (VERBS.contains(&verb) || noun == "object"))
 }
