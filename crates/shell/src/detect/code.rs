@@ -5,7 +5,7 @@ use super::hedged;
 use super::Checker;
 use crate::launch::{git_global, git_long, is_submodule, Global};
 use crate::said::Said;
-use crate::unit::{could_be, has_flag, may_be_option, operands, unknown_start, Arg, Unit};
+use crate::unit::{could_be, has_flag, may_be_option, operands, unknown_start, Arg, Flagged, Unit};
 use crate::{Rule, Shell};
 
 impl Checker<'_> {
@@ -26,7 +26,7 @@ impl Checker<'_> {
                     None,
                 );
             }
-            "awk" | "gawk" | "mawk" | "nawk" => self.awk(args),
+            "awk" | "gawk" | "mawk" | "nawk" => self.awk(unit),
             "osascript" => self.add(
                 Rule::Unknown,
                 "runs AppleScript the guard does not read",
@@ -38,35 +38,53 @@ impl Checker<'_> {
 
     /// awk code that runs commands (`system(…)`, a pipe) or writes files
     /// (`print > "f"`) is risky; so is code the guard cannot read (`-f script`,
-    /// a variable).
-    fn awk(&mut self, args: &[Arg]) {
+    /// a library `-i` or `@include` loads, a variable). gawk's `inplace`
+    /// library (`-i inplace`) edits each file awk reads, so each is a write.
+    fn awk(&mut self, unit: &Unit) {
+        let args = unit.args.as_slice();
         let mut programs = Vec::new();
         let mut file = false;
-        let mut iter = args.iter();
-        while let Some(arg) = iter.next() {
+        let mut libraries: Vec<Library<'_>> = Vec::new();
+        let mut at = 0;
+        while let Some(arg) = args.get(at) {
+            at += 1;
             match arg.known() {
-                Some("-f" | "--file") => {
+                Some("-f" | "--file" | "-E" | "--exec") => {
                     file = true;
-                    iter.next();
+                    at += 1;
                 }
-                Some("-e" | "--source") => programs.extend(iter.next()),
-                Some(
-                    "-F" | "-v" | "--field-separator" | "--assign" | "-i" | "--include" | "-l"
-                    | "--load",
-                ) => {
-                    iter.next();
+                Some("-e" | "--source") => {
+                    programs.extend(args.get(at));
+                    at += 1;
                 }
-                Some("--") => {
-                    programs.extend(iter.next());
-                    break;
+                Some("-i" | "--include") => {
+                    libraries.push(args.get(at).map_or(Library::Other, library));
+                    at += 1;
                 }
+                Some("-F" | "-v" | "--field-separator" | "--assign" | "-l" | "--load") => at += 1,
+                Some("--") => break,
+                Some(text) if text.starts_with("--include=") => {
+                    libraries.push(named_library(&text["--include=".len()..]));
+                }
+                Some(text) if text.starts_with("--file=") || text.starts_with("--exec=") => {
+                    file = true;
+                }
+                Some(text) if text.starts_with("-i") && !text.starts_with("--") => {
+                    libraries.push(named_library(&text[2..]));
+                }
+                Some(text) if text.starts_with("-f") || text.starts_with("-E") => file = true,
                 Some(text) if text.len() > 1 && text.starts_with('-') => {}
                 _ => {
-                    if programs.is_empty() && !file {
-                        programs.push(arg);
-                    }
+                    at -= 1;
                     break;
                 }
+            }
+        }
+        let mut operands = args.get(at..).unwrap_or_default();
+        if programs.is_empty() && !file {
+            if let Some((program, rest)) = operands.split_first() {
+                programs.push(program);
+                operands = rest;
             }
         }
         if file {
@@ -78,12 +96,16 @@ impl Checker<'_> {
         }
         for program in programs {
             match program.known() {
-                Some(code) if awk_runs_commands(code) => self.add(
-                    Rule::Unknown,
-                    "runs commands or writes files from awk code",
-                    None,
-                ),
-                Some(_) => {}
+                Some(code) => {
+                    if awk_runs_commands(code) {
+                        self.add(
+                            Rule::Unknown,
+                            "runs commands or writes files from awk code",
+                            None,
+                        );
+                    }
+                    libraries.extend(included(code));
+                }
                 None => self.add(
                     Rule::Unknown,
                     "runs awk code only known when it runs",
@@ -91,6 +113,37 @@ impl Checker<'_> {
                 ),
             }
         }
+        if libraries.iter().any(|library| *library != Library::InPlace) {
+            self.add(
+                Rule::Unknown,
+                "runs an awk script the guard does not read",
+                libraries.iter().find_map(|library| match library {
+                    Library::Unread(arg) => Some(*arg),
+                    _ => None,
+                }),
+            );
+        }
+        let in_place = if libraries.contains(&Library::InPlace) {
+            Flagged::Written
+        } else if libraries
+            .iter()
+            .any(|library| matches!(library, Library::Unread(_)))
+        {
+            Flagged::Unread
+        } else {
+            Flagged::Absent
+        };
+        // Each file awk reads, but `-` (its input) and an assignment
+        // (`x=1`), which it reads as one.
+        self.flagged(in_place, |checker| {
+            for operand in operands.iter().filter(|operand| {
+                !operand
+                    .known()
+                    .is_some_and(|text| text == "-" || assigns(text))
+            }) {
+                checker.write(unit.shell, unit.scope(), operand, "edits");
+            }
+        });
     }
 
     /// git's commands that throw work away. An argument only known when it
@@ -408,6 +461,61 @@ fn clean_dry_run(args: &[Arg]) -> Option<String> {
         }
     }
     Some(format!("git clean -{options}"))
+}
+
+/// A library awk loads with `-i`, `--include` or `@include`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Library<'a> {
+    /// gawk's `inplace`, which edits each file awk reads.
+    InPlace,
+    /// Any other, which the guard does not read.
+    Other,
+    /// One only known when it runs, which may be either.
+    Unread(&'a Arg),
+}
+
+/// The library an `-i` argument names.
+fn library(arg: &Arg) -> Library<'_> {
+    match arg.known() {
+        Some(name) => named_library(name),
+        None => Library::Unread(arg),
+    }
+}
+
+/// The library `name` is: gawk finds `inplace` as `inplace.awk` in its own
+/// folder.
+fn named_library(name: &str) -> Library<'static> {
+    if matches!(name, "inplace" | "inplace.awk") {
+        Library::InPlace
+    } else {
+        Library::Other
+    }
+}
+
+/// The libraries awk code loads with `@include "name"`: one whose name is
+/// not a plain string is one the guard does not read.
+fn included(code: &str) -> Vec<Library<'static>> {
+    code.split("@include")
+        .skip(1)
+        .map(|after| {
+            after
+                .trim_start()
+                .strip_prefix('"')
+                .and_then(|name| name.split_once('"'))
+                .map_or(Library::Other, |(name, _)| named_library(name))
+        })
+        .collect()
+}
+
+/// Whether an awk operand is an assignment (`x=1`, `ns::x=1`), which awk
+/// reads as one and not as a file.
+fn assigns(text: &str) -> bool {
+    text.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':')
+    })
 }
 
 /// Whether awk code runs a command or writes a file: `system`, a single

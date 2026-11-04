@@ -3232,6 +3232,67 @@ own: the home directory, a system folder, the root of a disk, the workspace
 itself, its `.git`, keys and shell startup files, and the paths the caller
 protects.
 
+### Programs that write the file they name
+
+Beyond a redirect, a copy and the write cmdlets, a few programs write a file
+their line names, and each file is judged as a write, where it lands: beyond
+the workspace, a startup file, a file a tool runs on its own or a protected
+path is `overwrite`, and a file in the workspace stays safe. A program the
+guard does not know is not judged as a writer; these are the ones it knows.
+
+- **`curl.exe` and `wget.exe` in PowerShell** are read as `curl` and `wget`
+  are in the other shells (`-o`, `-O`, `--output`, `-P`): a bare `curl` or
+  `wget` there is `Invoke-WebRequest`, judged by its `-OutFile`.
+- **`certutil`**: `-urlcache` downloads its URL to each operand after it, and
+  with `-split` and no file to the URL's name in the folder the line is in
+  (`cd /d C:\Windows & certutil -urlcache -split -f URL/a.dll`);
+  `-urlcache *` works on the cache and writes no file. `-decode`,
+  `-encode`, `-decodehex` and `-encodehex` write each operand after the
+  first. A verb or an option is `-` or `/` and a name, in any case
+  (`/URLCache`); every other word is an operand, so the value of an option
+  only adds a file judged where it lands. A file it writes is also one a
+  later run of a script on the line is judged for, as `curl -o`'s is.
+- **`Export-Csv`** (`epcsv`) **and `Export-Clixml`** write the file `-Path`,
+  `-LiteralPath` or the first position names, read by the cmdlet's own
+  parameters as the write cmdlets are (`Export-Csv out.csv ';'` takes `;` as
+  the delimiter). `ConvertTo-Json | Set-Content` and `Out-File` are the write
+  cmdlets' already.
+- **`sponge FILE`** (`-a` too) writes what it read to each operand.
+- **`awk -i inplace`**: gawk's `inplace` library (`-i inplace`, `-iinplace`,
+  `--include[=]inplace`, `inplace.awk`, or `@include "inplace"` in the
+  program) edits each file awk reads, every operand after the program but
+  `-` and an assignment (`x=1`). Any other library is code the guard does
+  not read, `unknown` as `-f script` is; one only known when it runs
+  (`-i "$L"`) is both, the edit said as one that may happen.
+- **`ex`, `vi`, `vim`, `nvim`, `view`, `vimdiff` and `gvim`** edit each file
+  they are given: its input may hold `:wq` as well as a `-c` may, so every
+  file operand is a write, whatever the commands (`vim /etc/hosts` is
+  `overwrite` with the reason `edits a system folder`). The options are read
+  as vim reads them: a bundle a letter at a time (`-es`, `-sc wq`), a letter
+  that takes a value taking the rest of the bundle or the next argument, `-s`
+  silent in ex mode (`ex`, after `-e` or `-E`) and otherwise a script of keys.
+  `-w`, `-W`, `--startuptime`, `--log` and `-i` (not `NONE`) write the file
+  they name. The ex commands of `-c`, `--cmd` and `+cmd` are read: a write
+  (`w`, `wq`, `x`, `update`, `saveas`, their forms that take all buffers,
+  after a range, with `!` or `>>`) writes the file it names, which is only
+  known when it runs when vim expands it (`%`, `#`, `$X`, a wildcard, a
+  backtick); quitting, `:s` (without a `\=` expression), `:d`, `:j`, `:m`,
+  `:t`, `:co`, `:p`, `:sort`, a range alone and a `:g` or `:v` running these
+  write nothing else. A bar ends each command but `:g`, as in vim, so
+  `%s/a|b/c/` runs `b/c/`. Any other command (`!`, `w !sh`, `r`, `call`,
+  `source`, `normal`, `edit`, `set`), a command only known when it runs, a
+  script `-S` or `-s` reads, a vimrc `-u` names (not `NONE`, `NORC` or
+  `DEFAULTS`), `--remote-send`, `--remote-expr` and an argument only known
+  when it runs that may be an option are code the guard does not read:
+  `unknown`, "runs editor commands the guard does not read".
+
+| Line | Verdict |
+| --- | --- |
+| `curl.exe -o C:\Windows\x URL`, `certutil -urlcache -f URL C:\Windows\x`, `Get-Process \| Export-Csv C:\Windows\x.csv`, `sort a \| sponge /etc/x`, `awk -i inplace 1 /etc/x`, `ex -sc wq /etc/x`, `vim -es /etc/x` | `overwrite`: a system folder |
+| `curl.exe -o .envrc URL`, `certutil -decode a.b64 .vscode\tasks.json`, `sponge ~/.bashrc`, `ex -sc wq .envrc`, `ex -sc 'w ~/.bashrc' a` | `overwrite`: a startup file, or one a tool runs on its own |
+| `curl.exe -o out.txt URL`, `certutil -urlcache -f URL out.txt`, `Export-Csv out.csv`, `sponge a`, `awk -i inplace 1 src/a.txt`, `vim -es -c '%s/a/b/g' -c wq src/a.txt` | safe |
+| `awk -i lib 1 a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `vim -es -c 'e /etc/x' -c wq a` | `unknown` |
+
 ### Files a tool runs on its own
 
 A workspace holds files that something runs without anyone typing a command:
@@ -3244,8 +3305,9 @@ writes one is `overwrite` with the reason `writes to a file a tool runs on its
 own` (the verb of the line: `edits` for `sed -i`, `creates` for `touch`). The
 rule is the same as for every sensitive place: core's `place_into` answers it,
 so every writer the guard knows (a redirect, `tee`, `cp`, `mv`, `ln`,
-`install`, `rsync`, `sed -i`, `perl -i`, `dd`, `curl -o`, `Set-Content`,
-`Out-File`, `Copy-Item`, `copy`, `xcopy`, ...) finds it without a rule of its
+`install`, `rsync`, `sed -i`, `perl -i`, `dd`, `curl -o`, `certutil`, `sponge`,
+`awk -i inplace`, `ex`, `vim`, `Set-Content`, `Out-File`, `Export-Csv`,
+`Copy-Item`, `copy`, `xcopy`, ...) finds it without a rule of its
 own.
 
 | Line | Verdict |

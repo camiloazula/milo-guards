@@ -327,6 +327,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "sp" => "set-itemproperty",
         "rp" => "remove-itemproperty",
         "ac" => "add-content",
+        "epcsv" => "export-csv",
         "clc" => "clear-content",
         "gci" | "ls" | "dir" => "get-childitem",
         "gi" => "get-item",
@@ -4691,6 +4692,40 @@ pub(crate) const OUT_FILE: [Param; 11] = [
     Param::switch("force", &[]),
     Param::switch("noclobber", &["nooverwrite"]),
     Param::switch("nonewline", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `Export-Csv`, whose file and delimiter are also taken
+/// by position, in that order.
+pub(crate) const EXPORT_CSV: [Param; 16] = [
+    Param::value("path", &[]),
+    Param::value("literalpath", &["lp", "pspath"]),
+    Param::value("inputobject", &[]),
+    Param::value("encoding", &[]),
+    Param::value("delimiter", &[]),
+    Param::value("quotefields", &["qf"]),
+    Param::value("usequotes", &["uq"]),
+    Param::switch("force", &[]),
+    Param::switch("noclobber", &["nooverwrite"]),
+    Param::switch("append", &[]),
+    Param::switch("useculture", &[]),
+    Param::switch("includetypeinformation", &["iti"]),
+    Param::switch("notypeinformation", &["nti"]),
+    Param::switch("noheader", &[]),
+    Param::switch("whatif", &["wi"]),
+    Param::switch("confirm", &["cf"]),
+];
+
+/// The parameters of `Export-Clixml`, whose file is also taken by position.
+pub(crate) const EXPORT_CLIXML: [Param; 9] = [
+    Param::value("path", &[]),
+    Param::value("literalpath", &["lp", "pspath"]),
+    Param::value("inputobject", &[]),
+    Param::value("depth", &[]),
+    Param::value("encoding", &[]),
+    Param::switch("force", &[]),
+    Param::switch("noclobber", &["nooverwrite"]),
     Param::switch("whatif", &["wi"]),
     Param::switch("confirm", &["cf"]),
 ];
