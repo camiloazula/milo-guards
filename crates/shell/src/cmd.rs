@@ -130,6 +130,7 @@ impl Walker<'_> {
 
     /// A command, or a `call`. An arm of [`Self::walk`], kept out of its frame,
     /// which nests as deep as the tree.
+    #[inline(never)]
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         if !self.statement(node, stage, level) {
             self.command(node, stage);
@@ -139,6 +140,7 @@ impl Walker<'_> {
 
     /// Commands joined by `&&` and `||`. An arm of [`Self::walk`], kept out of
     /// its frame, which nests as deep as the tree.
+    #[inline(never)]
     fn cond_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
         let list = self.split.list_start();
@@ -183,6 +185,7 @@ impl Walker<'_> {
 
     /// A redirected statement. An arm of [`Self::walk`], kept out of its frame,
     /// which nests as deep as the tree.
+    #[inline(never)]
     fn redirected_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
         let mut inputs = Vec::new();
@@ -227,6 +230,7 @@ impl Walker<'_> {
 
     /// A `for` loop. An arm of [`Self::walk`], kept out of its frame, which
     /// nests as deep as the tree.
+    #[inline(never)]
     fn for_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.repeats += 1;
         self.split.begin_body();

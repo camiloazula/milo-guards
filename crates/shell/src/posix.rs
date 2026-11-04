@@ -54,6 +54,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         unstaged: None,
         sets: std::collections::HashMap::new(),
         functions: std::collections::HashSet::new(),
+        chained: std::collections::HashMap::new(),
     };
     // One walk of the tree finds the variables the line sets and the values
     // it gives them.
@@ -1154,6 +1155,10 @@ struct Walker<'a> {
     sets: std::collections::HashMap<usize, Vec<(String, crate::values::Value)>>,
     /// The functions the line defines, as the tree is read before the walk.
     functions: std::collections::HashSet<String>,
+    /// The assignments in `(( ))` of each chain read whole, by node id, with
+    /// whether the chain gives `GLOBIGNORE` a value (see
+    /// [`Walker::assigns_in_chain`]).
+    chained: std::collections::HashMap<usize, bool>,
 }
 
 /// The state just before the last command of a list: a redirect on a list
@@ -1289,41 +1294,66 @@ impl Walker<'_> {
     /// The operands of a chain of assignments in `(( ))`, in order, as the
     /// text each is written in: `x = y = 1` is `x`, `y` and `1`, however the
     /// parse nests it. Anything else is one operand.
-    fn chain_operands<'t>(&self, node: Node<'t>, out: &mut Vec<Node<'t>>) {
-        let assigning = node.kind() == "binary_expression" && {
-            let mut cursor = node.walk();
-            let found = node
-                .children(&mut cursor)
-                .find(|child| !child.is_named())
-                .map(|child| unit::text(&child, self.source));
-            found.is_some_and(|operator| {
-                operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
-            })
-        };
-        match (
-            assigning,
-            node.child_by_field_name("left"),
-            node.child_by_field_name("right"),
-        ) {
-            (true, Some(left), Some(right)) => {
-                self.chain_operands(left, out);
-                self.chain_operands(right, out);
+    ///
+    /// A chain nests a level for each assignment, so one at the length limit
+    /// is thousands of levels deep, and the walk's depth limit does not bound
+    /// this: the chain is taken apart in a loop over a stack on the heap,
+    /// never by recursing. The assignments of the chain go to `links`.
+    fn chain_operands<'t>(&self, node: Node<'t>, out: &mut Vec<Node<'t>>, links: &mut Vec<usize>) {
+        let mut pending = vec![node];
+        while let Some(node) = pending.pop() {
+            let assigning = node.kind() == "binary_expression" && {
+                let mut cursor = node.walk();
+                let found = node
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .map(|child| unit::text(&child, self.source));
+                found.is_some_and(|operator| {
+                    operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
+                })
+            };
+            match (
+                assigning,
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                // The left side is taken next, so the operands keep their
+                // order.
+                (true, Some(left), Some(right)) => {
+                    links.push(node.id());
+                    pending.push(right);
+                    pending.push(left);
+                }
+                _ => out.push(node),
             }
-            _ => out.push(node),
         }
     }
 
     /// Whether `node`, an assignment in `(( ))`, gives `GLOBIGNORE` a value
     /// at any place of a chain: `GLOBIGNORE = 1`, `x = GLOBIGNORE = 1`. Every
     /// operand but the last is assigned to; the last is the value.
-    fn assigns_in_chain(&self, node: Node<'_>) -> bool {
+    ///
+    /// A chain is read whole once, from the assignment the walk reaches
+    /// first, and each assignment in it is then what the whole chain is:
+    /// every operand one of them assigns to is one the chain does, so the
+    /// answer is never `false` where reading it alone gave `true`. Read again
+    /// from each, a chain at the length limit took time that grows with the
+    /// square of its length.
+    fn assigns_in_chain(&mut self, node: Node<'_>) -> bool {
+        if let Some(&found) = self.chained.get(&node.id()) {
+            return found;
+        }
         let mut operands = Vec::new();
-        self.chain_operands(node, &mut operands);
-        operands.split_last().is_some_and(|(_, targets)| {
+        let mut links = Vec::new();
+        self.chain_operands(node, &mut operands, &mut links);
+        let found = operands.split_last().is_some_and(|(_, targets)| {
             targets
                 .iter()
                 .any(|target| unit::text(target, self.source).trim() == dotglob::GLOBIGNORE)
-        })
+        });
+        self.chained
+            .extend(links.into_iter().map(|link| (link, found)));
+        found
     }
 
     /// Whether `node` or anything in it assigns `GLOBIGNORE` with a `${…}`:
@@ -1356,6 +1386,7 @@ impl Walker<'_> {
     /// Before the walk reads `node`, at `level`: `false` when it is not to
     /// read it, being too deep, or read here whole. Kept out of `node`, which
     /// the walk recurses through, and whose frame is the deepest nesting's.
+    #[inline(never)]
     fn enter(&mut self, node: Node<'_>, level: usize, background: bool) -> bool {
         if level > unit::MAX_TREE_DEPTH {
             self.split
@@ -1373,6 +1404,7 @@ impl Walker<'_> {
     }
 
     /// After the walk read `node`, which [`Walker::enter`] let it read.
+    #[inline(never)]
     fn leave(&mut self, node: Node<'_>, background: bool) {
         // `! cd s && rm -rf ../x` runs `rm` when the `cd` failed.
         if node.kind() == "negated_command" {
@@ -1446,6 +1478,7 @@ impl Walker<'_> {
     }
 
     /// `unset`, kept out of `node`, which the walk recurses through.
+    #[inline(never)]
     fn unset_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.assigned_earlier = true;
         let mut cursor = node.walk();
@@ -1464,6 +1497,7 @@ impl Walker<'_> {
 
     /// `export`, `declare` and their kind, kept out of `node`, which the walk
     /// recurses through.
+    #[inline(never)]
     fn declaration_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -1492,6 +1526,7 @@ impl Walker<'_> {
 
     /// An arithmetic or test expression of two operands, kept out of `node`,
     /// which the walk recurses through.
+    #[inline(never)]
     fn binary_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut cursor = node.walk();
         let operator = node
@@ -1511,6 +1546,7 @@ impl Walker<'_> {
     }
 
     /// A `${…}` expansion, kept out of `node`, which the walk recurses through.
+    #[inline(never)]
     fn expansion_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         if self.assigns_ignore(node) {
             self.split.hide();
@@ -1521,6 +1557,7 @@ impl Walker<'_> {
 
     /// An arithmetic operand counted up or down, or a unary expression, kept
     /// out of `node`, which the walk recurses through.
+    #[inline(never)]
     fn counted_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let text = unit::text(&node, self.source);
         let bare = text.replace("++", "").replace("--", "");
@@ -1533,6 +1570,7 @@ impl Walker<'_> {
 
     /// A branch, a loop or a function definition, kept out of `node`, which the
     /// walk recurses through.
+    #[inline(never)]
     fn compound_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let body = !matches!(node.kind(), "if_statement" | "case_statement");
         if node.kind() == "for_statement"
@@ -1595,6 +1633,7 @@ impl Walker<'_> {
     }
 
     /// A test, kept out of `node`, which the walk recurses through.
+    #[inline(never)]
     fn test_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let mut hidden = false;
         unit::for_each_node(node, |inner| {
@@ -1615,6 +1654,7 @@ impl Walker<'_> {
 
     /// A subshell or a substitution, kept out of `node`, which the walk
     /// recurses through.
+    #[inline(never)]
     fn apart_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.substituted(node);
         let outer = self.split.dir_snapshot();
@@ -1686,7 +1726,8 @@ impl Walker<'_> {
 
     /// A list of commands joined by `&&` and `||`: the right side of either
     /// may not run.
-    /// The commands of a list, joined by `&&` and `||`. The grammar makes
+    ///
+    /// The grammar makes
     /// the left side of each `&&` and `||` a list of its own, a level deeper
     /// (`a && b && c` is `(a && b) && c`), so a chain is as deep as it is
     /// long. The lists on its left are read in a loop that holds each one on
@@ -1706,6 +1747,7 @@ impl Walker<'_> {
     }
 
     /// Begin reading the list `node`, on top of the lists `open` holds.
+    #[inline(never)]
     fn list_open<'tree>(
         &mut self,
         open: &mut Vec<Listed<'tree>>,
@@ -1750,6 +1792,7 @@ impl Walker<'_> {
     /// stage and level to walk it at, or `None` when all are read. A list on
     /// the left of the one being read is opened here, and a list read to the
     /// end is closed.
+    #[inline(never)]
     fn list_next<'tree>(
         &mut self,
         open: &mut Vec<Listed<'tree>>,
@@ -1788,6 +1831,7 @@ impl Walker<'_> {
     /// it is an operator, and otherwise the stage and level to read the
     /// command at, the link begun when it is on the right side of `&&` or
     /// `||`.
+    #[inline(never)]
     fn list_child(
         &mut self,
         reading: &mut Listed<'_>,
@@ -1849,6 +1893,7 @@ impl Walker<'_> {
 
     /// After the walk read the command [`Walker::list_next`] gave it, of the
     /// list on top of `open`.
+    #[inline(never)]
     fn list_walked(&mut self, open: &mut [Listed<'_>]) {
         let Some(reading) = open.last_mut() else {
             return;

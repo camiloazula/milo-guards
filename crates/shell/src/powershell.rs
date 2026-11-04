@@ -558,6 +558,7 @@ impl Walker<'_> {
 
     /// A chain of pipelines joined by `&&` and `||`. An arm of [`Self::walk`],
     /// kept out of its frame.
+    #[inline(never)]
     fn chain_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.statement();
         let list = self.split.list_start();
@@ -587,6 +588,7 @@ impl Walker<'_> {
 
     /// A pipeline, its stages in order. An arm of [`Self::walk`], kept out of
     /// its frame.
+    #[inline(never)]
     fn pipeline_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.statement();
         let pipeline = self.split.pipeline(stage.or(self.item));
@@ -617,6 +619,7 @@ impl Walker<'_> {
 
     /// A command, with the blocks and the sub-expressions its arguments hold.
     /// An arm of [`Self::walk`], kept out of its frame.
+    #[inline(never)]
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let first = self.split.units.len();
         let keys = self.command(node, stage);
@@ -675,6 +678,7 @@ impl Walker<'_> {
 
     /// `trap { … }`, whose block runs later. An arm of [`Self::walk`], kept out
     /// of its frame.
+    #[inline(never)]
     fn trap_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let began = self.split.begin_later();
         self.children(node, stage, level);
@@ -683,6 +687,7 @@ impl Walker<'_> {
 
     /// A loop, or a function, which runs what it holds again. An arm of
     /// [`Self::walk`], kept out of its frame.
+    #[inline(never)]
     fn repeated_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         // A function named as a location cmdlet stands in for it.
         if node.kind() == "function_statement" && self.names_location(node) {
@@ -697,6 +702,7 @@ impl Walker<'_> {
 
     /// What a condition guards, or a `try` may stop short of. An arm of
     /// [`Self::walk`], kept out of its frame.
+    #[inline(never)]
     fn branch_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.branches += 1;
         self.children(node, stage, level);
@@ -704,6 +710,7 @@ impl Walker<'_> {
     }
 
     /// A redirect. An arm of [`Self::walk`], kept out of its frame.
+    #[inline(never)]
     fn redirection_node(&mut self, node: Node<'_>, level: usize) {
         self.redirect(node);
         self.children(node, None, level);
@@ -711,12 +718,14 @@ impl Walker<'_> {
 
     /// A comparison, which may replace text with a block. An arm of
     /// [`Self::walk`], kept out of its frame.
+    #[inline(never)]
     fn comparison_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.replace(node);
         self.children(node, stage, level);
     }
 
     /// A method call. An arm of [`Self::walk`], kept out of its frame.
+    #[inline(never)]
     fn invokation_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         // A method call is no unit, and the rules know only some of
         // them: `effect` cannot say what it does.
@@ -743,6 +752,7 @@ impl Walker<'_> {
 
     /// An assignment, which may set a hook, a default or a block held in a
     /// variable. An arm of [`Self::walk`], kept out of its frame.
+    #[inline(never)]
     fn assignment_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         blocks::hook(self.split, node, self.source);
         let named_hook = self.session_member(node);
