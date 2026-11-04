@@ -1138,6 +1138,9 @@ powershell finds=destroy_resources reason="deletes AWS resources" | Start-TFRRem
 powershell finds=destroy_resources reason="deletes AWS resources" | Start-ADSBatchDeleteConfigurationTask -ConfigurationType SERVER -ConfigurationId c
 powershell finds=destroy_resources reason="deletes AWS resources" | Start-EMLDeleteMonitorDeployment -Identifier s
 powershell finds=destroy_resources reason="deletes AWS resources" | Start-MPAActiveApprovalTeamDeletion -Arn a
+powershell finds=destroy_resources reason="deletes AWS resources" | New-BCMPCDeleteBillScenarioCommitmentModification -BillScenarioId b -Id i
+powershell finds=destroy_resources reason="deletes AWS resources" | New-BCMPCDeleteBillScenarioUsageModification -BillScenarioId b -Id i
+powershell finds=destroy_resources reason="deletes AWS resources" | New-BCMPCDeleteWorkloadEstimateUsage -WorkloadEstimateId w -Id i
 powershell finds=destroy_resources reason="deletes AWS resources" | New-PERSDataDeletionJob -JobName j -DatasetGroupArn a -RoleArn r -DataSource_DataLocation s3://b/u.csv
 powershell finds=destroy_resources reason="deletes AWS resources" | Set-SMDeleteClusterNode -ClusterName c -NodeId n
 powershell finds=destroy_resources reason="deletes AWS resources" | Set-BDRBatchDeleteEvaluationJob -JobIdentifier j
@@ -1162,15 +1165,27 @@ powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzVir
 powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzStaticWebAppApiKey -ResourceGroupName rg -Name s
 powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzLabServicesVMPassword -ResourceGroupName rg -LabName l -VirtualMachineName v -Password $p
 powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzureRoleInstance -ServiceName s -Slot Production -InstanceName i -Reimage
+# Auditing, threat protection and vulnerability assessment settings removed,
+# and a rule baseline tuned by hand, destroy as `Remove-AzSqlServerAudit` does.
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlAuditSetting -WorkspaceName w
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlPoolAuditSetting -WorkspaceName w -Name pool
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlAdvancedThreatProtectionSetting -WorkspaceName w
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlPoolAdvancedThreatProtectionSetting -WorkspaceName w -Name pool
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlVulnerabilityAssessmentSetting -WorkspaceName w
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlPoolVulnerabilityAssessmentSetting -WorkspaceName w -Name pool
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlServerVulnerabilityAssessmentSetting -ResourceGroupName rg -ServerName s
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlDatabaseVulnerabilityAssessmentSetting -ResourceGroupName rg -ServerName s -DatabaseName d
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlInstanceVulnerabilityAssessmentSetting -ResourceGroupName rg -InstanceName i
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlInstanceDatabaseVulnerabilityAssessmentSetting -ResourceGroupName rg -InstanceName i -DatabaseName d
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlDatabaseVulnerabilityAssessmentRuleBaseline -ResourceGroupName rg -ServerName s -DatabaseName d -RuleId VA1
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlInstanceDatabaseVulnerabilityAssessmentRuleBaseline -ResourceGroupName rg -InstanceName i -DatabaseName d -RuleId VA1
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSynapseSqlPoolVulnerabilityAssessmentRuleBaseline -WorkspaceName w -Name pool -RuleId VA1
 powershell safe | Clear-AzCdnEndpointContent -ResourceGroupName rg -ProfileName p -EndpointName e -ContentPath /*
 powershell safe | Clear-AzFrontDoorCdnEndpointContent -ResourceGroupName rg -ProfileName p -EndpointName e -ContentPath /*
-powershell safe | Clear-AzSqlServerVulnerabilityAssessmentSetting -ResourceGroupName rg -ServerName s
-powershell safe | Clear-AzSqlDatabaseVulnerabilityAssessmentRuleBaseline -ResourceGroupName rg -ServerName s -DatabaseName d -RuleId VA1
 powershell safe | Reset-AzVirtualNetworkGateway -VirtualNetworkGateway $g
 powershell safe | Reset-AzureRmVirtualNetworkGateway -VirtualNetworkGateway $g
 powershell safe | Reset-AzVpnGateway -ResourceGroupName rg -Name g
 powershell safe | Reset-AzPaloAltoNetworksLocalRuleCounter -LocalRulestackName r -Priority 1 -ResourceGroupName rg
-powershell safe | Reset-AzSynapseSqlAuditSetting -WorkspaceName w
 powershell safe | Reset-AzSynapseSparkSessionTimeout -WorkspaceName w -SparkPoolName p -Id 1
 powershell safe | Reset-AzureADMSLifeCycleGroup -Id g
 # Google Cloud's one `Reset-` cmdlet deletes an instance's client

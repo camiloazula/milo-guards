@@ -6175,10 +6175,16 @@ instance's client certificates, `Clear-MgDeviceManagementManagedDevice` and
 for the nouns of those modules, read whole, that only set a setting back,
 flush a cache of responses, reset a counter, reboot a gateway or take a
 reaction or a presence off (`Clear-AzCdnEndpointContent`,
-`Clear-AzSqlServerVulnerabilityAssessmentSetting`,
 `Reset-AzVirtualNetworkGateway`, `Reset-AzureADMSLifeCycleGroup`,
 `Clear-MgChatMessageReaction`, `Clear-MgUserPresence`,
-`Reset-EntraLifeCycleGroup`). The lists are checked against the Az 16.5.0
+`Reset-EntraLifeCycleGroup`). A setting that watches a database is not one of
+them: the cmdlets that remove a server's, database's, workspace's or pool's
+auditing, threat protection or vulnerability assessment settings, or a rule
+baseline tuned by hand, destroy as `Remove-AzSqlServerAudit` does
+(`Reset-AzSynapseSqlAuditSetting`,
+`Reset-AzSynapseSqlAdvancedThreatProtectionSetting`,
+`Clear-AzSqlServerVulnerabilityAssessmentSetting`,
+`Clear-AzSqlDatabaseVulnerabilityAssessmentRuleBaseline`). The lists are checked against the Az 16.5.0
 reference, Google's module and Microsoft Graph's command metadata, and a noun
 of those prefixes no list names stays risky, since its prefix is its cloud's.
 AWS's prefixes are short and other modules' nouns start like them
@@ -6213,7 +6219,10 @@ AWS's terminate operations are named (`Stop-EBEnvironment`,
 `Stop-SSMSession` and the rest); `Close-ORGAccount`, which closes an account;
 the deletes AWS names with another verb (`Uninstall-SWFWorkflowType`,
 `Dismount-FSXAndDeleteS3AccessPoint`, `Unlock-BAKRecoveryPoint`,
-`Start-TFRRemoteDelete`, `New-PERSDataDeletionJob`, `Set-SMDeleteClusterNode`,
+`Start-TFRRemoteDelete`, `New-PERSDataDeletionJob`, the batch deletes
+`New-BCMPCDeleteBillScenarioCommitmentModification`,
+`New-BCMPCDeleteBillScenarioUsageModification` and
+`New-BCMPCDeleteWorkloadEstimateUsage`, `Set-SMDeleteClusterNode`,
 `Group-CHMVODeletePhoneNumber`, `Start-EBEnvironmentRebuild` and
 `Invoke-NEPTFastReset`); and `Request-KMSKeyDeletion`, which schedules a key's
 deletion. A `Stop-` that cancels stays safe (`Stop-KMSKeyDeletion`,

@@ -490,8 +490,8 @@ impl Checker<'_> {
 /// - `Clear-` and `Reset-` of AWS, by the whole noun: the AWS prefixes are
 ///   short, so other modules' nouns start like them (`Clear-SPLogLevel`, of
 ///   the `SharePoint` module, like `SP`), and AWS's own `Reset-` cmdlets
-///   mostly set one attribute back (`Reset-EC2ImageAttribute`). Only the cmdlets of
-///   [`AWS_DESTROYS`] destroy (`Clear-SQSQueue` purges a queue,
+///   mostly set one attribute back (`Reset-EC2ImageAttribute`). Only the
+///   cmdlets of [`AWS_DESTROYS`] destroy (`Clear-SQSQueue` purges a queue,
 ///   `Reset-RDSDBParameterGroup` sets a database's parameters back).
 /// - `Unregister-`, for AWS and Azure: AWS names its deregister and
 ///   disassociate verbs so (`Unregister-EC2Image` deregisters an image,
@@ -746,9 +746,10 @@ const EXCHANGE_DEVICES: &[&str] = &["activesyncdevice", "mobiledevice"];
 ///   `Unlock-BAKRecoveryPoint` (which deletes a continuous backup's recovery
 ///   point), `Start-` (a remote file, configuration items, a monitor, an
 ///   approval team), `New-PERSDataDeletionJob`, the batch deletes named
-///   `Set-` and `Group-`, `Start-EBEnvironmentRebuild`, which deletes and
-///   recreates an environment's resources, and `Invoke-NEPTFastReset`, which
-///   removes a Neptune graph's data.
+///   `New-` (the `BCMPC` modifications and usage of a bill scenario or a
+///   workload estimate), `Set-` and `Group-`, `Start-EBEnvironmentRebuild`,
+///   which deletes and recreates an environment's resources, and
+///   `Invoke-NEPTFastReset`, which removes a Neptune graph's data.
 /// - `Request-KMSKeyDeletion`, which schedules a key's deletion.
 const AWS_DESTROYS: &[(&str, &str)] = &[
     ("clear-cweconnection", "clears data in AWS"),
@@ -762,6 +763,18 @@ const AWS_DESTROYS: &[(&str, &str)] = &[
     ),
     ("group-chmvodeletephonenumber", "deletes AWS resources"),
     ("invoke-neptfastreset", "clears data in AWS"),
+    (
+        "new-bcmpcdeletebillscenariocommitmentmodification",
+        "deletes AWS resources",
+    ),
+    (
+        "new-bcmpcdeletebillscenariousagemodification",
+        "deletes AWS resources",
+    ),
+    (
+        "new-bcmpcdeleteworkloadestimateusage",
+        "deletes AWS resources",
+    ),
     ("new-persdatadeletionjob", "deletes AWS resources"),
     ("request-kmskeydeletion", "schedules a KMS key's deletion"),
     ("reset-actenabledbaseline", "resets AWS resources"),
@@ -837,37 +850,25 @@ const AWS_DESTROYS: &[(&str, &str)] = &[
 /// The `Clear-` and `Reset-` cmdlets of the Az modules (and their `AzureRM`
 /// and `AzureAD` names) that destroy nothing, by verb and the noun after the
 /// prefix, checked against the Az 16.5.0 reference and the `AzureAD`
-/// module's: a cache of responses purged from a CDN, a vulnerability
-/// assessment's, audit's or threat protection's settings, a gateway,
-/// connection or router reset (rebooted), a rule's counter, a Spark
-/// session's timeout, and a group renewed (`Reset-AzureADMSLifeCycleGroup`). Every other `Clear-` and
-/// `Reset-` of Azure destroys: a soft-deleted store purged, a cache wiped, a
-/// node reimaged, a password, key, shared key, certificate or publishing
-/// profile reset.
+/// module's: a cache of responses purged from a CDN, a gateway, connection
+/// or router reset (rebooted), a rule's counter, a Spark session's timeout,
+/// and a group renewed (`Reset-AzureADMSLifeCycleGroup`). Every other
+/// `Clear-` and `Reset-` of Azure destroys: a soft-deleted store purged, a
+/// cache wiped, a node reimaged, a password, key, shared key, certificate or
+/// publishing profile reset, and a server's, database's, workspace's or
+/// pool's auditing, threat protection or vulnerability assessment settings
+/// removed, or a rule baseline tuned by hand
+/// (`Reset-AzSynapseSqlAuditSetting`,
+/// `Clear-AzSqlDatabaseVulnerabilityAssessmentRuleBaseline`), as
+/// `Remove-AzSqlServerAudit` removes them.
 const AZURE_KEEPS: &[(&str, &str)] = &[
     ("clear", "cdnendpointcontent"),
     ("clear", "frontdoorcdnendpointcontent"),
-    ("clear", "sqldatabasevulnerabilityassessmentrulebaseline"),
-    ("clear", "sqldatabasevulnerabilityassessmentsetting"),
-    (
-        "clear",
-        "sqlinstancedatabasevulnerabilityassessmentrulebaseline",
-    ),
-    ("clear", "sqlinstancedatabasevulnerabilityassessmentsetting"),
-    ("clear", "sqlinstancevulnerabilityassessmentsetting"),
-    ("clear", "sqlservervulnerabilityassessmentsetting"),
-    ("clear", "synapsesqlpoolvulnerabilityassessmentrulebaseline"),
     ("reset", "admslifecyclegroup"),
     ("reset", "hubrouter"),
     ("reset", "p2svpngateway"),
     ("reset", "paloaltonetworkslocalrulecounter"),
     ("reset", "synapsesparksessiontimeout"),
-    ("reset", "synapsesqladvancedthreatprotectionsetting"),
-    ("reset", "synapsesqlauditsetting"),
-    ("reset", "synapsesqlpooladvancedthreatprotectionsetting"),
-    ("reset", "synapsesqlpoolauditsetting"),
-    ("reset", "synapsesqlpoolvulnerabilityassessmentsetting"),
-    ("reset", "synapsesqlvulnerabilityassessmentsetting"),
     ("reset", "virtualnetworkgateway"),
     ("reset", "virtualnetworkgatewayconnection"),
     ("reset", "vpngateway"),
