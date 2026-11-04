@@ -1081,6 +1081,7 @@ powershell finds=destroy_resources reason="may terminate EC2 instances with a de
 powershell finds=destroy_resources reason="terminates EC2 instances" | $global:PSDefaultParameterValues['*:Terminate']=1; Stop-EC2Instance i-1
 powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | Set-Variable PSDefaultParameterValues @{'*:Terminate'=$true}; Stop-EC2Instance i-1
 powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | sv -Name PSDefaultParameterValues -Value @{'*:Terminate'=$true}; Stop-EC2Instance i-1
+powershell finds=destroy_resources reason="may terminate EC2 instances with a default parameter value the line sets" | Set-Variable -Name ('PSDefault'+'ParameterValues') -Value @{'*:Terminate'=$true}; Stop-EC2Instance i-1
 posix finds=destroy_resources reason="terminates EC2 instances" | pwsh -c '$PSDefaultParameterValues["*:Terminate"]=$true; Stop-EC2Instance i-1'
 powershell finds=destroy_resources reason="terminates EC2 instances" | $PSDefaultParameterValues['*:Terminate']=$false; Stop-EC2Instance i-1 -Terminate
 powershell safe | $PSDefaultParameterValues['*:Terminate']=$true; Stop-EC2Instance i-1 -Terminate:$false

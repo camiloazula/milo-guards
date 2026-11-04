@@ -614,6 +614,15 @@ powershell finds=unknown | Update-FormatData -PrependPath x.format.ps1xml
 powershell finds=unknown | Update-FormatData x.format.ps1xml
 powershell finds=unknown | Update-FormatData @p
 powershell finds=unknown | update-formatdata -pre x.format.ps1xml
+powershell finds=unknown | Update-TypeData -Path x.ps1xml
+powershell finds=unknown | Update-TypeData -PSPath x.ps1xml
+powershell finds=unknown | Update-TypeData -Path:x.ps1xml
+powershell finds=unknown | Update-FormatData -Path x.format.ps1xml
+powershell finds=unknown | Update-FormatData -PSPath x.format.ps1xml
+powershell finds=unknown reason="loads a type or format file whose scripts run later" | $PSDefaultParameterValues['Update-TypeData:AppendPath'] = 'x.ps1xml'; Update-TypeData
+powershell finds=unknown | $PSDefaultParameterValues['Update-FormatData:PrependPath'] = 'x.format.ps1xml'; Update-FormatData
+powershell finds=unknown | $PSDefaultParameterValues['Update-*:Path'] = 'x.ps1xml'; Update-TypeData
+powershell finds=unknown | $PSDefaultParameterValues = $h; Update-TypeData
 powershell safe | Update-TypeData
 powershell safe | Update-FormatData
 powershell safe | Update-TypeData -TypeName X -MemberType AliasProperty -MemberName Y -Value Length
@@ -704,6 +713,43 @@ powershell safe | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; Remove-It
 powershell safe | $PSDefaultParameterValues['*:Path'] = '~'; git status
 powershell safe | $PSDefaultParameterValues.Remove('Remove-Item:Path'); Remove-Item build
 powershell safe | $PSDefaultParameterValues.Clear(); Remove-Item build
+powershell safe | $PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = { Get-ChildItem }; Invoke-Command
+# Text Invoke-Expression runs is run in the same session, with the defaults
+# the line set, and may set more; a new process starts with none.
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; iex 'Remove-Item -Recurse'
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; Invoke-Expression -Command "Remove-Item -Recurse -Force"
+powershell finds=overwrite reason="writes to a shell startup file" | $PSDefaultParameterValues['Set-Content:Path'] = '~/.bashrc'; iex "Set-Content -Value x"
+powershell finds=delete reason="deletes your home directory" | iex "`$PSDefaultParameterValues['Remove-Item:Path'] = '~'"; Remove-Item -Recurse
+powershell finds=delete reason="deletes your home directory" | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; iex "iex 'Remove-Item -Recurse'"
+posix finds=delete reason="deletes your home directory" | pwsh -c "\\$PSDefaultParameterValues['Remove-Item:Path'] = '~'; iex 'Remove-Item -Recurse'"
+powershell safe | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; powershell -c 'Remove-Item -Recurse build'
+powershell safe | $PSDefaultParameterValues['Remove-Item:Path'] = '~'; iex 'Remove-Item -Path build -Recurse'
+# The variable got, set or made by its name, a wildcard that matches it or
+# a name only known when it runs, through a variable cmdlet, a path on the
+# Variable: drive or a method given its name, may set any default. Text that
+# only says the name, and a cmdlet that only prints the variable, set none.
+powershell finds=delete | (Get-Variable PSDefaultP* -ValueOnly).Add('Remove-Item:Path', '~'); Remove-Item -Recurse
+powershell finds=delete | (gv PSDefaultP* -ValueOnly).Add('Remove-Item:Path', '~'); Remove-Item -Recurse
+powershell finds=delete | (Get-Variable -Name PSDefaultParameterValues).Value.Add('Remove-Item:Path', '~'); Remove-Item -Recurse
+powershell finds=delete | Get-Variable | % { $_.Value }; Remove-Item -Recurse
+powershell finds=delete | (Get-Item variable:PSDefaultP*).Value.Add('Remove-Item:Path', '~'); Remove-Item -Recurse
+powershell finds=delete | (Get-Item Microsoft.PowerShell.Core\\Variable::PSDefaultParameterValues).Value.Add('Remove-Item:Path', '~'); Remove-Item -Recurse
+powershell finds=delete | Set-Item variable:PSDefaultParameterValues @{ 'Remove-Item:Path' = '~' }; Remove-Item -Recurse
+powershell finds=delete | New-Item -Path variable: -Name PSDefaultParameterValues -Value @{ 'Remove-Item:Path' = '~' } -Force; Remove-Item -Recurse
+powershell finds=delete | cd variable:; Set-Item PSDefaultParameterValues @{ 'Remove-Item:Path' = '~' }; Remove-Item -Recurse
+powershell finds=delete | Set-Variable -Name ('PSDefault' + 'ParameterValues') -Value @{ 'Remove-Item:Path' = '~' }; Remove-Item -Recurse
+powershell finds=delete | Set-Variable -Name $n -Value @{ 'Remove-Item:Path' = '~' }; Remove-Item -Recurse
+powershell finds=delete | New-Variable -Name $n -Value @{ 'Remove-Item:Path' = '~' } -Force; Remove-Item -Recurse
+powershell finds=delete | sv -Name:PSDefaultParameterValues -Value @{ 'Remove-Item:Path' = '~' }; Remove-Item -Recurse
+powershell finds=delete | $ExecutionContext.SessionState.PSVariable.Set('PSDefaultParameterValues', @{ 'Remove-Item:Path' = '~' }); Remove-Item -Recurse
+powershell finds=delete | Get-Content x.json | ConvertFrom-Json -OutVariable PSDefaultParameterValues; Remove-Item -Recurse
+powershell safe | Write-Host 'PSDefaultParameterValues'; Remove-Item build -Recurse
+powershell safe | Write-Output "set PSDefaultParameterValues first"; Remove-Item build -Recurse
+powershell safe | Get-Variable PSDefaultParameterValues; Remove-Item build -Recurse
+powershell safe | Get-Variable; Remove-Item build -Recurse
+powershell safe | Get-ChildItem variable:; Remove-Item build -Recurse
+powershell safe | Set-Variable -Name x -Value $v; Remove-Item build -Recurse
+powershell safe | Get-Item variable:HOME; Remove-Item build -Recurse
 
 # A cmdlet that runs a block, given none, no argument and nothing in its
 # place, takes it from a default value set anywhere in the session, or fails.

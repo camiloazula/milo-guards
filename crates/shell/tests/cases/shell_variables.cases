@@ -1,7 +1,8 @@
 # Variables a shell runs or expands later. `PS4` and `BASH_ENV` hold text a
 # shell runs later: `$(…)` in `PS4` runs with each `set -x` line, and
 # `BASH_ENV` is expanded and then run as a script by every non-interactive
-# bash (and `ENV` by a POSIX sh), a file the line does not show. Arithmetic, `${!x}` and `${x@P}` read any variable's value again as
+# bash (and `ENV` by an interactive POSIX sh), a file the line does not
+# show. Arithmetic, `${!x}` and `${x@P}` read any variable's value again as
 # code. The format is in CONTRIBUTING.md.
 
 # A PS4 or BASH_ENV value is code the shell runs.
@@ -301,15 +302,30 @@ posix finds=unknown | export BASH_ENV=x.sh; bash -c true
 posix finds=unknown | BASH_ENV=x.sh; bash -c true
 posix finds=unknown | BASH_ENV=x.sh make
 posix finds=unknown | BASH_ENV=x.sh sudo bash -c true
-posix finds=unknown | ENV=x.sh sh -c true
-posix finds=unknown | ENV=x.sh dash -c true
-posix finds=unknown | export ENV=x.sh; sh -c true
-posix finds=unknown | env ENV=x.sh sh -c true
-posix finds=unknown | ENV=$f sh -c true
+posix finds=unknown reason="starts a shell that first runs a file the line does not show" | ENV=x.sh sh -i
+posix finds=unknown | ENV=x.sh sh -ic true
+posix finds=unknown | ENV=x.sh dash -i
+posix finds=unknown | ENV=x.sh sh
+posix finds=unknown | ENV=x.sh sh -s
+posix finds=unknown | export ENV=x.sh; sh -i
+posix finds=unknown | env ENV=x.sh sh -i
+posix finds=unknown | ENV=$f sh -i
 posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo 'echo hi' > other.sh; BASH_ENV=e.sh bash -c true
 powershell finds=unknown reason="starts a shell that first runs a file the line does not show" | $env:BASH_ENV = 'x.sh'; bash -c true
 powershell finds=unknown | $env:BASH_ENV = "$HOME/x.sh"; bash -c true
-powershell finds=unknown | $Env:ENV = 'x.sh'; sh -c true
+powershell finds=unknown | $Env:ENV = 'x.sh'; sh -i
+powershell finds=unknown | New-Item -Path Env: -Name BASH_ENV -Value x.sh; bash -c true
+powershell finds=unknown | ni -Path env: -Name BASH_ENV -Value x.sh; bash -c true
+powershell finds=unknown | New-Item -Path Env:\\ -Name:BASH_ENV -Value x.sh; bash -c true
+powershell finds=unknown | New-Item Env: -Name ENV -Value x.sh; sh -i
+powershell finds=unknown | New-Item -Path Env: -Name $n -Value x.sh; bash -c true
+powershell finds=unknown | New-Item -Path Env: -Name NODE_OPTIONS -Value '--require ./x.js'; node app.js
+powershell finds=unknown reason="starts a shell that first runs a file the line does not show" | Start-Process bash -Environment @{ BASH_ENV = 'x.sh' } -ArgumentList '-c','true'
+powershell finds=unknown | Start-Process bash -Environment @{ 'bash_env' = 'x.sh' } -ArgumentList '-c','true'
+powershell finds=unknown | Start-Process -FilePath sh -Environment @{ ENV = 'x.sh' } -ArgumentList '-i'
+powershell finds=unknown | Start-Process bash -Environment $vars -ArgumentList '-c','true'
+powershell finds=unknown | Start-Process bash -Environment @{ $k = 'x.sh' } -ArgumentList '-c','true'
+powershell finds=unknown | Start-Process bash -Env @{ BASH_ENV = $f } -ArgumentList '-c','true'
 powershell finds=unknown | Set-Item Env:BASH_ENV x.sh; bash -c true
 powershell finds=unknown | Set-Item -Path Env:\\BASH_ENV -Value x.sh; make
 powershell finds=unknown | [Environment]::SetEnvironmentVariable('BASH_ENV', 'x.sh'); bash -c true
@@ -320,6 +336,12 @@ powershell finds=unknown | [Environment]::SetEnvironmentVariable($n, 'x.sh'); ba
 cmd finds=unknown | set BASH_ENV=x.sh && start bash -c true
 cmd finds=unknown | set BASH_ENV=x.sh && bash -c true
 cmd finds=unknown | set "BASH_ENV=x.sh" & bash -c true
+cmd finds=unknown | set %n%=x.sh & bash -c true
+cmd finds=unknown | set "%n%=x.sh" & bash -c true
+cmd finds=unknown | set !n!=x.sh & bash -c true
+cmd finds=unknown | set /a BASH_ENV=1 & bash -c true
+cmd finds=unknown | set /A x=1, BASH_ENV+=2 & bash -c true
+cmd finds=unknown | set /a "BASH_ENV=1" & bash -c true
 posix safe | BASH_ENV=/dev/null bash -c true
 posix safe | BASH_ENV=x.sh echo hi
 posix safe | ENV=x.sh bash -c true
@@ -327,13 +349,29 @@ posix safe | ENV=production node app.js
 posix safe | ENV=production make
 posix safe | export ENV=production; npm start
 posix safe | ENV= sh -c true
+posix safe | ENV=x.sh sh -c true
+posix safe | ENV=x.sh dash -c true
+posix safe | ENV=x.sh sh ./deploy.sh
+posix safe | ENV=staging sh ./deploy.sh
+posix safe | NODE_ENV=production ENV=prod sh -c 'npm run build'
+posix safe | export ENV=x.sh; sh -c true
+posix finds=run_input lacks=unknown | ENV=x.sh sh < script.sh
+posix safe | ENV=x.sh make
+posix safe | ENV=x.sh ./script.sh
 powershell safe | $env:BASH_ENV = 'x.sh'
 powershell safe | $env:BASH_ENV = 'x.sh'; Get-ChildItem
 powershell safe | $env:BASH_ENV = ''; bash -c true
+powershell safe | $env:BASH_ENV = $null; bash -c true
+powershell safe | New-Item -Path Env: -Name FOO -Value x.sh; bash -c true
+powershell safe | Start-Process bash -Environment @{ FOO = 'x.sh' } -ArgumentList '-c','true'
+powershell safe | Start-Process bash -Environment @{ BASH_ENV = $null } -ArgumentList '-c','true'
+powershell safe | Start-Process sh -Environment @{ ENV = 'x.sh' } -ArgumentList '-c','true'
 powershell safe | $env:ENV = 'production'; node app.js
 powershell safe | $env:BASH_ENV = 'x.sh'; Write-Output hi
 cmd safe | set ENV=production && node app.js
 cmd safe | set BASH_ENV=x.sh
+cmd safe | set /a x=1 & bash -c true
+cmd safe | set X=%Y% & bash -c true
 
 # A BASH_ENV file the line writes is run by every shell the line starts: in
 # every shell the line starts, whatever starts it (a program that may start

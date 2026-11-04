@@ -977,6 +977,28 @@ impl Walker<'_> {
             let mut cursor = prompt.walk();
             children.extend(prompt.named_children(&mut cursor));
         }
+        let source = unit::text(&node, self.source);
+        // `set /a BASH_ENV=1`: a number, which still names a file a bash the
+        // line starts runs first.
+        if let Some(sum) = children
+            .iter()
+            .find(|child| child.kind() == "arithmetic_assignment")
+        {
+            let text = unit::text(sum, self.source);
+            for name in arithmetic_names(text) {
+                if startup::named_file(name) {
+                    startup::environment(self.split, Some(name), Arg::Unknown(source.to_string()));
+                }
+            }
+            return;
+        }
+        // `set %n%=x.sh`: a name only known when it runs may be `BASH_ENV`.
+        if children
+            .iter()
+            .any(|child| child.kind() == "variable_reference")
+        {
+            startup::environment(self.split, None, Arg::Unknown(source.to_string()));
+        }
         let Some(written_name) = children
             .iter()
             .find(|child| child.kind() == "variable_name")
@@ -992,7 +1014,6 @@ impl Walker<'_> {
         if !zip && !node_options && terraform.is_none() && !startup {
             return;
         }
-        let source = unit::text(&node, self.source);
         let plain = children.iter().all(|child| {
             matches!(
                 child.kind(),
@@ -1031,6 +1052,32 @@ impl Walker<'_> {
             }
         }
     }
+}
+
+/// The names `set /a` gives a value to (`set /a a=1, BASH_ENV+=2`): before
+/// each `=` of an assignment, or of an operator and `=`, in each part
+/// between commas, without the quotes and the switch it is written with. A
+/// name with `%` or `!` in it is only known when it runs, and may be any.
+fn arithmetic_names(text: &str) -> Vec<&str> {
+    let text = text.trim_start();
+    let text = text
+        .get(..2)
+        .filter(|head| head.eq_ignore_ascii_case("/a"))
+        .map_or(text, |_| &text[2..]);
+    text.split(',')
+        .filter_map(|part| {
+            let (name, _) = part.split_once('=')?;
+            let name = name
+                .trim_end_matches(['+', '-', '*', '/', '%', '&', '|', '^', '<', '>'])
+                .trim()
+                .trim_matches(['"', '(', ' ']);
+            Some(if name.contains(['%', '!']) {
+                "BASH_ENV"
+            } else {
+                name
+            })
+        })
+        .collect()
 }
 
 /// The characters that end a command's name as a space does.

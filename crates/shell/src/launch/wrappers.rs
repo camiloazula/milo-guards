@@ -928,7 +928,8 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         adrift: false,
         rerun: Rc::default(),
         hidden: false,
-        startup: Rc::default(),
+        // `-Environment @{ BASH_ENV = … }` is for the program it starts.
+        startup: Rc::clone(&unit.startup),
         repeated: false,
         downloaded: false,
         relocates: false,

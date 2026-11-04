@@ -4,8 +4,8 @@
 //! non-interactive bash). An assignment is read where it is written: a value
 //! with code in it is a script that runs later, a value only known when it
 //! runs is a script nobody can read, and a `BASH_ENV` file is a script the
-//! shell it is handed to runs. `ENV` names a file a POSIX `sh` runs the same
-//! way, so it is read only as the file it names.
+//! shell it is handed to runs. `ENV` names a file an interactive POSIX `sh`
+//! runs the same way, so it is read only as the file it names.
 
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -32,10 +32,10 @@ pub(crate) const SPECIAL: [&str; 15] = [
     "shift", "times", "trap", "unset",
 ];
 
-/// The variable that names a file a POSIX `sh` runs before its own script
-/// (dash, ksh and the like; bash only when it is `sh`): every other program
-/// leaves it be, and it is a name many programs give their own setting
-/// (`ENV=production`).
+/// The variable that names a file a POSIX `sh` runs before it reads its
+/// commands, when it is interactive (dash, ksh and the like; bash only when
+/// it is `sh`): every other program leaves it be, and it is a name many
+/// programs give their own setting (`ENV=production`).
 pub(crate) const SH_ENV: &str = "ENV";
 
 /// The shells that run the file [`SH_ENV`] names.
@@ -228,26 +228,35 @@ pub(crate) fn named_file(name: &str) -> bool {
 
 /// Note `value`, given to the variable `name` by PowerShell (`$env:BASH_ENV
 /// = …`, `Set-Item Env:BASH_ENV …`, .NET) or cmd (`set BASH_ENV=…`), when the
-/// variable names a file a shell the line starts runs: the name in any case,
-/// as on Windows. Its code is not read: the shell it is handed to runs the
-/// file, which the line does not show. `None` for a name that may be any
-/// variable, which is taken for `BASH_ENV`.
+/// variable names a file a shell the line starts runs (see [`entry`]).
 pub(crate) fn environment(split: &mut Split, name: Option<&str>, value: Arg) {
+    if let Some(entry) = entry(split, name, value) {
+        split.add_startup(entry);
+    }
+}
+
+/// The file `value` names for a shell, given to the variable `name` in
+/// PowerShell or cmd, when the variable names a file a shell the line starts
+/// runs: the name in any case, as on Windows. Its code is not read: the
+/// shell it is handed to runs the file, which the line does not show. `None`
+/// for a name that may be any variable, which is taken for `BASH_ENV`. An
+/// empty value and `$null` remove the variable, and name no file.
+pub(crate) fn entry(split: &Split, name: Option<&str>, value: Arg) -> Option<Startup> {
     let sh_only = match name {
         None => false,
         Some(name) if name.eq_ignore_ascii_case("BASH_ENV") => false,
         Some(name) if name.eq_ignore_ascii_case(SH_ENV) => true,
-        Some(_) => return,
+        Some(_) => return None,
     };
-    if value.known().is_some_and(str::is_empty) {
-        return;
+    if matches!(value, Arg::Null) || value.known().is_some_and(str::is_empty) {
+        return None;
     }
-    split.add_startup(Startup {
+    Some(Startup {
         file: value,
         sh_only,
         expanded: false,
         assigned: split.directory(),
-    });
+    })
 }
 
 /// Read the assignment `name=value`: the findings it carries, and the file

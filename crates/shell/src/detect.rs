@@ -48,6 +48,38 @@ const ELEVATORS: [&str; 8] = [
     "systemd-run",
 ];
 
+/// Whether a POSIX `sh` may be interactive, the only one that runs the file
+/// `ENV` names: given `-i`, or given no `-c`, no script and no input of a
+/// file or text (`sh`, `sh -s`), when it reads commands from a terminal.
+fn interactive(unit: &Unit) -> bool {
+    let mut command = false;
+    let mut operand = false;
+    let mut args = unit.args.iter();
+    while let Some(arg) = args.next() {
+        let Some(text) = arg.known() else {
+            operand = true;
+            break;
+        };
+        if text == "--" || text == "-" {
+            operand |= args.next().is_some();
+            break;
+        }
+        let Some(letters) = text.strip_prefix(['-', '+']) else {
+            operand = true;
+            break;
+        };
+        if text.starts_with('-') && letters.contains('i') {
+            return true;
+        }
+        command |= text.starts_with('-') && letters.contains('c');
+        // `-o posix` takes the next word.
+        if letters.contains('o') {
+            args.next();
+        }
+    }
+    !command && !operand && unit.stdin.is_none()
+}
+
 /// Builtins that start no program: they print, test, move or set a variable,
 /// so a `BASH_ENV` file is not run for them (one set in front of a special
 /// builtin stays set for the rest of the line: see `startup::SPECIAL`).
@@ -1294,8 +1326,9 @@ impl Checker<'_> {
     /// and any program that may start one (`make` runs its recipes with the
     /// `SHELL` of its makefile, a script with a `#!/bin/bash` line, `git`
     /// its hooks). A POSIX `sh` runs the file `ENV` names the same way
-    /// ([`startup::SH_SHELLS`]). What starts nothing is a builtin that only
-    /// prints, tests or sets a variable ([`STARTS_NOTHING`]), and in
+    /// ([`startup::SH_SHELLS`]), when it may be interactive (see
+    /// [`interactive`]). What starts nothing is a builtin that only prints,
+    /// tests or sets a variable ([`STARTS_NOTHING`]), and in
     /// PowerShell and cmd a cmdlet or a built-in command (but `start` and
     /// `call`, which run a program); `key` is `None` for a program only
     /// known when it runs. A file that is the null device runs nothing.
@@ -1322,7 +1355,9 @@ impl Checker<'_> {
         // a line may set many, and start many shells.
         let mut unshown = false;
         for entry in unit.startup.iter().chain(self.split.startup.iter()) {
-            if entry.sh_only && !key.is_some_and(|key| startup::SH_SHELLS.contains(&key)) {
+            if entry.sh_only
+                && !key.is_some_and(|key| startup::SH_SHELLS.contains(&key) && interactive(unit))
+            {
                 continue;
             }
             // `BASH_ENV=/dev/stdin` is the shell's input run as a script, as

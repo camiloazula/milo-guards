@@ -3,12 +3,11 @@
 //! `BASH_ENV` is expanded and then run as a script by every non-interactive
 //! bash, so a `BASH_ENV` file is a script it runs that the line does not
 //! show, by anything that may start bash (inline code among them), and `ENV`
-//! one a POSIX sh runs. The value is read as bash
-//! reads it: prompt escapes decoded, subscripts of the variable, declarations
-//! behind `builtin` and `command`, and `$PWD` as the folder the line moved to,
-//! which is plain only when the line wrote that folder out. Arithmetic,
-//! `${!x}` and `${x@P}` read any variable's value again, and run the code it
-//! holds.
+//! one an interactive POSIX sh runs. The value is read as bash reads it:
+//! prompt escapes decoded, subscripts of the variable, declarations behind
+//! `builtin` and `command`, and `$PWD` as the folder the line moved to, which
+//! is plain only when the line wrote that folder out. Arithmetic, `${!x}` and
+//! `${x@P}` read any variable's value again, and run the code it holds.
 //!
 //! The lines and their answers are in `tests/cases/shell_variables.cases`;
 //! here are the lines made of many assignments or reads, the time they take,

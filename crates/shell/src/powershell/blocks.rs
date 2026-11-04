@@ -916,8 +916,9 @@ const TYPE_FILE_SWITCHES: [&str; 9] = [
 ];
 
 /// `Update-TypeData` and `Update-FormatData` load a type or format file
-/// (`-AppendPath`, `-PrependPath`, or first by position): its script members
-/// and blocks run later, whenever an object of the type is used or
+/// (`-AppendPath`, its aliases `-Path` and `-PSPath`, `-PrependPath`, or
+/// first by position, a default parameter value among them): its script
+/// members and blocks run later, whenever an object of the type is used or
 /// formatted, and the guard does not read the file. A file given by any of
 /// them, and a splat, which may give one, are unknown. Without a file they
 /// load again the files the session already has, or add the members the
@@ -930,7 +931,11 @@ fn type_files(split: &mut Split, args: &[Arg], shapes: &[Shape], command: &str) 
             file = true;
             continue;
         };
-        if names(&name, &["appendpath", "prependpath"]) {
+        // `-Path` and `-PSPath` are aliases of `-AppendPath`, matched
+        // whole.
+        if names(&name, &["appendpath", "prependpath"])
+            || matches!(name.as_str(), "path" | "pspath")
+        {
             file = true;
         } else if !names(&name, &TYPE_FILE_SWITCHES)
             && iter
