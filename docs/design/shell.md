@@ -3140,17 +3140,30 @@ of their strictest, so each family below was added on that test.
   `user@1000.service`, `session-3.scope`, `init.scope`, and a pattern that
   may match one, as `'user*'` and `'*.scope'`), is `stop_system`; one that
   matches none (`systemctl stop 'docker*'`) is everyday work. Stopping
-  `system.slice` by its name `stops every system service`. For `service name action`, an
-  action only known when it runs may be `stop`, so it is risky when the name
-  protects the machine or is only known when it runs (`service ufw
-  $action`); `service nginx $action` is safe, as `service nginx stop` is.
+  `system.slice` by its name `stops every system service`.
   An action stops the service when it is `stop`, a BSD spelling of it
   (`onestop`, `forcestop`, `faststop`, `quietstop`), `force-stop`, `kill`,
   or one of the actions the firewall and `AppArmor` scripts take their
   protection down with, `flush` (`service netfilter-persistent flush`) and
-  `teardown` (`service apparmor teardown`). Every other service manager
-  is read as `service`: a program run from an init script folder
-  (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
+  `teardown` (`service apparmor teardown`). An action disables the service
+  when it is FreeBSD's `disable` or `delete`, alone or after a prefix
+  `rc.subr` reads (`one`, `force`, `fast`, `quiet`): `service sshd
+  onedisable` writes `sshd_enable="NO"` to `rc.conf`, as `sysrc
+  sshd_enable=NO` does, and `delete` removes it, as `sysrc -x` does, so
+  either is `system_settings` whatever the service, as `systemctl disable`
+  is. For `service name action`, an action only known when it runs may be a
+  stop or a disable, so it is `system_settings` (`service nginx $action`,
+  `changes a system service only known when it runs`), and also what a stop
+  of that name is (`service sshd $action` is `stop_system` too). FreeBSD's
+  `-j jail` and `-E var=value` take a value, so the name and the action are
+  the words after it (`service -j jail sshd onedisable`, `service -jjail
+  sshd onedisable`); a word only known when it runs before them may be such
+  an option and the word after it its value, so the name and the action may
+  be the words after either (`service $opt sshd onedisable`). Every other
+  service manager is read as `service`, a disable included (`invoke-rc.d
+  nginx disable`, `/usr/local/etc/rc.d/nginx onedisable`): a program run
+  from an init script folder (`/etc/init.d`, `/etc/rc.d/init.d`,
+  `/etc/rc.d`, `/usr/local/etc/rc.d`),
   placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
   as `/etc/init.d/ufw stop`, is the service of its name with its first
   operand as the action. So is the script a shell runs (`sh
@@ -3167,7 +3180,12 @@ of their strictest, so each family below was added on that test.
   `shutdown`, `force-stop`, `force-shutdown`, or starts with the letters
   `sv` reads as down, exit or pause (`d`, `D`, `x`, `X`, `e`, `E`, `p`), or
   is only known when it runs, and a service given as a folder
-  (`/etc/service/ufw`) is the last part. `/etc/init.d/nginx restart`,
+  (`/etc/service/ufw`) is the last part. A folder named from inside it
+  (`.`, `..`, `./`, `sshd/.`) is placed where it lands from where the line
+  is, and the service is that folder's last part: `cd /etc/service/sshd &&
+  sv down .` is `sv down sshd`, and from a folder only known when it runs
+  (`cd $dir && sv down .`) the service is only known when it runs too. s6's
+  `s6-svc` names its folders the same way. `/etc/init.d/nginx restart`,
   `rc-service docker stop` and `sv down nginx` are safe; `/etc/init.d/ssh
   stop` and `sv down sshd` are `stop_system`. The protecting units are the
   firewalls (`firewalld`, `ufw`, `nftables`, `iptables`, `ip6tables`,
@@ -3252,7 +3270,10 @@ of their strictest, so each family below was added on that test.
   known when it runs) stop each formula's service, and `--all` every one
   it runs, any of which may protect the machine: `brew services stop
   postgresql` is safe, `brew services stop fail2ban` and `brew services stop
-  --all` are not. `nsenter` is a wrapper: what it runs in the init
+  --all` are not. A subcommand only known when it runs may be `services`
+  and what follows it its command and formulas, so `brew $cmd services
+  stop postgresql` (and any `brew $cmd`) `changes a system service only
+  known when it runs`. `nsenter` is a wrapper: what it runs in the init
   process's namespaces is judged (`nsenter -t 1 -a systemctl stop sshd` is
   `stop_system`; see [Wrappers and scripts](#wrappers-and-scripts)).
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
@@ -3305,7 +3326,8 @@ Gatekeeper …"). Quoted with nothing before it, it is one
 word, a value (`iptables -A INPUT -s "$ip" -j DROP` is safe). `service`,
 `launchctl` and the other service managers take no option that changes what
 their words do, and their own reading judges each word, an unknown one
-included (`service nginx $action` stays safe).
+included (`service $name status` is safe, and `service nginx $action`
+is the stop or disable it may be).
 
 ### Values only known when they run
 
@@ -3791,7 +3813,16 @@ guard does not know is not judged as a writer; these are the ones it knows.
   program) edits each file awk reads, every operand after the program but
   `-` and an assignment (`x=1`). Any other library is code the guard does
   not read, `unknown` as `-f script` is; one only known when it runs
-  (`-i "$L"`) is both, the edit said as one that may happen. The options are
+  (`-i "$L"`) is both, the edit said as one that may happen. A shared
+  library gawk loads with `-l`, `--load` or `@load` in the program
+  (`awk -l ./ext.so 1 a`, `awk '@load "ext"; 1' a`) runs native code the
+  line does not show, `unknown` whatever its name (`-l inplace` too, and
+  beside `-i inplace` the edit is still judged). A directive is read as
+  gawk's lexer reads it: `@` is a token of its own, and `include` or `load`
+  after it, past spaces, tabs, carriage returns and backslash-newlines, is
+  the directive (`@ load "ext"`, `@ include "inplace"` the edit); only the
+  whole word counts, so `@loader` is none, and one written in a string or
+  regex (`print "@load"`) is found too, risky and not safe. The options are
   read as gawk's `getopt_long` reads them: a bundle a letter at a time
   (`-bi inplace`, `-Oiinplace`), `f E i l v F e Z` taking the rest of the
   bundle or else the next word and `d D L o p` only the rest; a long option
@@ -3840,7 +3871,7 @@ guard does not know is not judged as a writer; these are the ones it knows.
 | `curl.exe -o C:\Windows\x URL`, `certutil -urlcache -f URL C:\Windows\x`, `Get-Process \| Export-Csv C:\Windows\x.csv`, `sort a \| sponge /etc/x`, `awk -i inplace 1 /etc/x`, `ex -sc wq /etc/x`, `vim -es /etc/x` | `overwrite`: a system folder |
 | `curl.exe -o .envrc URL`, `certutil -decode a.b64 .vscode\tasks.json`, `sponge ~/.bashrc`, `ex -sc wq .envrc`, `ex -sc 'w ~/.bashrc' a` | `overwrite`: a startup file, or one a tool runs on its own |
 | `curl.exe -o out.txt URL`, `certutil -urlcache -f URL out.txt`, `Export-Csv out.csv`, `sponge a`, `awk -i inplace 1 src/a.txt`, `vim -es -c '%s/a/b/g' -c wq src/a.txt` | safe |
-| `awk -i lib 1 a`, `awk --fil s.awk a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `nvim -l s.lua`, `vim -es -c 'e /etc/x' -c wq a`, `echo 'w /etc/x' \| vim -es a` | `unknown` |
+| `awk -i lib 1 a`, `awk --fil s.awk a`, `awk -l ./ext.so 1 a`, `awk '@load "ext"; 1' a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `nvim -l s.lua`, `vim -es -c 'e /etc/x' -c wq a`, `echo 'w /etc/x' \| vim -es a` | `unknown` |
 | `view /etc/hosts`, `vim -R /etc/hosts`, `ex -sc 'w %.bak' -c q src/a.txt`, `ex -s a <<EOF` with `%s/a/b/g` and `wq` | safe |
 
 ### Files a tool runs on its own
