@@ -133,12 +133,23 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
 /// that holds one, in an argument (`sort <x`, `python 0<&3`, `a<b`) as in an
 /// expression (`1 < 2`), while the grammar reads it as an input redirect,
 /// a word or part of one. A part of a word in quotes (`--author="Me <m>"`)
-/// or after a backtick (`` a`<b ``) is text. Each node's own text, apart from
-/// its children, is scanned once, so the time grows with the line.
+/// or after a backtick (`` a`<b ``) is text. Only a node that spans a `<`
+/// is visited, and each one's own text, apart from its children, is scanned
+/// once, so the time grows with the line, and a line with no `<` costs one
+/// search of its text.
 fn refused_input<'s>(root: Node<'_>, source: &'s str) -> Option<&'s str> {
+    let marks: Vec<usize> = source.match_indices('<').map(|(at, _)| at).collect();
+    if marks.is_empty() {
+        return None;
+    }
     let mut found = None;
     unit::for_each_node_until(root, |node| {
         if found.is_some() {
+            return false;
+        }
+        let Range { start, end } = node.byte_range();
+        let next = marks.partition_point(|&mark| mark < start);
+        if marks.get(next).is_none_or(|&mark| mark >= end) {
             return false;
         }
         match node.kind() {
