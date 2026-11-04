@@ -8,6 +8,7 @@ use crate::launch::{
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
 use crate::said::Said;
+use crate::startup;
 use milo_guards_core::spelling::glob;
 
 use std::borrow::Cow;
@@ -48,6 +49,38 @@ const ELEVATORS: [&str; 8] = [
     "run0",
     "systemd-run",
 ];
+
+/// Whether a POSIX `sh` may be interactive, the only one that runs the file
+/// `ENV` names: given `-i`, or given no `-c`, no script and no input of a
+/// file or text (`sh`, `sh -s`), when it reads commands from a terminal.
+fn interactive(unit: &Unit) -> bool {
+    let mut command = false;
+    let mut operand = false;
+    let mut args = unit.args.iter();
+    while let Some(arg) = args.next() {
+        let Some(text) = arg.known() else {
+            operand = true;
+            break;
+        };
+        if text == "--" || text == "-" {
+            operand |= args.next().is_some();
+            break;
+        }
+        let Some(letters) = text.strip_prefix(['-', '+']) else {
+            operand = true;
+            break;
+        };
+        if text.starts_with('-') && letters.contains('i') {
+            return true;
+        }
+        command |= text.starts_with('-') && letters.contains('c');
+        // `-o posix` takes the next word.
+        if letters.contains('o') {
+            args.next();
+        }
+    }
+    !command && !operand && unit.stdin.is_none()
+}
 
 /// Builtins that start no program: they print, test, move or set a variable,
 /// so a `BASH_ENV` file is not run for them (one set in front of a special
@@ -1290,32 +1323,74 @@ impl Checker<'_> {
     }
 
     /// A program that starts a bash runs the file `BASH_ENV` names before
-    /// that bash's own script, when the same line writes it: a shell, and
-    /// any program that may start one (`make` runs its recipes with the
+    /// that bash's own script, which the line does not show, and is unknown
+    /// with the reason that the same line writes it when it does: a shell,
+    /// and any program that may start one (`make` runs its recipes with the
     /// `SHELL` of its makefile, a script with a `#!/bin/bash` line, `git`
-    /// its hooks). What starts nothing is a builtin that only prints, tests
-    /// or sets a variable ([`STARTS_NOTHING`]); `key` is `None` for a
-    /// program only known when it runs.
+    /// its hooks). A POSIX `sh` runs the file `ENV` names the same way
+    /// ([`startup::SH_SHELLS`]), when it may be interactive (see
+    /// [`interactive`]). What starts nothing is a builtin that only prints,
+    /// tests or sets a variable ([`STARTS_NOTHING`]), and in
+    /// PowerShell and cmd a cmdlet or a built-in command (but `start` and
+    /// `call`, which run a program); `key` is `None` for a program only
+    /// known when it runs. A file that is the null device runs nothing.
     fn startup_then_run(&mut self, unit: &Unit, key: Option<&str>) {
-        if unit.shell != Shell::Posix || key.is_some_and(|key| STARTS_NOTHING.contains(&key)) {
+        if (unit.startup.is_empty() && self.split.startup.is_empty())
+            || key.is_some_and(|key| STARTS_NOTHING.contains(&key))
+        {
+            return;
+        }
+        let own = match unit.shell {
+            Shell::Posix => false,
+            Shell::PowerShell => key
+                .is_some_and(|key| crate::powershell::is_cmdlet(crate::powershell::canonical(key))),
+            Shell::Cmd => key.is_some_and(|key| {
+                !matches!(key, "start" | "call") && crate::cmd::is_built_in(key)
+            }),
+        };
+        if own {
             return;
         }
         // The files the line sets for every shell it starts count wherever
         // the unit sits, as the files it writes do: an assignment is read
         // where it is written, and a trap action, the next pass of a loop or
         // a function body runs after it.
+        // One finding of a file the line does not show says it of the unit:
+        // a line may set many, and start many shells.
+        let mut unshown = false;
         for entry in unit.startup.iter().chain(self.split.startup.iter()) {
+            if entry.sh_only
+                && !key.is_some_and(|key| startup::SH_SHELLS.contains(&key) && interactive(unit))
+            {
+                continue;
+            }
             // `BASH_ENV=/dev/stdin` is the shell's input run as a script, as
             // `bash /dev/stdin` is.
             if entry.file.known().is_some_and(is_stdin) {
                 self.reads(unit, Reads::Shell);
                 continue;
             }
+            if entry
+                .file
+                .known()
+                .is_some_and(|file| path::null_device(file, Shell::Posix))
+            {
+                continue;
+            }
+            let before = self.found.len();
             self.runs_written(unit, &entry.file, unit.dir.as_ref());
             // A name an expansion made (`$PWD/e.sh`) is the file where the
             // line assigned it, whatever folder the shell runs from.
             if entry.expanded && entry.assigned.as_ref() != unit.dir.as_ref() {
                 self.runs_written(unit, &entry.file, entry.assigned.as_ref());
+            }
+            if self.found.len() == before && !unshown {
+                unshown = true;
+                self.add(
+                    Rule::Unknown,
+                    "starts a shell that first runs a file the line does not show",
+                    Some(&entry.file),
+                );
             }
         }
     }

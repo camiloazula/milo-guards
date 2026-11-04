@@ -1396,6 +1396,14 @@ pub(crate) struct Split {
     /// The aliases and functions a PowerShell line sets, which a command of
     /// that name may run (see [`crate::powershell::Aliases`]).
     pub(crate) powershell_aliases: crate::powershell::Aliases,
+    /// The default parameter values of the PowerShell session the walk is
+    /// in (see [`crate::powershell::Defaults`]): text `Invoke-Expression`
+    /// runs in the same session takes them, and adds its own, while a script
+    /// a new process runs (`powershell -c`) starts with none.
+    pub(crate) powershell_defaults: crate::powershell::Defaults,
+    /// How many arguments default parameter values have given the cmdlets
+    /// of the line, which is bounded (see [`crate::powershell::Defaults`]).
+    pub(crate) defaults_given: usize,
 }
 
 /// What the line does to `PWD`, read from the whole line.
@@ -5080,6 +5088,9 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     split.apart += usize::from(apart);
     // A group a `coproc` opens closes in the same script.
     let groups = std::mem::take(&mut split.coproc_groups);
+    // A new process has none of the session's default parameter values;
+    // `Invoke-Expression` runs its text with them.
+    let defaults = (!here).then(|| std::mem::take(&mut split.powershell_defaults));
     match shell {
         Shell::Posix => crate::posix::split(split, text, depth),
         Shell::PowerShell => crate::powershell::split(split, text, depth),
@@ -5095,6 +5106,9 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
         );
     }
     split.apart -= usize::from(apart);
+    if let Some(defaults) = defaults {
+        split.powershell_defaults = defaults;
+    }
     if depth == 0 {
         split.note_end();
     }

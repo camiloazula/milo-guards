@@ -781,7 +781,9 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
     // each; a chain of members or calls is walked down only as deep as a
     // tree is; a value is read for blocks only as deep as a limit; and the
     // letters of numbers are made lower case in one pass, subexpressions in
-    // strings only as deep as a limit.
+    // strings only as deep as a limit; a cmdlet is given at most 16 default
+    // parameter values, and the cmdlets of a line at most 1024 arguments by
+    // them.
     let limit = if cfg!(debug_assertions) {
         std::time::Duration::from_secs(2)
     } else {
@@ -790,6 +792,13 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
     let fit = |unit: &str, head: &str, tail: &str| {
         let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
         format!("{head}{}{tail}", unit.repeat(count))
+    };
+    // A table of 16 entries, each `entry`.
+    let defaults = |entry: &str| {
+        format!(
+            "$PSDefaultParameterValues = @{{ {} }}; ",
+            vec![entry; 16].join("; ")
+        )
     };
     let rows = [
         fit("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
@@ -800,6 +809,28 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
         fit(".a", "$ExecutionContext", " = $b"),
         fit("[0]", "$ExecutionContext.InvokeCommand", ".Value = $b"),
         fit(".Add(1, $b)", "$PSDefaultParameterValues", ""),
+        fit(
+            "Remove-Item -Recurse; ",
+            &format!(
+                "$PSDefaultParameterValues = @{{ {} }}; ",
+                (0..16)
+                    .map(|at| format!("'*:P{at}' = '~'"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            "",
+        ),
+        fit(
+            "$PSDefaultParameterValues['*:Path'] = '~'; ",
+            "",
+            "Remove-Item",
+        ),
+        fit("ri;", &defaults("'Remove-*:P*' = '~'"), ""),
+        fit("ri;", &defaults("'Remove-*:Path' = '~'"), ""),
+        fit("gci|ri;", &defaults("'Remove-*:P*' = '~'"), ""),
+        fit("iex 'ri';", &defaults("'Remove-*:P*' = '~'"), ""),
+        fit("Update-TypeData -Force -TypeName X ", "", "x.ps1xml"),
+        fit("$env:BASH_ENV = 'x.sh'; bash; ", "", ""),
         fit("@{e=", "Get-ChildItem | Sort-Object ", ""),
         fit("@{e=@{e=1}}, ", "Get-ChildItem | Sort-Object ", "x"),
         fit(" -replace 'a', $b", "'a'", ""),
