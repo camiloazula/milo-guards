@@ -151,6 +151,37 @@ posix finds=git_discard | git switch --discard-changes main
 posix finds=unknown | git -c 'alias.x=!rm -rf ~' x
 posix finds=unknown | git -c core.pager='rm -rf ~' -p log
 posix finds=unknown | git -c core.sshCommand='rm -rf ~' fetch
+# A `-c` value only known when it runs, or one `--config-env` takes from
+# the environment, may set any key, one that runs a command among them,
+# unless what is written of it names a key whose value git never runs.
+posix finds=unknown reason="gives git config only known when it runs" | git -c "$cfg" status
+posix finds=unknown | git -c $cfg status
+posix finds=unknown | git -c "core.pager=$p" log
+posix finds=unknown | git -c "alias.status=$a" status
+posix finds=unknown | git -c "core.$k=x" status
+posix finds=unknown | git -c "pager.status=$p" status
+posix finds=unknown | git -c "user.name$x" status
+posix finds=unknown | git -c "$(cat cfg)" status
+posix finds=unknown | git --config-env core.pager=PAGER log
+posix finds=unknown | git --config-env=alias.st=CMD st
+posix finds=unknown | git --config-env "$spec" status
+posix finds=unknown | git --config-env="$spec" status
+posix finds=unknown | git --config-env=pager.status=P status
+posix finds=unknown | git --config-env core.fsmonitor=X status
+posix finds=unknown | git -c "$cfg" -C sub status
+powershell finds=unknown | git -c $cfg status
+powershell finds=unknown | git -c "core.pager=$p" log
+powershell finds=unknown | git --config-env core.pager=PAGER log
+cmd finds=unknown | git -c %CFG% status
+cmd finds=unknown | git -c core.pager=%P% log
+cmd finds=unknown | git -c user.name=%NAME% commit -m x
+posix finds=unknown | git -c user.name=$NAME commit -m x
+posix finds=unknown | git --config-env $spec status
+posix safe | git -c "user.name=$NAME" -c "user.email=$EMAIL" commit -m x
+posix safe | git -c color.ui="$c" status
+posix safe | git -c advice.detachedHead="$a" checkout v1
+posix safe | git --config-env user.email=EMAIL commit -m x
+powershell safe | git -c "user.name=$name" commit -m x
 posix finds=unknown | git config alias.x '!rm -rf ~' && git x
 posix finds=system_settings | git config core.editor 'rm -rf ~'
 posix finds=git_discard | git switch -f main

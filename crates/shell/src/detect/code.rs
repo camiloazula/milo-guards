@@ -3,10 +3,12 @@
 
 use super::hedged;
 use super::Checker;
-use crate::launch::{git_global, git_long, is_submodule, Global};
+use crate::launch::{git_global, git_long, is_submodule, Global, Unread};
 use crate::path::{pattern_folder, within};
 use crate::said::Said;
-use crate::unit::{could_be, has_flag, may_be_option, operands, unknown_start, Arg, Flagged, Unit};
+use crate::unit::{
+    could_be, has_flag, may_be_option, may_split, operands, unknown_start, Arg, Flagged, Unit,
+};
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::glob;
 
@@ -149,6 +151,7 @@ impl Checker<'_> {
             at,
             repository,
             configs,
+            unread,
         } = git_global(args);
         // A `-c` config value that makes git run a command of its own: an
         // alias body starting `!`, or a program git calls (pager, editor,
@@ -158,6 +161,19 @@ impl Checker<'_> {
                 Rule::Unknown,
                 "runs a command through git config",
                 repository,
+            );
+        }
+        // A setting whose value is only known when it runs may be any of
+        // those, unless what is written of it names a key whose value git
+        // never runs.
+        if let Some(setting) = unread
+            .iter()
+            .find(|setting| !harmless_setting(setting, shell))
+        {
+            self.add(
+                Rule::Unknown,
+                "gives git config only known when it runs",
+                Some(setting.arg),
             );
         }
         // A subcommand only known when it runs may be any of them, those
@@ -408,8 +424,9 @@ impl Checker<'_> {
     /// does not show: `apply` the files a patch names, below the folder git
     /// runs in; `am`, `cherry-pick`, `revert`, `stash apply` and `pop`,
     /// `read-tree -u` and `checkout-index` the files a patch, a commit or
-    /// the index holds, anywhere in the work tree; `checkout` and `restore`
-    /// given paths the files a revision holds below them. Each may change a
+    /// the index holds, anywhere in the work tree, and so does a branch move
+    /// (see [`moves_branch`]); `checkout` and `restore` given paths the
+    /// files a revision holds below them. Each may change a
     /// protected path the folder holds (see [`Checker::changes_in`]). The
     /// folder git runs in is `-C`'s, or the one the line is in; the top of
     /// the work tree is the workspace folder that holds it, and is only
@@ -449,6 +466,11 @@ impl Checker<'_> {
             "checkout-index" => !flag(None, Some("temp")),
             _ => false,
         };
+        // A branch move writes what the commit it moves to holds, anywhere
+        // in the work tree; it is not a write to the folder git runs in.
+        if moves_branch(sub, rest) {
+            self.changes_in(shell, scope, &top);
+        }
         if anywhere {
             let before = self.found.len();
             self.write_folder(shell, scope, &folder, "patches files in");
@@ -491,6 +513,65 @@ impl Checker<'_> {
             _ => {}
         }
     }
+}
+
+/// Whether a git subcommand moves the work tree to another commit or
+/// branch, rewriting what it holds from history the line does not show:
+/// `pull` but a dry run, `merge` and `rebase` but those options that only
+/// end or show one in progress (`--abort` moves back), `switch` given a
+/// branch or a start point, or `--orphan`, which empties the work tree, and
+/// `checkout` given one operand that may name a revision and no paths after
+/// `--`. A word only known when it runs may be one or none, or several, so
+/// a `checkout` with one is read as a move. Only an option as written stops
+/// a move.
+fn moves_branch(sub: &str, rest: &[Arg]) -> bool {
+    let flag = |long: &str| git_flag(rest, None, Some(long));
+    match sub {
+        "pull" => !flag("dry-run"),
+        "merge" => !(flag("quit") || flag("continue")),
+        "rebase" => !(flag("quit") || flag("edit-todo") || flag("show-current-patch")),
+        "switch" => {
+            flag("orphan")
+                || !operands(
+                    rest,
+                    &[
+                        "-c",
+                        "-C",
+                        "--create",
+                        "--force-create",
+                        "--orphan",
+                        "--conflict",
+                    ],
+                )
+                .is_empty()
+        }
+        "checkout" => {
+            let dashes = rest.iter().position(|arg| arg.known() == Some("--"));
+            let (before, after) = match dashes {
+                Some(at) => (&rest[..at], &rest[at + 1..]),
+                None => (rest, &[][..]),
+            };
+            if !after.is_empty() || flag("pathspec-from-file") {
+                return false;
+            }
+            let named = operands(
+                before,
+                &["-b", "-B", "--orphan", "--conflict", "--pathspec-from-file"],
+            );
+            named.iter().any(|arg| arg.known().is_none())
+                || matches!(named.as_slice(), [only] if only.known().is_some_and(may_be_revision))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `git checkout` may read an operand as a revision: a name git
+/// refuses as a ref, and that no revision expression is either (`.`, `..`,
+/// `./src`, `src/`, a wildcard, a Windows path), is a path.
+fn may_be_revision(text: &str) -> bool {
+    !(text.ends_with('/')
+        || text.contains(['*', '?', '[', '\\'])
+        || text.split('/').any(|part| part.starts_with('.')))
 }
 
 /// The paths `git checkout` or `git restore` is given, each as the folder
@@ -948,6 +1029,51 @@ fn config_set_executes(rest: &[Arg]) -> bool {
         _ => false,
     }
 }
+
+/// Whether a setting whose value is only known when it runs is sure to set
+/// a key whose value git never runs, reads a file from or takes a command
+/// from (see [`HARMLESS_KEYS`]): the key is written out in full before the
+/// `=`, as in `-c "user.name=$NAME"` or `--config-env user.email=EMAIL`,
+/// and the word stays one word when it runs: one that splits (`-c
+/// user.name=$NAME`, cmd's `%NAME%`) may hand git more of its own options
+/// (`-c alias.st=!cmd`), or another subcommand.
+fn harmless_setting(setting: &Unread<'_>, shell: Shell) -> bool {
+    if may_split(setting.arg, shell) {
+        return false;
+    }
+    let start = match setting.arg.known() {
+        Some(text) => Some(text.to_string()),
+        None => unknown_start(setting.arg, shell),
+    };
+    start
+        .as_deref()
+        .and_then(|start| start.strip_prefix(setting.prefix))
+        .and_then(|start| start.split_once('='))
+        .is_some_and(|(key, _)| {
+            let key = key.to_ascii_lowercase();
+            HARMLESS_KEYS.contains(&key.as_str())
+                || HARMLESS_SECTIONS.iter().any(|section| {
+                    key.strip_prefix(section)
+                        .and_then(|rest| rest.strip_prefix('.'))
+                        .is_some_and(|name| !name.is_empty())
+                })
+        })
+}
+
+/// git config keys whose value is a name or an address git only records:
+/// it never runs it, reads a file from it or takes a command from it.
+const HARMLESS_KEYS: [&str; 6] = [
+    "user.name",
+    "user.email",
+    "author.name",
+    "author.email",
+    "committer.name",
+    "committer.email",
+];
+
+/// git config sections every key of which is a colour or a hint shown or
+/// not.
+const HARMLESS_SECTIONS: [&str; 2] = ["color", "advice"];
 
 /// git config keys whose value git runs as a command.
 const EXEC_CONFIG_KEYS: [&str; 11] = [

@@ -805,6 +805,49 @@ posix@workspace_folder safe | git stash show -p
 posix@workspace_folder safe | git cherry-pick --quit
 posix@workspace_folder safe | git read-tree -m HEAD
 posix@workspace_folder safe | git checkout-index --temp -a
+# A branch move rewrites the work tree from history the line does not show,
+# at its top, whatever folder it runs in.
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | git pull
+posix@workspace_folder finds=overwrite | git pull --rebase origin main
+posix@workspace_folder finds=overwrite | git merge feature
+posix@workspace_folder finds=overwrite | git merge --abort
+posix@workspace_folder finds=overwrite | git switch other
+posix@workspace_folder finds=overwrite | git switch -c new origin/main
+posix@workspace_folder finds=overwrite | git switch --orphan new
+posix@workspace_folder finds=overwrite | git switch -
+posix@workspace_folder finds=overwrite | git switch "$B"
+posix@workspace_folder finds=overwrite | git rebase main
+posix@workspace_folder finds=overwrite | git rebase -i HEAD~3
+posix@workspace_folder finds=overwrite | git rebase --continue
+posix@workspace_folder finds=overwrite | git rebase --abort
+posix@workspace_folder finds=overwrite | git checkout feature
+posix@workspace_folder finds=overwrite | git checkout feature --
+posix@workspace_folder finds=overwrite | git checkout -
+posix@workspace_folder finds=overwrite | git checkout -b new origin/main
+posix@workspace_folder finds=overwrite | git checkout --detach v1
+posix@workspace_folder finds=overwrite | git checkout "$B"
+posix@workspace_folder finds=overwrite | git checkout $X src/main.rs
+posix@workspace_folder finds=overwrite | cd src && git checkout feature
+posix@workspace_folder finds=overwrite | git -C src switch other
+posix@workspace_folder finds=overwrite | cd /tmp && git pull
+posix@workspace_file finds=overwrite | git merge feature
+powershell@windows_folder_and_file finds=overwrite | git pull
+powershell@windows_folder_and_file finds=overwrite | git checkout feature
+cmd@windows_folder_and_file finds=overwrite | git switch other
+cmd@windows_folder_and_file finds=overwrite | git rebase main
+posix@workspace_folder safe | git pull --dry-run
+posix@workspace_folder safe | git merge --quit
+posix@workspace_folder safe | git merge --continue
+posix@workspace_folder safe | git rebase --quit
+posix@workspace_folder safe | git rebase --edit-todo
+posix@workspace_folder safe | git rebase --show-current-patch
+posix@workspace_folder safe | git switch -c new
+posix@workspace_folder safe | git switch --create=new
+posix@workspace_folder safe | git checkout -b "$NEW"
+posix@workspace_folder safe | git checkout --orphan new
+posix@workspace_folder safe | git checkout
+posix@workspace_folder safe | git fetch origin
+posix@workspace_folder rules=git_discard | cd src && git checkout .
 # Paths read from a file or the input, and a folder only known when it runs,
 # may be any.
 posix@workspace_folder finds=overwrite | git checkout HEAD --pathspec-from-file=list.txt
@@ -845,6 +888,12 @@ posix safe | cd src && git am
 posix safe | git stash pop
 posix safe | git cherry-pick abc
 posix safe | git checkout HEAD --pathspec-from-file=list.txt
+posix safe | git pull
+posix safe | git merge feature
+posix safe | git switch other
+posix safe | git rebase main
+posix safe | git checkout feature
+posix safe | cd src && git checkout feature
 posix safe | rm ./…
 posix first=overwrite reason="patches a shell startup file" | patch -u ~/.bashrc fix.diff
 posix finds=overwrite | patch -u /etc/hosts fix.diff
