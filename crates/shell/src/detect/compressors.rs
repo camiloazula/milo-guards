@@ -588,7 +588,9 @@ fn read(spec: &Spec, args: &[Arg], shell: Shell) -> Run {
             }
             continue;
         };
-        if text == "--" {
+        // `zopfli` ends no options at `--`: it is an option it does not
+        // know, and `-c` after it still writes to the screen.
+        if text == "--" && !spec.whole {
             run.operands.extend(iter.by_ref().cloned());
             break;
         }

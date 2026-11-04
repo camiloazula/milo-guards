@@ -219,7 +219,7 @@ posix safe | bzip3 -d -c ~/.bashrc.bz3
 # `zopfli` keeps the file and writes `x.gz` (`.zlib` with `--zlib`,
 # `.deflate` with `--deflate`) beside it, or to the screen with `-c`; it
 # reads only whole options, so `-vc` is none it knows, and every word that
-# starts with `-` is an option to it.
+# starts with `-` is an option to it, even after `--`.
 posix rules=overwrite | zopfli ~/.bashrc
 posix first=overwrite reason="writes to a file outside the workspace" | zopfli --zlib ~/x
 posix rules=overwrite | zopfli -vc ~/.bashrc
@@ -229,7 +229,8 @@ posix safe | zopfli src/a.txt
 posix safe | zopfli --deflate --i50 src/a.txt
 posix finds=overwrite | zopfli "--$f" ~/x
 posix safe | zopfli "--$f" src/a.txt
-posix finds=overwrite | zopfli -- -c ~/x
+posix safe | zopfli -- -c ~/x
+posix finds=overwrite | zopfli -- ~/x
 
 # In PowerShell and cmd, `gzip` is the same program; `compress` there is
 # Windows' own.

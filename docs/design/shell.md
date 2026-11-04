@@ -2571,10 +2571,15 @@ is the program's output, which a redirect sends on, and writes no file.
 | `python -m zipfile`, `python -m tarfile` | `-c ARCHIVE …` (`--create`): the archive | |
 | `Compress-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
 | .NET `CreateFromDirectory`, `CreateFromDirectoryAsync` (PowerShell) | the second argument (`[IO.Compression.ZipFile]::CreateFromDirectory('src', 'C:\Windows\x.zip')`, `[Formats.Tar.TarFile]`, a type held in a variable), both of the first two when the operator cannot be read; a stream given there is a file only known when it runs | |
-| .NET `ZipFile.Open`, `OpenAsync` (PowerShell) | the first argument of `::Open` on `[…ZipFile]` or on a type only known when it runs (`$t::Open(…)`), with a mode of `Create` or `Update` (`'Create'`, `1`, `[IO.Compression.ZipArchiveMode]::Update`), one only known when it runs, or none | a mode written out as `Read` (`'Read'` in any case, `0`, `[IO.Compression.ZipArchiveMode]::Read`) |
+| .NET `ZipFile.Open`, `OpenAsync` (PowerShell) | the first argument of `::Open` on `[…ZipFile]` (`System.IO.Compression.ZipFile`, or its end after a dot, so not `[Evil.ZipFile]`; the mode's type likewise) or on a type only known when it runs (`$t::Open(…)`), with a mode of `Create` or `Update` (`'Create'`, `1`, `[IO.Compression.ZipArchiveMode]::Update`), one only known when it runs, or none | a mode written out as `Read` (`'Read'` in any case, `0`, `[IO.Compression.ZipArchiveMode]::Read`) |
 
 The two .NET calls are judged as `Compress-Archive -DestinationPath` of the
-archive; `ZipFile.Open` on the type written out is then no other open of a
+archive, with `-Path` of the folder `CreateFromDirectory` reads, so
+`…::CreateFromDirectory("$HOME\.ssh", 'build\x.zip')` reads secrets as
+`Compress-Archive` of that folder does. `ZipFile.Open` reads the archive in
+every mode, judged as `Get-Content` of it, so
+`…::Open("$HOME\.ssh\id_rsa", 'Read')` reads a secret as `OpenRead` does.
+`ZipFile.Open` on the type written out is then no other open of a
 file, so `[IO.Compression.ZipFile]::Open('build\x.zip', 'Create')` and
 `…::Open('C:\Windows\x.zip', 'Read')` stay safe, while the generic
 "calls .NET to write or open files" still holds every other type's `Open`
@@ -2620,7 +2625,7 @@ startup file, and `gzip src/a.txt` and `gunzip src/x.gz` stay safe.
 | `brotli` | `.br`; `.br` | with `-j` (`--rm`) | `-o`, `--output`, `-S`, `--suffix` |
 | `pixz` | `.xz`, and `.tar` becomes `.tpxz`; `.tar.xz` and `.tpxz` (to `.tar`), `.xz` | unless `-k`, or a second operand names what it writes; `-c` is ignored | a second operand; `-o` (with an operand, the name it makes wins, and both are judged); `-i` is the input, `-t` says it is no tarball, and `-l` and `-x` (to the screen) write only the file `-o` names |
 | `bzip3` | `.bz3`; `.bz3` | with `--rm` | a second operand, also with `-c`, unless `-B` (`--batch`) makes every operand an input; `-d` (`--decode`) and `-r` (`--recover`) decompress, `-e` (`--encode`) compresses |
-| `zopfli` | `.gz` (`.zlib` with `--zlib`, `.deflate` with `--deflate`, the last one given); it only compresses | never | `-c` alone writes to the screen: it reads only whole options, so `-vc` is none it knows, and every word that starts with `-` is an option |
+| `zopfli` | `.gz` (`.zlib` with `--zlib`, `.deflate` with `--deflate`, the last one given); it only compresses | never | `-c` alone writes to the screen: it reads only whole options, so `-vc` is none it knows, and every word that starts with `-` is an option, `--` too |
 
 - `-c` (`--stdout`, `--to-stdout`) writes to the screen and deletes nothing,
   unless `-o` names a file: `zstd -c -o x` writes `x` (and deletes with

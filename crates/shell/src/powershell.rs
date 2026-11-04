@@ -3509,13 +3509,14 @@ impl Walker<'_> {
     /// A .NET call that writes an archive is judged as `Compress-Archive`
     /// to it: `CreateFromDirectory`
     /// (`[IO.Compression.ZipFile]::CreateFromDirectory('src', 'x.zip')`,
-    /// `[Formats.Tar.TarFile]::CreateFromDirectory(…)`) writes its second
-    /// argument, and `ZipFile.Open` (`[IO.Compression.ZipFile]::Open('x.zip',
-    /// 'Create')`, on that type or one only known when it runs) its first,
-    /// unless its mode is written out as `Read` (`'Read'`, `0`,
-    /// `[IO.Compression.ZipArchiveMode]::Read`). Whether the call is an
-    /// `Open` of `ZipFile` written out, judged so, is returned: it is then no
-    /// other open of a file.
+    /// `[Formats.Tar.TarFile]::CreateFromDirectory(…)`) reads the folder its
+    /// first argument names and writes its second, and `ZipFile.Open`
+    /// (`[IO.Compression.ZipFile]::Open('x.zip', 'Create')`, on that type or
+    /// one only known when it runs) its first, unless its mode is written
+    /// out as `Read` (`'Read'`, `0`, `[IO.Compression.ZipArchiveMode]::Read`).
+    /// `ZipFile.Open` also reads the archive in every mode, as `Get-Content`
+    /// of it. Whether the call is an `Open` of `ZipFile` written out, judged
+    /// so, is returned: it is then no other open of a file.
     fn archive_call(
         &mut self,
         node: Node<'_>,
@@ -3532,9 +3533,16 @@ impl Walker<'_> {
         // `[IO.Compression.ZipFile]::Open(…)` is no other open of a file; a
         // type only known when it runs may be it, or another.
         let mut judged = false;
+        // The folder it reads, if the line shows which argument it is.
+        let mut source = None;
+        // The archive `Open` reads, in every mode.
+        let mut read = None;
         let targets: Vec<Node<'_>> = match method {
             "createfromdirectory" | "createfromdirectoryasync" => match operator {
-                Some(_) => arguments.into_iter().skip(1).take(1).collect(),
+                Some(_) => {
+                    source = arguments.first().copied();
+                    arguments.into_iter().skip(1).take(1).collect()
+                }
                 None => arguments.into_iter().take(2).collect(),
             },
             "open" | "openasync" if operator == Some("::") && !arguments.is_empty() => {
@@ -3542,14 +3550,16 @@ impl Walker<'_> {
                     return false;
                 };
                 let literal = object.kind() == "type_literal";
-                if literal && !type_named(object, self.source).ends_with("zipfile") {
+                if literal && !names_type(object, self.source, "system.io.compression.zipfile") {
                     return false;
                 }
                 judged = literal;
+                read = arguments.first().copied();
                 if arguments.get(1).is_some_and(|mode| self.reads_only(*mode)) {
-                    return judged;
+                    Vec::new()
+                } else {
+                    arguments.into_iter().take(1).collect()
                 }
-                arguments.into_iter().take(1).collect()
             }
             _ => return false,
         };
@@ -3558,18 +3568,29 @@ impl Walker<'_> {
             .find(|child| child.kind() == "argument_list")
             .map(|list| variables(*list, self.source))
             .unwrap_or_default();
-        for target in &targets {
+        let push = |walker: &mut Self, program: &str, args: Vec<Arg>| {
             let mut unit = Unit::new(
                 Shell::PowerShell,
-                Arg::Known("Compress-Archive".to_string()),
-                vec![
-                    Arg::Known("-DestinationPath".to_string()),
-                    self.expr(*target),
-                ],
+                Arg::Known(program.to_string()),
+                args,
                 stage,
             );
             unit.names = Some(names.clone());
-            self.split.push(unit);
+            walker.split.push(unit);
+        };
+        if let Some(archive) = read {
+            let archive = self.expr(archive);
+            push(self, "Get-Content", vec![archive]);
+        }
+        for target in &targets {
+            let mut args = Vec::new();
+            if let Some(folder) = source {
+                args.push(Arg::Known("-Path".to_string()));
+                args.push(self.expr(folder));
+            }
+            args.push(Arg::Known("-DestinationPath".to_string()));
+            args.push(self.expr(*target));
+            push(self, "Compress-Archive", args);
         }
         judged
     }
@@ -3585,7 +3606,7 @@ impl Walker<'_> {
             return match parts.as_slice() {
                 [object, member] => {
                     object.kind() == "type_literal"
-                        && type_named(*object, self.source).ends_with("ziparchivemode")
+                        && names_type(*object, self.source, "system.io.compression.ziparchivemode")
                         && member.kind() == "member_name"
                         && unit::text(member, self.source).eq_ignore_ascii_case("read")
                 }
@@ -4098,13 +4119,19 @@ fn argument_nodes<'a>(children: &[Node<'a>]) -> Vec<Node<'a>> {
         .collect()
 }
 
-/// The name of the type a type literal (`[IO.Compression.ZipFile]`) names, in
-/// lower case and without its brackets.
-fn type_named(literal: Node<'_>, source: &str) -> String {
-    unit::text(&literal, source)
+/// Whether a type literal (`[IO.Compression.ZipFile]`) names the type whose
+/// full name, lower case, is `full`: the name written is all of it, or its
+/// end after a dot (`[ZipFile]` under `using namespace`), so neither
+/// `[Evil.MyZipFile]` nor `[Evil.ZipFile]` is `ZipFile`.
+fn names_type(literal: Node<'_>, source: &str, full: &str) -> bool {
+    let written = unit::text(&literal, source)
         .trim_matches(['[', ']'])
         .trim()
-        .to_ascii_lowercase()
+        .to_ascii_lowercase();
+    !written.is_empty()
+        && full
+            .strip_suffix(written.as_str())
+            .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
 }
 
 /// What a .NET method does to files or the system, by its lower-case name:

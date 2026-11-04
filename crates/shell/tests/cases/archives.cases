@@ -1256,6 +1256,20 @@ powershell safe | $t = [IO.Compression.ZipFile]; $t::Open('build\\x.zip', 'Creat
 powershell finds=overwrite | ([IO.Compression.ZipFile])::Open('C:\\Windows\\x.zip', 'Create')
 powershell finds=overwrite | [IO.File]::Open('build\\x.txt', 'Create')
 powershell finds=overwrite | $zipFile::Open()
+powershell finds=overwrite | [Evil.MyZipFile]::Open('C:\\Windows\\x.zip', 'Read')
+powershell finds=overwrite | [Evil.ZipFile]::Open('C:\\Windows\\x.zip', 'Read')
+powershell safe | [Compression.ZipFile]::Open('C:\\Windows\\x.zip', 'Read')
+powershell finds=overwrite | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', [Evil.ZipArchiveMode]::Read)
+powershell safe | [ZipFile]::Open('C:\\Windows\\x.zip', [ZipArchiveMode]::Read)
+
+# `ZipFile.Open` reads the archive in every mode, as `OpenRead` does, and
+# `CreateFromDirectory` the folder it is given first.
+powershell finds=read_secret | [IO.Compression.ZipFile]::Open("$HOME\\.ssh\\id_rsa", 'Read')
+powershell finds=read_secret | [IO.Compression.ZipFile]::Open("$HOME\\.ssh\\id_rsa", 0)
+powershell finds=read_secret | [IO.Compression.ZipFile]::Open("$HOME\\.ssh\\id_rsa", [IO.Compression.ZipArchiveMode]::Read)
+powershell finds=read_secret | [IO.Compression.ZipFile]::Open("$HOME\\.ssh\\id_rsa", 'Update')
+powershell finds=read_secret | $z = [IO.Compression.ZipFile]::Open("$HOME\\.aws\\creds.zip", 'Read'); [IO.StreamReader]::new($z.Entries[0].Open()).ReadToEnd()
+powershell finds=read_secret | [IO.Compression.ZipFile]::CreateFromDirectory("$HOME\\.ssh", 'build\\x.zip')
 
 # `bsdunzip` is `unzip`; `aunpack` (`atool -x`) unpacks into the folder `-X`
 # (`--extract-to`) names, or the working directory.
