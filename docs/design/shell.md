@@ -7183,9 +7183,11 @@ holds seeded noise that never panics, a line too long or too nested being
 unreadable, a line whose nested scripts are read too often being unreadable,
 too many here-documents, a too-long cmd chain and too-deep nesting not being
 read while everyday lines with many `<<` or `&` are, and the tests that time
-a nasty line: against a 200 ms bound, or, for a shape repeated to fill the
-line, a line of 64 KB against one of 16 KB, which must take about four times
-as long and not sixteen. Each of them runs `explain` and draws its
+a nasty line: for a shape that grows to fill the line, a line of 64 KB
+against one of 16 KB, which must take about four times as long and not
+sixteen; or, for a line whose time its length does not set (traps nested 26
+deep, redirects over many units, wrappers read only to a count), a fixed
+bound with at least four times room when the whole binary runs at once. Each of them runs `explain` and draws its
 tree too, which do more work than `classify`: a line past a limit is
 unreadable there as well, and `classify`, `explain` and the drawing of the tree
 are each held to the bound;
@@ -7246,10 +7248,11 @@ are each held to the bound;
   most of a second in an optimized build on a busy machine, and most are far
   quicker. Lines that made `find -exec` build
   gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
-  ones of several levels, are timed the same, as are `parallel` lines that
+  ones of several levels, are held to 2 s at the length limit, which an
+  optimized build here takes a tenth of or less, as are `parallel` lines that
   would build megabytes of jobs and the other wrappers that read their words
   as a command (`wsl`, `env -S`, `nix run`, `nix shell`, `nix-shell`,
-  `limactl shell`, `sem`, the secret runners), at the length limit.
+  `limactl shell`, `sem`, the secret runners).
   PowerShell lines that use a name the line sets as an alias, to a hundred
   commands or to one, in every command after it, are held to linear time. Loops with a `cd`, and function bodies a `cd` comes after, are
   held to linear time: one after another, a hundred deep around a long body,
