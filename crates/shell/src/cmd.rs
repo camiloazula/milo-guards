@@ -93,12 +93,7 @@ impl Walker<'_> {
             self.split.statement();
         }
         match node.kind() {
-            "cmd" | "call_stmt" => {
-                if !self.statement(node, stage, level) {
-                    self.command(node, stage);
-                    self.children(node, None, level);
-                }
-            }
+            "cmd" | "call_stmt" => self.command_node(node, stage, level),
             "pipe_stmt" => {
                 let pipeline = self.split.pipeline(stage);
                 self.pipe_in(node, pipeline, 0, level);
@@ -106,90 +101,10 @@ impl Walker<'_> {
             // The right side of `&&` and `||` may not run, and the right
             // side of `||` runs only when the left failed: a `cd` on the
             // left may not have moved the line.
-            "cond_exec" => {
-                let mut cursor = node.walk();
-                let list = self.split.list_start();
-                let mut at = 0;
-                let mut exit = None;
-                for child in node.children(&mut cursor) {
-                    // When the right side of `||` ends cmd (`cd s || exit`),
-                    // the rest of the line runs only where the left side
-                    // took it.
-                    if child.kind() == "||" {
-                        if stage.is_none()
-                            && child
-                                .next_named_sibling()
-                                .is_some_and(|right| self.exits(right))
-                        {
-                            exit = Some(self.split.exits_after());
-                        }
-                        self.split.list_or(&list);
-                    }
-                    if !child.is_named() {
-                        continue;
-                    }
-                    // A `cd` on the right side runs only when the left let
-                    // it: when it did not, the line may still be where that
-                    // side began, or where the list did.
-                    if at > 0 {
-                        let link = self.split.link_start();
-                        self.walk(child, stage, level + 1);
-                        self.split.link_end(&list, link);
-                        if let Some(exit) = exit.take() {
-                            self.split.exited(exit);
-                        }
-                    } else {
-                        self.split.list_head(child.kind() == "cond_exec");
-                        self.walk(child, stage, level + 1);
-                        self.split.list_head(false);
-                    }
-                    at += 1;
-                }
-                self.split.list_end(list);
-            }
+            "cond_exec" => self.cond_node(node, stage, level),
             // `cmd < f`, `cmd > f`, `< f cmd`: a file redirected onto the
             // command's input feeds the units it runs.
-            "redirect_stmt" => {
-                let mut cursor = node.walk();
-                let mut inputs = Vec::new();
-                let mut own: Option<Range<usize>> = None;
-                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-                // What the commands read from their input is the file: an
-                // interpreter runs it (`python < x.py`).
-                let outer = self.input;
-                self.input |= children
-                    .iter()
-                    .any(|child| child.kind() == "redirection" && self.reads_input(*child));
-                for child in children
-                    .iter()
-                    .filter(|child| child.kind() != "redirection")
-                {
-                    let first = self.split.units.len();
-                    self.walk(*child, stage, level + 1);
-                    let range = first..self.split.units.len();
-                    own = Some(own.map_or(range.clone(), |own| own.start..range.end));
-                }
-                self.input = outer;
-                // The shell opens a redirect before the command runs, so a
-                // command that moves the line (`cd sub > f`) is redirected
-                // from the folder it starts in.
-                let from = own
-                    .clone()
-                    .map_or(OpensFrom::Line, |own| self.split.starts_in(own, true));
-                let before = self.split.open_from(from);
-                for child in children
-                    .iter()
-                    .filter(|child| child.kind() == "redirection")
-                {
-                    inputs.extend(self.redirect(*child));
-                }
-                self.split.open_from(before);
-                if let Some(own) = own {
-                    for target in inputs {
-                        self.split.redirect(own.clone(), target, true);
-                    }
-                }
-            }
+            "redirect_stmt" => self.redirected_node(node, stage, level),
             "redirection" => {
                 self.redirect(node);
             }
@@ -199,12 +114,7 @@ impl Walker<'_> {
             }
             "comment" => self.comment(node),
             // `for %%i in (…) do …`: what it does runs once for each item.
-            "for_stmt" => {
-                self.split.repeats += 1;
-                self.split.begin_body();
-                self.children(node, stage, level);
-                self.open_loop(node);
-            }
+            "for_stmt" => self.for_node(node, stage, level),
             // What a condition guards may not run.
             "if_stmt" => {
                 self.split.branches += 1;
@@ -217,6 +127,116 @@ impl Walker<'_> {
             self.loops.pop();
             self.end_loop();
         }
+    }
+
+    /// A command, or a `call`. An arm of [`Self::walk`], kept out of its frame,
+    /// which nests as deep as the tree.
+    #[inline(never)]
+    fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        if !self.statement(node, stage, level) {
+            self.command(node, stage);
+            self.children(node, None, level);
+        }
+    }
+
+    /// Commands joined by `&&` and `||`. An arm of [`Self::walk`], kept out of
+    /// its frame, which nests as deep as the tree.
+    #[inline(never)]
+    fn cond_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let mut cursor = node.walk();
+        let list = self.split.list_start();
+        let mut at = 0;
+        let mut exit = None;
+        for child in node.children(&mut cursor) {
+            // When the right side of `||` ends cmd (`cd s || exit`),
+            // the rest of the line runs only where the left side
+            // took it.
+            if child.kind() == "||" {
+                if stage.is_none()
+                    && child
+                        .next_named_sibling()
+                        .is_some_and(|right| self.exits(right))
+                {
+                    exit = Some(self.split.exits_after());
+                }
+                self.split.list_or(&list);
+            }
+            if !child.is_named() {
+                continue;
+            }
+            // A `cd` on the right side runs only when the left let
+            // it: when it did not, the line may still be where that
+            // side began, or where the list did.
+            if at > 0 {
+                let link = self.split.link_start();
+                self.walk(child, stage, level + 1);
+                self.split.link_end(&list, link);
+                if let Some(exit) = exit.take() {
+                    self.split.exited(exit);
+                }
+            } else {
+                self.split.list_head(child.kind() == "cond_exec");
+                self.walk(child, stage, level + 1);
+                self.split.list_head(false);
+            }
+            at += 1;
+        }
+        self.split.list_end(list);
+    }
+
+    /// A redirected statement. An arm of [`Self::walk`], kept out of its frame,
+    /// which nests as deep as the tree.
+    #[inline(never)]
+    fn redirected_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let mut cursor = node.walk();
+        let mut inputs = Vec::new();
+        let mut own: Option<Range<usize>> = None;
+        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        // What the commands read from their input is the file: an
+        // interpreter runs it (`python < x.py`).
+        let outer = self.input;
+        self.input |= children
+            .iter()
+            .any(|child| child.kind() == "redirection" && self.reads_input(*child));
+        for child in children
+            .iter()
+            .filter(|child| child.kind() != "redirection")
+        {
+            let first = self.split.units.len();
+            self.walk(*child, stage, level + 1);
+            let range = first..self.split.units.len();
+            own = Some(own.map_or(range.clone(), |own| own.start..range.end));
+        }
+        self.input = outer;
+        // The shell opens a redirect before the command runs, so a
+        // command that moves the line (`cd sub > f`) is redirected
+        // from the folder it starts in.
+        let from = own
+            .clone()
+            .map_or(OpensFrom::Line, |own| self.split.starts_in(own, true));
+        let before = self.split.open_from(from);
+        for child in children
+            .iter()
+            .filter(|child| child.kind() == "redirection")
+        {
+            inputs.extend(self.redirect(*child));
+        }
+        self.split.open_from(before);
+        if let Some(own) = own {
+            for target in inputs {
+                self.split.redirect(own.clone(), target, true);
+            }
+        }
+    }
+
+    /// A `for` loop. An arm of [`Self::walk`], kept out of its frame, which
+    /// nests as deep as the tree.
+    #[inline(never)]
+    fn for_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.repeats += 1;
+        self.split.begin_body();
+        self.children(node, stage, level);
+        self.open_loop(node);
     }
 
     /// Note that the `for` loop `node` has been read as far as the grammar
