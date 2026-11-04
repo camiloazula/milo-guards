@@ -2044,7 +2044,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | --- | --- |
 | `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs, also what a search finds in a folder that holds a protected path (`find . -name x -delete`); archives such files with an option that deletes what it archives, or compresses them in place (`gzip ~/.bashrc`). |
 | `wipe_disk` | Formats, repartitions or writes over a disk; `dd` writes to a file only known when it runs ([below](#values-only-known-when-they-run)). |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`, and by default GNU `cpio -i`, `pax -r` and `python -m tarfile -e` without `--filter`) or renamed as it runs (`pax -s`); writes an archive or a compressed file to such a file (`tar -cf ~/.bashrc src`, `gzip -d ~/.bashrc.gz`); applies a patch, checks out paths, copies recursively or unpacks in a folder that holds a protected path, the workspace itself included (`git apply p.diff`, `cp -r tmpl/. .`). |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`, and by default GNU `cpio -i`, `pax -r` and `python -m tarfile -e` without `--filter`) or renamed as it runs (`pax -s`); writes an archive or a compressed file to such a file (`tar -cf ~/.bashrc src`, `gzip -d ~/.bashrc.gz`); applies a patch, checks out paths, moves a branch, copies recursively or unpacks in a folder that holds a protected path, the workspace itself included (`git apply p.diff`, `git pull`, `cp -r tmpl/. .`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -3414,6 +3414,50 @@ does not show, and a rule takes the worst it may be:
   a `git_discard`. One whose name is only known when it runs (`git --$o
   status`) may take the next word as its value, so what comes after it is
   `unknown`.
+- **git config.** A `-c` value only known when it runs, or any
+  `--config-env` (`git --config-env core.pager=PAGER log`), whose value git
+  takes from the environment, may set a key whose value git runs
+  (`core.pager=!cmd`, `alias.status=!cmd`, `core.fsmonitor=…`), so `git -c
+  "$cfg" status`, `git -c "core.pager=$p" log` and `git -c "pager.status=$p"
+  status` are `unknown`, "gives git config only known when it runs". It
+  stays safe only where the setting is one word when it runs and what is
+  written of it names, before the `=`, a key whose value git only records
+  or shows: `user.name`, `user.email`, the `author.` and `committer.` name
+  and email, and any key of `color.` and `advice.` (`git -c
+  "user.name=$NAME" commit`, `git --config-env user.email=EMAIL commit`).
+  A word that splits when it runs (`-c user.name=$NAME`, cmd's
+  `%NAME%`) may hand git more of its own options (`-c alias.st=!cmd st`),
+  so it is `unknown` whatever key it starts with. A PowerShell variable is
+  read as one word, as PowerShell 7.3 and later hand it to a native
+  program; Windows PowerShell 5.1 passes arguments the legacy way, where a
+  value that holds a quote and a space can hand git more words, which the
+  guard, here as everywhere, does not model.
+
+  The same holds for config git takes from its environment, which the line
+  sets in front of git, with `env`, or for the rest of the line (`export`,
+  `$env:`, cmd's `set`): `GIT_CONFIG_PARAMETERS`, the variable git hands
+  its `-c` settings to the git it starts in, and the
+  `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` pairs below
+  `GIT_CONFIG_COUNT`. A known value is read as `-c` is
+  (`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0='rm
+  -rf ~' git log` is `unknown`, "runs a command through git config", and
+  `GIT_CONFIG_PARAMETERS="'core.pager=x'"` too, read as git quotes it). A
+  `GIT_CONFIG_PARAMETERS` or a count only known when it runs, one git
+  would not read, a key only known when it runs, a pair the line gives no
+  key (the environment may), or a value only known when it runs of a key
+  not in the list above is `unknown`, "gives git config only known when it
+  runs" (`GIT_CONFIG_PARAMETERS="$x" git status`). A count the line sets
+  reads the pairs below it alone; with none, every pair the line sets is
+  read, since the count may be in the environment.
+
+  `git config KEY VALUE` (and `git config set`) keeps an argument only known
+  when it runs in its place: a key so may be any (`git config "$k"
+  '!rm -rf ~'` is `unknown`, "sets git config only known when it runs"),
+  but alone it is read, unless it splits; a value so is judged by its key:
+  a key whose value git runs is `system_settings` as its known form is
+  (`git config core.pager "$p"`), an alias is `unknown` unless its body is
+  sure to start with a git command (`git config alias.st "status $x"`
+  stays safe), and any other key is read as `-c` is.
 - **What the finding says.** A finding that only such an option turns on
   says what the program may do, not that it does it: `git tag $TAG` is
   `git_discard`, "may delete a tag with an option only known when it runs",
@@ -3490,7 +3534,7 @@ a path.
   matches, and a word only known when it runs any; a read (`Test-Path
   Env:CI`, `Get-ChildItem Env:`) changes none. An item a program reads as
   its arguments or its command (`TF_CLI_ARGS`, `npm_config_call`,
-  `NODE_OPTIONS`, `ZIPOPT`) set by a pattern (`Env:npm_config_*`), a name
+  `NODE_OPTIONS`, `ZIPOPT`, `GIT_CONFIG_PARAMETERS`) set by a pattern (`Env:npm_config_*`), a name
   only known when it runs, the new name of a rename, copy or move of an
   `Env:` item, or a plain name after a location cmdlet goes to the `Env:`
   drive (`cd Env:`) is only known when it runs, as a value set to it by name
@@ -3993,8 +4037,9 @@ and so does a read. With `Protected::folder("/home/me/work/repo/.agent", ..)`:
 | `find . -type f -delete`, `Get-ChildItem -Recurse \| Remove-Item` | `delete`, "deletes the whole workspace": a delete of a folder handed on whole says so |
 | `del /s *.yaml`, `Get-ChildItem *.yaml -Recurse \| Remove-Item`, `Remove-Item *.yaml -Recurse` | `delete`, "deletes the agent's settings": the pattern's last part matches in every folder below |
 | `cd src && git am`, `git stash pop`, `git cherry-pick abc`, `cd src && git checkout HEAD -- :/` | `overwrite`, "may change the agent's settings": git applies them at the top of the work tree |
+| `git pull`, `git merge feature`, `git switch other`, `git rebase main`, `cd src && git checkout feature`, `git reset --keep HEAD~1`, `git bisect good`, `git checkout 'HEAD^{/fix*}'` | `overwrite`, "may change the agent's settings": a branch move rewrites the work tree from its top |
 | `patch -d src -r ../.agent/x -p1 < p.diff`, `patch -d src -B ../.agent/ -p1 < p.diff` | `overwrite`, "writes to the agent's settings": the reject file and the backups |
-| `find src -name '*.o' -delete`, `find . -name '*.yaml' -exec cat {} +`, `patch -d src -p1 < p.diff`, `git apply --check p.diff`, `cp -r tmpl/. dist`, `tar -xf x.tar -C build`, `git checkout -b feature`, `git stash list` | safe: the folder holds no protected path, or nothing is written |
+| `find src -name '*.o' -delete`, `find . -name '*.yaml' -exec cat {} +`, `patch -d src -p1 < p.diff`, `git apply --check p.diff`, `cp -r tmpl/. dist`, `tar -xf x.tar -C build`, `git checkout -b feature`, `git switch -c feature`, `git pull --dry-run`, `git rebase --quit`, `git pull --help`, `git bisect log`, `git stash list` | safe: the folder holds no protected path, or nothing is written |
 
 What a search or a filtered listing hands on from inside a folder (`find .
 -name x`, `Get-ChildItem -Filter`, a wildcard path with `-Recurse`, cmd's
@@ -4033,12 +4078,35 @@ apply` writes nothing with `--cached`, or with `--check`, `--stat`,
 `--numstat` or `--summary` and no `--apply`, which turns the patching back
 on (`git apply --check --apply p.diff` patches).
 
-Decision (epic #41): a branch move (`git pull`, `git merge`, `git switch`,
-`git rebase`, a `git checkout` of a branch) also writes from history the line
-does not show, but it is not read for a protected path. It is on many
-everyday lines, a protected path is often tracked in the repository, and the
-history it brings is the project's own: a finding there would be a finding on
-nearly every branch change. A follow-up ticket weighs it.
+A branch move also writes from history the line does not show, anywhere in
+the work tree, so it is read as `cherry-pick` is, at the top of the work
+tree (#248, which reverses the decision of epic #41 to leave branch moves
+unread): with a protected path there it is `overwrite`, "may change the
+agent's settings", and with none it stays safe. The moves are `git pull`
+but `--dry-run`, which only fetches; `git merge` and `git rebase` but the
+options that only end or show one in progress (`--quit`, `--continue` for a
+merge, `--edit-todo` and `--show-current-patch` for a rebase), while
+`--abort` moves back and a rebase's `--continue` and `--skip` go on
+applying commits; `git switch` given a branch or a start point (`git switch
+other`, `git switch -c new origin/main`), or `--orphan`, which empties the
+work tree, while `git switch -c new` stays where it is; and `git checkout`
+with one operand before `--` that may name a revision and no paths after it
+(`git checkout feature`, `git checkout feature --`, `git checkout -b new
+origin/main`). An operand git refuses as a ref name and no revision
+expression is either (`.`, `./src`, `src/`, a wildcard, a part that starts
+with a dot, a backslash) is a path, read as above, but a commit found by its
+message or a reflog entry, which may hold any of those (`HEAD^{/fix*}`,
+`:/fix`, `main@{1}`), is a revision. `git reset --merge`, the command
+`git merge --abort` runs, moves the work tree, and so does `git reset
+--keep` given a commit. `git bisect` moves it but for the subcommands that
+only show (`log`, `view`, `visualize`, `terms`, `help`) and a `start` that
+checks nothing out: with `--no-checkout`, or given no revision. A word only
+known when it runs may be none, one or several, so a checkout with one is
+read as a move, and so is a bisect; only an option as written stops one,
+and `-h` and `--help` stop every one (`git pull --help`), since git then
+only shows how to use it. A move that may change a protected path says so
+once, though the paths of a checkout may too. Other commands that move the
+work tree (`git stash`, `git sparse-checkout`) are not read this way yet.
 
 How the copy reads its operands: `Copy-Item` and `Move-Item` bind `-Path` at
 position 0 and `-Destination` at position 1, and a comma list of sources is
@@ -5150,7 +5218,12 @@ Some risks only show when units are read together.
     of it as a file (`-type b`, `c`, `p`, `s` and `D` are false of both);
     options (`-maxdepth`, `-xdev`) are true. `-lname` is read as `-name`.
 - **Git config that makes git run a command.** `-c alias.x=!...`,
-  `core.pager`, `core.sshCommand`, and `git config` setting them. Reading
+  `core.pager`, `core.sshCommand`, the same given through git's
+  environment (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_KEY_<n>`), and `git
+  config` setting them; a `-c` value only known when it runs,
+  `--config-env`, and a key or value of either only known when it runs,
+  unless the key is written out and is one git only records (see [Values
+  only known when they run](#values-only-known-when-they-run)). Reading
   them is fine.
 - **In-place edits.** `perl -pi -e` is an edit like `sed -i`, judged by the
   files it edits, when its code is only substitutions (`s/a/b/g`, `tr/.../.../`)

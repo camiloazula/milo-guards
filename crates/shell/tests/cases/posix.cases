@@ -151,8 +151,85 @@ posix finds=git_discard | git switch --discard-changes main
 posix finds=unknown | git -c 'alias.x=!rm -rf ~' x
 posix finds=unknown | git -c core.pager='rm -rf ~' -p log
 posix finds=unknown | git -c core.sshCommand='rm -rf ~' fetch
+# A `-c` value only known when it runs, or one `--config-env` takes from
+# the environment, may set any key, one that runs a command among them,
+# unless what is written of it names a key whose value git never runs.
+posix finds=unknown reason="gives git config only known when it runs" | git -c "$cfg" status
+posix finds=unknown | git -c $cfg status
+posix finds=unknown | git -c "core.pager=$p" log
+posix finds=unknown | git -c "alias.status=$a" status
+posix finds=unknown | git -c "core.$k=x" status
+posix finds=unknown | git -c "pager.status=$p" status
+posix finds=unknown | git -c "user.name$x" status
+posix finds=unknown | git -c "$(cat cfg)" status
+posix finds=unknown | git --config-env core.pager=PAGER log
+posix finds=unknown | git --config-env=alias.st=CMD st
+posix finds=unknown | git --config-env "$spec" status
+posix finds=unknown | git --config-env="$spec" status
+posix finds=unknown | git --config-env=pager.status=P status
+posix finds=unknown | git --config-env core.fsmonitor=X status
+posix finds=unknown | git -c "$cfg" -C sub status
+powershell finds=unknown | git -c $cfg status
+powershell finds=unknown | git -c "core.pager=$p" log
+powershell finds=unknown | git --config-env core.pager=PAGER log
+cmd finds=unknown | git -c %CFG% status
+cmd finds=unknown | git -c core.pager=%P% log
+cmd finds=unknown | git -c user.name=%NAME% commit -m x
+posix finds=unknown | git -c user.name=$NAME commit -m x
+posix finds=unknown | git --config-env $spec status
+posix safe | git -c "user.name=$NAME" -c "user.email=$EMAIL" commit -m x
+posix safe | git -c color.ui="$c" status
+posix safe | git -c advice.detachedHead="$a" checkout v1
+posix safe | git --config-env user.email=EMAIL commit -m x
+powershell safe | git -c "user.name=$name" commit -m x
 posix finds=unknown | git config alias.x '!rm -rf ~' && git x
 posix finds=system_settings | git config core.editor 'rm -rf ~'
+# `git config` given a key or a value only known when it runs: a key so may
+# be any, and a value so is judged by its key, as `-c` is.
+posix finds=unknown reason="sets git config only known when it runs" | git config "$k" '!rm -rf ~'
+posix finds=unknown | git config --global "$k" "$v"
+posix finds=unknown | git config set "$k" x
+posix finds=unknown | git config $kv
+posix finds=unknown | git config core.autocrlf "$v"
+posix finds=unknown | git config user.name $v
+posix finds=system_settings reason="sets git config that runs a program" | git config core.pager "$p"
+posix finds=unknown reason="sets a git alias that runs a command" | git config alias.x "$v"
+posix finds=unknown | git config alias.x "!$v"
+posix finds=unknown | git config alias.x $v
+powershell finds=system_settings | git config core.pager $p
+cmd finds=unknown | git config alias.x %V%
+posix safe | git config user.email "$EMAIL"
+posix safe | git config alias.st "status $x"
+posix safe | git config "$k"
+posix safe | git config --get "$k"
+posix safe | git config core.pager
+# The config git takes from its environment, as `-c` gives it.
+posix finds=unknown reason="gives git config only known when it runs" | GIT_CONFIG_PARAMETERS="$x" git status
+posix finds=unknown | GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="$k" GIT_CONFIG_VALUE_0="$v" git log
+posix finds=unknown reason="runs a command through git config" | GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0='rm -rf ~' git log
+posix finds=unknown | GIT_CONFIG_PARAMETERS="'core.pager=rm -rf ~'" git log
+posix finds=unknown | GIT_CONFIG_PARAMETERS="'user.name'='x' 'core.pager'='rm -rf ~'" git log
+posix finds=unknown | GIT_CONFIG_PARAMETERS="'alias.st=!rm -rf ~'" git st
+posix finds=unknown | GIT_CONFIG_PARAMETERS="core.pager=x" git log
+posix finds=unknown | export GIT_CONFIG_PARAMETERS="'alias.status=!rm -rf ~'"; git status
+posix finds=unknown | env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=./x git status
+posix finds=unknown | GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=x git log
+posix finds=unknown | GIT_CONFIG_COUNT=1 git log
+posix finds=unknown | GIT_CONFIG_COUNT="$n" git log
+posix finds=unknown | GIT_CONFIG_COUNT=1k git log
+posix finds=unknown | GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager git log
+powershell finds=unknown | $env:GIT_CONFIG_PARAMETERS = $x; git status
+powershell finds=unknown | $env:git_config_count = '1'; $env:GIT_CONFIG_KEY_0 = 'core.pager'; $env:GIT_CONFIG_VALUE_0 = 'rm -rf ~'; git log
+cmd finds=unknown | set GIT_CONFIG_PARAMETERS=%X% && git status
+powershell finds=unknown reason="gives git config only known when it runs" | Set-Item Env:GIT_CONFIG_* x; git log
+powershell safe | $env:GIT_CONFIG_PARAMETERS = "'user.name=x'"; git commit -m x
+posix safe | GIT_CONFIG_PARAMETERS="'user.name=x'" git commit -m x
+posix safe | GIT_CONFIG_PARAMETERS="'user.name'='it'\\''s me'" git commit -m x
+posix safe | GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0="$n" git commit -m x
+posix safe | GIT_CONFIG_COUNT=0 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=x git log
+posix safe | GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x GIT_CONFIG_KEY_1=core.pager git log
+posix safe | GIT_CONFIG_PARAMETERS= git status
+posix safe | GIT_CONFIG_PARAMETERS="$x" ls; git status
 posix finds=git_discard | git switch -f main
 posix finds=git_discard | git reset --ha
 posix finds=git_remote | git push --fo origin main
