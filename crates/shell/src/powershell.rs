@@ -2,7 +2,7 @@
 //! aliases, and how a cmdlet's parameters are read.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use tree_sitter::Node;
@@ -119,6 +119,8 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         streams: HashSet::new(),
         env_location: false,
         variable_location: false,
+        hooks_named: HashMap::new(),
+        roots: HashMap::new(),
     };
     walker.mark_listings(tree.root_node());
     walker.define(tree.root_node());
@@ -620,6 +622,12 @@ struct Walker<'a> {
     /// The same for the `Variable:` drive (`cd Variable:`), so a plain name
     /// may be a variable of the session.
     variable_location: bool,
+    /// Whether each link of a chain of members, items and calls read so far
+    /// names a hook as text, by node id (see [`Walker::names_hook`]).
+    hooks_named: HashMap<usize, bool>,
+    /// The variable each link of a chain read so far starts at, by node id
+    /// (see [`Walker::root_is`]).
+    roots: HashMap<usize, Option<String>>,
 }
 
 impl Walker<'_> {
@@ -3787,7 +3795,7 @@ impl Walker<'_> {
         // a hook named as text, on any object.
         if children
             .first()
-            .is_some_and(|object| blocks::names_hook(*object, self.source))
+            .is_some_and(|object| self.names_hook(*object))
             && !blocks::any_argument(&children, blocks::written)
         {
             self.split.problem(
@@ -3911,6 +3919,68 @@ impl Walker<'_> {
         sends
     }
 
+    /// Whether a chain of members, items and calls names a hook as text: an
+    /// item (`….psobject.Properties['CommandNotFoundAction']`) or an argument
+    /// of a call (`….GetProperty('CommandNotFoundAction')`). The object it is
+    /// reached from may be the session's `InvokeCommand`, whatever it is
+    /// written as.
+    ///
+    /// What each link of the chain gives is kept for the line: every call
+    /// in a chain asks it of the chain before it, so read again at each, `$PSDefaultParameterValues.Add(1, $b)` followed
+    /// by `.Add(1, $b)` repeated took time that grows with the square of the
+    /// chain, up to the depth a tree may have.
+    fn names_hook(&mut self, node: Node<'_>) -> bool {
+        let mut passed = Vec::new();
+        let mut at = blocks::unwrap(node);
+        let found = loop {
+            if passed.len() >= unit::MAX_TREE_DEPTH {
+                break false;
+            }
+            if let Some(&known) = self.hooks_named.get(&at.id()) {
+                break known;
+            }
+            passed.push(at.id());
+            match blocks::hook_link(at, self.source) {
+                (true, _) => break true,
+                (false, Some(object)) => at = object,
+                (false, None) => break false,
+            }
+        };
+        self.hooks_named
+            .extend(passed.into_iter().map(|id| (id, found)));
+        found
+    }
+
+    /// [`variables::root_is`], with the variable each link of the chain
+    /// starts at kept for the line: every call in a chain asks it of the
+    /// chain before it, so walked down again at each, a chain of calls on
+    /// `$PSDefaultParameterValues` took time that grows with its square, up
+    /// to the depth a tree may have.
+    fn root_is(&mut self, node: Node<'_>, name: &str) -> bool {
+        if !variables::starts_as(node, self.source, name) {
+            return false;
+        }
+        let mut passed = Vec::new();
+        let mut at = node;
+        let found = loop {
+            if passed.len() >= unit::MAX_TREE_DEPTH {
+                break None;
+            }
+            if let Some(known) = self.roots.get(&at.id()) {
+                break known.clone();
+            }
+            passed.push(at.id());
+            match variables::root_link(at, self.source) {
+                Ok(next) => at = next,
+                Err(found) => break found,
+            }
+        };
+        let is = found.as_deref() == Some(name);
+        self.roots
+            .extend(passed.into_iter().map(|id| (id, found.clone())));
+        is
+    }
+
     /// `$ExecutionContext.InvokeCommand.$h = $b`, `….psobject.Properties[…]
     /// .Value = $b`: a member of the session set by a way the guard cannot
     /// name may be a hook, whose block runs for every command. A hook named
@@ -3928,7 +3998,7 @@ impl Walker<'_> {
                 Some(unit::text(&node, self.source)),
             );
         }
-        if !blocks::names_hook(target, self.source) {
+        if !self.names_hook(target) {
             return false;
         }
         if !node
@@ -3954,7 +4024,7 @@ impl Walker<'_> {
         let Some(left) = node.named_child(0) else {
             return false;
         };
-        let defaults = variables::root_is(left, self.source, "psdefaultparametervalues");
+        let defaults = self.root_is(left, "psdefaultparametervalues");
         let unread = || {
             let Some(value) = node.child_by_field_name("value") else {
                 return true;
@@ -4009,7 +4079,7 @@ impl Walker<'_> {
         let Some(object) = children.first() else {
             return false;
         };
-        if !variables::root_is(*object, self.source, "psdefaultparametervalues") {
+        if !self.root_is(*object, "psdefaultparametervalues") {
             return false;
         }
         let method = children

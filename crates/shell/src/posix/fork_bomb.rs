@@ -251,6 +251,8 @@ impl Walker<'_> {
             sets: HashMap::new(),
             functions: HashSet::new(),
             chained: HashMap::new(),
+            negations: HashMap::new(),
+            arithmetic: HashMap::new(),
             chain: None,
             contexts: Vec::new(),
             awaiting: false,

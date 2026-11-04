@@ -745,8 +745,10 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
     // now placed once, and the bytes placed are counted (`MAX_LANDING_BYTES`
     // in `detect.rs`), also where the copies are followed for a send
     // (`copied_by` in `detect/send.rs`). The log the recoveries are counted
-    // from makes the lines that read the same 30 to 70 per cent slower: the
-    // slowest, a `cd` back up in PowerShell or a runner that starts another,
+    // from makes the lines that read the same 30 to 70 per cent slower (a
+    // parse first runs without it for a line's first steps, `MAX_QUIET` in
+    // `unit.rs`, which a line of a few kilobytes fits, so a longer line still
+    // pays for it): the slowest, a `cd` back up in PowerShell or a runner that starts another,
     // take up to 190 ms at the length limit in an optimized build, which a
     // fixed bound of 250 ms left no room for on a busy machine. So each row
     // is held to how its time grows instead: written at the length limit
@@ -1193,6 +1195,61 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
             Shell::Posix,
             Grows,
             Box::new(|size| fit("pwsh -c '1 2 1 2 1 2'; ", "", "", size)),
+        ),
+        // Read again from each link of a chain: the left side of each `||`
+        // for a negated `cd`, a quarter of a second at the length limit
+        // (`Walker::negates` in `posix.rs`); each assignment of a chain in
+        // `for (( ))` walked and copied the rest of the chain, seconds
+        // (`value` in `posix/values.rs`), and one in `(( ))` walked up to
+        // the arithmetic from each operand, 0.15 s at 400 deep
+        // (`in_arithmetic`); a chain of PowerShell calls asked of each call
+        // whether the chain before it names a hook, reaches the session or
+        // starts at `$PSDefaultParameterValues`, time that grew with the
+        // square of the chain up to the depth a tree may have, so it is held
+        // at each length too (`Walker::names_hook` in `powershell.rs`).
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("cd a || exit || ", "", "", size)),
+        ),
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("x=", "for ((", "0;;)); do a; done", size)),
+        ),
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("x=", "for ((;;", "0)); do a; done", size)),
+        ),
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("x=", "((", "0))", size)),
+        ),
+        (
+            Shell::PowerShell,
+            Stops,
+            Box::new(|size| fit(".Add(1, $b)", "$PSDefaultParameterValues", "", size)),
+        ),
+        (
+            Shell::PowerShell,
+            Grows,
+            Box::new(|size| fit("$PSDefaultParameterValues.Add(1, $b); ", "", "", size)),
+        ),
+        // The same pattern placed again at each write, a tenth of a
+        // millisecond each, half a second at the length limit (`placed` in
+        // `path.rs`).
+        (
+            Shell::PowerShell,
+            Grows,
+            Box::new(|size| fit("sc *a x;.\\b;", "", "", size)),
+        ),
+        // Thousands of names into a short folder.
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| format!("cp {}b", distinct_names(at(9_000, size)))),
         ),
         // A runner that starts another, each read in turn: up to a fifth of
         // a second at the length limit in a release build.

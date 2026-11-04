@@ -643,6 +643,14 @@ posix finds=delete | x='a[$(rm -rf ~)]'; y=x; echo $((y))
 posix finds=delete | x='a[$(rm -rf ~)]'; echo $[x]
 posix finds=delete | x='a[`rm -rf ~`]'; echo $((x))
 posix finds=delete | x='a[$(rm -rf ~)]'; for ((i=x; i<1; i++)); do :; done
+# An assignment in `for (( ))` whose value is the next one (`x=y=…`) holds
+# what that one gives, only known when it runs.
+posix finds=delete | for ((x=y=0;;)); do rm -rf $x; done
+posix finds=unknown | for ((x=y=$(cat f);;)); do echo $((x)); done
+posix finds=unknown | declare -i x; for ((x=y=$(cat f);;)); do :; done
+posix finds=unknown | for ((x=y=PATH=1;;)); do python3 -c 1; done
+posix finds=delete | for ((x=y=GLOBIGNORE=1;;)); do rm -rf *; done
+posix safe | for ((x=y=0;;)); do :; done
 posix finds=delete | x='a[$(rm -rf ~)]'; echo ${a[x]}
 posix finds=delete | x='a[$(rm -rf ~)]'; a[x]=1
 posix finds=delete | x='a[$(rm -rf ~)]'; echo ${s:x}

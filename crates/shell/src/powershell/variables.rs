@@ -53,6 +53,9 @@ pub(super) struct Variables {
     /// (`$ic = $ExecutionContext.InvokeCommand`, `$ec = (Get-Variable
     /// ExecutionContext).Value`, `$a = $ic`), in any assignment.
     session: HashSet<String>,
+    /// What [`Variables::reaches_session`] found from each link of a chain,
+    /// by node id and whether the links above it were obscure.
+    reached: std::cell::RefCell<HashMap<(usize, bool), bool>>,
 }
 
 /// The variables PowerShell sets itself, or that hold the session's state:
@@ -438,44 +441,63 @@ impl Variables {
     /// chain starts at, or anywhere above `$ExecutionContext`, `(Get-Variable
     /// ExecutionContext)` or a variable the line sets to what may reach the
     /// session. Such a member may be a hook, or a method that runs code.
+    ///
+    /// What each link gives, with whether the links above it were obscure,
+    /// is kept for the line: every call in a chain asks it of the chain
+    /// before it, so read again at each, a chain of calls took time that
+    /// grows with its square, up to the depth a tree may have.
     pub(super) fn reaches_session(&self, node: Node<'_>, source: &str) -> bool {
         let mut node = blocks::unwrap(node);
         let mut obscure = false;
-        for _ in 0..unit::MAX_TREE_DEPTH {
-            match node.kind() {
-                "member_access" | "invokation_expression" => {
-                    let name = member_name(node).and_then(|member| blocks::called(member, source));
-                    match name {
-                        Some(name) if SESSION_MEMBERS.contains(&name.as_str()) && obscure => {
-                            return true;
+        // The answer at each link is the answer at the next, so every link
+        // passed keeps the one found.
+        let mut passed = Vec::new();
+        let found = 'found: {
+            for _ in 0..unit::MAX_TREE_DEPTH {
+                if let Some(&known) = self.reached.borrow().get(&(node.id(), obscure)) {
+                    break 'found known;
+                }
+                passed.push((node.id(), obscure));
+                match node.kind() {
+                    "member_access" | "invokation_expression" => {
+                        let name =
+                            member_name(node).and_then(|member| blocks::called(member, source));
+                        match name {
+                            Some(name) if SESSION_MEMBERS.contains(&name.as_str()) && obscure => {
+                                break 'found true;
+                            }
+                            Some(name)
+                                if node.kind() == "member_access"
+                                    && !matches!(
+                                        name.as_str(),
+                                        "psobject" | "psbase" | "psadapted" | "psextended"
+                                    ) => {}
+                            _ => obscure = true,
                         }
-                        Some(name)
-                            if node.kind() == "member_access"
-                                && !matches!(
-                                    name.as_str(),
-                                    "psobject" | "psbase" | "psadapted" | "psextended"
-                                ) => {}
-                        _ => obscure = true,
                     }
+                    "element_access" => obscure = true,
+                    "parenthesized_expression" => {}
+                    "command" => break 'found obscure && reads_session(node, source),
+                    "variable" => {
+                        let text = unit::text(&node, source);
+                        let name = normal(text);
+                        break 'found obscure
+                            && (name == "executioncontext"
+                                || (!text.contains(':') && self.session.contains(&name)));
+                    }
+                    _ => break 'found false,
                 }
-                "element_access" => obscure = true,
-                "parenthesized_expression" => {}
-                "command" => return obscure && reads_session(node, source),
-                "variable" => {
-                    let text = unit::text(&node, source);
-                    let name = normal(text);
-                    return obscure
-                        && (name == "executioncontext"
-                            || (!text.contains(':') && self.session.contains(&name)));
-                }
-                _ => return false,
+                let Some(object) = node.named_child(0) else {
+                    break 'found false;
+                };
+                node = blocks::unwrap(object);
             }
-            let Some(object) = node.named_child(0) else {
-                return false;
-            };
-            node = blocks::unwrap(object);
-        }
-        true
+            true
+        };
+        self.reached
+            .borrow_mut()
+            .extend(passed.into_iter().map(|key| (key, found)));
+        found
     }
 }
 
@@ -500,8 +522,13 @@ fn normal(text: &str) -> String {
 /// (`$PSDefaultParameterValues['x']`), as [`normal`] names it, when it is
 /// `name`.
 pub(super) fn root_is(node: Node<'_>, source: &str, name: &str) -> bool {
+    starts_as(node, source, name) && root(node, source).as_deref() == Some(name)
+}
+
+/// Whether the text of `node` starts with the variable `name`: the quick
+/// look of [`root_is`], before the chain is walked.
+pub(super) fn starts_as(node: Node<'_>, source: &str, name: &str) -> bool {
     leading(unit::text(&node, source)).is_some_and(|(leading, _)| leading == name)
-        && root(node, source).as_deref() == Some(name)
 }
 
 /// The variable the text of a chain starts with, as [`normal`] names it,
@@ -528,23 +555,32 @@ fn leading(text: &str) -> Option<(String, bool)> {
 fn root(node: Node<'_>, source: &str) -> Option<String> {
     let mut node = node;
     for _ in 0..unit::MAX_TREE_DEPTH {
-        if node.kind() == "left_assignment_expression" {
-            node = node.named_child(0)?;
-            continue;
-        }
-        node = blocks::unwrap(node);
-        match node.kind() {
-            "member_access"
-            | "element_access"
-            | "invokation_expression"
-            | "parenthesized_expression" => {
-                node = node.named_child(0)?;
-            }
-            "variable" => return Some(normal(unit::text(&node, source))),
-            _ => return None,
+        match root_link(node, source) {
+            Ok(next) => node = next,
+            Err(found) => return found,
         }
     }
     None
+}
+
+/// One link of the chain [`root`] walks down: the next link, or what the
+/// chain starts at when `node` is the last.
+pub(super) fn root_link<'tree>(
+    node: Node<'tree>,
+    source: &str,
+) -> Result<Node<'tree>, Option<String>> {
+    if node.kind() == "left_assignment_expression" {
+        return node.named_child(0).ok_or(None);
+    }
+    let node = blocks::unwrap(node);
+    match node.kind() {
+        "member_access"
+        | "element_access"
+        | "invokation_expression"
+        | "parenthesized_expression" => node.named_child(0).ok_or(None),
+        "variable" => Err(Some(normal(unit::text(&node, source)))),
+        _ => Err(None),
+    }
 }
 
 /// The one variable an assignment sets, when its left side is a variable

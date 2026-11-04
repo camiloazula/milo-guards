@@ -477,3 +477,9 @@ cmd finds=delete | del /s /q \\\\?\\c:\\users\\me\\dev\\repo\\HEAD
 cmd finds=delete | del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\config
 cmd finds=delete | del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\??
 powershell finds=delete | cmd /c del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\HEAD
+
+# A pattern is placed once for the line, and lands at the same place each
+# time it is written.
+powershell safe | sc *a x;.\\b;sc *a x;.\\b;
+powershell finds=overwrite reason="writes to your SSH keys" | Set-Content ~\\.ssh\\* x; .\\b; Set-Content ~\\.ssh\\* x
+powershell finds=overwrite | sc .g* x; .\\b; sc .g* x

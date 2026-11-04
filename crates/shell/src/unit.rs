@@ -1432,6 +1432,9 @@ pub(crate) struct Split {
     /// those grammars started: see [`MAX_SCANNED`] and [`MAX_RECOVERIES`].
     scanned: usize,
     recoveries: usize,
+    /// The reports of its progress the grammars whose recoveries are
+    /// counted made for the line without their log: see [`MAX_QUIET`].
+    quiet: usize,
     /// How many times the line has forked into two readings, each judged
     /// (see [`crate::launch::Launch::Either`]).
     forks: usize,
@@ -5260,6 +5263,19 @@ const LEXED_PIECE: usize = 256;
 /// errors are lost. A line people write recovers a few times, if at all.
 const MAX_RECOVERIES: usize = 256;
 
+/// How many of the reports of its progress the POSIX and PowerShell grammars
+/// make (one each 100 steps of the parser) a line's parses may take without
+/// the log that counts recoveries (see [`parse`]). The log has an entry for
+/// each character and each step, and made the lines that read the same 30 to
+/// 70 per cent slower; a line people write takes a few hundred steps, and
+/// one of some kilobytes fits. Without the log nothing counts recoveries, so
+/// these steps are what noise can cost before the log is kept: each step
+/// recovers from an error at most a few times, and the noisiest measured,
+/// PowerShell's `1 2 ` and `-a ` repeated, took about 0.4 ms for each 100,
+/// so these take at most some tens of milliseconds, and the run stops at the
+/// first report that says the parse is in error.
+const MAX_QUIET: usize = 32;
+
 /// How many characters the lexers of the grammars whose recoveries are
 /// counted may move over for a line before the parse is stopped and the line
 /// is unreadable: [`MAX_SCANNED_BASE`], and [`MAX_SCANNED`] times the text
@@ -5651,13 +5667,20 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
 /// grammar whose recoveries are counted, [`MAX_RECOVERIES`] and
 /// [`MAX_SCANNED`]), and a finding beside the tree when part of it is an
 /// error.
+///
+/// A grammar whose recoveries are counted is first run without its log, for
+/// as many of the line's steps as [`MAX_QUIET`] leaves: a text it reads
+/// whole in them with no error is read as fast as the grammar reads, and
+/// started no recovery (a recovery leaves an error or a missing node in the
+/// tree). Any other is read again from its start with the log kept, so what
+/// is counted is what the log of the whole parse says, and the quiet run
+/// only adds the steps it was allowed.
 pub(crate) fn parse(
     split: &mut Split,
     text: &str,
     language: &tree_sitter::Language,
     recovery: Recovery,
 ) -> Option<tree_sitter::Tree> {
-    use std::cell::Cell;
     let bytes = text.as_bytes();
     // The budgets are the line's, shared by every script and piece of code
     // in it, so a line that starts many cannot spend them many times over.
@@ -5682,13 +5705,89 @@ pub(crate) fn parse(
         split.problem(Rule::Unreadable, "cannot be read", None);
         return None;
     }
+    let quiet = MAX_QUIET.saturating_sub(split.quiet);
+    if recovery == Recovery::Counted && quiet > 0 {
+        let budget = allowed.saturating_sub(split.lexed);
+        let run = parse_once(&mut parser, text, budget, Log::Quiet(quiet));
+        split.quiet = split.quiet.saturating_add(run.steps);
+        split.lexed = split.lexed.saturating_add(run.lexed);
+        match run.tree {
+            Some(tree) if !tree.root_node().has_error() => return Some(tree),
+            _ if run.over => {
+                split.problem(Rule::Unreadable, "takes too long to read", None);
+                return None;
+            }
+            _ => {}
+        }
+        // Read again from the start, not from where the quiet run stopped.
+        parser.reset();
+    }
+    let logged = match recovery {
+        Recovery::Counted => Log::Counted {
+            scan: scan_allowed.saturating_sub(split.scanned),
+            recoveries: MAX_RECOVERIES.saturating_sub(split.recoveries),
+        },
+        Recovery::Cheap => Log::Off,
+    };
     let budget = allowed.saturating_sub(split.lexed);
-    let scan_budget = scan_allowed.saturating_sub(split.scanned);
-    let recovery_budget = MAX_RECOVERIES.saturating_sub(split.recoveries);
+    let run = parse_once(&mut parser, text, budget, logged);
+    split.lexed = split.lexed.saturating_add(run.lexed);
+    split.scanned = split.scanned.saturating_add(run.scanned);
+    split.recoveries = split.recoveries.saturating_add(run.recoveries);
+    if run.over {
+        split.problem(Rule::Unreadable, "takes too long to read", None);
+        return None;
+    }
+    if let Some(tree) = run.tree {
+        if tree.root_node().has_error() {
+            split.problem(Rule::Unreadable, "cannot be read in full", None);
+        }
+        Some(tree)
+    } else {
+        split.problem(Rule::Unreadable, "cannot be read", None);
+        None
+    }
+}
+
+/// How one run of a grammar over a text is watched (see [`parse`]).
+#[derive(Clone, Copy)]
+enum Log {
+    /// No log, and no steps counted: cmd's grammar.
+    Off,
+    /// No log, for at most this many of the grammar's reports of its
+    /// progress (see [`MAX_QUIET`]); the run stops at an error.
+    Quiet(usize),
+    /// The log kept, and the run stopped past this many characters its
+    /// lexer moves over or recoveries it starts.
+    Counted { scan: usize, recoveries: usize },
+}
+
+/// What one run of a grammar over a text read and found.
+struct Run {
+    tree: Option<tree_sitter::Tree>,
+    /// Whether it read past a budget, the bytes it was handed or what the
+    /// log counted (not the steps of a quiet run, which only end it).
+    over: bool,
+    lexed: usize,
+    scanned: usize,
+    recoveries: usize,
+    /// The reports of its progress a quiet run took.
+    steps: usize,
+}
+
+/// Run `parser` over `text` once, handed at most `budget` bytes and watched
+/// as `log` says.
+fn parse_once(parser: &mut tree_sitter::Parser, text: &str, budget: usize, log: Log) -> Run {
+    use std::cell::Cell;
+    let bytes = text.as_bytes();
+    let (scan_budget, recovery_budget) = match log {
+        Log::Counted { scan, recoveries } => (scan, recoveries),
+        Log::Off | Log::Quiet(_) => (usize::MAX, usize::MAX),
+    };
     // What the grammar's log has said so far: the characters its lexer moved
     // over, and the recoveries from an error it started.
     let logged = Rc::new([Cell::new(0_usize), Cell::new(0_usize)]);
-    if recovery == Recovery::Counted {
+    if let Log::Counted { .. } = log {
         let logged = Rc::clone(&logged);
         parser.set_logger(Some(Box::new(move |kind, message: &str| {
             let at = match kind {
@@ -5721,8 +5820,17 @@ pub(crate) fn parse(
         lexed.set(lexed.get().saturating_add(piece.len().max(1)));
         piece
     };
-    let mut progress = |_: &tree_sitter::ParseState| {
-        if over() {
+    // The reports a quiet run took, and whether it may take another.
+    let steps = Cell::new(0_usize);
+    let mut progress = |state: &tree_sitter::ParseState| {
+        let quiet_over = match log {
+            Log::Quiet(allowed) => {
+                steps.set(steps.get().saturating_add(1));
+                state.has_error() || steps.get() > allowed
+            }
+            Log::Off | Log::Counted { .. } => false,
+        };
+        if quiet_over || over() {
             std::ops::ControlFlow::Break(())
         } else {
             std::ops::ControlFlow::Continue(())
@@ -5730,22 +5838,16 @@ pub(crate) fn parse(
     };
     let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
     let tree = parser.parse_with_options(&mut read, None, Some(options));
-    let stopped = over();
-    split.lexed = split.lexed.saturating_add(lexed.get());
-    split.scanned = split.scanned.saturating_add(logged[0].get());
-    split.recoveries = split.recoveries.saturating_add(logged[1].get());
-    if stopped {
-        split.problem(Rule::Unreadable, "takes too long to read", None);
-        return None;
+    if let Log::Counted { .. } = log {
+        parser.set_logger(None);
     }
-    if let Some(tree) = tree {
-        if tree.root_node().has_error() {
-            split.problem(Rule::Unreadable, "cannot be read in full", None);
-        }
-        Some(tree)
-    } else {
-        split.problem(Rule::Unreadable, "cannot be read", None);
-        None
+    Run {
+        tree,
+        over: over(),
+        lexed: lexed.get(),
+        scanned: logged[0].get(),
+        recoveries: logged[1].get(),
+        steps: steps.get(),
     }
 }
 
@@ -6231,4 +6333,58 @@ pub(crate) fn plain(args: &[Arg]) -> Vec<&Arg> {
     args.iter()
         .filter(|arg| !arg.known().is_some_and(is_switch))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse, Recovery, Split, MAX_QUIET};
+
+    fn parsed(text: &str, language: &tree_sitter::Language) -> Split {
+        let mut split = Split::default();
+        let _ = parse(&mut split, text, language, Recovery::Counted);
+        split
+    }
+
+    #[test]
+    fn a_text_read_whole_without_an_error_is_read_without_the_log() {
+        let posix = tree_sitter_bash::LANGUAGE.into();
+        let powershell = tree_sitter_powershell::LANGUAGE.into();
+        for (text, language) in [
+            ("git status && ls -la src | grep foo > out.txt", &posix),
+            (&"echo a b c | sort; ".repeat(40), &posix),
+            (
+                "Get-ChildItem -Recurse src | Where-Object { $_.Length -gt 1kb }",
+                &powershell,
+            ),
+        ] {
+            let split = parsed(text, language);
+            assert_eq!((split.scanned, split.recoveries), (0, 0), "{text}");
+            assert!(split.quiet <= MAX_QUIET, "{text}");
+            assert!(split.findings.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_text_with_an_error_or_past_the_quiet_steps_is_read_again_with_the_log() {
+        let posix = tree_sitter_bash::LANGUAGE.into();
+        let powershell = tree_sitter_powershell::LANGUAGE.into();
+        // An error: every recovery is counted, as the log of the whole
+        // parse says.
+        let split = parsed(&"1 2 ".repeat(10), &powershell);
+        assert!(split.recoveries > 0);
+        assert!(split.scanned > 0);
+        // Longer than the quiet steps allow: read again with the log.
+        let split = parsed(&"echo a b c | sort; ".repeat(2_000), &posix);
+        assert_eq!(split.quiet, MAX_QUIET + 1);
+        assert!(split.scanned > 0);
+        assert!(split.findings.is_empty());
+        // Once the line's quiet steps are spent, a text is read with the log
+        // from its start.
+        let mut split = Split::default();
+        let long = "echo a b c | sort; ".repeat(2_000);
+        let _ = parse(&mut split, &long, &posix, Recovery::Counted);
+        let scanned = split.scanned;
+        let _ = parse(&mut split, "ls", &posix, Recovery::Counted);
+        assert!(split.scanned > scanned);
+    }
 }

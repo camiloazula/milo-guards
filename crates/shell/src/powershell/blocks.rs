@@ -1244,41 +1244,33 @@ pub(super) fn first_string<'tree>(children: &[Node<'tree>]) -> Option<Node<'tree
     }
 }
 
-/// Whether a chain of members, items and calls names a hook as text: an
-/// item (`….psobject.Properties['CommandNotFoundAction']`) or an argument
-/// of a call (`….GetProperty('CommandNotFoundAction')`). The object it is
-/// reached from may be the session's `InvokeCommand`, whatever it is
-/// written as.
-pub(super) fn names_hook(node: Node<'_>, source: &str) -> bool {
-    let mut node = unwrap(node);
-    for _ in 0..unit::MAX_TREE_DEPTH {
-        match node.kind() {
-            "element_access" | "invokation_expression" => {
-                let mut cursor = node.walk();
-                let named = node.named_children(&mut cursor).skip(1).any(|part| {
-                    let parts = if part.kind() == "argument_list" {
-                        part.named_child(0).map_or(Vec::new(), |list| {
-                            let mut cursor = list.walk();
-                            list.named_children(&mut cursor).collect()
-                        })
-                    } else {
-                        vec![part]
-                    };
-                    parts.into_iter().any(|part| hook_text(part, source))
-                });
-                if named {
-                    return true;
-                }
+/// One link of a chain of members, items and calls, `node`, unwrapped:
+/// whether it names a hook as text itself (see `Walker::names_hook` in
+/// `powershell.rs`), and the object it is reached from, the next link, when
+/// the chain goes on.
+pub(super) fn hook_link<'tree>(node: Node<'tree>, source: &str) -> (bool, Option<Node<'tree>>) {
+    match node.kind() {
+        "element_access" | "invokation_expression" => {
+            let mut cursor = node.walk();
+            let named = node.named_children(&mut cursor).skip(1).any(|part| {
+                let parts = if part.kind() == "argument_list" {
+                    part.named_child(0).map_or(Vec::new(), |list| {
+                        let mut cursor = list.walk();
+                        list.named_children(&mut cursor).collect()
+                    })
+                } else {
+                    vec![part]
+                };
+                parts.into_iter().any(|part| hook_text(part, source))
+            });
+            if named {
+                return (true, None);
             }
-            "member_access" | "parenthesized_expression" => {}
-            _ => return false,
         }
-        let Some(object) = node.named_child(0) else {
-            return false;
-        };
-        node = unwrap(object);
+        "member_access" | "parenthesized_expression" => {}
+        _ => return (false, None),
     }
-    false
+    (false, node.named_child(0).map(unwrap))
 }
 
 /// Whether an expression is text that names a hook (`'CommandNotFoundAction'`).

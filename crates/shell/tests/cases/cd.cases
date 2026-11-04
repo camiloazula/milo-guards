@@ -232,6 +232,14 @@ powershell finds=delete | Set-Location C:\\Windows; -not (Set-Location C:\\Users
 posix safe | cd /etc && cd /home/me/work/repo && rm -rf passwd
 posix safe | cd /etc; cd /home/me/work/repo || exit; rm -rf passwd
 posix safe | cd sub || exit 1; rm -rf ../x
+# The left side of an `||` that ends the shell is read for a negated `cd`
+# once for the whole chain, however deep in it the negation is.
+posix finds=delete | cd /etc; ! cd /home/me/work/repo && cd sub || exit; rm -rf ../passwd
+posix finds=delete | cd /etc; cd /home/me/work/repo && ! cd sub || exit; rm -rf ../passwd
+posix finds=delete | cd /etc; ! cd /home/me/work/repo && cd a && cd b || exit; rm -rf ../../passwd
+posix finds=delete | cd /etc; cd /home/me/work/repo && { ! cd a; } && cd b || exit; rm -rf ../../passwd
+posix safe | cd /etc; cd /home/me/work/repo && cd sub || exit; rm -rf ../passwd
+posix safe | cd /etc; cd /home/me/work/repo && cd a && cd b || exit; rm -rf ../../passwd
 # A `CDPATH` the line sets moves `cd` to a relative name somewhere else; a
 # name that starts with `.` or `..`, or an absolute one, is not looked up.
 posix finds=delete | CDPATH=/; cd etc; rm -rf passwd
