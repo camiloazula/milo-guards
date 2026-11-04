@@ -10,7 +10,7 @@
 use super::tools::{unknown_before, unknown_subcommand, UNKNOWN_OPTION, UNKNOWN_WORD};
 use super::wrappers::running;
 use super::{runs, Launch};
-use crate::unit::{Arg, Unit};
+use crate::unit::{Arg, Reads, Unit};
 use crate::Shell;
 
 /// The options of `nix` that take one value.
@@ -354,7 +354,44 @@ fn attribute(installable: &str) -> Option<&str> {
 /// files, expressions or packages, and the options stand among them. A word
 /// only known when it runs, with a word after it, may be `--run` or an
 /// option, so the line is not read.
+///
+/// Given a script whose first lines are `#!` and `#! nix-shell` as its
+/// first word, nix-shell runs that script (shebang mode), with the words
+/// after it as the script's: a first word that may be a file other than a
+/// Nix expression ([`may_be_script`]) runs code the guard does not read,
+/// beside the reading of its words as nix-shell's own.
 pub(super) fn nix_shell(args: &[Arg]) -> Launch {
+    let options = nix_shell_options(args);
+    match args.first() {
+        Some(Arg::Known(first)) if may_be_script(first) => Launch::Either(
+            Box::new(Launch::Reads(Reads::Interpreter)),
+            Box::new(options),
+        ),
+        Some(first) if first.known().is_none() => {
+            Launch::Either(Box::new(Launch::Unread(first.clone())), Box::new(options))
+        }
+        _ => options,
+    }
+}
+
+/// Whether `word`, the first word of `nix-shell`, may name a script it runs
+/// in shebang mode: not an option, and not what names a Nix expression
+/// instead, which nix-shell reads as one: a `.nix` file, a folder (`.`,
+/// `..`, a path that ends in `/`), a path Nix looks up (`<nixpkgs>`), or a
+/// URL, `channel:` name or `flake:` reference, which Nix fetches as it
+/// fetches a URL.
+fn may_be_script(word: &str) -> bool {
+    // Nix reads the name as it is written: `x.NIX` is a file of its own.
+    let expression = word.rsplit_once('.').is_some_and(|(_, ext)| ext == "nix");
+    let folder = word.ends_with('/') || matches!(word, "." | "..");
+    let looked_up = word.starts_with('<') && word.ends_with('>');
+    let url = word.contains("://") || word.starts_with("channel:") || word.starts_with("flake:");
+    !(word.is_empty() || word.starts_with('-') || expression || folder || looked_up || url)
+}
+
+/// [`nix_shell`] read as nix-shell's own words: its options, and the shell
+/// line `--run` or `--command` gives.
+fn nix_shell_options(args: &[Arg]) -> Launch {
     let mut script = None;
     let mut at = 0;
     while let Some(arg) = args.get(at) {

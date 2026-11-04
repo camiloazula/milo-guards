@@ -3,22 +3,24 @@
 
 use super::hedged;
 use super::Checker;
-use crate::launch::{git_global, git_long, is_submodule, Global};
+use crate::launch::{git_global, git_long, is_submodule, Global, Unread};
 use crate::path::{pattern_folder, within};
 use crate::said::Said;
-use crate::unit::{could_be, has_flag, may_be_option, operands, unknown_start, Arg, Flagged, Unit};
+use crate::unit::{
+    could_be, has_flag, may_be_option, may_split, operands, unknown_start, Arg, Flagged, Unit,
+    GIT_CONFIG_COUNT, GIT_CONFIG_PARAMETERS,
+};
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::glob;
 
 impl Checker<'_> {
     /// Git, and code run through awk, expect, `AppleScript` or .NET.
     pub(super) fn code(&mut self, unit: &Unit, key: &str) {
-        let args = unit.args.as_slice();
         let shell = unit.shell;
         match key {
             // Git.
             "git" => {
-                self.git(args, shell);
+                self.git(unit);
                 self.git_work_tree(unit);
             }
 
@@ -43,19 +45,30 @@ impl Checker<'_> {
 
     /// awk code that runs commands (`system(…)`, a pipe) or writes files
     /// (`print > "f"`) is risky; so is code the guard cannot read (`-f script`,
-    /// a library `-i` or `@include` loads, a variable). gawk's `inplace`
-    /// library (`-i inplace`) edits each file awk reads, so each is a write,
-    /// as is the file `-o`, `-p` or `-d` is given. The options are read as
-    /// gawk's `getopt_long` reads them (see [`awk_options`]).
+    /// a library `-i` or `@include` loads, a variable), and so is a shared
+    /// library `-l` or `@load` loads, native code whatever its name. gawk's
+    /// `inplace` library (`-i inplace`) edits each file awk reads, so each
+    /// is a write, as is the file `-o`, `-p` or `-d` is given. The options
+    /// are read as gawk's `getopt_long` reads them (see [`awk_options`]).
     fn awk(&mut self, unit: &Unit) {
         let args = unit.args.as_slice();
         let read = awk_options(args);
         let mut programs: Vec<Value<'_>> = Vec::new();
         let mut file = false;
         let mut libraries: Vec<Library<'_>> = Vec::new();
+        // A shared library `-l` or `@load` loads, with the word that names
+        // it when that is only known when it runs.
+        let mut extension: Option<Option<&Arg>> = None;
         for &(name, value) in &read.options {
             match name {
                 "file" | "exec" => file = true,
+                "load" => {
+                    let unread = match value {
+                        Some(Value::Word(arg)) if arg.known().is_none() => Some(arg),
+                        _ => None,
+                    };
+                    extension = Some(extension.flatten().or(unread));
+                }
                 "source" => programs.extend(value),
                 "include" => libraries.push(value.map_or(Library::Other, library)),
                 "dump-variables" | "pretty-print" | "profile" => {
@@ -97,7 +110,12 @@ impl Checker<'_> {
                             None,
                         );
                     }
-                    libraries.extend(included(code));
+                    for directive in directives(code) {
+                        match directive {
+                            Directive::Include(library) => libraries.push(library),
+                            Directive::Load => extension = Some(extension.flatten()),
+                        }
+                    }
                 }
                 None => self.add(
                     Rule::Unknown,
@@ -105,6 +123,13 @@ impl Checker<'_> {
                     Some(&program.arg()),
                 ),
             }
+        }
+        if let Some(arg) = extension {
+            self.add(
+                Rule::Unknown,
+                "loads an awk extension the guard does not read",
+                arg,
+            );
         }
         if libraries.iter().any(|library| *library != Library::InPlace) {
             self.add(
@@ -144,12 +169,22 @@ impl Checker<'_> {
     /// origin main`, `git push "-$F" origin main`, see [`may_be_option`])
     /// is taken as given, and the finding says it may (see [`hedged`]); an
     /// option that keeps work is taken only as written.
-    fn git(&mut self, args: &[Arg], shell: Shell) {
+    fn git(&mut self, unit: &Unit) {
+        let args = unit.args.as_slice();
+        let shell = unit.shell;
         let Global {
             at,
             repository,
             configs,
+            unread: unread_settings,
         } = git_global(args);
+        // The config the line gives git through its environment, as `-c`
+        // gives it (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_KEY_0`).
+        let environment = environment_config(unit);
+        let configs: Vec<&str> = configs
+            .into_iter()
+            .chain(environment.configs.iter().map(String::as_str))
+            .collect();
         // A `-c` config value that makes git run a command of its own: an
         // alias body starting `!`, or a program git calls (pager, editor,
         // ssh, hooks).
@@ -158,6 +193,21 @@ impl Checker<'_> {
                 Rule::Unknown,
                 "runs a command through git config",
                 repository,
+            );
+        }
+        // A setting whose value is only known when it runs may be any of
+        // those, unless what is written of it names a key whose value git
+        // never runs.
+        let unread_setting = unread_settings
+            .iter()
+            .find(|setting| !harmless_setting(setting, shell))
+            .map(|setting| setting.arg)
+            .or(environment.unread.as_ref());
+        if let Some(setting) = unread_setting {
+            self.add(
+                Rule::Unknown,
+                "gives git config only known when it runs",
+                Some(setting),
             );
         }
         // A subcommand only known when it runs may be any of them, those
@@ -334,20 +384,9 @@ impl Checker<'_> {
                         "removes what git keeps to undo mistakes".into(),
                     )
                 }
-                "config" if config_set_executes(rest) => {
-                    let alias = operands
-                        .iter()
-                        .filter_map(|arg| arg.known())
-                        .find(|word| *word != "set")
-                        .is_some_and(|key| key.to_ascii_lowercase().starts_with("alias."));
-                    if alias {
-                        (Rule::Unknown, "sets a git alias that runs a command".into())
-                    } else {
-                        (
-                            Rule::SystemSettings,
-                            "sets git config that runs a program".into(),
-                        )
-                    }
+                "config" => {
+                    let (rule, reason) = config_set(rest, shell)?;
+                    (rule, reason.into())
                 }
                 "update-ref" if may(Some('d'), None) => (Rule::GitDiscard, "deletes a ref".into()),
                 // A tag has no reflog to bring it back from.
@@ -408,8 +447,9 @@ impl Checker<'_> {
     /// does not show: `apply` the files a patch names, below the folder git
     /// runs in; `am`, `cherry-pick`, `revert`, `stash apply` and `pop`,
     /// `read-tree -u` and `checkout-index` the files a patch, a commit or
-    /// the index holds, anywhere in the work tree; `checkout` and `restore`
-    /// given paths the files a revision holds below them. Each may change a
+    /// the index holds, anywhere in the work tree, and so does a branch move
+    /// (see [`moves_branch`]); `checkout` and `restore` given paths the
+    /// files a revision holds below them. Each may change a
     /// protected path the folder holds (see [`Checker::changes_in`]). The
     /// folder git runs in is `-C`'s, or the one the line is in; the top of
     /// the work tree is the workspace folder that holds it, and is only
@@ -449,6 +489,14 @@ impl Checker<'_> {
             "checkout-index" => !flag(None, Some("temp")),
             _ => false,
         };
+        // A branch move writes what the commit it moves to holds, anywhere
+        // in the work tree; it is not a write to the folder git runs in.
+        let before = self.found.len();
+        if moves_branch(sub, rest) {
+            self.changes_in(shell, scope, &top);
+        }
+        // What the move may change holds what its paths may.
+        let moved_found = self.found.len() > before;
         if anywhere {
             let before = self.found.len();
             self.write_folder(shell, scope, &folder, "patches files in");
@@ -483,6 +531,9 @@ impl Checker<'_> {
                     self.changes_in(shell, scope, &top);
                     return;
                 }
+                if moved_found {
+                    return;
+                }
                 for (path, from_top) in pathspecs(sub, rest) {
                     let path = within(Some(if from_top { &top } else { &folder }), &path, shell);
                     self.changes_in(shell, scope, &path);
@@ -491,6 +542,99 @@ impl Checker<'_> {
             _ => {}
         }
     }
+}
+
+/// Whether a git subcommand moves the work tree to another commit or
+/// branch, rewriting what it holds from history the line does not show:
+/// `pull` but a dry run, `merge` and `rebase` but those options that only
+/// end or show one in progress (`--abort` moves back), `switch` given a
+/// branch or a start point, or `--orphan`, which empties the work tree,
+/// `checkout` given one operand that may name a revision and no paths after
+/// `--`, `reset --merge`, and `reset --keep` given a commit, and `bisect`
+/// but the subcommands that only show (`log`, `view`, `visualize`, `terms`,
+/// `help`) and a `start` that checks nothing out (`--no-checkout`, or no
+/// revision). A word only known when it runs may be one or none, or several,
+/// so a `checkout` with one is read as a move. Only an option as written
+/// stops a move; `-h` and `--help` stop every one, since git then only
+/// shows how to use it.
+fn moves_branch(sub: &str, rest: &[Arg]) -> bool {
+    let flag = |long: &str| git_flag(rest, None, Some(long));
+    let help = rest
+        .iter()
+        .filter_map(Arg::known)
+        .take_while(|text| *text != "--")
+        .any(|text| text == "-h" || text == "--help");
+    if help {
+        return false;
+    }
+    match sub {
+        "pull" => !flag("dry-run"),
+        "merge" => !(flag("quit") || flag("continue")),
+        "rebase" => !(flag("quit") || flag("edit-todo") || flag("show-current-patch")),
+        "reset" => flag("merge") || (flag("keep") && !operands(rest, &[]).is_empty()),
+        "bisect" => {
+            const TERMS: [&str; 4] = ["--term-old", "--term-new", "--term-bad", "--term-good"];
+            let dashes = rest
+                .iter()
+                .position(|arg| arg.known() == Some("--"))
+                .unwrap_or(rest.len());
+            let words = operands(&rest[..dashes], &TERMS);
+            match words.split_first() {
+                None => false,
+                Some((first, revisions)) => match first.known() {
+                    Some("log" | "view" | "visualize" | "terms" | "help") => false,
+                    Some("start") => !flag("no-checkout") && !revisions.is_empty(),
+                    _ => true,
+                },
+            }
+        }
+        "switch" => {
+            flag("orphan")
+                || !operands(
+                    rest,
+                    &[
+                        "-c",
+                        "-C",
+                        "--create",
+                        "--force-create",
+                        "--orphan",
+                        "--conflict",
+                    ],
+                )
+                .is_empty()
+        }
+        "checkout" => {
+            let dashes = rest.iter().position(|arg| arg.known() == Some("--"));
+            let (before, after) = match dashes {
+                Some(at) => (&rest[..at], &rest[at + 1..]),
+                None => (rest, &[][..]),
+            };
+            if !after.is_empty() || flag("pathspec-from-file") {
+                return false;
+            }
+            let named = operands(
+                before,
+                &["-b", "-B", "--orphan", "--conflict", "--pathspec-from-file"],
+            );
+            named.iter().any(|arg| arg.known().is_none())
+                || matches!(named.as_slice(), [only] if only.known().is_some_and(may_be_revision))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `git checkout` may read an operand as a revision: a name git
+/// refuses as a ref, and that no revision expression is either (`.`, `..`,
+/// `./src`, `src/`, a wildcard, a Windows path), is a path. A commit found
+/// by its message (`HEAD^{/fix*}`, `:/fix`) or a reflog entry (`main@{1}`)
+/// may hold any of those, and is a revision.
+fn may_be_revision(text: &str) -> bool {
+    if text.contains("^{") || text.contains("@{") || text.starts_with(":/") {
+        return true;
+    }
+    !(text.ends_with('/')
+        || text.contains(['*', '?', '[', '\\'])
+        || text.split('/').any(|part| part.starts_with('.')))
 }
 
 /// The paths `git checkout` or `git restore` is given, each as the folder
@@ -845,19 +989,59 @@ fn named_library(name: &str) -> Library<'static> {
     }
 }
 
-/// The libraries awk code loads with `@include "name"`: one whose name is
-/// not a plain string is one the guard does not read.
-fn included(code: &str) -> Vec<Library<'static>> {
-    code.split("@include")
+/// A directive in awk code: `@include "name"` or `@load "name"`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Directive {
+    /// A library `@include` loads.
+    Include(Library<'static>),
+    /// A shared library `@load` loads.
+    Load,
+}
+
+/// The directives in awk code, read as gawk's lexer reads them: `@` is a
+/// token of its own, and the word after it, past spaces, tabs, carriage
+/// returns and backslash-newlines, is a directive when it is `include` or
+/// `load`. Only a word made of ASCII letters, digits and `_` is a name, so
+/// `@loader` is no directive. An `@include` whose name is not a plain
+/// string is a library the guard does not read. A directive is found in a
+/// string or regex too, where gawk reads none: risky, not safe.
+fn directives(code: &str) -> Vec<Directive> {
+    code.split('@')
         .skip(1)
-        .map(|after| {
-            after
-                .trim_start()
-                .strip_prefix('"')
-                .and_then(|name| name.split_once('"'))
-                .map_or(Library::Other, |(name, _)| named_library(name))
+        .filter_map(|after| {
+            let after = skip_blanks(after);
+            let end = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            let (word, rest) = after.split_at(end);
+            match word {
+                "load" => Some(Directive::Load),
+                "include" => Some(Directive::Include(
+                    skip_blanks(rest)
+                        .strip_prefix('"')
+                        .and_then(|name| name.split_once('"'))
+                        .map_or(Library::Other, |(name, _)| named_library(name)),
+                )),
+                _ => None,
+            }
         })
         .collect()
+}
+
+/// awk code past the blanks gawk's lexer skips between two tokens: spaces,
+/// tabs, carriage returns, and a backslash before a newline, with or
+/// without a carriage return between.
+fn skip_blanks(mut code: &str) -> &str {
+    loop {
+        let trimmed = code.trim_start_matches([' ', '\t', '\r']);
+        match trimmed
+            .strip_prefix("\\\n")
+            .or_else(|| trimmed.strip_prefix("\\\r\n"))
+        {
+            Some(rest) => code = rest,
+            None => return trimmed,
+        }
+    }
 }
 
 /// Whether an awk operand is an assignment (`x=1`, `ns::x=1`), which awk
@@ -910,8 +1094,15 @@ fn config_executes(config: &str) -> bool {
     EXEC_CONFIG_KEYS.contains(&key.as_str())
 }
 
-/// Whether a `git config KEY VALUE` sets one of those keys.
-fn config_set_executes(rest: &[Arg]) -> bool {
+/// What a `git config KEY VALUE` (or `git config set KEY VALUE`, git 2.46)
+/// is when it sets a key whose value git runs: an alias that runs a command,
+/// or a program git calls. The other subcommands, the options that read,
+/// and a key alone only read. An argument only known when it runs keeps its
+/// place: a key so is any key, and a value so is judged by its key, as the
+/// known form is for a key git runs the value of, and as `-c` is for any
+/// other (see [`harmless_key`]). An option only known when it runs may be
+/// one that reads, and is read as none.
+fn config_set(rest: &[Arg], shell: Shell) -> Option<(Rule, &'static str)> {
     let reads = rest.iter().filter_map(Arg::known).any(|text| {
         matches!(
             text,
@@ -930,24 +1121,259 @@ fn config_set_executes(rest: &[Arg]) -> bool {
         )
     });
     if reads {
-        return false;
+        return None;
     }
     let operands = operands(rest, &["--file", "-f", "--blob", "--type", "--default"]);
-    let mut words = operands.iter().filter_map(|arg| arg.known());
-    // `git config set KEY VALUE` (git 2.46) or `git config KEY VALUE`; the
-    // other subcommands and a key alone only read.
-    let (key, value) = match words.next() {
-        Some("set") => (words.next(), words.next()),
+    let mut words = operands.into_iter();
+    let first = words.next()?;
+    let (key, value) = match first.known() {
+        Some("set") => (words.next()?, words.next()),
         Some("get" | "unset" | "list" | "edit" | "rename-section" | "remove-section") => {
-            return false;
+            return None;
         }
-        key => (key, words.next()),
+        _ => (first, words.next()),
     };
-    match (key, value) {
-        (Some(key), Some(value)) => config_executes(&format!("{key}={value}")),
-        _ => false,
+    const UNREAD: (Rule, &str) = (Rule::Unknown, "sets git config only known when it runs");
+    const ALIAS: (Rule, &str) = (Rule::Unknown, "sets a git alias that runs a command");
+    const PROGRAM: (Rule, &str) = (Rule::SystemSettings, "sets git config that runs a program");
+    let Some(written) = key.known() else {
+        // A key alone is read, unless it splits into a key and a value.
+        return (value.is_some() || may_split(key, shell)).then_some(UNREAD);
+    };
+    let value = value?;
+    let lower = written.trim().to_ascii_lowercase();
+    let alias = lower
+        .strip_prefix("alias.")
+        .is_some_and(|name| !name.is_empty());
+    if let Some(text) = value.known() {
+        return config_executes(&format!("{written}={text}")).then_some(if alias {
+            ALIAS
+        } else {
+            PROGRAM
+        });
+    }
+    if alias {
+        // A body sure to start with something other than `!` is a git
+        // command.
+        let start = (!may_split(value, shell))
+            .then(|| unknown_start(value, shell))
+            .flatten();
+        let git_command = start.is_some_and(|start| {
+            let start = start.trim_start();
+            !start.is_empty() && !start.starts_with('!')
+        });
+        return (!git_command).then_some(ALIAS);
+    }
+    if EXEC_CONFIG_KEYS.contains(&lower.as_str()) {
+        return Some(PROGRAM);
+    }
+    (may_split(value, shell) || !harmless_key(&lower)).then_some(UNREAD)
+}
+
+/// The config the line gives git through the variables it reads as its own
+/// `-c` (see [`crate::unit::git_config_variable`]), each value the last the
+/// line gives the variable where git runs.
+struct Environment {
+    /// The `key=value` settings, as `-c` takes them.
+    configs: Vec<String>,
+    /// A value only known when it runs, or one the guard does not read,
+    /// that may set any key: `GIT_CONFIG_PARAMETERS`, a `GIT_CONFIG_COUNT`
+    /// or `GIT_CONFIG_KEY_<n>`, a `GIT_CONFIG_VALUE_<n>` of a key that is
+    /// not sure to be harmless, or the variable itself for a pair the line
+    /// does not set.
+    unread: Option<Arg>,
+}
+
+/// The most `GIT_CONFIG_KEY_<n>` pairs read; a count above it may set any
+/// key.
+const MOST_PAIRS: usize = 64;
+
+/// Read what the line sets of the variables git takes config from, for the
+/// git `unit` runs: `GIT_CONFIG_PARAMETERS` as git writes it for `-c`, and
+/// the `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` pairs below
+/// `GIT_CONFIG_COUNT`, or every pair the line sets when it sets no count,
+/// which may then be in the environment. A pair whose key the line does not
+/// give may be any key the environment holds.
+fn environment_config(unit: &Unit) -> Environment {
+    let variables = unit.argument_variables.as_slice();
+    let mut found = Environment {
+        configs: Vec::new(),
+        unread: None,
+    };
+    if variables.is_empty() {
+        return found;
+    }
+    let last = |name: &str| {
+        variables
+            .iter()
+            .rev()
+            .find(|(noted, _)| noted == name)
+            .map(|(_, value)| value)
+    };
+    let unread = |found: &mut Environment, arg: &Arg| {
+        if found.unread.is_none() {
+            found.unread = Some(arg.clone());
+        }
+    };
+    if let Some(value) = last(GIT_CONFIG_PARAMETERS) {
+        match value.known().and_then(parameters) {
+            Some(configs) => found.configs.extend(configs),
+            None => unread(&mut found, value),
+        }
+    }
+    let indices: Vec<usize> = if let Some(count) = last(GIT_CONFIG_COUNT) {
+        match count.known().and_then(pair_count) {
+            Some(count) if count <= MOST_PAIRS => (0..count).collect(),
+            _ => {
+                unread(&mut found, count);
+                Vec::new()
+            }
+        }
+    } else {
+        let mut indices: Vec<usize> = variables
+            .iter()
+            .filter_map(|(name, _)| {
+                name.strip_prefix("GIT_CONFIG_KEY_")
+                    .or_else(|| name.strip_prefix("GIT_CONFIG_VALUE_"))
+            })
+            .filter_map(|index| index.parse().ok())
+            .collect();
+        indices.sort_unstable();
+        indices.dedup();
+        if indices.len() > MOST_PAIRS {
+            let named = Arg::Unknown(GIT_CONFIG_COUNT.to_string());
+            unread(&mut found, &named);
+            indices.clear();
+        }
+        indices
+    };
+    for index in indices {
+        let key_name = format!("GIT_CONFIG_KEY_{index}");
+        let value_name = format!("GIT_CONFIG_VALUE_{index}");
+        let (key, value) = (last(&key_name), last(&value_name));
+        let Some(written) = key.and_then(Arg::known) else {
+            let named = Arg::Unknown(key_name);
+            unread(&mut found, key.or(value).unwrap_or(&named));
+            continue;
+        };
+        match value.and_then(Arg::known) {
+            Some(text) => found.configs.push(format!("{written}={text}")),
+            None if harmless_key(&written.trim().to_ascii_lowercase()) => {}
+            None => {
+                let named = Arg::Unknown(value_name);
+                unread(&mut found, value.unwrap_or(&named));
+            }
+        }
+    }
+    found
+}
+
+/// How many pairs `GIT_CONFIG_COUNT` says git reads: a number in decimal,
+/// and none for an empty value. `None` for one git refuses.
+fn pair_count(text: &str) -> Option<usize> {
+    if text.is_empty() {
+        return Some(0);
+    }
+    if !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// The settings `GIT_CONFIG_PARAMETERS` holds, as git writes them: each a
+/// single-quoted `'key=value'`, or `'key'='value'`, set apart by spaces, a
+/// quote inside written `'\''` (and `!` as `'\!'`). `None` for text git
+/// would not read so, which the guard does not read either.
+fn parameters(text: &str) -> Option<Vec<String>> {
+    let mut configs = Vec::new();
+    let mut rest = text;
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if rest.is_empty() {
+            return Some(configs);
+        }
+        let (key, after) = quoted(rest)?;
+        rest = after;
+        match rest.strip_prefix('=') {
+            Some(after) => {
+                let (value, after) = quoted(after)?;
+                configs.push(format!("{key}={value}"));
+                rest = after;
+            }
+            None => configs.push(key),
+        }
+        if !rest.is_empty() && !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
+            return None;
+        }
     }
 }
+
+/// One single-quoted word at the start of `text`, as git's `sq_dequote`
+/// reads it, and what follows it.
+fn quoted(text: &str) -> Option<(String, &str)> {
+    let mut rest = text.strip_prefix('\'')?;
+    let mut word = String::new();
+    loop {
+        let end = rest.find('\'')?;
+        word.push_str(&rest[..end]);
+        rest = &rest[end + 1..];
+        match rest.as_bytes() {
+            [b'\\', quote @ (b'\'' | b'!'), b'\'', ..] => {
+                word.push(char::from(*quote));
+                rest = &rest[3..];
+            }
+            _ => return Some((word, rest)),
+        }
+    }
+}
+
+/// Whether a setting whose value is only known when it runs is sure to set
+/// a key whose value git never runs, reads a file from or takes a command
+/// from (see [`harmless_key`]): the key is written out in full before the
+/// `=`, as in `-c "user.name=$NAME"` or `--config-env user.email=EMAIL`,
+/// and the word stays one word when it runs: one that splits (`-c
+/// user.name=$NAME`, cmd's `%NAME%`) may hand git more of its own options
+/// (`-c alias.st=!cmd`), or another subcommand.
+fn harmless_setting(setting: &Unread<'_>, shell: Shell) -> bool {
+    if may_split(setting.arg, shell) {
+        return false;
+    }
+    let start = match setting.arg.known() {
+        Some(text) => Some(text.to_string()),
+        None => unknown_start(setting.arg, shell),
+    };
+    start
+        .as_deref()
+        .and_then(|start| start.strip_prefix(setting.prefix))
+        .and_then(|start| start.split_once('='))
+        .is_some_and(|(key, _)| harmless_key(&key.to_ascii_lowercase()))
+}
+
+/// Whether `key`, in lower case, is one whose value git only records or
+/// shows ([`HARMLESS_KEYS`], [`HARMLESS_SECTIONS`]).
+fn harmless_key(key: &str) -> bool {
+    HARMLESS_KEYS.contains(&key)
+        || HARMLESS_SECTIONS.iter().any(|section| {
+            key.strip_prefix(section)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .is_some_and(|name| !name.is_empty())
+        })
+}
+
+/// git config keys whose value is a name or an address git only records:
+/// it never runs it, reads a file from it or takes a command from it.
+const HARMLESS_KEYS: [&str; 6] = [
+    "user.name",
+    "user.email",
+    "author.name",
+    "author.email",
+    "committer.name",
+    "committer.email",
+];
+
+/// git config sections every key of which is a colour or a hint shown or
+/// not.
+const HARMLESS_SECTIONS: [&str; 2] = ["color", "advice"];
 
 /// git config keys whose value git runs as a command.
 const EXEC_CONFIG_KEYS: [&str; 11] = [

@@ -388,7 +388,7 @@ pub(super) enum Output {
 }
 
 /// What the program `key` writes its own output to, by `args`: `strace -o`
-/// (`--output`), `ltrace -o` (`--output`), `time -o` (`--output`, with or
+/// (`--output`), `ltrace -o` (`--output`), `time -o` and `gtime -o` (`--output`, with or
 /// without `-a`), and `script`'s file (`typescript` when it names none) and
 /// the files of its `-B`, `-I`, `-O`, `-T` and `-t` (see [`script_outputs`]).
 pub(super) fn outputs(key: &str, args: &[Arg]) -> Vec<Output> {
@@ -403,7 +403,7 @@ pub(super) fn outputs(key: &str, args: &[Arg]) -> Vec<Output> {
         .into_iter()
         .map(Output::File)
         .collect(),
-        "time" => written(args, false, |text, next| {
+        "time" | "gtime" => written(args, false, |text, next| {
             named(getopt(text, next, &TIME_OPTIONS), &["output"])
         })
         .into_iter()

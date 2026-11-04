@@ -168,9 +168,90 @@ posix finds=delete,overwrite | zstd --rm --filelist list.txt
 posix finds=delete,overwrite | find ~ -name '*.log' | xargs gzip
 posix finds=delete | ls | xargs gzip
 
+# `pixz` deletes the file it compresses unless `-k` keeps it, and ignores
+# `-c`; it writes `x.tar` as `x.tpxz` and any other name with `.xz` added,
+# keeps the file when a second operand names the one it writes, and `-t`
+# only says the input is no tarball. `-l` lists and `-x` extracts to the
+# screen, and write nothing but the file `-o` names.
+posix finds=delete,overwrite | pixz ~/.bashrc
+posix finds=delete reason="deletes a shell startup file" | pixz -c ~/.bashrc
+posix finds=delete,overwrite | pixz -t ~/.bashrc
+posix finds=delete,overwrite | pixz -9 ~/x.tar
+posix finds=delete,overwrite | pixz -p 4 ~/notes.txt
+posix rules=overwrite | pixz -k ~/.bashrc
+posix first=overwrite lacks=delete reason="writes to a shell startup file" | pixz src/a.txt ~/.bashrc
+posix finds=overwrite reason="writes to a shell startup file" | pixz -d ~/.bashrc.xz
+posix finds=delete,overwrite | pixz -d ~/x.tpxz
+posix finds=overwrite reason="writes to a shell startup file" | pixz -d -i x.xz -o ~/.bashrc
+posix finds=overwrite reason="writes to a shell startup file" | pixz -o ~/.bashrc < x
+posix finds=overwrite reason="writes to a shell startup file" | pixz -l -o ~/.bashrc x.tpxz
+posix safe | pixz src/a.tar
+posix safe | pixz -t src/a.txt
+posix safe | pixz src/a.txt out.xz
+posix safe | pixz ~/notes.txt out.xz
+posix safe | pixz -d -i ~/x.xz -o out
+posix safe | pixz -l ~/x.tpxz
+posix safe | pixz -x dir/file < ~/x.tpxz
+posix safe | pixz < ~/x > out.xz
+
+# `bzip3` keeps the file unless `--rm` says not to, writes `x.bz3`, and
+# writes a second operand also with `-c`; `-r` recovers, which decompresses,
+# and `-B` makes every operand an input.
+posix rules=overwrite | bzip3 ~/.bashrc
+posix first=delete reason="deletes a shell startup file" | bzip3 --rm ~/.bashrc
+posix finds=delete,overwrite | bzip3 --rm ~/notes.txt
+posix finds=overwrite reason="writes to a shell startup file" | bzip3 -d ~/.bashrc.bz3
+posix finds=overwrite reason="writes to a shell startup file" | bzip3 -r ~/.bashrc.bz3
+posix finds=overwrite reason="writes to a shell startup file" | bzip3 --decode ~/.bashrc.bz3
+posix first=overwrite lacks=delete reason="writes to a shell startup file" | bzip3 src/a.txt ~/.bashrc
+posix first=overwrite lacks=delete reason="writes to a shell startup file" | bzip3 -c src/a.txt ~/.bashrc
+posix finds=overwrite reason="writes to a shell startup file" | bzip3 -d -c src/x.bz3 ~/.bashrc
+posix rules=overwrite | bzip3 -B src/a.txt ~/x
+posix rules=overwrite | bzip3 -j 4 -b 16 ~/notes.txt
+posix safe | bzip3 src/a.txt
+posix safe | bzip3 --rm src/a.txt
+posix safe | bzip3 src/a.txt out.bz3
+posix safe | bzip3 -B src/a.txt src/b.txt
+posix safe | bzip3 -c ~/.bashrc
+posix safe | bzip3 -t ~/x.bz3
+posix safe | bzip3 -d -c ~/.bashrc.bz3
+
+# `zopfli` keeps the file and writes `x.gz` (`.zlib` with `--zlib`,
+# `.deflate` with `--deflate`) beside it, or to the screen with `-c`; it
+# reads only whole options, so `-vc` is none it knows, and every word that
+# starts with `-` is an option to it, even after `--`.
+posix rules=overwrite | zopfli ~/.bashrc
+posix first=overwrite reason="writes to a file outside the workspace" | zopfli --zlib ~/x
+posix rules=overwrite | zopfli -vc ~/.bashrc
+posix rules=overwrite | zopfli --i50 ~/notes.txt
+posix safe | zopfli -c ~/.bashrc
+posix safe | zopfli src/a.txt
+posix safe | zopfli --deflate --i50 src/a.txt
+posix finds=overwrite | zopfli "--$f" ~/x
+posix safe | zopfli "--$f" src/a.txt
+posix safe | zopfli -- -c ~/x
+posix finds=overwrite | zopfli -- ~/x
+
 # In PowerShell and cmd, `gzip` is the same program; `compress` there is
 # Windows' own.
 powershell finds=delete,overwrite | gzip C:\\Users\\me\\notes.txt
 cmd finds=delete,overwrite | gzip C:\\Users\\me\\notes.txt
 cmd safe | gzip src\\a.txt
 cmd safe | compress -r src\\a.txt out
+
+# Windows' `compress` writes its last operand, a file or a folder, and keeps
+# the files it compresses; with `-r` and no destination it writes each file
+# beside itself, the last letter of its extension made `_`.
+cmd first=overwrite lacks=delete reason="writes to a system folder" | compress.exe -r src C:\\Windows\\x
+cmd finds=overwrite | compress src\\a.txt C:\\Windows\\a.tx_
+cmd finds=overwrite | compress -r -d -z src\\*.dll C:\\Windows
+cmd finds=overwrite | compress -r C:\\Windows\\x.dll
+cmd finds=overwrite | compress -r %USERPROFILE%\\x.txt
+cmd finds=overwrite | compress /r src\\a.txt C:\\Windows\\x
+cmd finds=overwrite reason="writes to a file only known when it runs" | compress -r src\\a.txt %OUT%
+powershell finds=overwrite | compress.exe -r src C:\\Windows\\x
+powershell finds=overwrite | compress -zx src\\a.txt $env:windir\\a.tx_
+cmd safe | compress src\\a.txt out.tx_
+cmd safe | compress -r src\\a.txt
+cmd safe | compress -r -zx src\\*.txt build
+powershell safe | compress.exe -r src build

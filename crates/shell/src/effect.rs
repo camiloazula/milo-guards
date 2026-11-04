@@ -349,7 +349,7 @@ fn plain_loop(name: &str) -> bool {
 /// start sessions) is a step the guard does not judge. `{`, `!` and zsh's
 /// `repeat` are the words that start a command of its own the grammar reads
 /// as a program (`! { ls; }`, `repeat 3 { ls; }`).
-const WRAPPERS: [&str; 22] = [
+const WRAPPERS: [&str; 23] = [
     "sudo",
     "doas",
     "gsudo",
@@ -358,6 +358,7 @@ const WRAPPERS: [&str; 22] = [
     "nice",
     "ionice",
     "time",
+    "gtime",
     "timeout",
     "gtimeout",
     "stdbuf",
@@ -508,8 +509,9 @@ pub(crate) fn wrapper(key: &str, own: &[Arg]) -> Kind {
             valued_longs: &["class", "classdata"],
             ..none
         },
-        // GNU and BSD `time` write their report to a file with `-o`.
-        "time" => Options {
+        // GNU and BSD `time` write their report to a file with `-o`, and
+        // so does GNU's as Homebrew names it.
+        "time" | "gtime" => Options {
             flags: "pvla",
             valued: "f",
             writes: "o",
