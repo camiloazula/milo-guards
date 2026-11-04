@@ -1,17 +1,17 @@
 //! The tools that run their arguments as a command: tracers and runners
 //! (`strace`, `ltrace`, `script`, `ssh-agent`, `chronic`), `launchctl
-//! asuser`, `bsexec` and `submit`, `wsl`, `lima`, `nix run`, `nsenter`, and
-//! the runners that load secrets into the command's environment first
-//! (`aws-vault exec`, `doppler run`, `op run`, `infisical run`, `direnv
-//! exec`, `dotenv`). And the files the tracers, `script` and `time` write
-//! their own output to.
+//! asuser`, `bsexec` and `submit`, `wsl`, `lima` and `limactl shell`,
+//! `nsenter`, and the runners that load secrets into the command's
+//! environment first (`aws-vault exec`, `doppler run`, `op run`, `infisical
+//! run`, `direnv exec`, `dotenv`). And the files the tracers, `script` and
+//! `time` write their own output to.
 
 use std::collections::HashSet;
 
-use super::wrappers::{getopt, running, Getopt};
+use super::wrappers::{folder_option, getopt, running, Getopt};
 use super::{
-    after_getopt, after_options, after_options_by, getopt_value, getopt_word, join, runs,
-    shell_words, subcommand, Launch, Word,
+    after_assignments, after_getopt, after_options, after_options_by, getopt_value, getopt_word,
+    join, runs, shell_word, shell_words, subcommand, Launch, Word,
 };
 use crate::unit::{Arg, Unit};
 use crate::Shell;
@@ -706,111 +706,228 @@ fn windows_line(words: &[Arg]) -> Arg {
     }
 }
 
-/// `lima` runs its words in the default Lima virtual machine.
-pub(super) fn lima(args: &[Arg]) -> Launch {
-    runs(args, Some(0))
+/// Why a wrapper's command is not read when the wrapper is given an option
+/// the guard does not know: the option may take the word after it, so where
+/// the command starts, or what it is, is not known.
+pub(super) const UNKNOWN_OPTION: &str = "runs a command after an option that cannot be read";
+
+/// The index of the first word of `args`, from `at`, that is not one of a
+/// wrapper's options, `read` giving how many words each option takes, itself
+/// among them; a `--` ends the options. `Err` with the index of an option
+/// `read` does not know (`None`).
+pub(super) fn after_known(
+    args: &[Arg],
+    mut at: usize,
+    read: impl Fn(&str) -> Option<usize>,
+) -> Result<usize, usize> {
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("--") => return Ok(at + 1),
+            Some(text) if text.len() > 1 && text.starts_with('-') => match read(text) {
+                Some(taken) => at += taken,
+                None => return Err(at),
+            },
+            _ => return Ok(at),
+        }
+    }
+    Ok(at)
 }
 
-/// The options of `nix` that take one value.
-const NIX_VALUES: &[&str] = &[
-    "-f",
-    "--file",
-    "--expr",
-    "-I",
-    "--include",
-    "-j",
-    "--max-jobs",
-    "--cores",
-    "--store",
-    "--eval-store",
-    "--log-format",
-    "--builders",
-    "--substituters",
-    "--extra-substituters",
-    "--experimental-features",
-    "--extra-experimental-features",
-    "--inputs-from",
-    "--reference-lock-file",
-    "--output-lock-file",
-    "--update-input",
-    "--profile",
-    "--priority",
-    "-k",
-    "--keep",
-    "-u",
-    "--unset",
-    "--arg-from-stdin",
-];
+/// Why a wrapper's command is not read when a word only known when it runs
+/// stands where its options or its subcommand do: the word may be the
+/// option, or the subcommand, that runs a command.
+pub(super) const UNKNOWN_WORD: &str = "runs a command after a word only known when it runs";
 
-/// The options of `nix` that take two values.
-const NIX_PAIRS: &[&str] = &[
-    "--option",
-    "--arg",
-    "--argstr",
-    "--arg-from-file",
-    "--override-input",
-    "--override-flake",
-];
+/// Whether one of `words` is among `args` from `at`.
+pub(super) fn follows(args: &[Arg], at: usize, words: &[&str]) -> bool {
+    args.get(at..)
+        .unwrap_or_default()
+        .iter()
+        .any(|arg| arg.known().is_some_and(|text| words.contains(&text)))
+}
 
-/// `nix run INSTALLABLE [-- ARGS]` runs the package's program with the
-/// arguments: the program is named by the attribute after `#`
-/// (`nixpkgs#hello` runs `hello`), and a flake's own app (`nix run .`, or
-/// `nix run -- ARGS` with none named) is the user's. The package sets which of its programs runs, which need not
-/// be its name, and may be one that runs its arguments; so the words after
-/// `--` are also read as a command, and the riskier reading counts.
-pub(super) fn nix(unit: &Unit) -> Launch {
-    let args = &unit.args;
-    let mut at = 0;
-    let mut sub = None;
-    // The options stand before and after `run`; the installable is the first
-    // other word after it.
-    let installable = loop {
-        let Some(arg) = args.get(at) else {
-            return Launch::Itself;
-        };
-        match arg.known() {
-            Some(text) if NIX_PAIRS.contains(&text) => at += 3,
-            Some(text) if NIX_VALUES.contains(&text) => at += 2,
-            // `nix run -- ARGS` runs the flake of the folder it is in, its
-            // default app, with the words after `--`.
-            Some("--") if sub.is_some() => return runs(args, Some(at + 1)),
-            Some("--") => return Launch::Itself,
-            Some(text) if text.starts_with('-') => at += 1,
-            _ if sub.is_none() => {
-                if arg.known() != Some("run") {
-                    return Launch::Itself;
-                }
-                sub = Some(at);
-                at += 1;
-            }
-            _ => break at,
-        }
-    };
-    let dash = args.get(installable + 1).and_then(Arg::known) == Some("--");
-    let rest = installable + 1 + usize::from(dash);
-    let package = match args[installable].known().and_then(attribute) {
-        Some(name) => {
-            let mut run = running(unit, "nix", installable);
-            run.program = Arg::Known(name.to_string());
-            run.args = args[rest.min(args.len())..].to_vec();
-            Launch::Replace(Box::new(run))
-        }
-        None => Launch::Itself,
-    };
-    match runs(args, Some(rest)) {
-        command @ Launch::Runs(_) if dash => Launch::Either(Box::new(package), Box::new(command)),
-        _ => package,
+/// What a program does when it is given an option the guard does not know
+/// before its subcommand, which the option may take as its value: when one
+/// of the `subcommands` that run a command follows, from `at`, that command
+/// is not read; otherwise the program is judged itself.
+pub(super) fn unknown_before(args: &[Arg], at: usize, subcommands: &[&str]) -> Launch {
+    if follows(args, at, subcommands) {
+        Launch::Opaque(UNKNOWN_OPTION)
+    } else {
+        Launch::Itself
     }
 }
 
-/// The program an installable names: the last part of its attribute path
-/// (`nixpkgs#python3Packages.black` is `black`), without the outputs
-/// (`^bin`). `None` without one.
-fn attribute(installable: &str) -> Option<&str> {
-    let (_, path) = installable.split_once('#')?;
-    let path = path.split('^').next().unwrap_or(path);
-    let name = path.rsplit('.').next().unwrap_or(path);
-    (!name.is_empty()).then_some(name)
+/// What a program does when a word only known when it runs stands where its
+/// subcommand does: when one of `words`, which follow the subcommand that
+/// runs a command, follows from `at`, the word may be that subcommand, and
+/// the command is not read; otherwise the program is judged itself.
+pub(super) fn unknown_subcommand(args: &[Arg], at: usize, words: &[&str]) -> Launch {
+    if follows(args, at, words) {
+        Launch::Opaque(UNKNOWN_WORD)
+    } else {
+        Launch::Itself
+    }
+}
+
+/// How many words the option `text` takes, itself among them, as a Go
+/// program built on cobra reads it: `--name=value` and `-xVALUE` one, a
+/// long option of `long_values` or a short one of `short_values` two at the
+/// end of its word, one of `long_flags` or `short_flags` one (short flags in
+/// a bundle). `None` for one the guard does not know.
+pub(super) fn cobra_option(
+    text: &str,
+    short_values: &str,
+    short_flags: &str,
+    long_values: &[&str],
+    long_flags: &[&str],
+) -> Option<usize> {
+    if let Some(long) = text.strip_prefix("--") {
+        let (name, value) = long
+            .split_once('=')
+            .map_or((long, None), |(name, value)| (name, Some(value)));
+        let valued = long_values.contains(&name);
+        return if !valued && !long_flags.contains(&name) {
+            None
+        } else if valued && value.is_none() {
+            Some(2)
+        } else {
+            Some(1)
+        };
+    }
+    let bundle = text.strip_prefix('-')?;
+    for (at, letter) in bundle.char_indices() {
+        if short_values.contains(letter) {
+            return Some(if at + letter.len_utf8() == bundle.len() {
+                2
+            } else {
+                1
+            });
+        }
+        if !short_flags.contains(letter) {
+            return None;
+        }
+    }
+    Some(1)
+}
+
+/// `lima` runs its words in the default Lima virtual machine: it is a
+/// script that hands them all to `limactl shell --instance default`, so
+/// `limactl shell`'s options may stand first, a `--` ends them, and the
+/// words after them are the command.
+pub(super) fn lima(args: &[Arg]) -> Launch {
+    let Ok(start) = after_known(args, 0, limactl_option) else {
+        return Launch::Opaque(UNKNOWN_OPTION);
+    };
+    guest_command(args, &args[..start], start)
+}
+
+/// The long options of `limactl` and `limactl shell` that take a value.
+const LIMACTL_VALUES: &[&str] = &["log-level", "log-format", "shell", "workdir"];
+
+/// The long options of `limactl` and `limactl shell` that take none.
+const LIMACTL_FLAGS: &[&str] = &[
+    "debug",
+    "tty",
+    "help",
+    "version",
+    "reconnect",
+    "preserve-env",
+    "start",
+];
+
+/// How many words an option of `limactl` takes (see [`cobra_option`]).
+fn limactl_option(text: &str) -> Option<usize> {
+    cobra_option(text, "", "hv", LIMACTL_VALUES, LIMACTL_FLAGS)
+}
+
+/// `limactl shell [OPTIONS] INSTANCE [--] [CMD…]` runs the command in the
+/// Lima virtual machine `INSTANCE`; without one it starts the shell. The
+/// options end at the instance, and one `--` right after it is taken off:
+/// the words after them are the command's.
+pub(super) fn limactl(args: &[Arg]) -> Launch {
+    let sub = match after_known(args, 0, limactl_option) {
+        Ok(sub) => sub,
+        Err(at) => return unknown_before(args, at + 1, &["shell"]),
+    };
+    match args.get(sub) {
+        Some(arg) if arg.known() == Some("shell") => {}
+        Some(arg) if arg.known().is_none() => return unknown_subcommand(args, sub + 1, &["shell"]),
+        _ => return Launch::Itself,
+    }
+    let Ok(instance) = after_known(args, sub + 1, limactl_option) else {
+        return Launch::Opaque(UNKNOWN_OPTION);
+    };
+    let mut start = instance + 1;
+    if args.get(start).and_then(Arg::known) == Some("--") {
+        start += 1;
+    }
+    guest_command(args, args.get(sub + 1..instance).unwrap_or_default(), start)
+}
+
+/// The command `limactl shell` runs from `start`, with its options `own`.
+/// Lima quotes each word and hands the line to the machine's shell, but
+/// leaves the leading words with a `=` as assignments, their names
+/// unquoted: a `NAME=value` sets a variable for the command, and a word
+/// whose name is not one is shell text, so the line is read as the shell
+/// reads it. `--workdir DIR` starts the command in `DIR`, a path of the
+/// machine; without it Lima runs `cd` to the folder the line is in, and to
+/// the home directory when that folder is not shared with the machine, so
+/// the command is read from both.
+fn guest_command(args: &[Arg], own: &[Arg], start: usize) -> Launch {
+    let program = after_assignments(args, start);
+    let launch = match args.get(program).and_then(Arg::known) {
+        Some(text) if text.contains('=') => {
+            Launch::Script(Shell::Posix, guest_line(&args[start..]))
+        }
+        _ => runs(args, Some(program)),
+    };
+    if !matches!(launch, Launch::Runs(_) | Launch::Script(..)) {
+        return launch;
+    }
+    let folder = folder_option(own, &["--workdir"], false, |text, _| {
+        if limactl_option(text) == Some(2) {
+            Word::Value
+        } else {
+            Word::Flag
+        }
+    });
+    match folder {
+        Some(folder) => Launch::In(folder, Some(Shell::Posix), Box::new(launch)),
+        None => Launch::Either(
+            Box::new(launch.clone()),
+            Box::new(Launch::In(
+                Arg::Known("~".to_string()),
+                Some(Shell::Posix),
+                Box::new(launch),
+            )),
+        ),
+    }
+}
+
+/// The line Lima builds from the words of a command: each leading word with
+/// a `=` its name as it is and its value quoted, every other word quoted.
+fn guest_line(words: &[Arg]) -> Arg {
+    let mut assigning = true;
+    let line = words
+        .iter()
+        .map(|arg| {
+            let text = arg.text();
+            match text.split_once('=') {
+                Some((name, value)) if assigning => format!("{name}={}", shell_word(value)),
+                _ => {
+                    assigning = false;
+                    shell_word(text)
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if words.iter().all(|arg| arg.known().is_some()) {
+        Arg::Known(line)
+    } else {
+        Arg::Unknown(line)
+    }
 }
 
 /// The options of `aws-vault` and its `exec` that take a value.
@@ -847,7 +964,8 @@ pub(super) fn aws_vault(args: &[Arg]) -> Launch {
     runs(args, Some(start))
 }
 
-/// The options of `doppler` and `doppler run` that take a value.
+/// The options of `doppler` and `doppler run` that take a value: short,
+/// then long.
 const DOPPLER_SHORT: &str = "pc";
 const DOPPLER_LONG: &[&str] = &[
     "project",
@@ -866,7 +984,39 @@ const DOPPLER_LONG: &[&str] = &[
     "mount-max-reads",
     "only-secrets",
     "command",
+    "timeout",
+    "attempts",
+    "dns-resolver-address",
+    "dns-resolver-proto",
 ];
+
+/// The options of `doppler` and `doppler run` that take none.
+const DOPPLER_FLAGS: &[&str] = &[
+    "debug",
+    "json",
+    "silent",
+    "print-config",
+    "no-check-version",
+    "no-verify-tls",
+    "no-timeout",
+    "no-read-env",
+    "fallback-readonly",
+    "fallback-only",
+    "no-fallback",
+    "no-cache",
+    "forward-signals",
+    "preserve-env",
+    "watch",
+    "no-exit-on-write-failure",
+    "enable-dns-resolver",
+    "help",
+    "version",
+];
+
+/// How many words an option of `doppler` takes (see [`cobra_option`]).
+fn doppler_option(text: &str) -> Option<usize> {
+    cobra_option(text, DOPPLER_SHORT, "h", DOPPLER_LONG, DOPPLER_FLAGS)
+}
 
 /// The options of `infisical` and `infisical run` that take a value.
 const INFISICAL_SHORT: &str = "t";
@@ -894,13 +1044,40 @@ const OP_LONG: &[&str] = &[
 ];
 
 /// `doppler run`, `infisical run` and `op run` run the command after their
-/// options (or after `--`) with secrets in its environment. `doppler run
-/// --command` and `infisical run --command` run a shell line instead: in the
-/// system shell, `cmd` on Windows.
+/// options (or after `--`) with secrets in its environment, from any shell.
+/// `doppler run --command` and `infisical run --command` run a shell line
+/// instead: in the system shell, `cmd` on Windows. `doppler`'s options are
+/// all known to the guard, and one it does not know leaves its command
+/// unread.
 pub(super) fn secrets_run(key: &str, unit: &Unit) -> Launch {
     let args = &unit.args;
+    let system = if unit.shell == Shell::Posix {
+        Shell::Posix
+    } else {
+        Shell::Cmd
+    };
+    if key == "doppler" {
+        let sub = match after_known(args, 0, doppler_option) {
+            Ok(sub) => sub,
+            Err(at) => return unknown_before(args, at + 1, &["run"]),
+        };
+        match args.get(sub) {
+            Some(arg) if arg.known() == Some("run") => {}
+            Some(arg) if arg.known().is_none() => {
+                return unknown_subcommand(args, sub + 1, &["run", "--"])
+            }
+            _ => return Launch::Itself,
+        }
+        let Ok(start) = after_known(args, sub + 1, doppler_option) else {
+            return Launch::Opaque(UNKNOWN_OPTION);
+        };
+        let own = &args[sub + 1..];
+        if let Some(line) = getopt_value(own, None, "command", DOPPLER_SHORT, DOPPLER_LONG) {
+            return Launch::Script(system, line);
+        }
+        return runs(args, Some(start));
+    }
     let (short, long, command) = match key {
-        "doppler" => (DOPPLER_SHORT, DOPPLER_LONG, true),
         "infisical" => (INFISICAL_SHORT, INFISICAL_LONG, true),
         _ => ("", OP_LONG, false),
     };
@@ -910,12 +1087,7 @@ pub(super) fn secrets_run(key: &str, unit: &Unit) -> Launch {
     let own = &args[from..];
     if command {
         if let Some(line) = getopt_value(own, None, "command", short, long) {
-            let shell = if unit.shell == Shell::Posix {
-                Shell::Posix
-            } else {
-                Shell::Cmd
-            };
-            return Launch::Script(shell, line);
+            return Launch::Script(system, line);
         }
     }
     runs(args, after_getopt(own, short, long).map(|at| from + at))
