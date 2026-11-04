@@ -253,11 +253,17 @@ fn add_launched(
     let mut given = given;
     for used in 0..wrappers {
         // `alias g=git; g clean -fdx` runs `git clean -fdx`.
-        if given.is_none() && !unit.aliased {
-            if let Some(readings) = alias_readings(split, &unit) {
-                add_aliased(split, unit, readings, depth, wrappers - used);
-                return;
-            }
+        if given.is_none()
+            && !unit.aliased
+            && unit.shell == Shell::Posix
+            && !unit.args.is_empty()
+            && unit
+                .program
+                .known()
+                .is_some_and(|name| split.is_alias(name))
+            && add_aliased(split, &mut unit, depth, wrappers - used)
+        {
+            return;
         }
         // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
         if unit.args.iter().any(dotglob::assigns_hiding) {
@@ -569,41 +575,7 @@ fn add_launched(
                             split.move_unknown("the folder it runs in");
                         }
                         if key == "alias" {
-                            // Each `NAME=VALUE` is a body of its own.
-                            let definitions: Vec<(String, String)> = split
-                                .units
-                                .get(shell_at)
-                                .map(|alias| {
-                                    aliases(&alias.args)
-                                        .into_iter()
-                                        .map(|(name, value)| (name.to_string(), value.to_string()))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            // A use of the name runs the value in this shell,
-                            // where the line is then, as a call runs a
-                            // function's body: it is read as one (see
-                            // `Split::end_body`), and its `cd` moves the line.
-                            for (name, value) in definitions {
-                                // One the line surely runs, in this shell,
-                                // takes the place of those before it.
-                                let replaces =
-                                    split.branches == 0 && split.repeats == 0 && split.apart == 0;
-                                let first = split.units.len();
-                                split.branches += 1;
-                                split.bodies += 1;
-                                split.repeats += 1;
-                                split.begin_body();
-                                split.last_read = 0..0;
-                                unit::script_in(split, &value, shell, depth + 1, true);
-                                let command = std::mem::take(&mut split.last_read);
-                                split.alias_command(&name, command, replaces);
-                                split.end_body(Some(&name));
-                                split.repeats -= 1;
-                                split.bodies -= 1;
-                                split.branches -= 1;
-                                split.alias_body(&name, first..split.units.len());
-                            }
+                            define_aliases(split, shell_at, shell, depth);
                         } else {
                             unit::script_in(split, &text, shell, depth + 1, here);
                         }
@@ -728,6 +700,45 @@ fn add_launched(
     split.push(unit);
 }
 
+/// Read each `NAME=VALUE` of the `alias` at `shell_at` as a body of its
+/// own. A use of the name runs the value in this shell, where the line is
+/// then, as a call runs a function's body: it is read as one (see
+/// [`Split::end_body`]), and its `cd` moves the line. A function of its own,
+/// so that what it holds is not on the stack of [`add_launched`] in the
+/// deepest walk of a nested line.
+#[inline(never)]
+fn define_aliases(split: &mut Split, shell_at: usize, shell: Shell, depth: usize) {
+    let definitions: Vec<(String, String)> = split
+        .units
+        .get(shell_at)
+        .map(|alias| {
+            aliases(&alias.args)
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (name, value) in definitions {
+        // One the line surely runs, in this shell, takes the place of those
+        // before it.
+        let replaces = split.branches == 0 && split.repeats == 0 && split.apart == 0;
+        let first = split.units.len();
+        split.branches += 1;
+        split.bodies += 1;
+        split.repeats += 1;
+        split.begin_body();
+        split.last_read = 0..0;
+        unit::script_in(split, &value, shell, depth + 1, true);
+        let command = std::mem::take(&mut split.last_read);
+        split.alias_command(&name, command, replaces);
+        split.end_body(Some(&name));
+        split.repeats -= 1;
+        split.bodies -= 1;
+        split.branches -= 1;
+        split.alias_body(&name, first..split.units.len());
+    }
+}
+
 /// The words in front of a command after which zsh and bash still expand
 /// an alias in its place: `time` (and `!`, which is no wrapper), and zsh's
 /// `nocorrect`. Behind any other (`sudo x`, `env x`, `command x`,
@@ -813,35 +824,46 @@ fn alias_readings(split: &mut Split, unit: &Unit) -> Option<Vec<Unit>> {
                 readings.push(current);
                 return Some(readings);
             }
-            let reading = Unit {
-                program: last.program.clone(),
-                args: last.args.iter().chain(&current.args).cloned().collect(),
-                wrappers: current
-                    .wrappers
-                    .iter()
-                    .chain(&last.wrappers)
-                    .cloned()
-                    .collect(),
-                ..current.clone()
-            };
-            todo.push((reading, seen.clone()));
+            todo.push((joined(&current, last), seen.clone()));
         }
     }
     Some(readings)
 }
 
-/// Add `unit`, a use of an alias with words of its own, and the `readings`
-/// of what it runs (see [`alias_readings`]): the use itself, by its name, is
-/// a call of the alias's value, placed where it is made; each reading is
-/// judged as a command written there, with at most `wrappers` more to come
-/// off. Each of two or more may be the one that runs, so each is read as a
-/// branch.
+/// `last`, the last command of an alias's value, with the words of `used`, a
+/// use of the alias, after its own, run where the use is.
 #[inline(never)]
-fn add_aliased(split: &mut Split, unit: Unit, readings: Vec<Unit>, depth: usize, wrappers: usize) {
+fn joined(used: &Unit, last: &Unit) -> Unit {
+    let mut unit = used.clone();
+    unit.program = last.program.clone();
+    unit.args = last.args.iter().chain(&used.args).cloned().collect();
+    unit.wrappers.extend(last.wrappers.iter().cloned());
+    unit
+}
+
+/// When `unit` is a use of an alias with words of its own, add it and the
+/// readings of what it runs (see [`alias_readings`]): the use itself, by its
+/// name, is a call of the alias's value, placed where it is made; each
+/// reading is judged as a command written there, with at most `wrappers`
+/// more to come off. One reading takes the place of `unit`, which
+/// [`add_launched`] goes on with (`false`); each of two or more may be the
+/// one that runs, so each is read as a branch, and all are added (`true`).
+/// A function of its own, so that what it holds is not on the stack of
+/// [`add_launched`] in the deepest walk of a nested line.
+#[inline(never)]
+fn add_aliased(split: &mut Split, unit: &mut Unit, depth: usize, wrappers: usize) -> bool {
+    let Some(mut readings) = alias_readings(split, unit) else {
+        return false;
+    };
+    split.push(unit.clone());
+    if readings.len() < 2 {
+        if let Some(only) = readings.pop() {
+            *unit = only;
+        }
+        return false;
+    }
     let program = unit.program.text().to_string();
-    split.push(unit);
-    let several = readings.len() > 1;
-    split.branches += usize::from(several);
+    split.branches += 1;
     for (index, reading) in readings.into_iter().enumerate() {
         if index > 0 && !split.fork(MAX_FORKS) {
             split.problem(
@@ -853,7 +875,8 @@ fn add_aliased(split: &mut Split, unit: Unit, readings: Vec<Unit>, depth: usize,
         }
         add_launched(split, reading, depth, wrappers, None);
     }
-    split.branches -= usize::from(several);
+    split.branches -= 1;
+    true
 }
 
 /// A script only known when it runs: a download when it is a process
