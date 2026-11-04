@@ -67,8 +67,8 @@ impl Say<'_> {
 impl Checker<'_> {
     /// Containers, clusters, infrastructure stacks and cloud resources.
     pub(super) fn resources(&mut self, unit: &Unit, key: &str) {
-        if unit.shell == Shell::PowerShell {
-            if let Some((flagged, reason)) = cloud_cmdlet(key, &unit.args) {
+        if unit.shell == Shell::PowerShell && !has_extension(unit) {
+            if let Some((flagged, reason)) = cloud_cmdlet(key, &unit.args, self.split.defaults) {
                 match flagged {
                     Flagged::Written => self.add(Rule::DestroyResources, reason, None),
                     Flagged::Unread => self.add(Rule::DestroyResources, hedged(reason), None),
@@ -492,16 +492,34 @@ impl Checker<'_> {
 ///   `Disable-AzStorageDeleteRetentionPolicy`). Other `Disable-` cmdlets
 ///   (`Disable-KMSKeyRotation`) are left to the rules that read them.
 /// - For AWS, the cmdlets its terminate verbs are named: `Stop-EC2Instance`
-///   with `-Terminate` (see [`terminates`]), `Stop-EBEnvironment`,
-///   `Stop-EMRJobFlow` and `Stop-ASInstanceInAutoScalingGroup`, and
-///   `Request-KMSKeyDeletion`, which schedules a key's deletion.
+///   with `-Terminate` (see [`terminates`]), or on a line that sets
+///   `$PSDefaultParameterValues` (`defaults`, see [`Split::defaults`]),
+///   which may give it the switch; `Stop-EBEnvironment`, `Stop-EMRJobFlow`
+///   and `Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion`,
+///   which schedules a key's deletion.
+/// - Exchange's mobile devices ([`EXCHANGE_DEVICES`]), in Exchange and
+///   Microsoft 365: `Clear-` wipes the phone (`Clear-ActiveSyncDevice`,
+///   `Clear-MobileDevice`), and `Remove-` takes the device, or a rule for
+///   devices, off the organization.
 ///
 /// The guard cannot tell a scratch resource from one that matters, so each
 /// destroys whatever its other parameters (`-WhatIf` among them: a quoted
-/// `'-WhatIf'` is a value, and the guard reads both as the same word).
-fn cloud_cmdlet(key: &str, args: &[Arg]) -> Option<(Flagged, &'static str)> {
+/// `'-WhatIf'` is a value, and the guard reads both as the same word). A
+/// program whose name has an extension is no cmdlet (see [`has_extension`]).
+fn cloud_cmdlet(key: &str, args: &[Arg], defaults: bool) -> Option<(Flagged, &'static str)> {
     use Cloud::{Aws, Azure, Entra, Google};
     let (verb, noun) = key.split_once('-')?;
+    if EXCHANGE_DEVICES
+        .iter()
+        .any(|device| noun.starts_with(device))
+    {
+        let reason = match verb {
+            "clear" => "wipes a mobile device through Exchange or Microsoft 365",
+            "remove" => "removes a mobile device or its rules from Exchange or Microsoft 365",
+            _ => return None,
+        };
+        return Some((Flagged::Written, reason));
+    }
     let (cloud, rest) = cloud_of(noun)?;
     let reason = match (verb, cloud) {
         ("remove", Azure) => "deletes Azure resources",
@@ -524,7 +542,13 @@ fn cloud_cmdlet(key: &str, args: &[Arg]) -> Option<(Flagged, &'static str)> {
         ("disable", Aws) => "disables a key or a backup in AWS",
         ("disable", Entra) => "disables a key in Microsoft Entra or Microsoft 365",
         ("stop", Aws) if noun == "ec2instance" => {
-            return Some((terminates(args), "terminates EC2 instances"));
+            return Some(match terminates(args) {
+                (Flagged::Absent, false) if defaults => (
+                    Flagged::Written,
+                    "may terminate EC2 instances with a default parameter value the line sets",
+                ),
+                (flagged, _) => (flagged, "terminates EC2 instances"),
+            });
         }
         ("stop", Aws) if AWS_TERMINATES.contains(&noun) => "terminates AWS resources",
         ("request", Aws) if noun == "kmskeydeletion" => "schedules a KMS key's deletion",
@@ -605,14 +629,18 @@ fn keeps(rest: &str) -> bool {
 
 /// Whether `Stop-EC2Instance` terminates: its `-Terminate` switch, by any
 /// prefix of its name in any case (`-Term`; none of the cmdlet's other
-/// parameters starts with a `t`), is written, or may be. A value bound with
-/// a colon says which: `$false` or `0` is off, `$true` or `1` on, and one
-/// only known when it runs may be either. A splat (`@p`) may hold the switch.
-/// A variable given as an argument (`-InstanceId $id`) cannot: PowerShell
-/// binds a cmdlet's parameters by what the line writes, so its value is a
-/// value whatever it holds.
-fn terminates(args: &[Arg]) -> Flagged {
+/// parameters starts with a `t`), is written, or may be; and whether the
+/// switch is named at all, which a default parameter value for it then does
+/// not change. A value bound with a colon says which: `$false` or `0` is
+/// off, `$true` or `1` on, and one only known when it runs may be either. A
+/// splat (`@p`) may hold the switch. A variable given as an argument
+/// (`-InstanceId $id`) cannot: its value is a value whatever it holds. Of
+/// what the line does not write for the cmdlet, PowerShell binds a default
+/// parameter value, which the caller reads (see [`cloud_cmdlet`]), and the
+/// properties of the objects piped to it, which the guard does not read.
+fn terminates(args: &[Arg]) -> (Flagged, bool) {
     let mut unread = super::files::splatted(args);
+    let mut named = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else { continue };
@@ -631,18 +659,41 @@ fn terminates(args: &[Arg]) -> Flagged {
         if !"terminate".starts_with(name.as_str()) {
             continue;
         }
+        named = true;
         let Some(value) = value else {
-            return Flagged::Written;
+            return (Flagged::Written, true);
         };
         let value = value.text().to_ascii_lowercase();
         match value.as_str() {
-            "$true" | "1" => return Flagged::Written,
+            "$true" | "1" => return (Flagged::Written, true),
             "$false" | "0" => {}
             _ => unread = true,
         }
     }
-    Flagged::of(false, unread)
+    (Flagged::of(false, unread), named)
 }
+
+/// Whether the unit's program, after its folder or module qualifier, has a
+/// `.` in it (`clear-cache.cmd`, `Remove-Old.ps1`): a program or script found
+/// on the path, never a module's cmdlet, whose noun has none. Its key has
+/// the extension taken off, so the name as written is read.
+fn has_extension(unit: &Unit) -> bool {
+    unit.program.known().is_some_and(|program| {
+        program
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(program)
+            .trim_end_matches(['.', ' '])
+            .contains('.')
+    })
+}
+
+/// The nouns of Exchange's cmdlets for mobile devices (Exchange Server and
+/// Exchange Online, in Microsoft 365): `ActiveSyncDevice` and its newer
+/// name `MobileDevice`, with the nouns that start with them
+/// (`ActiveSyncDeviceAccessRule`, `ActiveSyncDeviceClass`). The first starts
+/// like the AWS prefix `act`, and is read here before it.
+const EXCHANGE_DEVICES: &[&str] = &["activesyncdevice", "mobiledevice"];
 
 /// The nouns of the AWS `Stop-` cmdlets that terminate what they name (AWS's
 /// terminate verbs): an Elastic Beanstalk environment, an EMR cluster, and
@@ -1131,8 +1182,7 @@ const AWS_PREFIXES: &[&str] = &[
 /// customization specs and ESX depots, Reporting Services' catalog, a file's
 /// content (`Clear-Content`), scheduled tasks and jobs
 /// (`Unregister-ScheduledTask`), a smart card's device log
-/// (`Clear-PcsvDeviceLog`) and Exchange's wipe of a phone
-/// (`Clear-ActiveSyncDevice`), none of them AWS's.
+/// (`Clear-PcsvDeviceLog`), none of them AWS's.
 const NOT_CLOUD_NOUNS: &[&str] = &[
     "smb",
     "dscconfiguration",
@@ -1165,7 +1215,6 @@ const NOT_CLOUD_NOUNS: &[&str] = &[
     "content",
     "scheduled",
     "pcsvdevice",
-    "activesyncdevice",
 ];
 
 /// Whether the unit is PowerShell's `sls`, written bare (any case, no

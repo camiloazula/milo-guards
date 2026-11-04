@@ -5439,14 +5439,30 @@ The AWS cmdlets its terminate verbs are named are: `Stop-EC2Instance` with
 the finding then says it may), `Stop-EBEnvironment`, `Stop-EMRJobFlow` and
 `Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion` schedules a
 key's deletion. `Stop-EC2Instance` without `-Terminate` stops instances and
-stays safe, also with a variable as an argument (`-InstanceId $id`), since
-PowerShell binds a cmdlet's parameters by what the line writes; so do
-`Stop-AzVM` and `Get-EC2Image`. The cmdlets that only change the module's
+stays safe, also with a variable as an argument (`-InstanceId $id`), whose
+value is a value whatever it holds; so do `Stop-AzVM` and `Get-EC2Image`.
+PowerShell also binds a parameter the line does not write from
+`$PSDefaultParameterValues`: on a line that sets it (an entry, the whole
+table, `.Add`, or `Set-Variable` by the variable's name), any key may reach
+`Stop-EC2Instance:Terminate` (`'*:Terminate'`, `'Stop-EC2Instance:T*'`), so a
+`Stop-EC2Instance` that does not name the switch may terminate, and the
+finding says so. A default set before the line (in a profile) is not the
+line's. Nor does the guard read the properties of objects piped to the
+cmdlet, which the AWS Tools bind by property name: the current AWS Tools
+(v4 and v5) have no `-Terminate` on `Stop-EC2Instance` at all, and reading
+every piped one as a terminate would flag `Get-EC2Instance |
+Stop-EC2Instance`. Exchange's cmdlets for mobile devices (`ActiveSyncDevice`,
+which starts like the AWS prefix `act`, and its newer name `MobileDevice`)
+destroy off the machine too: `Clear-ActiveSyncDevice` and
+`Clear-MobileDevice` wipe the phone, and a `Remove-` one takes a device or a
+rule for devices off the organization; listing them stays safe. A program
+whose name has an extension (`clear-cache.cmd`) is found on the path, and is
+no module's cmdlet. The cmdlets that only change the module's
 settings on this machine stay safe (`Clear-AzContext`, `Clear-AzDefault`,
 `Clear-AzConfig`, `Disable-AzContextAutosave`, and AWS's own `AWS` noun:
 `Clear-AWSCredential`, `Clear-AWSHistory`), and so do other modules' cmdlets
 of these verbs whose noun starts like a prefix (`Clear-Content`, which is
-judged as a write, `Clear-PcsvDeviceLog`, `Clear-ActiveSyncDevice`,
+judged as a write, `Clear-PcsvDeviceLog`,
 `Reset-ComputerMachinePassword`, `Reset-ADServiceAccountPassword`,
 `Unregister-ScheduledTask`, `Unregister-ScheduledJob`,
 `Unregister-SecretVault`, `Disable-ScheduledTask`, `Disable-MMAgent`).
