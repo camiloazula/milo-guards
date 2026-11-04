@@ -59,6 +59,18 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     } else {
         (text, first)
     };
+    // `sort < x.txt`, `python 0<&3`: PowerShell reserves `<` and refuses
+    // the whole line, which the grammar reads as a redirect or a word.
+    if let Some(refused) = refused_input(tree.root_node(), text) {
+        split.problem(
+            Rule::Unreadable,
+            Said::instead(
+                "holds a <, which PowerShell refuses to run",
+                "quote a < meant as text, or pipe a file in with Get-Content",
+            ),
+            Some(refused),
+        );
+    }
     // `$env:TEMP = $HOME`: a variable the line sets no longer names its
     // usual place.
     let mut names = Vec::new();
@@ -113,6 +125,81 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     walker.session_changes(tree.root_node());
     walker.read_defaults(tree.root_node());
     walker.walk(tree.root_node(), None, 0);
+}
+
+/// The text of the first node under `root` that holds a `<` PowerShell reads
+/// as an operator: one outside a string, a comment, a variable's name and
+/// what `--%` passes on as it is. PowerShell reserves `<` and refuses a line
+/// that holds one, in an argument (`sort <x`, `python 0<&3`, `a<b`) as in an
+/// expression (`1 < 2`), while the grammar reads it as an input redirect,
+/// a word or part of one. A part of a word in quotes (`--author="Me <m>"`)
+/// or after a backtick (`` a`<b ``) is text. Each node's own text, apart from
+/// its children, is scanned once, so the time grows with the line.
+fn refused_input<'s>(root: Node<'_>, source: &'s str) -> Option<&'s str> {
+    let mut found = None;
+    unit::for_each_node_until(root, |node| {
+        if found.is_some() {
+            return false;
+        }
+        match node.kind() {
+            "comment"
+            | "stop_parsing"
+            | "verbatim_string_characters"
+            | "verbatim_here_string_characters"
+            | "variable"
+            | "braced_variable" => false,
+            // The text of a string is text; what a `$(…)` in it holds is code.
+            "expandable_string_literal" | "expandable_here_string_literal" => true,
+            _ => {
+                if holds_operator(node, source) {
+                    found = Some(unit::text(&node, source));
+                    false
+                } else {
+                    true
+                }
+            }
+        }
+    });
+    found
+}
+
+/// Whether the text of `node` that none of its children covers holds a `<`
+/// outside quotes and not escaped by a backtick. A quote opened in that text
+/// runs on past a child (`a"$x<"`).
+fn holds_operator(node: Node<'_>, source: &str) -> bool {
+    let Range { start, end } = node.byte_range();
+    let mut cursor = node.walk();
+    let mut children = node
+        .children(&mut cursor)
+        .map(|child| child.byte_range())
+        .peekable();
+    let mut quote: Option<char> = None;
+    let mut at = start;
+    while at < end {
+        if let Some(child) = children.next_if(|child| child.start <= at) {
+            at = at.max(child.end);
+            continue;
+        }
+        let Some(c) = source.get(at..).and_then(|rest| rest.chars().next()) else {
+            return false;
+        };
+        at += c.len_utf8();
+        match (quote, c) {
+            (None, '<') => return true,
+            (None | Some('"'), '`') => {
+                // The next character is text, unless a child starts there.
+                if children.peek().is_none_or(|child| child.start > at) {
+                    if let Some(next) = source.get(at..).and_then(|rest| rest.chars().next()) {
+                        at += next.len_utf8();
+                    }
+                }
+            }
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(open), _) if open == c => quote = None,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The cmdlets that register a script block to run when an event happens:
@@ -3875,13 +3962,14 @@ impl Walker<'_> {
     }
 
     /// A redirect to a file: `>`, `>>`, `2>`, `*>`. A merge (`2>&1`) writes
-    /// nothing.
+    /// nothing, and neither does the `<` the grammar reads as one, which
+    /// makes the line unreadable (see [`refused_input`]).
     fn redirect(&mut self, node: Node<'_>) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-        let writes = children
-            .iter()
-            .any(|child| child.kind() == "file_redirection_operator");
+        let writes = children.iter().any(|child| {
+            child.kind() == "file_redirection_operator" && unit::text(child, self.source) != "<"
+        });
         let Some(file) = children
             .iter()
             .find(|child| child.kind() == "redirected_file_name")

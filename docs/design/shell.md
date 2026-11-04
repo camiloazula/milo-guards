@@ -110,7 +110,10 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   parameter (`git log --format=%h>..\x.txt`) is read the same way, with the
   part before the `>` kept as the parameter. A `1>` followed by a parameter
   (`git reset 1> --hard`) is `unknown`: the guard keeps the parameter an
-  argument and cannot tell whether it is the file. PowerShell reads `$HOME\.ssh\id` as one word but its
+  argument and cannot tell whether it is the file. The grammar also knows
+  `<` as a redirect, but PowerShell reserves it and refuses the whole line
+  (below, under [What cannot be read is risky](#what-cannot-be-read-is-risky)),
+  so it writes nothing. PowerShell reads `$HOME\.ssh\id` as one word but its
   grammar fails at the backslash, so such a word is put in quotes first. A cmd
   "comment" that hides a command cannot be read.
 - cmd's first word is read as cmd reads it, not where the grammar ends the
@@ -4799,6 +4802,19 @@ A line is never safe because the guard gave up on it. These come back risky:
   `has a word that may be a redirect the guard cannot read`. A `>` inside a
   closed quote of a word is read as text (`--format="%an <%ae>"`), unless a
   double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
+- A PowerShell line that holds a `<` outside a string, a comment, a braced
+  variable's name (`${a<b}`), a backtick's escape (`` a`<b ``) and what `--%`
+  passes on as it is. PowerShell reserves the operator and refuses the line
+  before any of it runs, in an argument as in an expression: `sort < x.txt`,
+  `sort <x`, `python 0<&3`, `ssh-keygen -C <comment>`, `1 < 2`, `echo
+  <<EOF`. The grammar reads it as an input redirect, a word or part of one
+  (`0<`, then `&3` as a job), so the guard looks for it in the tree: the
+  text of each node that none of its children covers, outside quotes opened
+  there (`--author="Me <m>"` is text), with the text of a string left out
+  but a `$( … )` in it read (`"a$(1 < 2)b"` is refused too). Such a line is
+  `unreadable`, `holds a <, which PowerShell refuses to run`; a merge
+  (`2>&1`) is no `<`, and in cmd `<` is the program's input (`sort <
+  x.txt`, `python 0<&3`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A value only known when it runs that may hide an output of `dd`, an
   operand of a delete, or an option that destroys or changes a machine
@@ -5293,7 +5309,8 @@ dist .` packs `dist`.
   or a command's output
   redirected to `/dev/tcp/host/port` or `/dev/udp/…`. Only bash's own redirect
   opens that path: `tee /dev/tcp/…` and `dd of=/dev/tcp/…` open a real path,
-  find none and send nothing. PowerShell has no `<` redirect.
+  find none and send nothing. PowerShell has no `<` redirect: it refuses a
+  line that holds one, which is `unreadable`.
 - **A substitution or a variable.** A sender handed a secret in its own
   arguments: `curl -d "$(cat .env)" url`, `$(<.env)`, a here-document or
   here-string that runs one, `` `…` ``, PowerShell's `-Body (Get-Content f)`;
@@ -6976,8 +6993,8 @@ are each held to the bound;
   open, or an operator with nothing after it, is never safe either, unless its
   shell reads that ending as a plain word: the test keeps a list of those per
   shell (cmd has no single quotes or backticks; PowerShell's grammar reads `<<`
-  as a word, though PowerShell itself refuses the line, so nothing runs), and
-  a table pins both sides. That a line is read at all is not the
+  as a word, but PowerShell refuses a `<`, so the guard calls the line
+  unreadable and it is not on the list), and a table pins both sides. That a line is read at all is not the
   claim: a program the guard does not know is safe.
 - **A line too long or too nested comes back unreadable** (and `Unknown` for
   `effect`). (In `tests/robust.rs`; `tests/limits.rs` measures where the edges
