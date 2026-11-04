@@ -346,8 +346,10 @@ fn plain_loop(name: &str) -> bool {
 /// The wrappers that only run the program after them, so what they run
 /// decides. `find` is the one a `-exec` makes. Any other wrapper (`flock`
 /// makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
-/// start sessions) is a step the guard does not judge.
-const WRAPPERS: [&str; 19] = [
+/// start sessions) is a step the guard does not judge. `{`, `!` and zsh's
+/// `repeat` are the words that start a command of its own the grammar reads
+/// as a program (`! { ls; }`, `repeat 3 { ls; }`).
+const WRAPPERS: [&str; 22] = [
     "sudo",
     "doas",
     "gsudo",
@@ -367,6 +369,9 @@ const WRAPPERS: [&str; 19] = [
     "nocorrect",
     "-",
     "coproc",
+    "{",
+    "!",
+    "repeat",
 ];
 
 /// The folders a program may be named in and still be the one the shell

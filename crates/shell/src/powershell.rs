@@ -2029,6 +2029,17 @@ impl Walker<'_> {
         program: Option<&str>,
         joined: bool,
     ) {
+        // `$p = @{ Path = 'x' }; Set-Content @p`: a splat of a table the
+        // line writes out binds the parameters it holds.
+        if let Some(table) = self.variables.splat(element, self.source) {
+            for (name, value) in table {
+                args.push(Arg::Known(format!("-{name}")));
+                args.push(Arg::Known(value.clone()));
+                shapes.push(blocks::Shape::default());
+                shapes.push(blocks::Shape::default());
+            }
+            return;
+        }
         let made = self.element_args(element, program);
         for (at, arg) in made.into_iter().enumerate() {
             shapes.push(if at == 0 {

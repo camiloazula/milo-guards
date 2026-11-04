@@ -2213,8 +2213,8 @@ impl Walker<'_> {
             }
         }
         // The `}` that closes a group a `coproc` opened runs nothing.
-        if self.split.coproc_groups > 0 && nodes.is_empty() && closes_group(name, self.source) {
-            self.split.coproc_groups -= 1;
+        if self.split.open_groups > 0 && nodes.is_empty() && closes_group(name, self.source) {
+            self.split.open_groups -= 1;
             return;
         }
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
@@ -3279,36 +3279,53 @@ impl Walker<'_> {
                 // A call to a function that moves the line matters only to a
                 // redirect that names a file by folder.
                 let by_folder = redirects && self.opens_by_folder(*child);
-                let opens = if !redirects {
-                    OpensFrom::Line
-                } else if simple {
-                    self.split.starts_in(own.clone(), by_folder)
-                } else if chained {
-                    self.split.starts_in(placed.clone(), by_folder)
-                } else if let Some(tail) = &tail {
-                    // The last command of a list: after the earlier ones.
-                    self.split.opens_before(
-                        tail.here.clone(),
-                        tail.now.clone(),
-                        tail.first..own.end,
-                        tail.moved,
-                        tail.moves,
-                        by_folder,
-                    )
+                let compound = !simple && !chained;
+                let opens_by = |split: &mut Split, by_folder: bool| {
+                    if simple {
+                        split.starts_in(own.clone(), by_folder)
+                    } else if chained {
+                        split.starts_in(placed.clone(), by_folder)
+                    } else if let Some(tail) = &tail {
+                        // The last command of a list: after the earlier ones.
+                        split.opens_before(
+                            tail.here.clone(),
+                            tail.now.clone(),
+                            tail.first..own.end,
+                            tail.moved,
+                            tail.moves,
+                            by_folder,
+                        )
+                    } else {
+                        split.opens_before(
+                            here.clone(),
+                            OpensFrom::Line,
+                            own.clone(),
+                            moved_before,
+                            moves_before,
+                            by_folder,
+                        )
+                    }
+                };
+                let opens = if redirects {
+                    opens_by(self.split, by_folder)
                 } else {
-                    self.split.opens_before(
-                        here.clone(),
-                        OpensFrom::Line,
-                        own.clone(),
-                        moved_before,
-                        moves_before,
-                        by_folder,
-                    )
+                    OpensFrom::Line
                 };
                 // What the redirect expands (`<<< "$(cat f)"`, a
                 // here-document's body) is expanded before the command it is
-                // on runs, so from where it starts when it moves the line.
-                self.split.enter_start(&mover, plain(*child));
+                // on runs, so from where it starts when it moves the line;
+                // on a group, a loop or a branch, from where the redirect
+                // opens its file, before the body runs, wherever the body
+                // left the line (any folder a function it calls may start
+                // in too).
+                let expanded = (compound
+                    && !plain(*child)
+                    && matches!(child.kind(), "herestring_redirect" | "heredoc_redirect"))
+                .then(|| opens_by(self.split, true));
+                match &expanded {
+                    Some(from) => self.split.enter_from(from),
+                    None => self.split.enter_start(&mover, plain(*child)),
+                }
                 if child.kind() == "file_redirect" {
                     self.walk_redirect_from(*child, stage, level, opens);
                 } else if child.kind() == "heredoc_redirect" {
@@ -3316,7 +3333,11 @@ impl Walker<'_> {
                 } else {
                     self.walk(*child, stage, level + 1);
                 }
-                self.split.leave_start();
+                if expanded.is_some() {
+                    self.split.leave_from();
+                } else {
+                    self.split.leave_start();
+                }
                 let whole = first..self.split.units.len();
                 after.push((*child, std::iter::once(whole).collect()));
             }

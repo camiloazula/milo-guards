@@ -558,6 +558,24 @@ cmd safe | ca^ll,dir
 # command it cannot read; a `call` of a label runs no program.
 cmd rules=unreadable | call^,rd /s /q C:\\Windows
 cmd safe | call:sub
+# A `call` or a `for` found before a `.`, `\` or `:` of a longer word
+# (`call.bat`, `for.exe`) may be the file the word names, or the built-in.
+# Read as the built-in, a `call` runs the program the rest of the word names,
+# with that character or without it, and a `for` whose next word starts no
+# loop variable or option is refused by cmd and runs nothing.
+cmd safe | call.bat
+cmd safe | call.bat x
+cmd safe | for.exe
+cmd safe | for.exe /?
+cmd rules=delete | call.rd /s /q C:\\Windows
+cmd rules=delete | call.cd C:\\Windows & rd /s /q System32
+cmd finds=delete | call.bat & cd sub & rd /s /q ..\\..\\Windows
+cmd rules=unreadable | call.
+cmd rules=unreadable | call.call rd /s /q C:\\Windows
+cmd finds=unreadable | for. %%i in (1) do rd /s /q C:\\Windows
+cmd finds=unreadable | for./L %%i in (1,1,2) do rd /s /q C:\\Windows
+cmd finds=unreadable | for.%X% in (1) do rd /s /q C:\\Windows
+cmd finds=unreadable | if.exe
 # cmd finds a built-in at the start of a longer word: `echo.x`, `rd/s`,
 # `cmd/c`. A word that may name a program in a folder is read both ways.
 cmd rules=drop_data | echo.DROP TABLE t| psql

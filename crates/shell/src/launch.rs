@@ -374,7 +374,7 @@ fn add_launched(
                 // and the `}` that closes the group is taken off by the walk.
                 if key == "coproc" && unit.shell == Shell::Posix && unit.wrappers.is_empty() {
                     if let Some(groups) = coproc_opens_only(&unit.args) {
-                        split.coproc_groups += groups;
+                        split.open_groups += groups;
                         return;
                     }
                 }
@@ -530,8 +530,16 @@ fn add_launched(
 fn runs_after(split: &mut Split, mut unit: Unit, key: String, start: usize, depth: usize) -> Unit {
     note_wrapper(split, &key, &unit, start);
     let own = unit.args.get(..start).unwrap_or_default();
-    if key == "coproc" && unit.shell == Shell::Posix {
-        split.coproc_groups += coproc_groups(own);
+    // `coproc { … }`, `time { … }`, `! { … }`, `repeat 3 { … }`: the `}`
+    // that closes the group is a command of its own to the grammar, and
+    // runs nothing.
+    if unit.shell == Shell::Posix && (key == "coproc" || starts_command(&key)) {
+        let program = if opens_group(&key) {
+            key.matches('{').count()
+        } else {
+            0
+        };
+        split.open_groups += program + coproc_groups(own);
     }
     split.environment += usize::from(sets_environment(&key, own));
     split
@@ -1675,8 +1683,9 @@ fn command_after(args: &[Arg], mut at: usize, repeat: bool) -> Launch {
     }
 }
 
-/// How many groups the words before what a `coproc` runs open: each `{`
-/// of the words [`coproc`] steps over (`{ {` is one word, two groups).
+/// How many groups the words before what a `coproc` (or `time`, `!`,
+/// `repeat`) runs open: each `{` of the words [`command_after`] steps over
+/// (`{ {` is one word, two groups).
 fn coproc_groups(own: &[Arg]) -> usize {
     own.iter()
         .filter_map(Arg::known)

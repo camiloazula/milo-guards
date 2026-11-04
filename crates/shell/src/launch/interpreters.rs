@@ -750,7 +750,18 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
     }
     let args = own_args(key, args);
     let (short, long) = code_options(key);
-    let code = args.iter().any(|arg| {
+    let read = options(key, args);
+    // Python's words after the script or the module are its own arguments,
+    // not the interpreter's: `python3 -m zipfile -c a.zip src` makes an
+    // archive. Python's table names every short option that takes a value;
+    // past a long option it does not know (`unsure`), the word taken for
+    // the script may be its value, and every word is read.
+    let end = read
+        .script
+        .or(read.module.as_ref().map(|(_, own)| *own))
+        .filter(|_| is_python(key) && !read.unsure)
+        .unwrap_or(args.len());
+    let code = args.get(..end).unwrap_or(args).iter().any(|arg| {
         arg.known()
             .is_some_and(|text| match text.strip_prefix('-') {
                 Some(bundle) if !bundle.is_empty() && !bundle.starts_with('-') => {
@@ -761,7 +772,6 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
     });
     // Code in a `data:` URL that node loads first runs, and is not read.
     let code = code || (is_node(key) && inline::loads_foreign_code(args));
-    let read = options(key, args);
     // `ipython --InteractiveShellApp.exec_lines=… x.py` runs code first.
     let code = code || read.runs_code;
     let file = read.script.is_some() || read.module.is_some();

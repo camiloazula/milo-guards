@@ -84,6 +84,20 @@ posix finds=overwrite | case x in x) cd sub;; esac > ../x
 posix finds=overwrite | { cd sub; } > ../x | cat
 posix finds=overwrite | (cd sub) > ../x
 posix finds=overwrite | { cd sub; } <<EOF > ../x\nx\nEOF
+# What a here-string or a here-document on a group, a loop or a branch runs
+# is expanded before the body runs, so from where the statement begins, not
+# from where the body left the line. (The grammar does not read a here-string
+# on a group, `{ cd sub; } <<< x`, which is unreadable.)
+posix finds=delete | if true; then cd sub || exit; fi <<< "$(rm -rf ../x)"
+posix finds=delete | if true; then cd sub || exit; fi <<EOF\n$(rm -rf ../x)\nEOF
+posix finds=delete | { cd sub || exit; } <<EOF\n$(rm -rf ../x)\nEOF
+posix finds=read_secret | while read l; do cd sub; done <<< "$(cat ../../.ssh/id_rsa)"
+posix finds=read_secret | cd ~ && while read l; do cd /; done <<< "$(cat .ssh/id_rsa)"
+posix safe | while read l; do cd ../..; done <<< "$(cat .ssh/id_rsa)"
+posix safe | if true; then cd ../.. || exit; fi <<< "$(rm -rf build)"
+posix safe | { cd ../.. || exit; } <<EOF\n$(rm -rf build)\nEOF
+posix finds=delete | for i in 1 2; do while read l; do cd ..; done <<< "$(rm -rf x)"; done
+posix finds=unreadable | { cd sub; } <<< x
 
 # A redirect on a group in a loop or after a cd that may not run is placed
 # from both folders.

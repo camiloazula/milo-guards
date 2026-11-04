@@ -430,6 +430,8 @@ fn cmd_commands_read_again_are_read_in_time() {
         fit("f^or %%i in (a) do "),
         fit("ca^ll "),
         fit("call "),
+        fit("call.bat & "),
+        fit("call.rd x & "),
         nested("ver && if a ("),
         nested("i^f a ("),
     ];
@@ -885,6 +887,13 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
     let path = defaults("'Remove-*:Path' = '~'");
     let rows = [
         ("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
+        // A splat of a table the line writes out binds what it holds.
+        (
+            "Set-Content @p; ",
+            "$p = @{ Path = 'x'; Value = 'y' }; ",
+            "",
+        ),
+        ("$q = @{ Path = 'x' }; Set-Content @q; ", "", ""),
         ("$v = 1; ", "", "Invoke-Command $v"),
         ("$v = { 1 }; Invoke-Command $v; ", "", ""),
         (".a()", "$x", ""),
@@ -1128,6 +1137,12 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
             "TRAPEXIT() { rm -rf b > o; }; ",
             "cd /a || cd b; ",
         ),
+        // Every call is made before the `cd`.
+        (
+            "f() { … }; f; cd …; ls…",
+            "f() { rm -rf b > o; }; ",
+            "f; cd d; ls; ",
+        ),
         // A use of an alias with words runs its last command with them.
         (
             "alias x='…' y=x; cd …; y ……",
@@ -1160,6 +1175,12 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
         (
             "alias x='… cd …'; x…",
             "alias x='rm -rf b > o; cd x' y=ls; x; ",
+            "",
+        ),
+        // What a here-string on a loop runs is read from where it starts.
+        (
+            "while …; do cd ..; done <<< \"$(…)\"…",
+            "while read l; do cd ..; done <<< \"$(rm -rf b)\"; ",
             "",
         ),
         // With `autocd` on, a command of one word is a `cd`.

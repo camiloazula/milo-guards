@@ -479,6 +479,11 @@ posix safe | mongosh --eval 'db.users.deleteOne({})'
 posix safe | mongosh --eval 'db.users.insertOne({a: 1})'
 posix safe | mongosh --eval "print('db.dropDatabase()')"
 posix safe | mongosh --eval '// db.dropDatabase()'
+# Code that only reads and prints is read whole, not left unknown.
+posix safe | mongosh --eval 'print(1)'
+posix safe | mongosh --eval 'db.users.find().forEach(printjson)'
+posix safe | mongosh --eval 'const x = 1; db.users.find({a: x})'
+posix safe | mongosh app --quiet --eval 'printjson(db.stats())'
 posix safe | mongo --eval 'db.stats()'
 posix safe | mongodump --db app
 posix safe | mongosh <<< 'db.users.find()'
