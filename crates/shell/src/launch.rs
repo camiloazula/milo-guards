@@ -295,6 +295,13 @@ fn add_launched(
         // reads (`npm_config_call='…' npx`).
         unit.argument_variables = Rc::clone(&split.argument_variables);
         let input = fed(&unit) || split.inherits_input > 0;
+        // What a tracer, `script` or `time` writes its own output to, once
+        // for the unit however many ways it reads.
+        if given.is_none() && unit.shell != Shell::Cmd {
+            for output in tools::outputs(&key, &unit.args) {
+                output_of(split, unit.shell, output, depth);
+            }
+        }
         let launched = given.take().unwrap_or_else(|| launch(&key, &unit, input));
         // The command `npm_config_call` sets runs once for each `npx`: its
         // readings are bounded as a line's own text is.
@@ -687,6 +694,24 @@ fn add_launched(
     split.push(unit);
 }
 
+/// Add what a wrapper writes its own output to (see [`tools::outputs`]): a
+/// file is written as a redirect writes it, from where the wrapper runs, and
+/// a command it pipes the output to is a script of its own for a POSIX
+/// shell.
+fn output_of(split: &mut Split, shell: Shell, output: tools::Output, depth: usize) {
+    match output {
+        tools::Output::File(file) => split.write(shell, file),
+        tools::Output::Command(Arg::Known(command)) => {
+            unit::script_in(split, &command, Shell::Posix, depth + 1, false);
+        }
+        tools::Output::Command(command) => split.problem(
+            Rule::Unknown,
+            "pipes its output to a command only known when it runs",
+            Some(command.text()),
+        ),
+    }
+}
+
 /// A script only known when it runs: a download when it is a process
 /// substitution that downloads (`bash <(curl …)`), and not read otherwise.
 fn unread_script(split: &mut Split, script: &Arg) {
@@ -949,7 +974,9 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // group or a negation the grammar does not read after it (`time {
         // cmd; }`, `time ! cmd`, `time X=1 cmd`).
         "time" if posix => {
-            let start = after_options(args, &["-f", "-o", "--format", "--output"]);
+            let start = after_options_by(args, |text, next| {
+                getopt(text, next, &tools::TIME_OPTIONS).0
+            });
             match start {
                 Some(start) if unit.shell == Shell::Posix => command_after(args, start, false),
                 start => runs(args, start),
@@ -975,6 +1002,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         "parallel" if posix => parallel::parallel(args),
         // Tracers and runners that run the program after their options.
         "strace" if posix => tools::strace(args),
+        "ltrace" if posix => tools::ltrace(args),
         "script" if posix => tools::script(args),
         "ssh-agent" if posix => tools::ssh_agent(args),
         "chronic" if posix => tools::chronic(args),
@@ -1570,7 +1598,7 @@ pub(super) fn after_getopt(args: &[Arg], short: &str, long: &[&str]) -> Option<u
 
 /// What the option `text` is among options read as [`after_getopt`] reads
 /// them.
-fn getopt_word(text: &str, short: &str, long: &[&str]) -> Word {
+pub(super) fn getopt_word(text: &str, short: &str, long: &[&str]) -> Word {
     if let Some(name) = text.strip_prefix("--") {
         return if long.contains(&name) {
             Word::Value
