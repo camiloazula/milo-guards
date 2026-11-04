@@ -54,6 +54,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         unstaged: None,
         sets: std::collections::HashMap::new(),
         functions: std::collections::HashSet::new(),
+        chained: std::collections::HashMap::new(),
     };
     // One walk of the tree finds the variables the line sets and the values
     // it gives them.
@@ -1155,6 +1156,10 @@ struct Walker<'a> {
     sets: std::collections::HashMap<usize, Vec<(String, crate::values::Value)>>,
     /// The functions the line defines, as the tree is read before the walk.
     functions: std::collections::HashSet<String>,
+    /// The assignments in `(( ))` of each chain read whole, by node id, with
+    /// whether the chain gives `GLOBIGNORE` a value (see
+    /// [`Walker::assigns_in_chain`]).
+    chained: std::collections::HashMap<usize, bool>,
 }
 
 /// The state just before the last command of a list: a redirect on a list
@@ -1167,6 +1172,28 @@ struct Tail {
     moved: usize,
     moves: usize,
     first: usize,
+}
+
+/// A list [`Walker::list`] is reading: the list and where its commands are.
+struct Listed<'tree> {
+    node: Node<'tree>,
+    children: Vec<Node<'tree>>,
+    /// The child to read next.
+    next: usize,
+    list: unit::List,
+    /// How many commands of it were read.
+    at: usize,
+    /// The right side of `&&` or `||` being read.
+    link: Option<unit::Link>,
+    /// Where an `exit` on the right side of an `||` leaves the line.
+    exit: Option<unit::Exit>,
+    /// The last command, when a redirect on the whole list is on it.
+    last: Option<usize>,
+    /// The last command, when the list is the first stage of a pipeline,
+    /// with the stage the pipeline is in.
+    staged: Option<(usize, Option<Stage>)>,
+    stage: Option<Stage>,
+    level: usize,
 }
 
 /// The words after the file of a redirect on a statement (`rm 2>/dev/null
@@ -1268,41 +1295,66 @@ impl Walker<'_> {
     /// The operands of a chain of assignments in `(( ))`, in order, as the
     /// text each is written in: `x = y = 1` is `x`, `y` and `1`, however the
     /// parse nests it. Anything else is one operand.
-    fn chain_operands<'t>(&self, node: Node<'t>, out: &mut Vec<Node<'t>>) {
-        let assigning = node.kind() == "binary_expression" && {
-            let mut cursor = node.walk();
-            let found = node
-                .children(&mut cursor)
-                .find(|child| !child.is_named())
-                .map(|child| unit::text(&child, self.source));
-            found.is_some_and(|operator| {
-                operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
-            })
-        };
-        match (
-            assigning,
-            node.child_by_field_name("left"),
-            node.child_by_field_name("right"),
-        ) {
-            (true, Some(left), Some(right)) => {
-                self.chain_operands(left, out);
-                self.chain_operands(right, out);
+    ///
+    /// A chain nests a level for each assignment, so one at the length limit
+    /// is thousands of levels deep, and the walk's depth limit does not bound
+    /// this: the chain is taken apart in a loop over a stack on the heap,
+    /// never by recursing. The assignments of the chain go to `links`.
+    fn chain_operands<'t>(&self, node: Node<'t>, out: &mut Vec<Node<'t>>, links: &mut Vec<usize>) {
+        let mut pending = vec![node];
+        while let Some(node) = pending.pop() {
+            let assigning = node.kind() == "binary_expression" && {
+                let mut cursor = node.walk();
+                let found = node
+                    .children(&mut cursor)
+                    .find(|child| !child.is_named())
+                    .map(|child| unit::text(&child, self.source));
+                found.is_some_and(|operator| {
+                    operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
+                })
+            };
+            match (
+                assigning,
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                // The left side is taken next, so the operands keep their
+                // order.
+                (true, Some(left), Some(right)) => {
+                    links.push(node.id());
+                    pending.push(right);
+                    pending.push(left);
+                }
+                _ => out.push(node),
             }
-            _ => out.push(node),
         }
     }
 
     /// Whether `node`, an assignment in `(( ))`, gives `GLOBIGNORE` a value
     /// at any place of a chain: `GLOBIGNORE = 1`, `x = GLOBIGNORE = 1`. Every
     /// operand but the last is assigned to; the last is the value.
-    fn assigns_in_chain(&self, node: Node<'_>) -> bool {
+    ///
+    /// A chain is read whole once, from the assignment the walk reaches
+    /// first, and each assignment in it is then what the whole chain is:
+    /// every operand one of them assigns to is one the chain does, so the
+    /// answer is never `false` where reading it alone gave `true`. Read again
+    /// from each, a chain at the length limit took time that grows with the
+    /// square of its length.
+    fn assigns_in_chain(&mut self, node: Node<'_>) -> bool {
+        if let Some(&found) = self.chained.get(&node.id()) {
+            return found;
+        }
         let mut operands = Vec::new();
-        self.chain_operands(node, &mut operands);
-        operands.split_last().is_some_and(|(_, targets)| {
+        let mut links = Vec::new();
+        self.chain_operands(node, &mut operands, &mut links);
+        let found = operands.split_last().is_some_and(|(_, targets)| {
             targets
                 .iter()
                 .any(|target| unit::text(target, self.source).trim() == dotglob::GLOBIGNORE)
-        })
+        });
+        self.chained
+            .extend(links.into_iter().map(|link| (link, found)));
+        found
     }
 
     /// Whether `node` or anything in it assigns `GLOBIGNORE` with a `${…}`:
@@ -1325,24 +1377,38 @@ impl Walker<'_> {
     /// subshell and a change it makes is not certain to reach the rest of the
     /// line.
     fn walk_in(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize, background: bool) {
+        if !self.enter(node, level, background) {
+            return;
+        }
+        self.node(node, stage, level);
+        self.leave(node, background);
+    }
+
+    /// Before the walk reads `node`, at `level`: `false` when it is not to
+    /// read it, being too deep, or read here whole. Kept out of `node`, which
+    /// the walk recurses through, and whose frame is the deepest nesting's.
+    #[inline(never)]
+    fn enter(&mut self, node: Node<'_>, level: usize, background: bool) -> bool {
         if level > unit::MAX_TREE_DEPTH {
             self.split
                 .problem(Rule::Unreadable, "nests too deeply to read", None);
-            return;
+            return false;
         }
-        // Kept out of `node`, which the walk recurses through.
         if self.reads_again(node) {
-            return;
+            return false;
         }
         self.split.branches += usize::from(background);
-        // Kept out of `node` too, whose frame is the deepest nesting's.
-        let kind = node.kind();
-        if STATEMENTS.contains(&kind) {
+        if STATEMENTS.contains(&node.kind()) {
             self.split.statement();
         }
-        self.node(node, stage, level);
+        true
+    }
+
+    /// After the walk read `node`, which [`Walker::enter`] let it read.
+    #[inline(never)]
+    fn leave(&mut self, node: Node<'_>, background: bool) {
         // `! cd s && rm -rf ../x` runs `rm` when the `cd` failed.
-        if kind == "negated_command" {
+        if node.kind() == "negated_command" {
             self.split.statement();
         }
         self.split.branches -= usize::from(background);
@@ -1368,85 +1434,17 @@ impl Walker<'_> {
             "list" => self.list(node, stage, level),
             // `unset GLOBIGNORE` turns bash's option off as `shopt -u` does;
             // `unset -f GLOBIGNORE` removes a function, not the variable.
-            "unset_command" => {
-                self.split.assigned_earlier = true;
-                let mut cursor = node.walk();
-                let names: Vec<&str> = node
-                    .named_children(&mut cursor)
-                    .map(|name| unit::text(&name, self.source))
-                    .collect();
-                let function = names.iter().any(|name| {
-                    name.starts_with('-') && !name.starts_with("--") && name.contains('f')
-                });
-                if !function && names.contains(&dotglob::GLOBIGNORE) {
-                    self.split.show(Flag::Bash, stage.is_none());
-                }
-                self.children(node, stage, level);
-            }
+            "unset_command" => self.unset_node(node, stage, level),
             // `export "GLOBIGNORE=x"`, `declare 'GLOBIGNORE=x'`: a quoted
             // assignment is a string, not an assignment node.
-            "declaration_command" => {
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    if child.kind() != "variable_assignment" && self.arg_hides(child) {
-                        self.split.hide();
-                    }
-                    if child.kind() != "variable_assignment" {
-                        self.exported_options(child);
-                        let text = unit::text(&child, self.source);
-                        let written = startup::Written {
-                            expanded: text.contains(['$', '`']),
-                            pwd: text.contains("PWD"),
-                        };
-                        self.startup_words(&[self.arg(child)], written);
-                    }
-                }
-                let first = self.split.units.len();
-                self.declaration(node, stage);
-                let own = first..self.split.units.len();
-                self.children(node, stage, level);
-                // What its substitutions run is handed to it, as to a
-                // command: `export $(cat .env)` sets what `cat` prints.
-                self.split
-                    .nest(own.clone(), own.end..self.split.units.len());
-            }
+            "declaration_command" => self.declaration_node(node, stage, level),
             // `(( GLOBIGNORE=1 ))`
-            "binary_expression" => {
-                let mut cursor = node.walk();
-                let operator = node
-                    .children(&mut cursor)
-                    .find(|child| !child.is_named())
-                    .map(|child| unit::text(&child, self.source));
-                let assigns = operator.is_some_and(|operator| {
-                    operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
-                });
-                if assigns && self.assigns_in_chain(node) {
-                    self.split.hide();
-                }
-                // `((PATH=1))` sets a variable the interpreter after it may
-                // be given.
-                self.split.assigned_earlier |= assigns && Self::in_arithmetic(node);
-                self.children(node, stage, level);
-            }
+            "binary_expression" => self.binary_node(node, stage, level),
             // `: ${GLOBIGNORE:=x}`: the expansion sets it.
-            "expansion" => {
-                if self.assigns_ignore(node) {
-                    self.split.hide();
-                }
-                self.split.assigned_earlier |= self.assigns_default(node);
-                self.children(node, stage, level);
-            }
+            "expansion" => self.expansion_node(node, stage, level),
             // `(( GLOBIGNORE++ ))`, `(( --GLOBIGNORE ))`: an empty variable
             // becomes 1 or -1.
-            "postfix_expression" | "unary_expression" => {
-                let text = unit::text(&node, self.source);
-                let bare = text.replace("++", "").replace("--", "");
-                if bare.len() < text.len() && bare.trim() == dotglob::GLOBIGNORE {
-                    self.split.hide();
-                }
-                self.split.assigned_earlier |= bare.len() < text.len() && Self::in_arithmetic(node);
-                self.children(node, stage, level);
-            }
+            "postfix_expression" | "unary_expression" => self.counted_node(node, stage, level),
             // What may not run, may run more than once, or runs when the
             // line calls it. A function body or a loop may run after the
             // line has turned the option on, which the walk's end settles.
@@ -1455,66 +1453,7 @@ impl Walker<'_> {
             | "while_statement"
             | "for_statement"
             | "c_style_for_statement"
-            | "function_definition" => {
-                let body = !matches!(node.kind(), "if_statement" | "case_statement");
-                if node.kind() == "for_statement"
-                    && node
-                        .child_by_field_name("variable")
-                        .is_some_and(|name| unit::text(&name, self.source) == dotglob::GLOBIGNORE)
-                {
-                    self.split.hide();
-                }
-                // `for f in *git(D); do rm -rf "$f"; done`: the body works
-                // on names the qualifier let a wildcard match.
-                let mut cursor = node.walk();
-                if node.kind() == "for_statement"
-                    && node
-                        .children_by_field_name("value", &mut cursor)
-                        .any(|word| self.qualified(word))
-                {
-                    self.split.hide_functions();
-                }
-                let function = self.function_start(node);
-                // `if true; then …; fi` runs its body: a `cd` in it is no
-                // `cd` that may not have run. It is still a branch for all
-                // else (the option, a definition, where a `cd` is placed).
-                let taken = self.always_taken(node);
-                // The variable of `for` and `select` is set for the body
-                // (`for PATH in /x; do …`).
-                self.split.assigned_earlier |= node.kind() == "for_statement";
-                self.split.branches += 1;
-                self.split.taken += usize::from(taken);
-                self.split.bodies += usize::from(body);
-                self.split.repeats += usize::from(body);
-                let start = (self.split.units.len(), self.split.reads.len());
-                if body {
-                    self.split.begin_body();
-                }
-                if let Some(function) = &function {
-                    let here = function.here.clone();
-                    self.function_children(node, stage, level, &here);
-                } else if node.kind() == "for_statement" {
-                    self.loop_children(node, stage, level);
-                } else {
-                    self.children(node, stage, level);
-                }
-                if node.kind() == "for_statement" {
-                    self.bind_loop(node, start);
-                }
-                if body {
-                    self.split
-                        .end_body(function.as_ref().map(|function| function.name.as_str()));
-                }
-                self.function_end(function);
-                // A function defined here may stand for a program of the same
-                // name (`node() { NODE_OPTIONS=… command node "$@"; }`) from
-                // here on.
-                self.split.assigned_earlier |= node.kind() == "function_definition";
-                self.split.repeats -= usize::from(body);
-                self.split.bodies -= usize::from(body);
-                self.split.taken -= usize::from(taken);
-                self.split.branches -= 1;
-            }
+            | "function_definition" => self.compound_node(node, stage, level),
             "pipeline" => {
                 let pipeline = self.split.pipeline(stage);
                 self.pipeline_in(node, pipeline, 0, level);
@@ -1530,36 +1469,202 @@ impl Walker<'_> {
             "heredoc_redirect" => self.walk_heredoc(node, stage, level, None),
             // `[[ 'a[$(cmd)]' -eq 0 ]]`: the shell evaluates an arithmetic
             // operand, subscript and all, so a quoted `$(…)` runs.
-            "test_command" => {
-                let mut hidden = false;
-                unit::for_each_node(node, |inner| {
-                    hidden |= inner.kind() == "raw_string" && {
-                        let text = unit::text(&inner, self.source);
-                        text.contains("$(") || text.contains('`')
-                    };
-                });
-                if hidden {
-                    self.split.problem(
-                        Rule::Unknown,
-                        "may run a command hidden in a test's arithmetic",
-                        Some(unit::text(&node, self.source)),
-                    );
-                }
-                self.children(node, stage, level);
-            }
+            "test_command" => self.test_node(node, stage, level),
             // A subshell's `cd` does not move the rest of the line.
             "subshell" | "command_substitution" | "process_substitution" => {
-                self.substituted(node);
-                let outer = self.split.dir_snapshot();
-                let hidden = self.split.hidden_snapshot();
-                self.split.apart += 1;
-                self.children(node, stage, level);
-                self.split.apart -= 1;
-                self.split.restore_dir(outer);
-                self.split.restore_hidden(hidden);
+                self.apart_node(node, stage, level);
             }
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// `unset`, kept out of `node`, which the walk recurses through.
+    #[inline(never)]
+    fn unset_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.assigned_earlier = true;
+        let mut cursor = node.walk();
+        let names: Vec<&str> = node
+            .named_children(&mut cursor)
+            .map(|name| unit::text(&name, self.source))
+            .collect();
+        let function = names
+            .iter()
+            .any(|name| name.starts_with('-') && !name.starts_with("--") && name.contains('f'));
+        if !function && names.contains(&dotglob::GLOBIGNORE) {
+            self.split.show(Flag::Bash, stage.is_none());
+        }
+        self.children(node, stage, level);
+    }
+
+    /// `export`, `declare` and their kind, kept out of `node`, which the walk
+    /// recurses through.
+    #[inline(never)]
+    fn declaration_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() != "variable_assignment" && self.arg_hides(child) {
+                self.split.hide();
+            }
+            if child.kind() != "variable_assignment" {
+                self.exported_options(child);
+                let text = unit::text(&child, self.source);
+                let written = startup::Written {
+                    expanded: text.contains(['$', '`']),
+                    pwd: text.contains("PWD"),
+                };
+                self.startup_words(&[self.arg(child)], written);
+            }
+        }
+        let first = self.split.units.len();
+        self.declaration(node, stage);
+        let own = first..self.split.units.len();
+        self.children(node, stage, level);
+        // What its substitutions run is handed to it, as to a
+        // command: `export $(cat .env)` sets what `cat` prints.
+        self.split
+            .nest(own.clone(), own.end..self.split.units.len());
+    }
+
+    /// An arithmetic or test expression of two operands, kept out of `node`,
+    /// which the walk recurses through.
+    #[inline(never)]
+    fn binary_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let mut cursor = node.walk();
+        let operator = node
+            .children(&mut cursor)
+            .find(|child| !child.is_named())
+            .map(|child| unit::text(&child, self.source));
+        let assigns = operator.is_some_and(|operator| {
+            operator.ends_with('=') && !matches!(operator, "==" | "!=" | "<=" | ">=")
+        });
+        if assigns && self.assigns_in_chain(node) {
+            self.split.hide();
+        }
+        // `((PATH=1))` sets a variable the interpreter after it may
+        // be given.
+        self.split.assigned_earlier |= assigns && Self::in_arithmetic(node);
+        self.children(node, stage, level);
+    }
+
+    /// A `${…}` expansion, kept out of `node`, which the walk recurses through.
+    #[inline(never)]
+    fn expansion_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        if self.assigns_ignore(node) {
+            self.split.hide();
+        }
+        self.split.assigned_earlier |= self.assigns_default(node);
+        self.children(node, stage, level);
+    }
+
+    /// An arithmetic operand counted up or down, or a unary expression, kept
+    /// out of `node`, which the walk recurses through.
+    #[inline(never)]
+    fn counted_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let text = unit::text(&node, self.source);
+        let bare = text.replace("++", "").replace("--", "");
+        if bare.len() < text.len() && bare.trim() == dotglob::GLOBIGNORE {
+            self.split.hide();
+        }
+        self.split.assigned_earlier |= bare.len() < text.len() && Self::in_arithmetic(node);
+        self.children(node, stage, level);
+    }
+
+    /// A branch, a loop or a function definition, kept out of `node`, which the
+    /// walk recurses through.
+    #[inline(never)]
+    fn compound_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let body = !matches!(node.kind(), "if_statement" | "case_statement");
+        if node.kind() == "for_statement"
+            && node
+                .child_by_field_name("variable")
+                .is_some_and(|name| unit::text(&name, self.source) == dotglob::GLOBIGNORE)
+        {
+            self.split.hide();
+        }
+        // `for f in *git(D); do rm -rf "$f"; done`: the body works
+        // on names the qualifier let a wildcard match.
+        let mut cursor = node.walk();
+        if node.kind() == "for_statement"
+            && node
+                .children_by_field_name("value", &mut cursor)
+                .any(|word| self.qualified(word))
+        {
+            self.split.hide_functions();
+        }
+        let function = self.function_start(node);
+        // `if true; then …; fi` runs its body: a `cd` in it is no
+        // `cd` that may not have run. It is still a branch for all
+        // else (the option, a definition, where a `cd` is placed).
+        let taken = self.always_taken(node);
+        // The variable of `for` and `select` is set for the body
+        // (`for PATH in /x; do …`).
+        self.split.assigned_earlier |= node.kind() == "for_statement";
+        self.split.branches += 1;
+        self.split.taken += usize::from(taken);
+        self.split.bodies += usize::from(body);
+        self.split.repeats += usize::from(body);
+        let start = (self.split.units.len(), self.split.reads.len());
+        if body {
+            self.split.begin_body();
+        }
+        if let Some(function) = &function {
+            let here = function.here.clone();
+            self.function_children(node, stage, level, &here);
+        } else if node.kind() == "for_statement" {
+            self.loop_children(node, stage, level);
+        } else {
+            self.children(node, stage, level);
+        }
+        if node.kind() == "for_statement" {
+            self.bind_loop(node, start);
+        }
+        if body {
+            self.split
+                .end_body(function.as_ref().map(|function| function.name.as_str()));
+        }
+        self.function_end(function);
+        // A function defined here may stand for a program of the same
+        // name (`node() { NODE_OPTIONS=… command node "$@"; }`) from
+        // here on.
+        self.split.assigned_earlier |= node.kind() == "function_definition";
+        self.split.repeats -= usize::from(body);
+        self.split.bodies -= usize::from(body);
+        self.split.taken -= usize::from(taken);
+        self.split.branches -= 1;
+    }
+
+    /// A test, kept out of `node`, which the walk recurses through.
+    #[inline(never)]
+    fn test_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let mut hidden = false;
+        unit::for_each_node(node, |inner| {
+            hidden |= inner.kind() == "raw_string" && {
+                let text = unit::text(&inner, self.source);
+                text.contains("$(") || text.contains('`')
+            };
+        });
+        if hidden {
+            self.split.problem(
+                Rule::Unknown,
+                "may run a command hidden in a test's arithmetic",
+                Some(unit::text(&node, self.source)),
+            );
+        }
+        self.children(node, stage, level);
+    }
+
+    /// A subshell or a substitution, kept out of `node`, which the walk
+    /// recurses through.
+    #[inline(never)]
+    fn apart_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.substituted(node);
+        let outer = self.split.dir_snapshot();
+        let hidden = self.split.hidden_snapshot();
+        self.split.apart += 1;
+        self.children(node, stage, level);
+        self.split.apart -= 1;
+        self.split.restore_dir(outer);
+        self.split.restore_hidden(hidden);
     }
 
     /// A redirected statement, with its redirects and the words they took
@@ -1622,11 +1727,36 @@ impl Walker<'_> {
 
     /// A list of commands joined by `&&` and `||`: the right side of either
     /// may not run.
+    ///
+    /// The grammar makes
+    /// the left side of each `&&` and `||` a list of its own, a level deeper
+    /// (`a && b && c` is `(a && b) && c`), so a chain is as deep as it is
+    /// long. The lists on its left are read in a loop that holds each one on
+    /// the heap, never by the walk recursing into them, so a chain at the
+    /// length limit, thousands of lists, takes no more of the thread's stack
+    /// than one list does. Each is still a level of the tree: past the depth
+    /// limit the line is unreadable. Only the walk of a command recurses;
+    /// all else is done in the helpers, so this frame, which lists nested in
+    /// subshells recurse through, stays small.
     fn list(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
-        let mut cursor = node.walk();
+        let mut open = Vec::new();
+        self.list_open(&mut open, node, stage, level);
+        while let Some((child, stage, level)) = self.list_next(&mut open) {
+            self.walk(child, stage, level);
+            self.list_walked(&mut open);
+        }
+    }
+
+    /// Begin reading the list `node`, on top of the lists `open` holds.
+    #[inline(never)]
+    fn list_open<'tree>(
+        &mut self,
+        open: &mut Vec<Listed<'tree>>,
+        node: Node<'tree>,
+        stage: Option<Stage>,
+        level: usize,
+    ) {
         let list = self.split.list_start();
-        let mut at = 0;
-        let mut exit = None;
         let last = self
             .tail_of
             .contains(&node.id())
@@ -1642,69 +1772,142 @@ impl Walker<'_> {
                 None
             }
         };
-        for child in node.children(&mut cursor) {
-            let stage = match staged {
-                Some((last, outer)) if child.id() != last => outer,
-                _ => stage,
-            };
-            // The right side of `||` only runs when the left failed: a `cd`
-            // on the left may not have moved the line. When that side ends
-            // the shell (`cd s || exit`), the rest of the line runs only
-            // where the left side took it.
-            if child.kind() == "||" {
-                // A redirect the grammar holds on the whole list is on its
-                // last command (`cd s || exit 2> e`).
-                // A left side that may succeed when its `cd` failed (`! cd
-                // s || exit`, or a `cd` the line made a function of) does
-                // not say the `cd` ran.
-                if stage.is_none()
-                    && staged.is_none()
-                    && child
-                        .next_named_sibling()
-                        .is_some_and(|right| self.exits(right))
-                    && !redirected_last(node)
-                    && !child.prev_named_sibling().is_none_or(negates)
-                    && !["cd", "chdir", "pushd", "popd"]
-                        .iter()
-                        .any(|name| self.split.defines_function(name))
-                {
-                    exit = Some(self.split.exits_after());
+        let mut cursor = node.walk();
+        let children = node.children(&mut cursor).collect();
+        open.push(Listed {
+            node,
+            children,
+            next: 0,
+            list,
+            at: 0,
+            link: None,
+            exit: None,
+            last,
+            staged,
+            stage,
+            level,
+        });
+    }
+
+    /// The next command of the lists `open` holds for the walk, with the
+    /// stage and level to walk it at, or `None` when all are read. A list on
+    /// the left of the one being read is opened here, and a list read to the
+    /// end is closed.
+    #[inline(never)]
+    fn list_next<'tree>(
+        &mut self,
+        open: &mut Vec<Listed<'tree>>,
+    ) -> Option<(Node<'tree>, Option<Stage>, usize)> {
+        loop {
+            let reading = open.last_mut()?;
+            let Some(child) = reading.children.get(reading.next).copied() else {
+                let done = open.pop()?;
+                self.split.list_end(done.list);
+                if let Some(outer) = open.last_mut() {
+                    // The list read was the left side of `outer`.
+                    self.leave(done.node, false);
+                    self.split.list_head(false);
+                    outer.at += 1;
                 }
-                self.split.list_or(&list);
-            }
-            if !child.is_named() {
+                continue;
+            };
+            reading.next += 1;
+            let Some((stage, level)) = self.list_child(reading, child) else {
+                continue;
+            };
+            if reading.link.is_none() && child.kind() == "list" {
+                if self.enter(child, level, false) {
+                    self.list_open(open, child, stage, level);
+                } else {
+                    self.split.list_head(false);
+                    reading.at += 1;
+                }
                 continue;
             }
-            // A `cd` on the right side runs only when the left let it: when
-            // it did not (`cd sub && cd sub2`), the line may still be where
-            // that side began, or where the list did.
-            let link = (at > 0).then(|| self.split.link_start());
-            // A redirect on the whole list is opened before its last command
-            // runs, and after the ones before it did: after `&&`, where a
-            // plain `cd` before it that failed left the line is not one.
-            if Some(child.id()) == last {
-                self.tail = Some(Tail {
-                    here: self.split.opens_here(),
-                    now: self.split.opens_now(),
-                    moved: self.split.moved_so_far(),
-                    moves: self.split.moves_so_far(),
-                    first: self.split.units.len(),
-                });
-            }
-            if let Some(link) = link {
-                self.walk(child, stage, level + 1);
-                self.split.link_end(&list, link);
-                if let Some(exit) = exit.take() {
-                    self.split.exited(exit);
-                }
-            } else {
-                self.split.list_head(heads_list(child));
-                self.walk(child, stage, level + 1);
-                self.split.list_head(false);
-            }
-            at += 1;
+            return Some((child, stage, level));
         }
-        self.split.list_end(list);
+    }
+
+    /// Take `child`, the next child of the list `reading` holds: `None` when
+    /// it is an operator, and otherwise the stage and level to read the
+    /// command at, the link begun when it is on the right side of `&&` or
+    /// `||`.
+    #[inline(never)]
+    fn list_child(
+        &mut self,
+        reading: &mut Listed<'_>,
+        child: Node<'_>,
+    ) -> Option<(Option<Stage>, usize)> {
+        let stage = match reading.staged {
+            Some((last, outer)) if child.id() != last => outer,
+            _ => reading.stage,
+        };
+        // The right side of `||` only runs when the left failed: a `cd`
+        // on the left may not have moved the line. When that side ends
+        // the shell (`cd s || exit`), the rest of the line runs only
+        // where the left side took it.
+        if child.kind() == "||" {
+            // A redirect the grammar holds on the whole list is on its
+            // last command (`cd s || exit 2> e`).
+            // A left side that may succeed when its `cd` failed (`! cd
+            // s || exit`, or a `cd` the line made a function of) does
+            // not say the `cd` ran.
+            if reading.stage.is_none()
+                && reading.staged.is_none()
+                && child
+                    .next_named_sibling()
+                    .is_some_and(|right| self.exits(right))
+                && !redirected_last(reading.node)
+                && !child.prev_named_sibling().is_none_or(negates)
+                && !["cd", "chdir", "pushd", "popd"]
+                    .iter()
+                    .any(|name| self.split.defines_function(name))
+            {
+                reading.exit = Some(self.split.exits_after());
+            }
+            self.split.list_or(&reading.list);
+        }
+        if !child.is_named() {
+            return None;
+        }
+        // A `cd` on the right side runs only when the left let it: when
+        // it did not (`cd sub && cd sub2`), the line may still be where
+        // that side began, or where the list did.
+        reading.link = (reading.at > 0).then(|| self.split.link_start());
+        // A redirect on the whole list is opened before its last command
+        // runs, and after the ones before it did: after `&&`, where a
+        // plain `cd` before it that failed left the line is not one.
+        if Some(child.id()) == reading.last {
+            self.tail = Some(Tail {
+                here: self.split.opens_here(),
+                now: self.split.opens_now(),
+                moved: self.split.moved_so_far(),
+                moves: self.split.moves_so_far(),
+                first: self.split.units.len(),
+            });
+        }
+        if reading.link.is_none() {
+            self.split.list_head(heads_list(child));
+        }
+        Some((stage, reading.level + 1))
+    }
+
+    /// After the walk read the command [`Walker::list_next`] gave it, of the
+    /// list on top of `open`.
+    #[inline(never)]
+    fn list_walked(&mut self, open: &mut [Listed<'_>]) {
+        let Some(reading) = open.last_mut() else {
+            return;
+        };
+        if let Some(link) = reading.link.take() {
+            self.split.link_end(&reading.list, link);
+            if let Some(exit) = reading.exit.take() {
+                self.split.exited(exit);
+            }
+        } else {
+            self.split.list_head(false);
+        }
+        reading.at += 1;
     }
 
     /// Whether `node`, the right side of an `||`, ends the shell: the

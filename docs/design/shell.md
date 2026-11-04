@@ -769,6 +769,31 @@ has 300 lines of `std::cout << x << \` are safe; the same header through an
 unquoted `<<EOF` (whose body joins lines at each backslash) is counted, and
 turned away past 256 `<<` on one joined line.
 
+The parse tree depth bounds the walk, which recurses once for each level of
+the tree, so what a level takes of the stack is kept small: each kind of
+node a walk reads in a way of its own is read in a method of its own, so the
+frame the walk recurses through holds the dispatch and no more. That holds in
+a debug build, where every local takes room of its own, and in a release
+build, where the optimizer would inline those methods back into the frame the
+walk recurses through and make it bigger than before: each is marked
+`#[inline(never)]`, as the other helpers the walk calls are. A deep tree that
+is a long line rather than a nested one is not recursed through at all. The
+POSIX grammar makes the left side of each `&&` and `||` a list of its own (`a
+&& b && c` is `(a && b) && c`), so a chain is as deep as it is long, thousands
+of levels at the length limit: the walk reads the lists on the left of a list
+in a loop that holds each one on the heap. Each is still a level of the tree,
+so a chain past the depth limit is unreadable, as before (`echo x && `
+repeated reads 397 times, and not 398). An arithmetic assignment nests to the
+right in the same way (`x = y = 1` is `x = (y = 1)`), and its operands are
+read apart from the walk, for a `GLOBIGNORE` among them, so the depth limit
+does not bound that read: it takes the chain apart in a loop, once for the
+whole chain. A walk that overflowed the stack would abort the process, which
+no caller can catch: `tests/robust.rs` reads the longest `&&`, `||`, `;`, `|`
+and `&` chains, the longest arithmetic assignments, lists in subshells as
+deep as a line may hold them, and PowerShell's chains of members and of
+operators, in every shell, on a thread with the 2 MiB stack a test thread
+has.
+
 The grammars themselves take time that grows with the square of the line on
 some noise. Measured in a release build at 65,000 bytes (the longest line),
 before the budget of what a lexer reads: in POSIX, `)` repeated took about 10

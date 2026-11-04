@@ -200,6 +200,73 @@ fn nesting_the_count_of_open_parens_cannot_see_is_stopped_by_the_walk() {
     }
 }
 
+#[test]
+#[allow(
+    clippy::disallowed_types,
+    reason = "the guard starts no thread; this test starts one for the stack it is given"
+)]
+fn the_longest_chains_are_read_on_a_small_stack() {
+    // The POSIX grammar makes the left side of each `&&` and `||` a list of
+    // its own (`a && b && c` is `(a && b) && c`), so a chain at the length
+    // limit is thousands of levels deep, and a walk that recursed into them
+    // overflowed the stack of a debug build: an abort, which no caller can
+    // catch. The walk of each grammar nests as deep as the tree, to the
+    // depth limit, so its frame is kept small, and what reads a chain apart
+    // from the walk reads it in a loop. Each chain is read on a thread with
+    // a test thread's 2 MiB stack, in every shell, whatever stack the test
+    // runner gives its own.
+    let fit = |head: &str, unit: &str, tail: &str| {
+        let room = 64 * 1024 - head.len() - tail.len();
+        head.to_string() + &unit.repeat(room / unit.len()) + tail
+    };
+    let chains = [
+        fit("", "echo x && ", "echo"),
+        fit("", "echo x || ", "echo"),
+        fit("", "cd a && echo x || ", "echo"),
+        fit("", "echo x; ", "echo"),
+        fit("", "echo x | ", "cat"),
+        fit("", "echo x & ", "echo"),
+        // An arithmetic assignment nests to the right, a level for each `=`,
+        // and its operands are read whole for a `GLOBIGNORE` among them.
+        fit("((", "x=", "1))"),
+        fit("echo $((", "x=", "1))"),
+        fit("((", "x+=", "1))"),
+        // Lists in subshells, as deep as the count of open `(` lets a line be.
+        "(echo x && ".repeat(199) + "echo" + &")".repeat(199),
+        // PowerShell nests a chain of members, and of operators, a level
+        // for each.
+        "$x".to_string() + &".a()".repeat(16_000),
+        "'a'".to_string() + &" -replace 'a', 'b'".repeat(3_000),
+    ];
+    let read = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            for shell in [Shell::Posix, Shell::PowerShell, Shell::Cmd] {
+                let paths = if shell == Shell::Posix {
+                    posix()
+                } else {
+                    windows()
+                };
+                for chain in &chains {
+                    let _ = classify(chain, shell, &paths);
+                    let _ = effect(chain, shell, &paths);
+                    let _ = explain(chain, shell, &paths).to_string();
+                }
+            }
+            // Past the depth limit, a chain is unreadable.
+            for chain in &chains[..3] {
+                assert!(
+                    explained_unreadable(chain, Shell::Posix, &posix()),
+                    "{}",
+                    &chain[..20]
+                );
+            }
+        })
+        .expect("a thread for the chains")
+        .join();
+    assert!(read.is_ok());
+}
+
 /// Source with a stream operator on each line, written into a file by a
 /// here-document or a PowerShell here-string.
 fn cpp_lines() -> String {
