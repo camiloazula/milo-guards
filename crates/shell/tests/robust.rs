@@ -783,58 +783,103 @@ fn input_redirects_over_many_units_are_read_in_linear_time() {
         .any(|finding| finding.rule == Rule::SendSecret));
 }
 
+/// A command `strace -o '|…'` pipes to, nested in another as deep as fits
+/// in `size` bytes: each level quotes the one inside it again, so the line
+/// grows fast.
+fn nested_outputs(size: usize) -> String {
+    let mut nested = "rm -rf ~".to_string();
+    loop {
+        let deeper = format!("strace -o '|{}' ls", nested.replace('\'', r"'\''"));
+        if deeper.len() > size {
+            return nested;
+        }
+        nested = deeper;
+    }
+}
+
+/// The wrappers that name their output many times: the head, the part
+/// repeated, and the tail.
+const OUTPUT_SHAPES: [(&str, &str, &str); 6] = [
+    ("strace ", "-o /etc/passwd ", "ls"),
+    ("strace ", "-fo/etc/passwd ", "ls"),
+    ("time ", "-ao /etc/passwd ", "ls"),
+    ("ltrace ", "--out=/etc/passwd ", "ls"),
+    ("script -c ls ", "-F /etc/passwd -O x ", ""),
+    ("strace ", "-o '|ls' ", "ls"),
+];
+
+/// `script` given its output and then a file of its own, `-O a0 -O a1 …`,
+/// as many times as fit in `size` bytes.
+fn numbered_outputs(size: usize) -> String {
+    let mut line = "script -c ls -O /etc/passwd ".to_string();
+    for at in 0.. {
+        let word = format!("-O a{at} ");
+        if line.len() + word.len() > size {
+            break;
+        }
+        line += &word;
+    }
+    line
+}
+
+#[test]
+fn a_wrapper_that_names_its_output_many_times_is_not_safe() {
+    // Each output option is a write of its own, read once; `script` reads
+    // its options among its operands, both ways `-F` reads; and a command
+    // `strace -o '|…'` pipes to is a script of its own, nested no deeper than
+    // any other. (`-o '|ls'` writes nowhere.)
+    for count in [16, 2_000] {
+        let numbered = (0..count).fold(String::new(), |words, i| words + &format!("-O a{i} "));
+        let lines = OUTPUT_SHAPES
+            .iter()
+            .filter(|(_, part, _)| !part.contains("'|ls'"))
+            .map(|(head, part, tail)| format!("{head}{}{tail}", part.repeat(count)))
+            // Each value its own file.
+            .chain([format!("script -c ls -O /etc/passwd {numbered}")]);
+        for line in lines {
+            assert!(line.len() <= 64 * 1024, "{}", line.len());
+            assert!(
+                !classify(&line, Shell::Posix, &posix()).is_safe(),
+                "{count} x {}",
+                &line[..20]
+            );
+        }
+    }
+    for size in [1024, 64 * 1024] {
+        let line = nested_outputs(size);
+        assert!(!classify(&line, Shell::Posix, &posix()).is_safe(), "{size}");
+    }
+}
+
 #[test]
 #[cfg_attr(
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
-fn a_wrapper_that_names_its_output_many_times_is_read_quickly_and_not_safe() {
-    // Each output option is a write of its own, read once; `script` reads
-    // its options among its operands, both ways `-F` reads; and a command
-    // `strace -o '|…'` pipes to is a script of its own, nested no deeper than
-    // any other.
-    for count in [16, 2_000] {
-        // Each level quotes the one inside it again, so the line grows
-        // fast: as deep as fits in a line.
-        let mut nested = "rm -rf ~".to_string();
-        for _ in 0..count {
-            let deeper = format!("strace -o '|{}' ls", nested.replace('\'', r"'\''"));
-            if deeper.len() > 64 * 1024 {
-                break;
-            }
-            nested = deeper;
-        }
-        let lines = [
-            format!("strace {}ls", "-o /etc/passwd ".repeat(count)),
-            format!("strace {}ls", "-fo/etc/passwd ".repeat(count)),
-            format!("time {}ls", "-ao /etc/passwd ".repeat(count)),
-            format!("ltrace {}ls", "--out=/etc/passwd ".repeat(count)),
-            format!("script -c ls {}", "-F /etc/passwd -O x ".repeat(count)),
-            // Each value its own file.
-            format!(
-                "script -c ls -O /etc/passwd {}",
-                (0..count).fold(String::new(), |words, i| words + &format!("-O a{i} "))
-            ),
-            format!("strace {}ls", "-o '|ls' ".repeat(count)),
-            nested,
-        ];
-        for line in lines {
-            if line.len() > 64 * 1024 {
-                continue;
-            }
-            let took = took(&line, Shell::Posix, &posix());
-            assert!(
-                took < Duration::from_millis(500),
-                "took {took:?} for {count} x {}",
-                &line[..20]
-            );
-            if !line.contains("'|ls'") {
-                assert!(
-                    !classify(&line, Shell::Posix, &posix()).is_safe(),
-                    "{count} x {}",
-                    &line[..20]
-                );
-            }
-        }
+fn a_wrapper_that_names_its_output_many_times_is_read_in_linear_time() {
+    // Each of the lines above, of 64 KB and of 16 KB: the one takes about
+    // four times as long as the other, not sixteen. Nested, the line of
+    // 64 KB is the one level deeper that fits, about three times as long.
+    for (head, part, tail) in OUTPUT_SHAPES {
+        assert_linear_by(
+            &format!("{head}{part}…{tail}"),
+            |line| took(line, Shell::Posix, &posix()),
+            |size| {
+                format!(
+                    "{head}{}{tail}",
+                    filled(part, size, head.len() + tail.len())
+                )
+            },
+        );
     }
+    assert_linear_by(
+        "script -c ls -O /etc/passwd -O a0 -O a1 …",
+        |line| took(line, Shell::Posix, &posix()),
+        numbered_outputs,
+    );
+    assert_linear_by(
+        "strace -o '|strace -o …' ls",
+        |line| took(line, Shell::Posix, &posix()),
+        nested_outputs,
+    );
 }
