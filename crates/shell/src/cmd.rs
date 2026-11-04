@@ -20,7 +20,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         format!("{text}\n")
     };
     let language = tree_sitter_batch::LANGUAGE.into();
-    let Some(tree) = unit::parse(split, &text, &language) else {
+    let Some(tree) = unit::parse(split, &text, &language, unit::Recovery::Cheap) else {
         return;
     };
     assigned(split, tree.root_node(), &text);
@@ -353,7 +353,7 @@ impl Walker<'_> {
             return true;
         }
         let language = tree_sitter_batch::LANGUAGE.into();
-        if let Some(tree) = unit::parse(self.split, &text, &language) {
+        if let Some(tree) = unit::parse(self.split, &text, &language, unit::Recovery::Cheap) {
             assigned(self.split, tree.root_node(), &text);
             let mut walker = Walker {
                 source: &text,

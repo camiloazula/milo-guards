@@ -38,7 +38,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     // in lower case.
     let lowered = numbers::lower(ascii.as_ref());
     let text = lowered.as_ref();
-    let Some(first) = unit::parse(split, text, &language) else {
+    let Some(first) = unit::parse(split, text, &language, unit::Recovery::Counted) else {
         return;
     };
     // A line the grammar cannot read stays unreadable, whatever else is found
@@ -49,7 +49,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let (text, tree) = if first.root_node().has_error() {
         if let Cow::Owned(rewritten) = variable_paths(text) {
             fixed = rewritten;
-            let Some(again) = unit::parse(split, &fixed, &language) else {
+            let Some(again) = unit::parse(split, &fixed, &language, unit::Recovery::Counted) else {
                 return;
             };
             (fixed.as_str(), again)

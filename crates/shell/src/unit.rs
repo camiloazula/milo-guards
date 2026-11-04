@@ -1373,6 +1373,11 @@ pub(crate) struct Split {
     /// bytes their lexers were handed for it: see [`MAX_LEXED`].
     parsed: usize,
     lexed: usize,
+    /// The characters the lexers of the grammars whose recoveries are
+    /// counted moved over for the line, and the recoveries from an error
+    /// those grammars started: see [`MAX_SCANNED`] and [`MAX_RECOVERIES`].
+    scanned: usize,
+    recoveries: usize,
     /// How many times the line has forked into two readings, each judged
     /// (see [`crate::launch::Launch::Either`]).
     forks: usize,
@@ -4766,6 +4771,50 @@ const MAX_LEXED_BASE: usize = 4 * 1024 * 1024;
 /// character does): see [`MAX_LEXED`].
 const LEXED_PIECE: usize = 256;
 
+/// How many times the POSIX and PowerShell grammars may start to recover
+/// from an error in a line before the parse is stopped and the line is
+/// unreadable, as the grammar's log says (`resume version`, see
+/// [`Recovery::Counted`]). Each start tries every token the grammar knows as
+/// a missing one, with every reduction that token allows: up to some tens of
+/// microseconds in PowerShell, whose grammar has hundreds of tokens and a
+/// dozen levels of expression, so noise that recovers at every token (`${a}`
+/// or `1 2 ` repeated) took half a second at the length limit while it read
+/// no more text, and took no more steps, than a plain line. A line with any
+/// error is unreadable already; past this many only the findings beside the
+/// errors are lost. A line people write recovers a few times, if at all.
+const MAX_RECOVERIES: usize = 256;
+
+/// How many characters the lexers of the grammars whose recoveries are
+/// counted may move over for a line before the parse is stopped and the line
+/// is unreadable: [`MAX_SCANNED_BASE`], and [`MAX_SCANNED`] times the text
+/// parsed for the line, as the grammar's log says (one entry for each
+/// character the lexer moves over, again or for the first time). The log
+/// that counts recoveries makes each character dearer to read, so these
+/// grammars are held to less than what [`MAX_LEXED`] allows: their real
+/// shapes move over a few times the text at most (a double-quoted `${` 400
+/// deep, 160 KiB), where noise that goes back over the rest of the line at
+/// every token moves over gigabytes.
+const MAX_SCANNED: usize = 4;
+
+/// See [`MAX_SCANNED`].
+const MAX_SCANNED_BASE: usize = 512 * 1024;
+
+/// Whether the grammar a text is parsed with has its recoveries from errors
+/// counted (see [`MAX_RECOVERIES`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// cmd's grammar: it has few tokens and recovers in microseconds, and
+    /// what makes it slow is its lexer going back over the line, which
+    /// [`MAX_LEXED`] stops. The log that counts would make every character
+    /// it reads several times dearer, and its real shapes read hundreds of
+    /// times their text (a chain of 400 commands), so it is not kept.
+    Cheap,
+    /// The POSIX and PowerShell grammars: the parse keeps the grammar's log,
+    /// counts the recoveries it starts and the characters its lexer moves
+    /// over, and stops past [`MAX_RECOVERIES`] or [`MAX_SCANNED`].
+    Counted,
+}
+
 /// The most folders a redirect is placed from for the calls it covers to
 /// functions that move the line: each is a place the redirect is judged
 /// from, and a line that calls more than this many (each from another
@@ -5118,29 +5167,71 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
 }
 
 /// Parse `text` with `language`; `None` (and a finding) when the parser
-/// gives nothing back or reads past its budget (see [`MAX_LEXED`]), and a
-/// finding beside the tree when part of it is an error.
+/// gives nothing back or reads past its budget (see [`MAX_LEXED`], and for a
+/// grammar whose recoveries are counted, [`MAX_RECOVERIES`] and
+/// [`MAX_SCANNED`]), and a finding beside the tree when part of it is an
+/// error.
 pub(crate) fn parse(
     split: &mut Split,
     text: &str,
     language: &tree_sitter::Language,
+    recovery: Recovery,
 ) -> Option<tree_sitter::Tree> {
+    use std::cell::Cell;
+    let bytes = text.as_bytes();
+    // The budgets are the line's, shared by every script and piece of code
+    // in it, so a line that starts many cannot spend them many times over.
+    split.parsed = split.parsed.saturating_add(bytes.len());
+    let allowed = MAX_LEXED
+        .saturating_mul(split.parsed)
+        .saturating_add(MAX_LEXED_BASE);
+    let scan_allowed = MAX_SCANNED
+        .saturating_mul(split.parsed)
+        .saturating_add(MAX_SCANNED_BASE);
+    // A budget an earlier parse of the line spent is checked only as the
+    // grammar reads, and a grammar starts its first recovery from an error
+    // in full before it reads again: each later script with an error would
+    // pay for one, with no limit but the length of the line. So a parse
+    // starts only while every budget is left.
+    if split.lexed > allowed || split.scanned > scan_allowed || split.recoveries > MAX_RECOVERIES {
+        split.problem(Rule::Unreadable, "takes too long to read", None);
+        return None;
+    }
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(language).is_err() {
         split.problem(Rule::Unreadable, "cannot be read", None);
         return None;
     }
-    let bytes = text.as_bytes();
-    // The budget is the line's, shared by every script and piece of code in
-    // it, so a line that starts many cannot spend it many times over.
-    split.parsed = split.parsed.saturating_add(bytes.len());
-    let budget = MAX_LEXED
-        .saturating_mul(split.parsed)
-        .saturating_add(MAX_LEXED_BASE)
-        .saturating_sub(split.lexed);
+    let budget = allowed.saturating_sub(split.lexed);
+    let scan_budget = scan_allowed.saturating_sub(split.scanned);
+    let recovery_budget = MAX_RECOVERIES.saturating_sub(split.recoveries);
+    // What the grammar's log has said so far: the characters its lexer moved
+    // over, and the recoveries from an error it started.
+    let logged = Rc::new([Cell::new(0_usize), Cell::new(0_usize)]);
+    if recovery == Recovery::Counted {
+        let logged = Rc::clone(&logged);
+        parser.set_logger(Some(Box::new(move |kind, message: &str| {
+            let at = match kind {
+                tree_sitter::LogType::Lex => 0,
+                tree_sitter::LogType::Parse if message.starts_with("resume version") => 1,
+                tree_sitter::LogType::Parse => return,
+            };
+            logged[at].set(logged[at].get().saturating_add(1));
+        })));
+    }
     // The bytes handed to the grammar so far.
-    let lexed = std::cell::Cell::new(0_usize);
+    let lexed = Cell::new(0_usize);
+    let over = || {
+        lexed.get() > budget || logged[0].get() > scan_budget || logged[1].get() > recovery_budget
+    };
     let mut read = |at: usize, _: tree_sitter::Point| -> &[u8] {
+        // Past a budget the text ends here, so a lexer that reads on to the
+        // end of the line at every token stops at once, not at the next
+        // look the parser takes at its progress.
+        if over() {
+            lexed.set(lexed.get().saturating_add(1));
+            return &[];
+        }
         // A piece at a time, ending where a character does: the lexer asks
         // again past each piece, and whenever it goes back before one.
         let end = (at.saturating_add(LEXED_PIECE)..=bytes.len())
@@ -5151,7 +5242,7 @@ pub(crate) fn parse(
         piece
     };
     let mut progress = |_: &tree_sitter::ParseState| {
-        if lexed.get() > budget {
+        if over() {
             std::ops::ControlFlow::Break(())
         } else {
             std::ops::ControlFlow::Continue(())
@@ -5159,8 +5250,11 @@ pub(crate) fn parse(
     };
     let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
     let tree = parser.parse_with_options(&mut read, None, Some(options));
+    let stopped = over();
     split.lexed = split.lexed.saturating_add(lexed.get());
-    if lexed.get() > budget {
+    split.scanned = split.scanned.saturating_add(logged[0].get());
+    split.recoveries = split.recoveries.saturating_add(logged[1].get());
+    if stopped {
         split.problem(Rule::Unreadable, "takes too long to read", None);
         return None;
     }

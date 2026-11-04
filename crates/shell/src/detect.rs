@@ -1202,6 +1202,13 @@ impl Checker<'_> {
             folder
         };
         self.selinux_landing((shell, scope.dir), (into, leaves), recursive, destination);
+        // Each name is placed with the whole folder in front of it, so the
+        // work is the names times the folder: past a bound the line is not
+        // read name by name.
+        if !landings_in_bound(folder, leaves) {
+            self.add(Rule::Unreadable, "names too many paths to read", None);
+            return;
+        }
         // What a folder's contents replace is read with the folder.
         for &leaf in leaves.iter().filter(|leaf| **leaf != CONTENTS) {
             let landing = Arg::Known(format!("{folder}/{leaf}"));
@@ -1992,7 +1999,11 @@ fn unread_target(arg: &Arg, shell: Shell) -> Option<Arg> {
     Some(Arg::Unknown(value.to_string()))
 }
 
-/// The files a unit writes, for matching a script the line then runs.
+/// The files a unit writes, for matching a script the line then runs. Only
+/// the files it names: whether it also writes files it does not name (a
+/// copy past [`MAX_LANDING_BYTES`], an item handed on) is read for every
+/// unit of the line by [`Checker::note_writes`], from [`written_with`], and
+/// makes a later run of any file risky, wherever the line may be.
 pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
     written_with(unit, None).0
 }
@@ -2021,7 +2032,10 @@ fn written_with(unit: &Unit, handed: Option<&dyn Fn() -> Vec<Arg>>) -> (Vec<Arg>
             .collect(),
         "cp" | "install" | "mv" | "ln" if unit.shell != Shell::PowerShell => {
             let (sources, destination) = sources_and_destination(args, &COPY_VALUED, unit.shell);
-            destination.map_or_else(Vec::new, |destination| into_folder(&destination, &sources))
+            return destination.map_or_else(
+                || (Vec::new(), false),
+                |destination| into_folder(&destination, &sources),
+            );
         }
         "tee" if unit.shell != Shell::PowerShell => {
             operands(args, &[]).into_iter().cloned().collect()
@@ -2066,10 +2080,11 @@ fn copy_written(unit: &Unit, handed: Option<&dyn Fn() -> Vec<Arg>>) -> (Vec<Arg>
         .or_else(|| positional.next().and_then(|list| list.first().copied()))
         .or_else(|| (!sources.is_empty()).then_some(&here));
     let unnamed = piped.iter().any(|item| item.known().is_none());
-    let written = destination.map_or_else(Vec::new, |destination| {
-        into_folder(&or_here(destination), &sources)
-    });
-    (written, unnamed)
+    let (written, unlisted) = destination.map_or_else(
+        || (Vec::new(), false),
+        |destination| into_folder(&or_here(destination), &sources),
+    );
+    (written, unnamed || unlisted)
 }
 
 /// The files `dd` writes: the value of each `of=` operand, and a file only
@@ -2208,23 +2223,57 @@ fn or_here(destination: &Arg) -> Arg {
 }
 
 /// What a copy to `destination` writes: the destination itself, or, as a
-/// folder, each source's name inside it.
-fn into_folder(destination: &Arg, sources: &[&Arg]) -> Vec<Arg> {
+/// folder, each source's name inside it, each name once (a name given twice
+/// is the one file). Also whether it writes files it does not name: more
+/// names, with the folder in front of each, than [`landings_in_bound`]
+/// reads, which may be any file of the folder.
+fn into_folder(destination: &Arg, sources: &[&Arg]) -> (Vec<Arg>, bool) {
     let mut written = vec![destination.clone()];
     if let Arg::Known(folder) = destination {
         let folder = folder.trim_end_matches(['/', '\\']);
-        for source in sources {
-            if let Some(name) = source
-                .known()
-                .and_then(|path| path.rsplit(['/', '\\']).next())
-                .filter(|name| !name.is_empty())
-            {
-                written.push(Arg::Known(format!("{folder}/{name}")));
-            }
+        let mut seen = HashSet::new();
+        let names: Vec<&str> = sources
+            .iter()
+            .filter_map(|source| {
+                source
+                    .known()
+                    .and_then(|path| path.rsplit(['/', '\\']).next())
+                    .filter(|name| !name.is_empty())
+            })
+            .filter(|name| seen.insert(*name))
+            .collect();
+        if !landings_in_bound(folder, &names) {
+            return (written, true);
+        }
+        for name in names {
+            written.push(Arg::Known(format!("{folder}/{name}")));
         }
     }
-    written
+    (written, false)
 }
+
+/// Whether the paths `names` land at in `folder`, each the folder and a
+/// name, add up to no more than [`MAX_LANDING_BYTES`].
+fn landings_in_bound(folder: &str, names: &[&str]) -> bool {
+    names
+        .iter()
+        .map(|name| folder.len().saturating_add(name.len()).saturating_add(1))
+        .try_fold(0_usize, |total, each| {
+            Some(total.saturating_add(each)).filter(|total| *total <= MAX_LANDING_BYTES)
+        })
+        .is_some()
+}
+
+/// The most bytes the paths the files of one copy, move or link land at may
+/// add up to, each the folder they go into and a name, before they are not
+/// read one by one: each is placed whole, so a line of thousands of names
+/// into a folder thousands of bytes long (well inside the longest line)
+/// would place gigabytes, and take seconds. A real copy names a few files
+/// into a short folder; past the bound a copy is `unreadable`, `names too
+/// many paths to read`, and what it writes may be any file of the folder.
+/// The copies followed for a secret the line sends are held to it too (see
+/// `copied_by` in `send.rs`).
+const MAX_LANDING_BYTES: usize = 256 * 1024;
 
 /// The files `curl` or `wget` downloads into: `curl -o FILE` (also at the
 /// end of a bundle, `-fsSLo FILE`), `curl -O` and plain `wget` (the URL's

@@ -104,3 +104,19 @@ posix finds=delete | echo ')(' ; rm -rf /
 posix finds=delete | cat <<'EOF'\n(\nEOF\nrm -rf /
 cmd safe | echo "a & b | (c"
 cmd finds=delete | echo "a & b" & rd /s /q C:\\
+
+# Noise the grammars recover from at every token, as each starts at the
+# length limit: under the count of recoveries it is read as far as an error
+# is, and a finding beside the errors is kept.
+powershell rules=unreadable first=unreadable reason="cannot be read in full" | ${a}${a}${a}${a}
+powershell rules=unreadable first=unreadable reason="cannot be read in full" | ${a} ${a} ${a} ${a}
+powershell rules=unreadable first=unreadable reason="cannot be read in full" | $a${a}$a${a}$a${a}
+powershell rules=unreadable first=unreadable reason="cannot be read in full" | {{{{{{{{{{}}}}}}}}}}{{{{{{{{{{}}}}}}}}}}
+powershell rules=unreadable first=unreadable reason="cannot be read in full" | 1 2 1 2 1 2
+powershell rules=unreadable first=unreadable reason="cannot be read in full" | $a[0]$a[0]$a[0]
+posix rules=unreadable,unknown first=unreadable reason="cannot be read in full" | ${a${a${a${a${a${a${a${a${a${a}}}}}}}}}}${a${a${a${a${a${a${a${a${a${a}}}}}}}}}}
+powershell finds=unreadable,delete | 1 2 1 2; Remove-Item -Recurse ~
+cmd rules=unreadable,unknown first=unreadable reason="cannot be read in full" | for %%i in (a) do for %%i in (a) do for %%i in (a) do\s
+# A name a copy gives again and again lands at one path.
+posix finds=overwrite reason="writes to a system folder" | cp -r a a a a a a /etc/x
+posix safe | cp -r a a a a a a sub/dir/

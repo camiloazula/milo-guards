@@ -299,6 +299,10 @@ pub(super) struct Flow {
     /// Whether the line wrote files from a secret further than
     /// [`MAX_PASSES`] follow: what it sends is not known.
     unfollowed: bool,
+    /// Whether a copy, move, link or archive the line makes names too many
+    /// paths to follow (see [`copied_by`]): what it writes may be any file
+    /// of where it writes, so what the line sends is not known.
+    unlisted: bool,
     /// A secret the unit itself reads: an argument that names one, the
     /// environment, a variable that holds one, a file redirected onto it.
     own: Vec<Option<Hit>>,
@@ -405,7 +409,7 @@ impl Checker<'_> {
         if !self.can_send() {
             return Flow::default();
         }
-        let copies = self.copies();
+        let (copies, unlisted) = self.copies();
         let mut written = self.copied(&copies, HashMap::new());
         let mut flow = self.trace_with(written.clone());
         for pass in 1..=MAX_PASSES {
@@ -423,17 +427,24 @@ impl Checker<'_> {
             }
             flow = self.trace_with(written.clone());
         }
+        flow.unlisted = unlisted;
         flow
     }
 
     /// Every file the line copies, links, packs or redirects into another:
-    /// what one holds, the other then holds.
-    fn copies(&self) -> Vec<Copy> {
+    /// what one holds, the other then holds. Also whether a command copies
+    /// into more paths than are followed (see [`copied_by`]).
+    fn copies(&self) -> (Vec<Copy>, bool) {
         let units = &self.split.units;
         let mut found = Vec::new();
+        let mut unlisted = false;
         for (at, unit) in units.iter().enumerate() {
             let Some(key) = unit.key() else { continue };
-            for (from, to, whole, workspace) in copied_by(unit, &key) {
+            let Some(copies) = copied_by(unit, &key) else {
+                unlisted = true;
+                continue;
+            };
+            for (from, to, whole, workspace) in copies {
                 self.note_copy(&mut found, at, from, &to, (whole, workspace));
             }
         }
@@ -469,7 +480,7 @@ impl Checker<'_> {
                 self.note_copy(&mut found, at, from, to, (false, false));
             }
         }
-        found
+        (found, unlisted)
     }
 
     /// Note that the unit at `at` puts what `from` holds into `to`, a whole
@@ -1247,6 +1258,10 @@ impl Checker<'_> {
                 None,
             );
         }
+        if self.flow.unlisted {
+            self.flow.unlisted = false;
+            self.add(Rule::Unreadable, "names too many paths to read", None);
+        }
         // A call of a function or an alias sends what it is given when its
         // body sends. (A use of an alias with words of its own is followed
         // by the command it runs, the alias's last command with the words
@@ -1843,20 +1858,42 @@ fn list_file(args: &[Arg], key: &str) -> Option<Arg> {
 /// the file it writes and whether it copies a whole folder: `cp`, `mv`,
 /// `install`, `ditto` and `ln` (into a folder, under the source's name
 /// there), `dd if= of=`, an `rsync` to a place on this machine, and the
-/// archive `tar` or `zip` writes to a file.
-fn copied_by(unit: &Unit, key: &str) -> Vec<(Arg, String, bool, bool)> {
+/// archive `tar` or `zip` writes to a file. Each source is taken once
+/// however often it is given. `None` when the paths the copies land at add
+/// up to more than [`super::MAX_LANDING_BYTES`]: each is placed whole, so
+/// thousands of names into a folder (or an archive) thousands of bytes long
+/// would place gigabytes, and the files the command writes are not named.
+fn copied_by(unit: &Unit, key: &str) -> Option<Vec<(Arg, String, bool, bool)>> {
     let args = unit.args.as_slice();
     let mut found = Vec::new();
+    // The bytes of the paths found so far, and whether they went past the
+    // bound.
+    let mut landed = 0_usize;
+    let mut over = false;
+    let mut land = |bytes: usize| {
+        landed = landed.saturating_add(bytes);
+        over |= landed > super::MAX_LANDING_BYTES;
+        !over
+    };
     let mut into = |sources: Vec<&Arg>, destination: &str, whole: bool, workspace: bool| {
+        let folder = destination.trim_end_matches('/');
+        let mut seen = HashSet::new();
         for source in sources {
-            found.push((source.clone(), destination.to_string(), whole, workspace));
-            if let Some(text) = source.known() {
+            if source.known().is_some_and(|text| !seen.insert(text)) {
+                continue;
+            }
+            let name = source.known().map(|text| {
                 let name = text.trim_end_matches('/');
-                let name = name.rsplit('/').next().unwrap_or(name);
-                if !name.is_empty() && !matches!(name, "." | "..") {
-                    let folder = destination.trim_end_matches('/');
-                    found.push((source.clone(), format!("{folder}/{name}"), whole, workspace));
-                }
+                name.rsplit('/').next().unwrap_or(name)
+            });
+            let name = name.filter(|name| !name.is_empty() && !matches!(*name, "." | ".."));
+            let bytes = name.map_or(0, |name| folder.len().saturating_add(name.len()) + 1);
+            if !land(destination.len().saturating_add(bytes)) {
+                return;
+            }
+            found.push((source.clone(), destination.to_string(), whole, workspace));
+            if let Some(name) = name {
+                found.push((source.clone(), format!("{folder}/{name}"), whole, workspace));
             }
         }
     };
@@ -1909,7 +1946,14 @@ fn copied_by(unit: &Unit, key: &str) -> Vec<(Arg, String, bool, bool)> {
         _ => {
             if let Some(archive) = archive(unit, key) {
                 for name in archive.to.iter().filter(|name| *name != "-") {
+                    let mut seen = HashSet::new();
                     for member in &archive.members {
+                        if member.known().is_some_and(|text| !seen.insert(text)) {
+                            continue;
+                        }
+                        if !land(name.len()) {
+                            return None;
+                        }
                         let workspace = archive.whole && !archive.leaves_out;
                         found.push((member.clone(), name.clone(), archive.whole, workspace));
                     }
@@ -1917,7 +1961,7 @@ fn copied_by(unit: &Unit, key: &str) -> Vec<(Arg, String, bool, bool)> {
             }
         }
     }
-    found
+    (!over).then_some(found)
 }
 
 /// What `tar` (creating) or `zip` packs: the files it writes the archive to

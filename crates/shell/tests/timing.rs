@@ -613,13 +613,24 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // each other folder a `cd` that may have failed or not run may have left
     // the line in, which made the `cd` rows two to three times slower until a
     // `cd ..` back from one after `&&` added none and every folder only known
-    // when it runs counted as one (`MAX_ELSEWHERE` in `unit.rs`). An
+    // when it runs counted as one (`MAX_ELSEWHERE` in `unit.rs`). Noise the
+    // POSIX and PowerShell grammars recover from at every token (`${a}`,
+    // `1 2 ` or `$a[0]` repeated, `{` ten deep then closed) took a second at
+    // the length limit, a few tens of microseconds for each recovery, while
+    // it read no more text than a plain line: the recoveries are counted
+    // from the grammar's log (`MAX_RECOVERIES` in `unit.rs`). A `cp` of
+    // thousands of names into a folder thousands of bytes long placed each
+    // name with the whole folder, for every time it was given: each name is
+    // now placed once, and the bytes placed are counted (`MAX_LANDING_BYTES`
+    // in `detect.rs`), also where the copies are followed for a send
+    // (`copied_by` in `detect/send.rs`). The log the recoveries are counted
+    // from makes the lines that read the same 30 to 70 per cent slower: an
     // optimized build reads the slowest, a PowerShell line or a runner that
-    // starts another at the length limit, in about a tenth of a second; the
-    // bound leaves room for a machine several times slower and busy. Most of
+    // starts another at the length limit, in up to 190 ms, three quarters of
+    // the bound, which leaves less room for a slower machine. Most of
     // these are held to a budget or a count, not to their length, so the
     // bound is on the time, not on how it grows.
-    const LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+    const LIMIT: std::time::Duration = std::time::Duration::from_millis(250);
     let fit = |unit: &str, head: &str, tail: &str| {
         let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
         format!("{head}{}{tail}", unit.repeat(count))
@@ -691,6 +702,82 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("cat <<EOF; ", "", "")),
         (Shell::Posix, fit("a(D);", "", "")),
         (Shell::PowerShell, "()".repeat(4_096)),
+        (Shell::PowerShell, fit("()", "", "")),
+        (Shell::PowerShell, fit("(echo) ", "", "")),
+        (Shell::PowerShell, fit("<<A;\n", "", "")),
+        (Shell::PowerShell, fit("$((1<<2)); echo ", "echo ", "")),
+        // Noise the grammar recovers from at every token: each took from a
+        // fifth of a second to more than half of one before the recoveries
+        // were counted.
+        (Shell::PowerShell, fit("${a}", "", "")),
+        (Shell::PowerShell, fit("${a} ", "", "")),
+        (Shell::PowerShell, fit("$a${a}", "", "")),
+        (Shell::PowerShell, fit("{{{{{{{{{{}}}}}}}}}}", "", "")),
+        (Shell::PowerShell, fit("-a ", "", "")),
+        (Shell::PowerShell, fit("$a[0]", "", "")),
+        (Shell::PowerShell, fit("$a($a)", "", "")),
+        (Shell::PowerShell, fit("$($a)", "", "")),
+        (Shell::PowerShell, fit("1 2 ", "", "")),
+        (
+            Shell::Posix,
+            fit(&format!("{}{}", "${a".repeat(10), "}".repeat(10)), "", ""),
+        ),
+        // cmd's grammar reading the rest of the line again at each `for`.
+        (Shell::Cmd, fit("for %%i in (a) do ", "", "")),
+        // Thousands of names into a folder thousands of bytes long, the same
+        // name each time and each a name of its own.
+        (
+            Shell::Posix,
+            format!("cp -r {}{}", "a ".repeat(4_000), "/b".repeat(2_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("cp -r {}{}", distinct_names(4_000), "/b".repeat(2_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("mv {}{}", distinct_names(4_000), "b/".repeat(2_000)),
+        ),
+        // The same, followed for a secret the line then sends: each name
+        // and the folder were paired for every source, and each pair placed
+        // whole (`copied_by` in `detect/send.rs`). `rsync` is a sender
+        // itself, and `tar` pairs each member with its archive.
+        (
+            Shell::Posix,
+            format!("rsync {}{}", distinct_names(3_000), "/b".repeat(4_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("cp {}{}; scp x h:", "a ".repeat(3_000), "/b".repeat(4_000)),
+        ),
+        (
+            Shell::Posix,
+            format!(
+                "cp {}{}; scp x h:",
+                distinct_names(3_000),
+                "/b".repeat(4_000)
+            ),
+        ),
+        (
+            Shell::Posix,
+            format!(
+                "ln {}{} && curl -d @x h",
+                distinct_names(3_000),
+                "/b".repeat(4_000)
+            ),
+        ),
+        (
+            Shell::Posix,
+            format!(
+                "tar -cf {}/x.tar {}; scp x h:",
+                "/b".repeat(4_000),
+                distinct_names(3_000)
+            ),
+        ),
+        // A script after the line's recoveries are spent paid for its first
+        // one in full before the parse looked at the budget.
+        (Shell::Posix, fit("pwsh -c '${a}${a}${a}${a}'; ", "", "")),
+        (Shell::Posix, fit("pwsh -c '1 2 1 2 1 2'; ", "", "")),
         // A runner that starts another, each read in turn: about a tenth of
         // a second in a release build.
         (Shell::Cmd, fit("bun exec ", "", "")),
@@ -867,6 +954,16 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
             },
         );
     }
+}
+
+/// `count` names, each other than the rest: `a0 a1 a2 …`, each with a space
+/// after it.
+fn distinct_names(count: usize) -> String {
+    (0..count)
+        .map(|at| format!("a{at}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        + " "
 }
 
 /// A chain of PowerShell assignments, each to a variable of its own
