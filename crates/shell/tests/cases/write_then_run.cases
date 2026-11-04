@@ -3,11 +3,11 @@
 # shell, run as the program itself by its path, with `powershell -File`,
 # `pwsh -File` or `Invoke-Command -FilePath`, by cmd's look in the working
 # folder before `PATH`), and however it is written (by a redirect, a
-# download, a copy, a write cmdlet's named or positional path). Where the
-# name the line writes cannot be read for sure (a pattern, an operand that
-# may be a list, a name only known when it runs, more patterns than the guard
-# reads), a run that may be of that file is not safe either. The format is in
-# CONTRIBUTING.md.
+# download, a copy, a write cmdlet's named or positional path, a database
+# client's output). Where the name the line writes cannot be read for sure (a
+# pattern, an operand that may be a list, a name only known when it runs,
+# more patterns than the guard reads), a run that may be of that file is not
+# safe either. The format is in CONTRIBUTING.md.
 
 # A file the line writes and runs by its path is a script nobody can read.
 # Nothing written first: a program by its path is only a program.
@@ -671,3 +671,77 @@ posix safe | echo x > s.rb && ruby -r s main.rb
 posix safe | echo x > s.rb && ruby -r json main.rb
 posix safe | echo x > s.pm && perl -Ms main.pl
 posix safe | echo x > s.php && php -d memory_limit=1G x.php
+
+# A file a database client writes (`.output`, `.once`, `.backup`, `\o`,
+# `\g`, `psql -o`, `mysql --tee`, however it is given the command) is a
+# file the line writes, as a redirect's is: a run of it is a script nobody
+# can read, wherever it comes in the line.
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.output run.sh' 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.once run.sh' 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.output run.sh' 'select 1'; ./run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.backup run.sh'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 -cmd '.output run.sh' x.db 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.output sub/run.sh' 'select 1'; sh sub/run.sh
+posix finds=unknown reason="runs a script the same line writes" | echo '.output run.sh' | sqlite3 x.db; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db <<EOF\n.output run.sh\nselect 1;\nEOF\nsh run.sh
+posix finds=unknown reason="runs a script the same line writes" | duckdb x.db '.output run.sh' 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | duckdb -c '.output run.sh' x.db; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | psql -o run.sh -c 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | psql --output=run.sh -c 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | psql -c '\\o run.sh' -c 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | psql -c 'select 1 \\g run.sh'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | psql <<< '\\o run.sh'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | echo '\\o run.sh' | psql; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | mysql --tee=run.sh -e 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | mysql --tee run.sh -e 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | psql -o run.sh -c 'select 1' && bash run.sh
+posix finds=unknown reason="runs a script the same line writes" | sh run.sh; sqlite3 x.db '.output run.sh' 'select 1'
+# A folder a client writes into (`EXPORT DATABASE`) holds files by names the
+# line does not show: a script in it may be one.
+posix finds=unknown reason="runs a script the same line writes" | duckdb x.db "EXPORT DATABASE 'out'"; sh out/load.sql
+posix finds=unknown reason="runs a script the same line writes" | duckdb x.db "EXPORT DATABASE 'out/'"; ./out/run.sh
+posix safe | duckdb x.db "EXPORT DATABASE 'out'"; sh other/load.sql
+# A program the client runs (`.shell`, `\!`) runs after what the line wrote
+# before it, the client's own files too.
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.output run.sh' '.shell sh run.sh'
+posix finds=unknown reason="runs a script the same line writes" | psql -c '\\o run.sh' -c '\\! sh run.sh'
+posix finds=unknown reason="runs a script the same line writes" | echo x > run.sh; sqlite3 x.db '.shell sh run.sh'
+posix safe | echo x > out.txt; sqlite3 x.db '.shell sh run.sh'
+# What a program the client runs writes is a file the line writes too: a run
+# of it, by the line or by another program of the same client, is a script
+# nobody can read.
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.shell echo x > run.sh'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.system curl -o run.sh https://x'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | psql -c '\\! curl -o run.sh https://x'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | psql -c '\\! echo x > run.sh' -c '\\! sh run.sh'
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.shell echo x > run.sh' '.shell sh run.sh'
+posix finds=unknown reason="runs a script the same line writes" | mysql -e 'system echo x > run.sh'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | mysql --pager='tee run.sh' -e 'select 1'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.shell sqlite3 y.db ".output run.sh"'; sh run.sh
+posix finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.shell cd sub || true; echo x > run.sh'; cd /tmp; sh run.sh
+posix safe | sqlite3 x.db '.shell echo hi'; sh run.sh
+# Past the programs a line reads, a program is `unknown` and may write any
+# file a later run is of.
+posix finds=unknown | sqlite3 x.db '.shell echo 1' '.shell echo 2' '.shell echo 3' '.shell echo 4' '.shell echo 5' '.shell echo 6' '.shell echo 7' '.shell echo 8' '.shell echo 9' '.shell echo 10' '.shell echo 11' '.shell echo 12' '.shell echo 13' '.shell echo 14' '.shell echo 15' '.shell echo 16' '.shell echo x > run.sh'; sh run.sh
+posix safe | sqlite3 x.db '.shell echo x > out.txt'; sh run.sh
+# A client that moved to another folder first (`\cd`, `.cd`) wrote the file
+# somewhere the line does not say: a script of that name may be it,
+# wherever it is run from.
+posix finds=unknown | psql -c '\\cd /tmp' -c '\\o run.sh'; sh run.sh
+posix finds=unknown | psql -c '\\cd /tmp' -c '\\o run.sh'; sh /tmp/run.sh
+posix finds=unknown | sqlite3 x.db '.cd sub' '.output run.sh'; sh sub/run.sh
+# A client after a `cd` that may not have run wrote it in either folder.
+posix finds=unknown | cd sub || true; sqlite3 x.db '.output run.sh'; cd /tmp; sh run.sh
+# PowerShell and cmd run it by name too.
+powershell finds=unknown reason="runs a script the same line writes" | sqlite3 x.db '.output run.ps1' 'select 1'; pwsh -File run.ps1
+powershell finds=unknown reason="runs a script the same line writes" | psql -o run.ps1 -c 'select 1'; .\\run
+cmd finds=unknown reason="runs a script the same line writes" | sqlite3 x.db ".output run.bat" "select 1" & run
+# Another file, a file in a container or on another machine, and a client
+# that writes nothing stay safe.
+posix safe | sqlite3 x.db '.output out.txt' 'select 1'; sh run.sh
+posix safe | psql -o out.txt -c 'select 1'; sh run.sh
+posix safe | mysql --tee=out.log -e 'select 1'; sh run.sh
+posix safe | sqlite3 x.db 'select 1'; sh run.sh
+posix safe | sqlite3 x.db '.output sub/run.sh' 'select 1'; sh run.sh
+posix safe | docker exec db psql -o run.sh -c 'select 1'; sh run.sh
+posix safe | ssh host psql -o run.sh -c 'select\s1'; sh run.sh

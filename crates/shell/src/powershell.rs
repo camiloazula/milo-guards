@@ -3572,6 +3572,7 @@ impl Walker<'_> {
             }
             !self.variables.inert(value, self.source)
         };
+        self.split.defaults |= defaults;
         if defaults && unread() {
             self.split.problem(
                 Rule::Unknown,
@@ -3599,6 +3600,8 @@ impl Walker<'_> {
             .iter()
             .find(|child| child.kind() == "member_name")
             .and_then(|member| blocks::called(*member, self.source));
+        // A method only known when it runs may be one of them.
+        self.split.defaults |= matches!(method.as_deref(), None | Some("add" | "set_item"));
         if !matches!(method.as_deref(), Some("add" | "set_item")) {
             return false;
         }

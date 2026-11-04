@@ -95,50 +95,36 @@ pub(crate) struct Judged {
 }
 
 pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
-    judge(split, resolver, data::Nest::default())
+    judge(split, resolver, data::Nest::default(), None)
 }
 
 /// What the rules find in `split`, a program a database client runs, read
-/// as a line of its own `nest` deep in such programs.
-fn nested(split: &Split, resolver: &Resolver, nest: data::Nest) -> Vec<Finding> {
-    judge(split, resolver, nest).found
+/// as a line of its own `nest` deep in such programs. It runs where the
+/// line `outer` judges started, and after it: a file that line writes is
+/// one this program may run.
+fn nested(split: &Split, outer: &Checker<'_>, nest: data::Nest) -> Vec<Finding> {
+    judge(split, outer.resolver, nest, Some(outer)).found
 }
 
 /// [`findings`], for a line `nest` deep in the programs database clients
-/// run (see [`data::Nest`]).
-fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
+/// run (see [`data::Nest`]), and run by the line `outer` judges.
+fn judge(
+    split: &Split,
+    resolver: &Resolver,
+    nest: data::Nest,
+    outer: Option<&Checker<'_>>,
+) -> Judged {
     let mut checker = Checker::new(split, resolver);
     checker.data.nest = nest;
+    if let Some(outer) = outer {
+        checker.written.clone_from(&outer.written);
+        checker.unplaced_write = outer.unplaced_write;
+        checker.patterns.clone_from(&outer.patterns);
+        checker.unsure_names.clone_from(&outer.unsure_names);
+        checker.anywhere = outer.anywhere;
+    }
     checker.found.clone_from(&split.findings);
-    for unit in &split.units {
-        let by_cmdlet = writes_by_cmdlet(unit);
-        let handed = || checker.handed_files(unit);
-        let (targets, unnamed) = written_with(unit, Some(&handed));
-        // A copy of items the guard cannot name may be any file.
-        checker.anywhere |= unnamed;
-        for target in targets {
-            checker.written(unit.dir.as_ref(), &target, unit.shell);
-            // Written where a `cd` that may not have run may have left the
-            // line, as for a redirect (see [`Split::unsure_writes`]).
-            if !unit.elsewhere.is_empty() {
-                checker.written_anywhere(&target, unit.shell);
-            }
-            // A file a write cmdlet names only when it runs (`$x` in `Set-Content
-            // a.txt,$x y`, which is not told from the value of `Set-Content a.txt
-            // $x`) may be any file: a script the line runs may be it.
-            if by_cmdlet && matches!(target, Arg::Unknown(_) | Arg::Template { .. }) {
-                checker.anywhere = true;
-            }
-        }
-    }
-    // A write placed from another folder the line may be in is read for a
-    // later run from that folder already (see [`Unit::others`]).
-    for write in split.writes.iter().filter(|write| !write.also) {
-        checker.written(write.dir.as_ref(), &write.target, write.shell);
-    }
-    for write in &split.unsure_writes {
-        checker.written_anywhere(&write.target, write.shell);
-    }
+    checker.note_writes();
     checker.flow = checker.trace();
     // What each step adds to `found` is what that step found: the findings
     // from `split.findings` come first, and are the line's own.
@@ -242,6 +228,74 @@ fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
     }
 }
 
+impl Checker<'_> {
+    /// Note every file the line writes, for a script it then runs: what its
+    /// units write (a download, a copy, `tee`, a write cmdlet), what a
+    /// database client writes and what the programs it runs do, and what
+    /// its redirects write.
+    fn note_writes(&mut self) {
+        let split = self.split;
+        for unit in &split.units {
+            let by_cmdlet = writes_by_cmdlet(unit);
+            let handed = || self.handed_files(unit);
+            let (targets, unnamed) = written_with(unit, Some(&handed));
+            // A copy of items the guard cannot name may be any file.
+            self.anywhere |= unnamed;
+            for target in targets {
+                self.written(unit.dir.as_ref(), &target, unit.shell);
+                // Written where a `cd` that may not have run may have left the
+                // line, as for a redirect (see [`Split::unsure_writes`]).
+                if !unit.elsewhere.is_empty() {
+                    self.written_anywhere(&target, unit.shell);
+                }
+                // A file a write cmdlet names only when it runs (`$x` in `Set-Content
+                // a.txt,$x y`, which is not told from the value of `Set-Content a.txt
+                // $x`) may be any file: a script the line runs may be it.
+                if by_cmdlet && matches!(target, Arg::Unknown(_) | Arg::Template { .. }) {
+                    self.anywhere = true;
+                }
+            }
+        }
+        // A file a database client writes (`psql -o`, `\o`, `.output`) is
+        // written as a redirect's is; one written after the client moved to a
+        // folder the line does not say (`\cd`) may be any file of its name.
+        let moved = Arg::Unknown("the folder a database client moves to".to_string());
+        for (at, unit) in split.units.iter().enumerate() {
+            for (target, moves) in self.client_writes(at, unit) {
+                let dir = if moves {
+                    Some(&moved)
+                } else {
+                    unit.dir.as_ref()
+                };
+                self.written(dir, &target, unit.shell);
+                if moves || !unit.elsewhere.is_empty() {
+                    self.written_anywhere(&target, unit.shell);
+                }
+            }
+        }
+        // A write placed from another folder the line may be in is read for a
+        // later run from that folder already (see [`Unit::others`]).
+        for write in split.writes.iter().filter(|write| !write.also) {
+            self.written(write.dir.as_ref(), &write.target, write.shell);
+        }
+        for write in &split.unsure_writes {
+            self.written_anywhere(&write.target, write.shell);
+        }
+    }
+
+    /// Note as the line's own the files `other`, the line of a program it
+    /// runs from where it started, writes.
+    fn absorb(&mut self, other: Checker<'_>) {
+        self.written.extend(other.written);
+        self.unplaced_write |= other.unplaced_write;
+        for pattern in other.patterns {
+            self.add_pattern(pattern);
+        }
+        self.unsure_names.extend(other.unsure_names);
+        self.anywhere |= other.anywhere;
+    }
+}
+
 /// The most distinct patterns the line is read for: each script the line
 /// runs is matched against every one of them (and PowerShell tries a name
 /// with each of the executable extensions), so the work of a line grows with
@@ -261,7 +315,7 @@ const MAX_NAME_LEN: usize = 255;
 
 /// A pattern the line writes by (`Set-Content *.ps1 x`): every file it
 /// matches is written.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct WrittenPattern {
     /// The key of the folder it is in; `None` when that cannot be placed.
     folder: Option<String>,

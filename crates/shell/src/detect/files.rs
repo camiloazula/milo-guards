@@ -701,7 +701,7 @@ fn is_splat(arg: &Arg) -> bool {
 }
 
 /// Whether any argument is a splat.
-fn splatted(args: &[Arg]) -> bool {
+pub(super) fn splatted(args: &[Arg]) -> bool {
     args.iter().any(is_splat)
 }
 
