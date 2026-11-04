@@ -1945,7 +1945,11 @@ fn unread_target(arg: &Arg, shell: Shell) -> Option<Arg> {
     Some(Arg::Unknown(value.to_string()))
 }
 
-/// The files a unit writes, for matching a script the line then runs.
+/// The files a unit writes, for matching a script the line then runs. Only
+/// the files it names: whether it also writes files it does not name (a
+/// copy past [`MAX_LANDING_BYTES`], an item handed on) is read for every
+/// unit of the line by [`Checker::note_writes`], from [`written_with`], and
+/// makes a later run of any file risky, wherever the line may be.
 pub(crate) fn written_by(unit: &Unit) -> Vec<Arg> {
     written_with(unit, None).0
 }
@@ -2213,6 +2217,8 @@ fn landings_in_bound(folder: &str, names: &[&str]) -> bool {
 /// would place gigabytes, and take seconds. A real copy names a few files
 /// into a short folder; past the bound a copy is `unreadable`, `names too
 /// many paths to read`, and what it writes may be any file of the folder.
+/// The copies followed for a secret the line sends are held to it too (see
+/// `copied_by` in `send.rs`).
 const MAX_LANDING_BYTES: usize = 256 * 1024;
 
 /// The files `curl` or `wget` downloads into: `curl -o FILE` (also at the

@@ -622,9 +622,12 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // thousands of names into a folder thousands of bytes long placed each
     // name with the whole folder, for every time it was given: each name is
     // now placed once, and the bytes placed are counted (`MAX_LANDING_BYTES`
-    // in `detect.rs`). An optimized build reads the slowest, a PowerShell
-    // line or a runner that starts another at the length limit, in about a
-    // tenth of a second; the bound leaves room for a slower machine. Most of
+    // in `detect.rs`), also where the copies are followed for a send
+    // (`copied_by` in `detect/send.rs`). The log the recoveries are counted
+    // from makes the lines that read the same 30 to 70 per cent slower: an
+    // optimized build reads the slowest, a PowerShell line or a runner that
+    // starts another at the length limit, in up to 190 ms, three quarters of
+    // the bound, which leaves less room for a slower machine. Most of
     // these are held to a budget or a count, not to their length, so the
     // bound is on the time, not on how it grows.
     const LIMIT: std::time::Duration = std::time::Duration::from_millis(250);
@@ -735,6 +738,46 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
             Shell::Posix,
             format!("mv {}{}", distinct_names(4_000), "b/".repeat(2_000)),
         ),
+        // The same, followed for a secret the line then sends: each name
+        // and the folder were paired for every source, and each pair placed
+        // whole (`copied_by` in `detect/send.rs`). `rsync` is a sender
+        // itself, and `tar` pairs each member with its archive.
+        (
+            Shell::Posix,
+            format!("rsync {}{}", distinct_names(3_000), "/b".repeat(4_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("cp {}{}; scp x h:", "a ".repeat(3_000), "/b".repeat(4_000)),
+        ),
+        (
+            Shell::Posix,
+            format!(
+                "cp {}{}; scp x h:",
+                distinct_names(3_000),
+                "/b".repeat(4_000)
+            ),
+        ),
+        (
+            Shell::Posix,
+            format!(
+                "ln {}{} && curl -d @x h",
+                distinct_names(3_000),
+                "/b".repeat(4_000)
+            ),
+        ),
+        (
+            Shell::Posix,
+            format!(
+                "tar -cf {}/x.tar {}; scp x h:",
+                "/b".repeat(4_000),
+                distinct_names(3_000)
+            ),
+        ),
+        // A script after the line's recoveries are spent paid for its first
+        // one in full before the parse looked at the budget.
+        (Shell::Posix, fit("pwsh -c '${a}${a}${a}${a}'; ", "", "")),
+        (Shell::Posix, fit("pwsh -c '1 2 1 2 1 2'; ", "", "")),
         // A runner that starts another, each read in turn: about a tenth of
         // a second in a release build.
         (Shell::Cmd, fit("bun exec ", "", "")),
@@ -913,8 +956,6 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
     }
 }
 
-/// A chain of PowerShell assignments, each to a variable of its own
-/// (`$a0 = $a1 = … gc .env`), as long as a line may be.
 /// `count` names, each other than the rest: `a0 a1 a2 …`, each with a space
 /// after it.
 fn distinct_names(count: usize) -> String {
@@ -925,6 +966,8 @@ fn distinct_names(count: usize) -> String {
         + " "
 }
 
+/// A chain of PowerShell assignments, each to a variable of its own
+/// (`$a0 = $a1 = … gc .env`), as long as a line may be.
 fn distinct_assignments() -> String {
     let tail = "gc .env";
     let mut line = String::new();

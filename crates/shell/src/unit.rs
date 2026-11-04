@@ -5178,23 +5178,32 @@ pub(crate) fn parse(
     recovery: Recovery,
 ) -> Option<tree_sitter::Tree> {
     use std::cell::Cell;
+    let bytes = text.as_bytes();
+    // The budgets are the line's, shared by every script and piece of code
+    // in it, so a line that starts many cannot spend them many times over.
+    split.parsed = split.parsed.saturating_add(bytes.len());
+    let allowed = MAX_LEXED
+        .saturating_mul(split.parsed)
+        .saturating_add(MAX_LEXED_BASE);
+    let scan_allowed = MAX_SCANNED
+        .saturating_mul(split.parsed)
+        .saturating_add(MAX_SCANNED_BASE);
+    // A budget an earlier parse of the line spent is checked only as the
+    // grammar reads, and a grammar starts its first recovery from an error
+    // in full before it reads again: each later script with an error would
+    // pay for one, with no limit but the length of the line. So a parse
+    // starts only while every budget is left.
+    if split.lexed > allowed || split.scanned > scan_allowed || split.recoveries > MAX_RECOVERIES {
+        split.problem(Rule::Unreadable, "takes too long to read", None);
+        return None;
+    }
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(language).is_err() {
         split.problem(Rule::Unreadable, "cannot be read", None);
         return None;
     }
-    let bytes = text.as_bytes();
-    // The budgets are the line's, shared by every script and piece of code
-    // in it, so a line that starts many cannot spend them many times over.
-    split.parsed = split.parsed.saturating_add(bytes.len());
-    let budget = MAX_LEXED
-        .saturating_mul(split.parsed)
-        .saturating_add(MAX_LEXED_BASE)
-        .saturating_sub(split.lexed);
-    let scan_budget = MAX_SCANNED
-        .saturating_mul(split.parsed)
-        .saturating_add(MAX_SCANNED_BASE)
-        .saturating_sub(split.scanned);
+    let budget = allowed.saturating_sub(split.lexed);
+    let scan_budget = scan_allowed.saturating_sub(split.scanned);
     let recovery_budget = MAX_RECOVERIES.saturating_sub(split.recoveries);
     // What the grammar's log has said so far: the characters its lexer moved
     // over, and the recoveries from an error it started.
