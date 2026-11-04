@@ -5,6 +5,7 @@
 //! left alone.
 
 pub(super) mod firewall;
+mod services;
 
 use super::processes::{
     is_system_label, is_system_unit, unit_pattern_matches, unit_pattern_stops_system,
@@ -91,6 +92,30 @@ const INIT_FOLDERS: [&str; 4] = [
     "etc/rc.d",
     "usr/local/etc/rc.d",
 ];
+
+/// Whether `folder`, a path below the root, is one of System V's runlevel
+/// folders, whose links run the init scripts as the system enters or leaves
+/// a runlevel: `etc/rc0.d` to `etc/rc6.d` and `etc/rcS.d`, and the same
+/// under Red Hat's `etc/rc.d`.
+fn is_runlevel_folder(folder: &str) -> bool {
+    let lower = folder.to_ascii_lowercase();
+    let level = lower
+        .strip_prefix("etc/rc.d/")
+        .or_else(|| lower.strip_prefix("etc/"))
+        .and_then(|rest| rest.strip_prefix("rc"))
+        .and_then(|rest| rest.strip_suffix(".d"));
+    matches!(level, Some("0" | "1" | "2" | "3" | "4" | "5" | "6" | "s"))
+}
+
+/// The service a link of a runlevel folder runs: its name without the `S`
+/// (start) or `K` (kill) and the number that order it (`K01ssh` is `ssh`).
+fn linked_name(name: &str) -> &str {
+    name.strip_prefix(['S', 'K', 's', 'k'])
+        .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        .map(|rest| rest.trim_start_matches(|c: char| c.is_ascii_digit()))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name)
+}
 
 /// Whether an action of an init script, `service`, `invoke-rc.d` or
 /// `rc-service` stops the service or takes its protection down: `stop` and
@@ -823,6 +848,14 @@ impl Checker<'_> {
             "chkconfig" => self.chkconfig(args),
             "sv" if unit.shell == Shell::Posix => self.sv(args),
             "launchctl" => self.launchctl(unit),
+            "rcctl" => self.rcctl(args),
+            "sysrc" => self.sysrc(unit),
+            "s6-svc" => self.s6_svc(args),
+            "s6-rc" => self.s6_rc(args),
+            "dinitctl" => self.dinitctl(args),
+            "insserv" => self.insserv(args),
+            // Homebrew runs on macOS and Linux, never in cmd.
+            "brew" if unit.shell != Shell::Cmd => self.brew_services(args),
             "tmutil" => self.tmutil(args),
             "defaults" => self.defaults(unit),
             "pmset" => self.pmset(args),
@@ -882,6 +915,13 @@ impl Checker<'_> {
                     | "chkconfig"
                     | "sv"
                     | "launchctl"
+                    | "rcctl"
+                    | "sysrc"
+                    | "s6-svc"
+                    | "s6-rc"
+                    | "dinitctl"
+                    | "insserv"
+                    | "brew"
             )
             && unread_option(args, unit.shell)
         {
@@ -1436,8 +1476,10 @@ impl Checker<'_> {
 
     /// A program run from an init script folder (`/etc/init.d/ufw stop`,
     /// `/etc/rc.d/pf stop`) is the service of its name, and its first
-    /// operand the action, as `service ufw stop`. The program is placed
-    /// where it lands, so `cd /etc/init.d && ./ufw stop` is the same.
+    /// operand the action, as `service ufw stop`; one run from a runlevel
+    /// folder is the service its link names (`/etc/rc2.d/K01ufw stop`). The
+    /// program is placed where it lands, so `cd /etc/init.d && ./ufw stop`
+    /// is the same.
     /// `bare` says a name without a folder is a file in the working folder,
     /// as it is to a shell given a script.
     fn init_script(&mut self, unit: &Unit, program: &Arg, args: &[Arg], bare: bool) {
@@ -1461,12 +1503,16 @@ impl Checker<'_> {
         else {
             return;
         };
-        if !INIT_FOLDERS
+        let name = if INIT_FOLDERS
             .iter()
             .any(|init| init.eq_ignore_ascii_case(folder))
         {
+            name
+        } else if is_runlevel_folder(folder) {
+            linked_name(name)
+        } else {
             return;
-        }
+        };
         let words = operands(args, &[]);
         let Some(action) = words.first() else {
             return;
@@ -1507,13 +1553,20 @@ impl Checker<'_> {
     }
 
     /// `update-rc.d name disable|remove` takes a service out of what starts
-    /// at boot.
+    /// at boot, and so does the legacy `update-rc.d name stop NN runlevel...
+    /// .` of a runlevel the system runs in ([`services::legacy_stops`]).
     fn update_rc(&mut self, args: &[Arg]) {
         let words = operands(args, &[]);
         let Some(action) = words.get(1) else { return };
-        if action.known().is_none_or(|action| {
-            matches!(action.to_ascii_lowercase().as_str(), "disable" | "remove")
-        }) {
+        let disables = match action.known().map(str::to_ascii_lowercase) {
+            None => true,
+            Some(action) => match action.as_str() {
+                "disable" | "remove" => true,
+                "start" | "stop" => services::legacy_stops(&words[1..]),
+                _ => false,
+            },
+        };
+        if disables {
             self.disable_service(words.first().copied());
         }
     }

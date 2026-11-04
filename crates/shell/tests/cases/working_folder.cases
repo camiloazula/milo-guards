@@ -168,3 +168,23 @@ cmd safe | start /d C:\\Windows cmd /c dir & rd /s /q build
 posix finds=delete reason="deletes a path only known when it runs" | env -C "$D" rm -rf build
 posix finds=delete reason="deletes a path only known when it runs" | pnpm --dir "$D" exec rimraf build
 powershell finds=delete reason="deletes a path only known when it runs" | Start-Process cmd -WorkingDirectory $d -ArgumentList '/c rd /s /q build'
+
+# `nsenter` starts its command in another folder under `-w` and `-r`
+# (`--wd`, `--root`), `-W` (`--wdns`, whose folder is only ever joined to
+# it), and on entering a mount namespace (`-m`, `--mount`, or `-a`,
+# `--all`), whose root the kernel moves it to: the folder is only known
+# when it runs. A long option by any prefix that names it alone.
+posix finds=delete | nsenter -t 1 -W rm -rf ~
+posix finds=delete | nsenter -t 1 --wdns rm -rf ~
+posix finds=delete | nsenter -t 1 -m -W/ rm -rf etc
+posix finds=delete | nsenter -t 1 --wdns=/ rm -rf etc
+posix finds=delete | nsenter -t 1 -w rm -rf etc
+posix finds=delete | nsenter -t 1 -m rm -rf etc
+posix finds=delete | nsenter --mount=/proc/1/ns/mnt rm -rf etc
+posix finds=delete | nsenter -m/proc/1/ns/mnt rm -rf etc
+posix finds=delete | nsenter -t 1 -a rm -rf etc
+posix finds=delete | nsenter --target 1 --all rm -rf etc
+posix finds=delete | nsenter -t 1 --mo rm -rf etc
+posix finds=delete | nsenter --targ 1 -n rm -rf ~
+posix safe | nsenter -t 1 -n rm -rf build
+posix safe | nsenter --target 1 --net --uts rm -rf build

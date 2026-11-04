@@ -206,7 +206,17 @@ multi-call firewall programs `xtables-nft-multi`, `xtables-legacy-multi` and
 `xtables-multi` run the program they name (`xtables-nft-multi iptables -F`
 is `iptables -F`), and their own names for it too: `main4` is `iptables`,
 `main6` is `ip6tables`, `restore4` and `restore6` are `iptables-restore`
-and `ip6tables-restore`, `save4` and `save6` their `-save`.
+and `ip6tables-restore`, `save4` and `save6` their `-save`. `nsenter` runs
+the program after its options in another process's namespaces (`nsenter -t
+1 -a systemctl stop sshd` is `systemctl stop sshd`): `-t`, `-N`, `-S` and
+`-G` (and `--target`, `--net-socket`, `--setuid`, `--setgid`, or a prefix
+that names one alone) take a value, the namespace options, `-r`, `-w` and
+`-W` take theirs only in the same word (`-m/proc/1/ns/mnt`, `-W/srv`), and
+`-w`, `-W` and `-r` (`--wd`, `--wdns`, `--root`) start the program in a
+folder of that process's, as entering its mount namespace does (`-m`,
+`--mount`, `-a`, `--all`), since the kernel then moves it to that
+namespace's root: where it runs is then only known when it does
+(`nsenter -t 1 -m rm -rf etc` deletes a path only known when it runs).
 
 `Start-Process` joins its argument list (`-ArgumentList`, `-Args`, or the
 words after the program) with spaces into one command line, which the program
@@ -470,7 +480,9 @@ each with the options it reads and those of them that take a value, as
 `getopt` reads them (in a bundle, `strace -fo log rm`, or attached):
 
 - Tracers and runners: `strace` (`-o`, `-e`, `-p`, `-s`, `--detach-on` and
-  its other options that take one), `ssh-agent`, `chronic` and `script`.
+  its other options that take one), `ltrace` (`-o`, `-e`, `-l`, `-p` and the
+  rest, as `getopt_long` reads them, a long one also by a shorter start of
+  it), `ssh-agent`, `chronic` and `script`.
   `script -c` (`--command`, wherever it stands, as util-linux reads it) runs
   a shell line; otherwise the words after the file it records to are the
   command (the BSDs and macOS), and `-p` plays a recording back and runs
@@ -506,6 +518,42 @@ each with the options it reads and those of them that take a value, as
   `--cd` names, read as a Linux path: `~` is the home directory, and an
   absolute Windows path is where WSL mounts it (`C:\Windows` is
   `/mnt/c/Windows`), so `wsl --cd C:\Windows rm -rf System32` is `delete`.
+
+**The files a wrapper writes its own output to**, beside the command it
+runs, are written as a redirect writes them: judged by where they land,
+from the folder the wrapper runs in, a file only known when it runs is not
+known, and a file the line writes and then runs is a script nobody read
+(see "A script a line writes and then runs" under [What cannot be read is
+risky](#what-cannot-be-read-is-risky)). So
+`strace -o /etc/passwd ls` is `overwrite` and `time -o ~/.bashrc ls` is
+`overwrite`, `writes to a shell startup file`, while `strace -o trace.log
+ls` is Safe. Only the wrapper's own options are read, before the command it
+runs (`strace ls -o /etc/passwd` gives `ls` its `-o`); every one is judged,
+not only the last, which is the one the program keeps.
+
+- `strace -o FILE` (in a bundle, `-fo FILE`, or attached, `-oFILE`) and
+  `--output FILE` (or `--output=FILE`). With `-ff` strace writes `FILE.PID`
+  beside `FILE`, and the guard judges `FILE`, in the same folder. A
+  `FILE` that starts with `|` or `!` is a command strace pipes its output to,
+  which a shell runs: it is read as a POSIX line of its own (`strace -o '|rm
+  -rf ~' ls` is `delete`), and one only known when it runs is `unknown`.
+- `ltrace -o FILE` and `--output FILE`, which may be shortened (`--out=`).
+- `time -o FILE` and `--output FILE` (GNU's, which may be shortened:
+  `--out`; `-a` and `--append` add to the file, which is a write too), the
+  BSDs' and macOS's `-o`. bash's and zsh's own `time` takes no `-o`, but a
+  POSIX shell without one runs the program, so the option is read whichever
+  runs. The options are read as GNU `time` reads them for what it runs too:
+  `time -ao log rm -rf ~` and `time --out log rm -rf ~` judge the `rm`.
+- `script FILE`, the file it records to: the first word after its options,
+  after `-c` too, or `typescript` in the folder it runs in when there is
+  none (`cd /etc && script` is `overwrite`), unless `-p` plays it back,
+  which reads it (a flag letter `-p`, as in `-dp`; not a `p` in an option's
+  value, as in `-cpwd` or `-Bperf.log`, nor the value `-c -p`); and the files of util-linux's `-B`, `-I`, `-O` and `-T`
+  (`--log-io`, `--log-in`, `--log-out`, `--log-timing`, any of them also
+  shortened), `-t` (its file attached on util-linux, a time on the BSDs,
+  read as a file either way) and `--timing=FILE`, wherever they stand, as
+  util-linux reads its options, and FreeBSD's `-F pipe`. Both readings of
+  `-F` are taken, so the file of either is judged.
 
 GNU **`parallel`** runs a command once for each value: its options, the
 command, then the values after `:::` (or the files after `::::`, or `-a`),
@@ -2786,6 +2834,58 @@ of their strictest, so each family below was added on that test.
   system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
   A `kill` whose ids come from a substitution (`kill $(pidof auditd)`) is
   `stop_unknown`, as every such `kill` is.
+- **Other service managers.** The rest are read through the same two
+  verbs: a stop is a stop of each service it names, judged by the names
+  above (one that protects the machine is `system_settings`, one the system
+  needs `stop_system`, one only known when it runs `system_settings`, any
+  other safe), and taking a service out of what starts at boot is
+  `system_settings` whatever the service, as `systemctl disable` is.
+  OpenBSD's `rcctl stop` stops each daemon, and `rcctl disable`, `rcctl set
+  daemon status off` disables it; a command, a variable or a value of `set
+  status` only known when it runs may be either, and `start`, `restart`,
+  `check`, `ls`, `get` and `enable` are safe, as is `rcctl set daemon flags
+  NO`, which `rcctl` refuses. FreeBSD's
+  `sysrc` disables a service when it sets a `NAME_enable` to anything
+  `rc.subr` does not read as on (`YES`, `TRUE`, `ON`, `1`, without case),
+  changes one with `+=` or `-=`, or removes one (`-x`, `-X`); a word only
+  known when it runs may be such an assignment unless what is known of it
+  names another variable, and an option only known when it runs may be `-x`.
+  `sysrc -c` only checks, and `sysrc -f FILE` of a file in the workspace is
+  the workspace's own (a file elsewhere, or only known when it runs, is not,
+  nor is any under `-R` or `-j`, where `sysrc` runs again in that root or
+  jail and reads the file there).
+  s6's `s6-svc` stops each service folder under `-d` or `-D`, and under
+  `-p`, `-P` or `-s STOP` (a pause freezes it, as runit's `sv pause` does),
+  or an option only known when it runs; `-u`, `-r`, `-l` and the signals
+  that end the process, which s6 starts again, are safe, unless `-O`, `-o`
+  or `-Q` says not to start it again: then a signal that ends it (any but
+  `CONT` and `WINCH`) or a restart stops it (`s6-svc -Ot`). `s6-rc -d change` (or `-D`, or
+  `stop`) stops each service, `-a` adds every service that is up (`stops
+  every system service`), `-p` takes down every service it is not given,
+  as `isolate` does, and `-n` is a dry run. `dinitctl stop` and `release`
+  stop each service, `signal SIG service` is read as `systemctl kill`,
+  `disable` disables it, and `shutdown` is `stop_system`; `-u` (`--user`)
+  is the user's own instance unless a later `-s` (`--system`), a socket
+  (`-p`, `--socket-path`), which `dinitctl` uses whatever `-u` says, or an
+  argument only known when it runs may name the system's. `insserv -r`
+  (`--remove` or a prefix of it, or an option only known when it runs)
+  takes a script out of the boot sequence, unless `-n` makes it a dry run.
+  The legacy `update-rc.d name stop NN runlevel... .` disables the service
+  when a stop group names a runlevel the system runs in (`2` to `5`, or
+  `S`), one only known when it runs, or none (`update-rc.d ssh stop`); stopping it in `0`, `1` and `6`,
+  as the old default did, is safe. A script run from a runlevel folder
+  (`/etc/rc0.d` to `/etc/rc6.d`, `/etc/rcS.d`, and the same under
+  `/etc/rc.d`) is the init script its link names, without the `S` or `K`
+  and the number that order it: `/etc/rc2.d/K01ssh stop` is `stop_system`
+  as `/etc/init.d/ssh stop` is. Renaming or linking one (`mv
+  /etc/rc2.d/S01ssh /etc/rc2.d/K01ssh`) is already a write to a system
+  folder. Homebrew's `brew services stop` and `kill` (or a command only
+  known when it runs) stop each formula's service, and `--all` every one
+  it runs, any of which may protect the machine: `brew services stop
+  postgresql` is safe, `brew services stop fail2ban` and `brew services stop
+  --all` are not. `nsenter` is a wrapper: what it runs in the init
+  process's namespaces is judged (`nsenter -t 1 -a systemctl stop sshd` is
+  `stop_system`; see [Wrappers and scripts](#wrappers-and-scripts)).
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
   `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
   `listbackups`, `status`, `startbackup` and `enable` are safe.
@@ -4171,10 +4271,26 @@ Some risks only show when units are read together.
 - **Links.** A link judges its target too. `ln ~/.zshrc z` is risky, since a
   later write to `z` lands on the startup file.
 - **A script a line writes and then runs.** It is risky however it was
-  written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy or
-  `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `unknown` ("runs a script the
-  same line writes"; `run_downloaded` is a download piped into a shell). The
-  guard matches the two by the file they name (core's `key`).
+  written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy,
+  `tee`, or a database client on this machine (`.output`, `.once`, `\o`,
+  `psql -o`, `mysql --tee` and every other file "A file it writes" under the
+  database clients lists). `curl -fsSLo i.sh URL && sh i.sh` is `unknown`
+  ("runs a script the same line writes"; `run_downloaded` is a download piped
+  into a shell), and so is `sqlite3 x.db '.output run.sh' 'select 1'; sh
+  run.sh`. The guard matches the two by the file they name (core's `key`).
+  A client reads the same statements for this as its rule judges (its
+  options, operands, a here-document, a stage before it). A folder it writes
+  into (`EXPORT DATABASE 'DIR'`) holds files by names the line does not show,
+  so any script in it may be one. One that moved (`\cd`, `.cd`) wrote its
+  files in a folder the line does not say, so a script of the same name, run
+  from any folder, may be one of them. A program a client runs (`.shell`,
+  `\!`, a pager) and reads as a line of its own writes files the line
+  writes, so `sqlite3 x.db '.shell echo x > run.sh'; sh run.sh` is `unknown`;
+  each is read for this once more, on a budget as large as the one it is
+  judged on, and one past it may write any file. Such a program runs after
+  the files the line writes, the client's own and those its other programs
+  write too: `sqlite3 x.db '.output run.sh' '.shell sh run.sh'` and `psql -c
+  '\! echo x > run.sh' -c '\! sh run.sh'` are `unknown`.
   When the line writes a file (a device such as `/dev/null` does not count),
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
@@ -5163,6 +5279,9 @@ by matching the text:
   "Each client's words" below). A file written by a client in a container or
   on another machine is not on this machine and is not judged, but a database
   `.backup` or `.save` replaces there is not the agent's own: `drop_data`.
+  A file a client here writes is one the line writes: a later run of it is
+  "runs a script the same line writes" (see "A script a line writes and then
+  runs").
 - **A program it runs with a command line the text shows** is that line, split
   by the POSIX grammar and judged by every rule as a line of its own, as `sh
   -c` is: `psql`'s and `mysql`'s `\!`, `mysql`'s `system` and `pager` (`\P`),

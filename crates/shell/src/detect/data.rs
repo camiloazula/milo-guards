@@ -520,6 +520,15 @@ struct Given {
     programs: Vec<Option<Arg>>,
 }
 
+/// What a database client is given on its command line.
+enum Asked<'u> {
+    /// A client of a database server, and what its statements are written
+    /// in.
+    Server(Given, Language),
+    /// `sqlite3` or `duckdb`, which open a file.
+    Embedded(Embedded<'u>, Dialect),
+}
+
 /// What a long option of a client does with what follows it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Long {
@@ -780,6 +789,42 @@ fn run_value(acts: &mut Reading, value: Option<&Arg>) {
     match value.and_then(Arg::known) {
         Some(line) if !line.trim().is_empty() => acts.run(Program::Line(line.to_string())),
         _ => acts.program = true,
+    }
+}
+
+/// Note in `acts` the command lines the options of the client of `unit`
+/// (`programs`) and its environment tell it to run: `mysql --pager=CMD`, and
+/// `PAGER=CMD psql` as `\setenv PAGER CMD`.
+fn given_programs(acts: &mut Reading, unit: &Unit, programs: &[Option<Arg>], language: Language) {
+    for program in programs {
+        run_value(acts, program.as_ref());
+    }
+    if language == Language::Sql(Dialect::Postgres) {
+        for (name, value) in unit.argument_variables.iter() {
+            if crate::unit::PSQL_PROGRAMS.contains(&name.as_str()) {
+                // An empty value turns the pager or editor off.
+                if value.known() != Some("") {
+                    run_value(acts, Some(value));
+                }
+            }
+        }
+    }
+}
+
+/// A program a client runs, as its text shows it, as a line of its own: a
+/// command line split by the POSIX grammar, or a program and its words.
+fn program_split(program: &Program) -> crate::unit::Split {
+    match program {
+        Program::Line(line) => crate::unit::split(line, Shell::Posix, (None, None), false),
+        Program::Words(words) => {
+            let mut split = crate::unit::Split::default();
+            if let Some((first, rest)) = words.split_first() {
+                let args = rest.iter().cloned().map(Arg::Known).collect();
+                let unit = Unit::new(Shell::Posix, Arg::Known(first.clone()), args, None);
+                crate::launch::add(&mut split, unit, 0);
+            }
+            split
+        }
     }
 }
 
@@ -1639,6 +1684,8 @@ pub(super) struct Cache {
     /// The programs a client has run from where the line started, each
     /// judged once.
     ran: HashSet<Program>,
+    /// The programs a client runs whose writes have been noted, each once.
+    gathered: HashSet<Program>,
 }
 
 /// The most programs that database clients run, as their text shows them,
@@ -1661,6 +1708,9 @@ pub(crate) struct Nest {
     depth: usize,
     /// How many programs have been read, and how many bytes of them.
     used: Rc<std::cell::Cell<(usize, usize)>>,
+    /// The same, for the programs read for the files they write (see
+    /// [`Checker::program_writes`]).
+    gathered: Rc<std::cell::Cell<(usize, usize)>>,
 }
 
 impl Nest {
@@ -1669,18 +1719,29 @@ impl Nest {
         Self {
             depth: self.depth + 1,
             used: Rc::clone(&self.used),
+            gathered: Rc::clone(&self.gathered),
         }
     }
 
     /// Whether a program of `len` bytes may be read, taking it from the
     /// budget when it may.
     fn take(&self, len: usize) -> bool {
-        let (count, bytes) = self.used.get();
+        self.take_from(&self.used, len)
+    }
+
+    /// Whether a program of `len` bytes may be read for the files it
+    /// writes, taking it from that budget when it may.
+    fn take_gathered(&self, len: usize) -> bool {
+        self.take_from(&self.gathered, len)
+    }
+
+    fn take_from(&self, used: &std::cell::Cell<(usize, usize)>, len: usize) -> bool {
+        let (count, bytes) = used.get();
         let fits = self.depth < MAX_PROGRAM_DEPTH
             && count < MAX_PROGRAMS
             && bytes.saturating_add(len) <= MAX_PROGRAM_TEXT;
         if fits {
-            self.used.set((count + 1, bytes + len));
+            used.set((count + 1, bytes + len));
         }
         fits
     }
@@ -2241,28 +2302,19 @@ impl Checker<'_> {
                 Some(&unit.program),
             );
         }
+        match self.asked(unit, key) {
+            Some(Asked::Server(given, language)) => {
+                self.client_given(at, unit, given, language);
+                return;
+            }
+            Some(Asked::Embedded(found, dialect)) => {
+                self.embedded_client(at, unit, &found, dialect);
+                return;
+            }
+            None => {}
+        }
         match key {
-            "psql" => self.sql_client(at, unit, &PSQL, args),
-            "mysql" | "mariadb" => self.sql_client(at, unit, &MYSQL, args),
-            "clickhouse-client" => self.sql_client(at, unit, &CLICKHOUSE, args),
-            "clickhouse" if args.first().and_then(Arg::known) == Some("client") => {
-                self.sql_client(at, unit, &CLICKHOUSE, args.get(1..).unwrap_or_default());
-            }
-            "sqlcmd" => self.sql_client(at, unit, &SQLCMD, args),
-            "cqlsh" => self.sql_client(at, unit, &CQLSH, args),
-            "mongosh" | "mongo" => self.sql_client(at, unit, &MONGO, args),
-            "sqlite3" => {
-                let found = embedded(args, &SQLITE);
-                self.embedded_client(at, unit, &found, Dialect::Sqlite);
-            }
-            "duckdb" => {
-                let found = embedded(args, &DUCKDB);
-                self.embedded_client(at, unit, &found, Dialect::DuckDb);
-            }
             "redis-cli" | "valkey-cli" | "keydb-cli" => self.redis(at, unit.shell, args),
-            "invoke-sqlcmd" if unit.shell == Shell::PowerShell => {
-                self.invoke_sqlcmd(at, unit, args);
-            }
             "pg_dropcluster" if !asks_help(args) => {
                 let cluster = resources::words(args, &[]).get(1).copied();
                 self.add(Rule::DropData, "deletes a database cluster", cluster);
@@ -2363,11 +2415,112 @@ impl Checker<'_> {
         }
     }
 
-    /// A client of a database server: every database on a server is risky,
-    /// since the line cannot tell a scratch one from production.
-    fn sql_client(&mut self, at: usize, unit: &Unit, client: &Client, args: &[Arg]) {
-        let args = self.templates(unit, args);
-        self.client_given(at, unit, client.statements(&args), client.language);
+    /// What the database client `key` (the program of `unit`) is given on
+    /// its command line, or `None` for a program that is no such client. A
+    /// client of a database server is judged by [`Self::client_given`]:
+    /// every database on a server is risky, since the line cannot tell a
+    /// scratch one from production. `sqlite3` and `duckdb` open a file, which
+    /// may be the agent's own ([`Self::embedded_client`]).
+    fn asked<'u>(&self, unit: &'u Unit, key: &str) -> Option<Asked<'u>> {
+        let args = unit.args.as_slice();
+        let server = |checker: &Self, client: &Client, args: &[Arg]| {
+            let args = checker.templates(unit, args);
+            Asked::Server(client.statements(&args), client.language)
+        };
+        let asked = match key {
+            "psql" => server(self, &PSQL, args),
+            "mysql" | "mariadb" => server(self, &MYSQL, args),
+            "clickhouse-client" => server(self, &CLICKHOUSE, args),
+            "clickhouse" if args.first().and_then(Arg::known) == Some("client") => {
+                server(self, &CLICKHOUSE, args.get(1..).unwrap_or_default())
+            }
+            "sqlcmd" => server(self, &SQLCMD, args),
+            "cqlsh" => server(self, &CQLSH, args),
+            "mongosh" | "mongo" => server(self, &MONGO, args),
+            // `Invoke-Sqlcmd`: SQL Server's cmdlet, which runs its `-Query`
+            // and its `-InputFile`.
+            "invoke-sqlcmd" if unit.shell == Shell::PowerShell => Asked::Server(
+                invoke_sqlcmd_queries(&self.templates(unit, args)),
+                Language::Sql(Dialect::SqlServer),
+            ),
+            "sqlite3" => Asked::Embedded(embedded(args, &SQLITE), Dialect::Sqlite),
+            "duckdb" => Asked::Embedded(embedded(args, &DUCKDB), Dialect::DuckDb),
+            _ => return None,
+        };
+        Some(asked)
+    }
+
+    /// The files the database client of the unit at `at` writes on this
+    /// machine beside its database, for a script the line then runs: those
+    /// its options name (`psql -o`, `mysql --tee`), and those its statements
+    /// do (`\o`, `.output`, `.backup`), read from the same statements
+    /// [`Self::data`] judges. Each comes with whether the client moved to a
+    /// folder the line does not say first (`\cd`), which puts every file its
+    /// statements write somewhere only known when it runs. What the programs
+    /// it runs write is noted as the line's own ([`Self::program_writes`]).
+    /// A client in a container or on another machine writes nothing here.
+    pub(super) fn client_writes(&mut self, at: usize, unit: &Unit) -> Vec<(Arg, bool)> {
+        if self.data.behind > 0 {
+            return Vec::new();
+        }
+        let Some(key) = unit.key() else {
+            return Vec::new();
+        };
+        let mut acts = Reading::default();
+        let (own, mut files, exits, language) = match self.asked(unit, &key) {
+            Some(Asked::Server(given, language)) => {
+                given_programs(&mut acts, unit, &given.programs, language);
+                let exits = given.exits && !given.files.iter().any(is_stdin);
+                let outputs = given.outputs.into_iter().map(|file| (file, false));
+                (given.statements, outputs.collect(), exits, language)
+            }
+            Some(Asked::Embedded(found, dialect)) => {
+                (found.statements, Vec::new(), false, Language::Sql(dialect))
+            }
+            None => return Vec::new(),
+        };
+        let mut statements: Vec<Arg> = own
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
+        let stages = if exits {
+            Vec::new()
+        } else {
+            self.fed(at, &mut statements).stages
+        };
+        for statement in &statements {
+            acts.add_acts(read_text(language, statement).acts);
+        }
+        for key in stages {
+            for reading in self.stage_readings(key, language).iter() {
+                acts.add_acts(reading.acts.clone());
+            }
+        }
+        for program in &acts.acts.programs {
+            self.program_writes(unit, program, &acts.acts);
+        }
+        let moved = acts.acts.moves_folder;
+        // A folder written into (`EXPORT DATABASE 'DIR'`) gets files by names
+        // the line does not show: any file in it.
+        files.extend(acts.acts.writes.into_iter().map(|written| {
+            let name = if written.folder {
+                format!("{}/*", written.name.trim_end_matches('/'))
+            } else {
+                written.name
+            };
+            (Arg::Known(name), moved)
+        }));
+        files
+    }
+
+    /// Add to `statements` what the line feeds the unit at `at` (a
+    /// here-document, a here-string) and what the commands it runs for are
+    /// fed, and say where else its input comes from.
+    fn fed(&mut self, at: usize, statements: &mut Vec<Arg>) -> Upstream {
+        statements.extend(self.split.fed_to(at).cloned());
+        let mut up = self.upstream(at);
+        statements.append(&mut up.texts);
+        up
     }
 
     /// What a client of a database server is given, its statements written
@@ -2394,21 +2547,7 @@ impl Checker<'_> {
         // What every statement writes and runs, gathered so that a `\cd` or
         // a `\setenv` in one counts for the others.
         let mut acts = Reading::default();
-        // The command lines its options and its environment tell it to run:
-        // `mysql --pager=CMD`, and `PAGER=CMD psql` as `\setenv PAGER CMD`.
-        for program in &given.programs {
-            run_value(&mut acts, program.as_ref());
-        }
-        if language == Language::Sql(Dialect::Postgres) {
-            for (name, value) in unit.argument_variables.iter() {
-                if crate::unit::PSQL_PROGRAMS.contains(&name.as_str()) {
-                    // An empty value turns the pager or editor off.
-                    if value.known() != Some("") {
-                        run_value(&mut acts, Some(value));
-                    }
-                }
-            }
-        }
+        given_programs(&mut acts, unit, &given.programs, language);
         // A client given a statement that it runs and then exits (`psql -c`,
         // `mysql -e`) does not read its input, unless a file of statements
         // it is given is its input (`-f -`).
@@ -2421,9 +2560,7 @@ impl Checker<'_> {
             self.judge_acts(unit, &acts);
             return;
         }
-        statements.extend(self.split.fed_to(at).cloned());
-        let up = self.upstream(at);
-        statements.extend(up.texts);
+        let up = self.fed(at, &mut statements);
         for statement in &statements {
             let reading = read_text(language, statement);
             self.judge(&reading, Some(statement), false);
@@ -2507,12 +2644,7 @@ impl Checker<'_> {
     /// environment (`\setenv`) has its program read; any other, and one past
     /// the line's budget, is `unknown`.
     fn run_program(&mut self, unit: &Unit, program: &Program, acts: &Acts) {
-        let here = self.data.behind == 0
-            && unit.shell == Shell::Posix
-            && unit.dir.is_none()
-            && unit.elsewhere.is_empty()
-            && !acts.moves_folder
-            && !acts.environment;
+        let here = self.reads_program(unit, acts);
         if here && self.data.ran.contains(program) {
             return;
         }
@@ -2522,20 +2654,43 @@ impl Checker<'_> {
             return;
         }
         self.data.ran.insert(program.clone());
-        let split = match program {
-            Program::Line(line) => crate::unit::split(line, Shell::Posix, (None, None), false),
-            Program::Words(words) => {
-                let mut split = crate::unit::Split::default();
-                if let Some((first, rest)) = words.split_first() {
-                    let args = rest.iter().cloned().map(Arg::Known).collect();
-                    let unit = Unit::new(Shell::Posix, Arg::Known(first.clone()), args, None);
-                    crate::launch::add(&mut split, unit, 0);
-                }
-                split
-            }
-        };
-        let found = super::nested(&split, self.resolver, self.data.nest.deeper());
+        let split = program_split(program);
+        let found = super::nested(&split, self, self.data.nest.deeper());
         self.found.extend(found);
+    }
+
+    /// Whether a program the client of `unit` runs, after what its
+    /// statements do (`acts`), is read as a line of its own (see
+    /// [`Self::run_program`]).
+    fn reads_program(&self, unit: &Unit, acts: &Acts) -> bool {
+        self.data.behind == 0
+            && unit.shell == Shell::Posix
+            && unit.dir.is_none()
+            && unit.elsewhere.is_empty()
+            && !acts.moves_folder
+            && !acts.environment
+    }
+
+    /// Note the files a program the client of `unit` runs writes as files
+    /// the line writes: a later run of one, by the line or by another
+    /// program of the client, runs a script the same line writes. It is
+    /// read as [`Self::run_program`] reads it, with what it writes and what
+    /// the programs of its own clients write, on a budget of its own as
+    /// large as theirs; one past it may write any file. A program that is
+    /// not read is `unknown` already.
+    fn program_writes(&mut self, unit: &Unit, program: &Program, acts: &Acts) {
+        if !self.reads_program(unit, acts) || !self.data.gathered.insert(program.clone()) {
+            return;
+        }
+        if !self.data.nest.take_gathered(program.text().len()) {
+            self.anywhere = true;
+            return;
+        }
+        let split = program_split(program);
+        let mut checker = Checker::new(&split, self.resolver);
+        checker.data.nest = self.data.nest.deeper();
+        checker.note_writes();
+        self.absorb(checker);
     }
 
     /// Whether the database `name` (as given to `sqlite3` or `duckdb`) is the
@@ -2555,14 +2710,6 @@ impl Checker<'_> {
         }
     }
 
-    /// `Invoke-Sqlcmd`: SQL Server's cmdlet, which runs its `-Query` and its
-    /// `-InputFile`.
-    fn invoke_sqlcmd(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
-        let args = self.templates(unit, args);
-        let given = invoke_sqlcmd_queries(&args);
-        self.client_given(at, unit, given, Language::Sql(Dialect::SqlServer));
-    }
-
     /// `sqlite3` and `duckdb`: a database in a file is the agent's own when
     /// the file is in the workspace, judged like any file.
     fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>, dialect: Dialect) {
@@ -2571,9 +2718,7 @@ impl Checker<'_> {
             .iter()
             .map(|statement| self.template(unit, statement))
             .collect();
-        statements.extend(self.split.fed_to(at).cloned());
-        let up = self.upstream(at);
-        statements.extend(up.texts);
+        let up = self.fed(at, &mut statements);
         let own_file = match found.file {
             None => self.data.behind == 0,
             Some(_) if self.data.behind > 0 => false,

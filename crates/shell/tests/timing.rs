@@ -1099,6 +1099,15 @@ fn machine_settings_given_many_patterns_names_or_options_are_read_in_time() {
         (Shell::Posix, fit("x ", "semanage fcontext ", "")),
         (Shell::Posix, fit("--info ALL ", "grubby ", "")),
         (Shell::PowerShell, fit("x ", "service ", " stop")),
+        (Shell::Posix, fit("'d*@x*' ", "rcctl stop ", "")),
+        (Shell::Posix, fit("x_enable=YES ", "sysrc ", "")),
+        (Shell::Posix, fit("-wd ", "s6-svc ", " /run/service/x")),
+        (Shell::Posix, fit("d*@x* ", "s6-rc -d change ", "")),
+        (Shell::Posix, fit("--force ", "dinitctl ", " stop x")),
+        (Shell::Posix, fit("-v ", "insserv ", " x")),
+        (Shell::Posix, fit("start 20 2 . ", "update-rc.d x ", "")),
+        (Shell::Posix, fit("'d*@x*' ", "brew services stop ", "")),
+        (Shell::Posix, fit("-a ", "nsenter ", " true")),
     ];
     for (shell, line) in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
