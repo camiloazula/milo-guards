@@ -1035,10 +1035,10 @@ powershell finds=destroy_resources | Remove-EntraUser -UserId u
 powershell finds=destroy_resources | Remove-MsolUser -UserPrincipalName u
 powershell finds=destroy_resources | Invoke-Command -ScriptBlock { Remove-AzVM -Name vm -Force }
 # Other verbs destroy too: an AWS `Unregister-` cmdlet (AWS's deregister and
-# disassociate) and an Azure one, a `Clear-` or `Reset-` cmdlet of any cloud
-# module, a `Disable-` of a key or a backup, a stop that terminates
+# disassociate) and an Azure one, a `Clear-` or `Reset-` cmdlet of a cloud
+# module that wipes, a `Disable-` of a key or a backup, a stop that terminates
 # (`Stop-EC2Instance -Terminate`, and the `Stop-` cmdlets AWS's terminate
-# verbs are named), and a key's deletion requested. A stop without
+# operations are named), and a key's deletion requested. A stop without
 # `-Terminate` stays safe, as do listing and the cmdlets that only change the
 # module's own settings on this machine, and other modules' cmdlets of those
 # verbs whose noun only looks like a prefix.
@@ -1067,9 +1067,155 @@ powershell finds=destroy_resources | Reset-AzRedisCache -ResourceGroupName rg -N
 powershell finds=destroy_resources | Reset-RDSDBParameterGroup -DBParameterGroupName p -ResetAllParameter $true
 powershell finds=destroy_resources | Reset-MsolStrongAuthenticationMethodByUpn -UserPrincipalName u
 powershell finds=destroy_resources | Unregister-SCDelegatedAdministrator -AccountId 1
-powershell finds=destroy_resources | Clear-CSDomain -DomainName d
 powershell finds=destroy_resources | Invoke-Command -ScriptBlock { Unregister-EC2Image -ImageId ami-1 }
 posix finds=destroy_resources | pwsh -c 'Stop-EC2Instance -InstanceId i-1 -Terminate'
+# A `Clear-` or `Reset-` cmdlet of AWS is read by its whole noun, from the
+# AWS Tools' list: the ones that wipe data, a credential or a set of values
+# tuned by hand are `destroy_resources`; the ones that set one attribute or
+# setting back, flush a cache of responses or release locks stay safe, and so
+# does another module's noun that starts like an AWS prefix (SharePoint's
+# `SP`).
+powershell finds=destroy_resources reason="clears data in AWS" | Clear-KNDRQuerySuggestion -IndexId i
+powershell finds=destroy_resources reason="clears data in AWS" | Clear-EVBConnection -Name c
+powershell finds=destroy_resources reason="clears data in AWS" | Clear-CWEConnection -Name c
+powershell finds=destroy_resources reason="clears data in AWS" | AWS.Tools.SQS\\Clear-SQSQueue -QueueUrl q
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-NEPTGGraph -GraphIdentifier g -SkipSnapshot $true
+powershell finds=destroy_resources reason="resets AWS resources" | reset-neptggraph -GraphIdentifier g
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-RDSDBCluster -DBClusterIdentifier c -BacktrackTo (Get-Date).AddHours(-1)
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-WKSWorkspace -WorkspaceId ws-1
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-MPV2ChannelState -ChannelName c -ChannelGroupName g
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-SGCache -GatewayARN a
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-GLUEJobBookmark -JobName j
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-GGDeployment -GroupId g
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-IAMServiceSpecificCredential -ServiceSpecificCredentialId c
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-DSUserPassword -DirectoryId d -UserName u -NewPassword $p
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-CGIPUserPasswordAdmin -UserPoolId p -Username u
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-BACCTokenVaultKeyMaterial -TokenVaultId v
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-ECCacheParameterGroup -CacheParameterGroupName p -ResetAllParameter $true
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-RSClusterParameterGroup -ParameterGroupName p
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-ACTLandingZone -LandingZoneIdentifier z
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-DZEnvironmentRole -DomainIdentifier d -EnvironmentIdentifier e
+powershell finds=destroy_resources reason="resets AWS resources" | Reset-SSMParameterVersionLabel -Name p -Label l
+powershell safe | Reset-EC2ImageAttribute -ImageId ami-1 -Attribute launchPermission
+powershell safe | Reset-EC2SnapshotAttribute -SnapshotId snap-1 -Attribute createVolumePermission
+powershell safe | Reset-EC2InstanceAttribute -InstanceId i-1 -Attribute sourceDestCheck
+powershell safe | Reset-EC2NetworkInterfaceAttribute -NetworkInterfaceId eni-1 -SourceDestCheck $true
+powershell safe | Reset-EC2EbsDefaultKmsKeyId
+powershell safe | Reset-SSMServiceSetting -SettingId s
+powershell safe | Reset-IOTWResourceLogLevel -ResourceIdentifier r -ResourceType WirelessDevice
+powershell safe | Reset-IAMRANotificationSetting -TrustAnchorId t
+powershell safe | Reset-CBProjectCache -ProjectName p
+powershell safe | Reset-LSDistributionCache -DistributionName d
+powershell safe | Reset-RDSDTransaction -ResourceArn a -SecretArn s -TransactionId t
+powershell safe | Reset-WICDevicesForUserBatch -NetworkId n -UserId u -AppId a
+powershell safe | Clear-AGStageCache -RestApiId a -StageName s
+powershell safe | Clear-ASYNApiCache -ApiId a
+powershell safe | Clear-IOTDefaultAuthorizer
+powershell safe | Clear-FSXFileSystemNfsV3Lock -FileSystemId fs-1
+powershell safe | Clear-SPLogLevel
+powershell safe | Clear-SPLogLevel -Identity "SharePoint Server:*"
+powershell safe | Reset-SPProjectQueueSettings -ServiceApplication s
+# The AWS cmdlets that destroy under another verb, each by its name: a `Stop-`
+# cmdlet AWS's terminate operations are named, the account an Organizations
+# `Close-` closes, and the deletes named `Uninstall-`, `Dismount-`, `Unlock-`,
+# `Start-`, `Invoke-`, `New-`, `Set-` and `Group-`. A `Stop-` that cancels
+# (`Stop-KMSKeyDeletion` cancels a deletion) stays safe.
+powershell finds=destroy_resources reason="terminates AWS resources" | Stop-SWFWorkflowExecution -Domain d -WorkflowId w
+powershell finds=destroy_resources reason="terminates AWS resources" | stop-swfworkflowexecution -Domain d -WorkflowId w
+powershell finds=destroy_resources reason="terminates AWS resources" | Stop-BATServiceJob -JobId j
+powershell finds=destroy_resources reason="terminates AWS resources" | Stop-EDRSRecoveryInstance -RecoveryInstanceID i-1
+powershell finds=destroy_resources reason="terminates AWS resources" | Stop-LMVM2Microvm -MicrovmId m
+powershell finds=destroy_resources reason="terminates AWS resources" | Stop-GMLGameSession -GameSessionId g
+powershell finds=destroy_resources reason="terminates AWS resources" | Stop-SSMSession -SessionId s
+powershell finds=destroy_resources reason="terminates AWS resources" | Stop-EMRServerlessSession -ApplicationId a -SessionId s
+powershell finds=destroy_resources reason="closes an AWS account" | Close-ORGAccount -AccountId 111122223333
+powershell finds=destroy_resources reason="closes an AWS account" | AWS.Tools.Organizations\\Close-ORGAccount -AccountId 1
+powershell finds=destroy_resources reason="deletes AWS resources" | Uninstall-SWFWorkflowType -Domain d -WorkflowType_Name w -WorkflowType_Version 1
+powershell finds=destroy_resources reason="deletes AWS resources" | Uninstall-SWFActivityType -Domain d -ActivityType_Name a -ActivityType_Version 1
+powershell finds=destroy_resources reason="deletes AWS resources" | Dismount-FSXAndDeleteS3AccessPoint -Name ap
+powershell finds=destroy_resources reason="deletes AWS resources" | Unlock-BAKRecoveryPoint -BackupVaultName v -RecoveryPointArn a
+powershell finds=destroy_resources reason="deletes AWS resources" | Start-TFRRemoteDelete -ConnectorId c -DeletePath /x
+powershell finds=destroy_resources reason="deletes AWS resources" | Start-ADSBatchDeleteConfigurationTask -ConfigurationType SERVER -ConfigurationId c
+powershell finds=destroy_resources reason="deletes AWS resources" | Start-EMLDeleteMonitorDeployment -Identifier s
+powershell finds=destroy_resources reason="deletes AWS resources" | Start-MPAActiveApprovalTeamDeletion -Arn a
+powershell finds=destroy_resources reason="deletes AWS resources" | New-BCMPCDeleteBillScenarioCommitmentModification -BillScenarioId b -Id i
+powershell finds=destroy_resources reason="deletes AWS resources" | New-BCMPCDeleteBillScenarioUsageModification -BillScenarioId b -Id i
+powershell finds=destroy_resources reason="deletes AWS resources" | New-BCMPCDeleteWorkloadEstimateUsage -WorkloadEstimateId w -Id i
+powershell finds=destroy_resources reason="deletes AWS resources" | New-PERSDataDeletionJob -JobName j -DatasetGroupArn a -RoleArn r -DataSource_DataLocation s3://b/u.csv
+powershell finds=destroy_resources reason="deletes AWS resources" | Set-SMDeleteClusterNode -ClusterName c -NodeId n
+powershell finds=destroy_resources reason="deletes AWS resources" | Set-BDRBatchDeleteEvaluationJob -JobIdentifier j
+powershell finds=destroy_resources reason="deletes AWS resources" | Set-QSBatchDeleteTopicReviewedAnswer -AwsAccountId 1 -TopicId t
+powershell finds=destroy_resources reason="deletes AWS resources" | Group-CHMVODeletePhoneNumber -PhoneNumberId p
+powershell finds=destroy_resources reason="deletes and recreates AWS resources" | Start-EBEnvironmentRebuild -EnvironmentName prod
+powershell finds=destroy_resources reason="clears data in AWS" | Invoke-NEPTFastReset -Action performDatabaseReset -Token t
+powershell safe | Stop-KMSKeyDeletion -KeyId k
+powershell safe | Stop-SSMCommand -CommandId c
+powershell safe | Stop-CFNUpdateStack -StackName s
+powershell safe | Stop-EC2SpotInstanceRequest -SpotInstanceRequestId r
+powershell safe | Close-SecurityIRCase -CaseId c
+powershell safe | Close-LSInstancePublicPort -InstanceName i -PortInfo_Protocol tcp
+powershell safe | Start-SWFWorkflowExecution -Domain d -WorkflowId w
+# Azure's `Clear-` and `Reset-` cmdlets destroy unless their whole noun is one
+# the Az modules give to a setting, a counter, a cache of responses or a
+# reboot of a gateway; a noun of the Azure prefix no list names stays risky.
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzAppConfigurationDeletedStore -Location l -Name s
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzBatchComputeNode -PoolId p -Id n -BatchContext $c
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzWebAppPublishingProfile -ResourceGroupName rg -Name app
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzVirtualNetworkGatewayConnectionSharedKey -Name c -ResourceGroupName rg -KeyLength 32
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzStaticWebAppApiKey -ResourceGroupName rg -Name s
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzLabServicesVMPassword -ResourceGroupName rg -LabName l -VirtualMachineName v -Password $p
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzureRoleInstance -ServiceName s -Slot Production -InstanceName i -Reimage
+# Auditing, threat protection and vulnerability assessment settings removed,
+# and a rule baseline tuned by hand, destroy as `Remove-AzSqlServerAudit` does.
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlAuditSetting -WorkspaceName w
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlPoolAuditSetting -WorkspaceName w -Name pool
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlAdvancedThreatProtectionSetting -WorkspaceName w
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlPoolAdvancedThreatProtectionSetting -WorkspaceName w -Name pool
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlVulnerabilityAssessmentSetting -WorkspaceName w
+powershell finds=destroy_resources reason="resets Azure resources" | Reset-AzSynapseSqlPoolVulnerabilityAssessmentSetting -WorkspaceName w -Name pool
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlServerVulnerabilityAssessmentSetting -ResourceGroupName rg -ServerName s
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlDatabaseVulnerabilityAssessmentSetting -ResourceGroupName rg -ServerName s -DatabaseName d
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlInstanceVulnerabilityAssessmentSetting -ResourceGroupName rg -InstanceName i
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlInstanceDatabaseVulnerabilityAssessmentSetting -ResourceGroupName rg -InstanceName i -DatabaseName d
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlDatabaseVulnerabilityAssessmentRuleBaseline -ResourceGroupName rg -ServerName s -DatabaseName d -RuleId VA1
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSqlInstanceDatabaseVulnerabilityAssessmentRuleBaseline -ResourceGroupName rg -InstanceName i -DatabaseName d -RuleId VA1
+powershell finds=destroy_resources reason="clears data in Azure" | Clear-AzSynapseSqlPoolVulnerabilityAssessmentRuleBaseline -WorkspaceName w -Name pool -RuleId VA1
+powershell safe | Clear-AzCdnEndpointContent -ResourceGroupName rg -ProfileName p -EndpointName e -ContentPath /*
+powershell safe | Clear-AzFrontDoorCdnEndpointContent -ResourceGroupName rg -ProfileName p -EndpointName e -ContentPath /*
+powershell safe | Reset-AzVirtualNetworkGateway -VirtualNetworkGateway $g
+powershell safe | Reset-AzureRmVirtualNetworkGateway -VirtualNetworkGateway $g
+powershell safe | Reset-AzVpnGateway -ResourceGroupName rg -Name g
+powershell safe | Reset-AzPaloAltoNetworksLocalRuleCounter -LocalRulestackName r -Priority 1 -ResourceGroupName rg
+powershell safe | Reset-AzSynapseSparkSessionTimeout -WorkspaceName w -SparkPoolName p -Id 1
+powershell safe | Reset-AzureADMSLifeCycleGroup -Id g
+# Google Cloud's one `Reset-` cmdlet deletes an instance's client
+# certificates; the module has no `Clear-` or `Unregister-` cmdlet.
+powershell finds=destroy_resources reason="resets Google Cloud resources" | Reset-GcSqlSslConfig -Instance db
+# Microsoft Graph, Entra and MSOnline: a wipe of a device or an app's data, a
+# purge of eDiscovery data, a password, passcode or sign-in method reset and
+# a reset of review decisions destroy, also in Graph's beta module; a reaction
+# or presence cleared, a quarantine lifted and a group renewed stay safe.
+powershell finds=destroy_resources reason="clears data in Microsoft Entra or Microsoft 365" | Clear-MgDeviceManagementManagedDevice -ManagedDeviceId d
+powershell finds=destroy_resources reason="clears data in Microsoft Entra or Microsoft 365" | Clear-MgBetaDeviceManagementManagedDevice -ManagedDeviceId d
+powershell finds=destroy_resources reason="clears data in Microsoft Entra or Microsoft 365" | Clear-MgUserManagedDevice -UserId u -ManagedDeviceId d
+powershell finds=destroy_resources reason="clears data in Microsoft Entra or Microsoft 365" | Clear-MgUserAndBlockManagedApp -UserId u
+powershell finds=destroy_resources reason="clears data in Microsoft Entra or Microsoft 365" | Clear-MgSecurityCaseEdiscoveryCaseSearchData -EdiscoveryCaseId c -EdiscoverySearchId s
+powershell finds=destroy_resources reason="resets Microsoft Entra or Microsoft 365 objects" | Reset-MgUserAuthenticationMethodPassword -UserId u -AuthenticationMethodId m
+powershell finds=destroy_resources reason="resets Microsoft Entra or Microsoft 365 objects" | Reset-MgDeviceManagementManagedDevicePasscode -ManagedDeviceId d
+powershell finds=destroy_resources reason="resets Microsoft Entra or Microsoft 365 objects" | Reset-MgIdentityGovernanceAccessReviewInstanceDecision -AccessReviewInstanceId r
+powershell finds=destroy_resources reason="resets Microsoft Entra or Microsoft 365 objects" | Reset-MgPolicyCrossTenantAccessPolicyDefaultToSystemDefault
+powershell finds=destroy_resources reason="resets Microsoft Entra or Microsoft 365 objects" | Reset-EntraStrongAuthenticationMethodByUpn -UserPrincipalName u
+powershell finds=destroy_resources reason="resets Microsoft Entra or Microsoft 365 objects" | Reset-EntraBetaStrongAuthenticationMethodByUpn -UserPrincipalName u
+powershell safe | Clear-MgChatMessageReaction -ChatId c -ChatMessageId m -ReactionType like
+powershell safe | Clear-MgTeamChannelMessageReplyReaction -TeamId t -ChannelId c -ChatMessageId m -ChatMessageId1 r
+powershell safe | Clear-MgUserPresence -UserId u -SessionId s
+powershell safe | Clear-MgBetaUserPresenceLocation -UserId u
+powershell safe | Clear-MgApplicationVerifiedPublisher -ApplicationId a
+powershell safe | Clear-MgIdentityGovernanceLifecycleWorkflowQuarantine -WorkflowId w
+powershell safe | Reset-MgGroupUnseenCount -GroupId g
+powershell safe | Reset-MgPrintPrinterDefault -PrinterId p
+powershell safe | Reset-EntraLifeCycleGroup -Id g
+powershell safe | Reset-EntraBetaLifeCycleGroup -Id g
 # A default parameter value the line sets gives `Stop-EC2Instance` its
 # `-Terminate`, by a key that names it (`$false` turns it off), and may by a
 # key with a wildcard in its parameter or by a cmdlet that sets the variable

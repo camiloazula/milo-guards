@@ -6330,26 +6330,72 @@ as do listing and creating (`Get-AzVM`, `Get-S3Bucket`, `New-AzResourceGroup`).
 guard reads the two as the same word.
 
 Other verbs of those modules destroy too, and are `destroy_resources` the
-same way. A `Clear-` or `Reset-` cmdlet of any of the clouds wipes what a
-resource holds or sets it back (`Clear-SQSQueue` purges a queue,
-`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
-`Reset-RDSDBParameterGroup` sets a database's parameters back). An
-`Unregister-` cmdlet of AWS is one of its deregister or disassociate verbs
-(`Unregister-EC2Image`, `Unregister-ECSTaskDefinition`,
-`Unregister-ELB2Target`), and one of Azure takes a provider or a server off a
-subscription (`Unregister-AzResourceProvider`). A `Disable-` cmdlet is one
-when its noun names a key or a backup: it ends in `Key` or `Keys`, or holds
-`Backup` or `Retention` (`Disable-KMSKey`,
+same way. A `Clear-` or `Reset-` cmdlet of Azure, Google Cloud or Microsoft
+Entra and Microsoft 365 wipes what a resource holds or sets it back
+(`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
+`Reset-AzBatchComputeNode` reimages a node, `Reset-GcSqlSslConfig` deletes an
+instance's client certificates, `Clear-MgDeviceManagementManagedDevice` and
+`Clear-MgBetaDeviceManagementManagedDevice` wipe a device,
+`Reset-MgUserAuthenticationMethodPassword` and
+`Reset-EntraStrongAuthenticationMethodByUpn` reset a way to sign in), except
+for the nouns of those modules, read whole, that only set a setting back,
+flush a cache of responses, reset a counter, reboot a gateway or take a
+reaction or a presence off (`Clear-AzCdnEndpointContent`,
+`Reset-AzVirtualNetworkGateway`, `Reset-AzureADMSLifeCycleGroup`,
+`Clear-MgChatMessageReaction`, `Clear-MgUserPresence`,
+`Reset-EntraLifeCycleGroup`). A setting that watches a database is not one of
+them: the cmdlets that remove a server's, database's, workspace's or pool's
+auditing, threat protection or vulnerability assessment settings, or a rule
+baseline tuned by hand, destroy as `Remove-AzSqlServerAudit` does
+(`Reset-AzSynapseSqlAuditSetting`,
+`Reset-AzSynapseSqlAdvancedThreatProtectionSetting`,
+`Clear-AzSqlServerVulnerabilityAssessmentSetting`,
+`Clear-AzSqlDatabaseVulnerabilityAssessmentRuleBaseline`). The lists are checked against the Az 16.5.0
+reference, Google's module and Microsoft Graph's command metadata, and a noun
+of those prefixes no list names stays risky, since its prefix is its cloud's.
+AWS's prefixes are short and other modules' nouns start like them
+(SharePoint's `Clear-SPLogLevel` like `SP`), and most of AWS's `Reset-`
+cmdlets set one attribute back, so an AWS `Clear-` or `Reset-` is read by
+its whole name, from the AWS Tools v5 cmdlet reference and the API operation
+each calls: the ones that wipe data (`Clear-SQSQueue` purges a queue,
+`Clear-EVBConnection` takes a connection's stored authorization off,
+`Reset-NEPTGGraph` empties a graph, `Reset-RDSDBCluster` backtracks a
+database, `Reset-WKSWorkspace` rebuilds a workspace), a credential
+(`Reset-DSUserPassword`, `Reset-IAMServiceSpecificCredential`) or a set of
+values tuned by hand (`Reset-RDSDBParameterGroup`, `Reset-ACTLandingZone`)
+destroy, and the rest stay safe (`Reset-EC2ImageAttribute`,
+`Reset-EC2EbsDefaultKmsKeyId`, `Reset-SSMServiceSetting`,
+`Clear-AGStageCache`, `Reset-CBProjectCache`, `Clear-SPLogLevel`). A new AWS
+cmdlet of those verbs is safe until it is listed. An `Unregister-` cmdlet of
+AWS is one of its deregister or disassociate verbs (`Unregister-EC2Image`,
+`Unregister-ECSTaskDefinition`, `Unregister-ELB2Target`), and one of Azure
+takes a provider or a server off a subscription
+(`Unregister-AzResourceProvider`); Google's and Microsoft Graph's modules have
+none. A `Disable-` cmdlet is one when its noun names a key or a backup: it
+ends in `Key` or `Keys`, or holds `Backup` or `Retention` (`Disable-KMSKey`,
 `Disable-AzRecoveryServicesBackupProtection`,
 `Disable-AzStorageDeleteRetentionPolicy`); `Disable-KMSKeyRotation` is not.
-The AWS cmdlets its terminate verbs are named are: `Stop-EC2Instance` with
-`-Terminate` (by any prefix of the name, in any case; `-Terminate:$false` or
-`:0` is off, a value only known when it runs and a splat may turn it on, and
-the finding then says it may), `Stop-EBEnvironment`, `Stop-EMRJobFlow` and
-`Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion` schedules a
-key's deletion. `Stop-EC2Instance` without `-Terminate` stops instances and
-stays safe, also with a variable as an argument (`-InstanceId $id`), whose
-value is a value whatever it holds; so do `Stop-AzVM` and `Get-EC2Image`.
+AWS also destroys under other verbs, each cmdlet read by its name:
+`Stop-EC2Instance` with `-Terminate` (by any prefix of the name, in any case;
+`-Terminate:$false` or `:0` is off, a value only known when it runs and a
+splat may turn it on, and the finding then says it may); every `Stop-` cmdlet
+AWS's terminate operations are named (`Stop-EBEnvironment`,
+`Stop-EMRJobFlow`, `Stop-ASInstanceInAutoScalingGroup`,
+`Stop-SWFWorkflowExecution`, `Stop-BATServiceJob`, `Stop-EDRSRecoveryInstance`,
+`Stop-SSMSession` and the rest); `Close-ORGAccount`, which closes an account;
+the deletes AWS names with another verb (`Uninstall-SWFWorkflowType`,
+`Dismount-FSXAndDeleteS3AccessPoint`, `Unlock-BAKRecoveryPoint`,
+`Start-TFRRemoteDelete`, `New-PERSDataDeletionJob`, the batch deletes
+`New-BCMPCDeleteBillScenarioCommitmentModification`,
+`New-BCMPCDeleteBillScenarioUsageModification` and
+`New-BCMPCDeleteWorkloadEstimateUsage`, `Set-SMDeleteClusterNode`,
+`Group-CHMVODeletePhoneNumber`, `Start-EBEnvironmentRebuild` and
+`Invoke-NEPTFastReset`); and `Request-KMSKeyDeletion`, which schedules a key's
+deletion. A `Stop-` that cancels stays safe (`Stop-KMSKeyDeletion`,
+`Stop-SSMCommand`, `Stop-CFNUpdateStack`). `Stop-EC2Instance` without
+`-Terminate` stops instances and stays safe, also with a variable as an
+argument (`-InstanceId $id`), whose value is a value whatever it holds; so do
+`Stop-AzVM` and `Get-EC2Image`.
 PowerShell also binds a parameter the line does not write from
 `$PSDefaultParameterValues`. A key written out that names the switch is
 given to the cmdlet as written (see [What cannot be read is
