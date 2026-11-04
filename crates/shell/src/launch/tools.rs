@@ -1,12 +1,17 @@
 //! The tools that run their arguments as a command: tracers and runners
-//! (`strace`, `script`, `ssh-agent`, `chronic`), `launchctl asuser`,
-//! `bsexec` and `submit`, `wsl`, `lima`, `nix run`, and the runners that load
-//! secrets into the command's environment first (`aws-vault exec`, `doppler
-//! run`, `op run`, `infisical run`, `direnv exec`, `dotenv`).
+//! (`strace`, `ltrace`, `script`, `ssh-agent`, `chronic`), `launchctl
+//! asuser`, `bsexec` and `submit`, `wsl`, `lima`, `nix run`, `nsenter`, and
+//! the runners that load secrets into the command's environment first
+//! (`aws-vault exec`, `doppler run`, `op run`, `infisical run`, `direnv
+//! exec`, `dotenv`). And the files the tracers, `script` and `time` write
+//! their own output to.
 
-use super::wrappers::running;
+use std::collections::HashSet;
+
+use super::wrappers::{getopt, running, Getopt};
 use super::{
-    after_getopt, after_options, getopt_value, join, runs, shell_words, subcommand, Launch,
+    after_getopt, after_options, after_options_by, getopt_value, getopt_word, join, runs,
+    shell_words, subcommand, Launch, Word,
 };
 use crate::unit::{Arg, Unit};
 use crate::Shell;
@@ -44,6 +49,132 @@ const STRACE_LONG: &[&str] = &[
 /// `strace` runs the program after its options, tracing it.
 pub(super) fn strace(args: &[Arg]) -> Launch {
     runs(args, after_getopt(args, STRACE_SHORT, STRACE_LONG))
+}
+
+/// The short options of `nsenter` that take a value, the rest of the bundle
+/// or the next word: the target process (`-t`), the socket (`-N`) and the
+/// user and group ids (`-S`, `-G`).
+const NSENTER_VALUED: &str = "tNSG";
+
+/// The short options of `nsenter` whose value, a namespace's file or a
+/// folder, is only ever the rest of the bundle (`-m/proc/1/ns/mnt`,
+/// `-W/srv`): with nothing after them they take the target's.
+const NSENTER_ATTACHED: &str = "muinpCUTrwW";
+
+/// The long options of `nsenter` that take the next word as their value.
+const NSENTER_LONG: &[&str] = &["target", "net-socket", "setuid", "setgid"];
+
+/// The long options of `nsenter` that take no value, or one only after `=`.
+const NSENTER_FLAGS: &[&str] = &[
+    "all",
+    "mount",
+    "uts",
+    "ipc",
+    "net",
+    "pid",
+    "cgroup",
+    "user",
+    "time",
+    "user-parent",
+    "root",
+    "wd",
+    "wdns",
+    "env",
+    "no-fork",
+    "preserve-credentials",
+    "keep-caps",
+    "join-cgroup",
+    "follow-context",
+    "help",
+    "version",
+];
+
+/// The short options of `nsenter` that start the program in another working
+/// folder: `-w` and `-W` move it to one, `-r` to the target's root, and
+/// entering a mount namespace (`-m`, or `-a`, every namespace) moves it to
+/// that namespace's root, as the kernel does on `setns`.
+const NSENTER_MOVES: &str = "wWrma";
+
+/// The long options of [`NSENTER_MOVES`].
+const NSENTER_MOVES_LONG: &[&str] = &["wd", "wdns", "root", "mount", "all"];
+
+/// Whether `name`, a long option of `nsenter` as written without its
+/// `=value`, is one of `options`: by its full name, or, as `getopt_long`
+/// reads one, by a prefix of it that is no option's full name.
+fn nsenter_long(name: &str, options: &[&str]) -> bool {
+    let exact = |option: &&str| *option == name;
+    if NSENTER_LONG.iter().chain(NSENTER_FLAGS).any(exact) {
+        return options.iter().any(exact);
+    }
+    !name.is_empty() && options.iter().any(|option| option.starts_with(name))
+}
+
+/// What an option of `nsenter` is, as its `getopt_long` reads it.
+fn nsenter_word(text: &str) -> Word {
+    if let Some(name) = text.strip_prefix("--") {
+        return if !name.contains('=') && nsenter_long(name, NSENTER_LONG) {
+            Word::Value
+        } else {
+            Word::Flag
+        };
+    }
+    let bundle = text.strip_prefix('-').unwrap_or(text);
+    for (at, letter) in bundle.char_indices() {
+        if NSENTER_ATTACHED.contains(letter) {
+            return Word::Flag;
+        }
+        if NSENTER_VALUED.contains(letter) {
+            return if at + letter.len_utf8() == bundle.len() {
+                Word::Value
+            } else {
+                Word::Flag
+            };
+        }
+    }
+    Word::Flag
+}
+
+/// Whether an option of `nsenter` starts the program in another working
+/// folder ([`NSENTER_MOVES`]).
+fn nsenter_moves(text: &str) -> bool {
+    if let Some(name) = text.strip_prefix("--") {
+        let name = name.split('=').next().unwrap_or(name);
+        return nsenter_long(name, NSENTER_MOVES_LONG);
+    }
+    let bundle = text.strip_prefix('-').unwrap_or(text);
+    for letter in bundle.chars() {
+        if NSENTER_MOVES.contains(letter) {
+            return true;
+        }
+        if NSENTER_ATTACHED.contains(letter) || NSENTER_VALUED.contains(letter) {
+            return false;
+        }
+    }
+    false
+}
+
+/// `nsenter` runs the program after its options in the namespaces of
+/// another process, the init process's among them (`nsenter -t 1 -a`).
+/// The options of [`NSENTER_MOVES`] start it in a folder of that process's,
+/// or in one they are given inside its namespace, which the line does not
+/// show: where it runs is then only known when it does.
+pub(super) fn nsenter(args: &[Arg]) -> Launch {
+    let start = after_options_by(args, |text, _| nsenter_word(text));
+    let launch = runs(args, start);
+    let own = start
+        .and_then(|start| args.get(..start))
+        .unwrap_or_default();
+    let moved = own
+        .iter()
+        .filter_map(Arg::known)
+        .take_while(|text| *text != "--")
+        .find(|text| text.starts_with('-') && nsenter_moves(text));
+    match (moved, &launch) {
+        (Some(option), Launch::Runs(_)) => {
+            Launch::In(Arg::Unknown(option.to_string()), None, Box::new(launch))
+        }
+        _ => launch,
+    }
 }
 
 /// The options of `script` that take a value: util-linux's and the BSDs'
@@ -84,11 +215,7 @@ fn script_with(args: &[Arg], short: &str) -> Launch {
     let Some(file) = after_getopt(args, short, SCRIPT_LONG) else {
         return Launch::Itself;
     };
-    let playback = args[..file].iter().filter_map(Arg::known).any(|text| {
-        text.strip_prefix('-')
-            .is_some_and(|bundle| !bundle.starts_with('-') && bundle.contains('p'))
-    });
-    if playback {
+    if plays_back(&args[..file], short) {
         return Launch::Itself;
     }
     let mut start = file + 1;
@@ -96,6 +223,318 @@ fn script_with(args: &[Arg], short: &str) -> Launch {
         start += 1;
     }
     runs(args, Some(start))
+}
+
+/// Whether `script`'s options `options`, read with the letters of `short`
+/// taking a value, play a recording back: `-p` as a flag letter in a
+/// bundle, before the first letter that takes a value (`-dp`, not `-cpwd`
+/// or `-Bperf.log`), and never the value of an option (`-c -p`).
+fn plays_back(options: &[Arg], short: &str) -> bool {
+    let mut at = 0;
+    while let Some(text) = options.get(at).and_then(Arg::known) {
+        let Some(bundle) = text.strip_prefix('-').filter(|_| text != "--") else {
+            break;
+        };
+        if !bundle.starts_with('-')
+            && bundle
+                .chars()
+                .take_while(|letter| !short.contains(*letter))
+                .any(|letter| letter == 'p')
+        {
+            return true;
+        }
+        at += match getopt_word(text, short, SCRIPT_LONG) {
+            Word::Value => 2,
+            Word::Flag | Word::Operand => 1,
+        };
+    }
+    false
+}
+
+/// The options of `ltrace` that take a value, as `getopt_long` reads them.
+const LTRACE_OPTIONS: Getopt = Getopt {
+    short: &[
+        ('a', "align"),
+        ('A', "array"),
+        ('D', "debug"),
+        ('e', "expr"),
+        ('F', "config"),
+        ('l', "library"),
+        ('n', "indent"),
+        ('o', "output"),
+        ('p', "pid"),
+        ('s', "string"),
+        ('u', "user"),
+        ('w', "where"),
+        ('x', "symbols"),
+    ],
+    long: &[
+        ("align", true),
+        ("config", true),
+        ("debug", true),
+        ("demangle", false),
+        ("help", false),
+        ("indent", true),
+        ("library", true),
+        ("no-signals", false),
+        ("output", true),
+        ("version", false),
+        ("where", true),
+    ],
+};
+
+/// `ltrace` runs the program after its options, tracing its library calls.
+pub(super) fn ltrace(args: &[Arg]) -> Launch {
+    runs(
+        args,
+        after_options_by(args, |text, next| getopt(text, next, &LTRACE_OPTIONS).0),
+    )
+}
+
+/// The options of GNU `time` (`-a`, `-p`, `-q` and `-v` take none), which
+/// also names a long one by a shorter start of it; the BSDs' and macOS's
+/// `-o` is the same.
+pub(super) const TIME_OPTIONS: Getopt = Getopt {
+    short: &[('f', "format"), ('o', "output")],
+    long: &[
+        ("append", false),
+        ("format", true),
+        ("help", false),
+        ("output", true),
+        ("portability", false),
+        ("quiet", false),
+        ("verbose", false),
+        ("version", false),
+    ],
+};
+
+/// The options of `script` read for the files it writes: util-linux's and
+/// the BSDs', with the long names util-linux gives them (a long one may be
+/// shortened, as `getopt_long` reads it). `-t` takes its file attached on
+/// util-linux and a time on the BSDs: its value is read as a file either
+/// way. [`SCRIPT_PIPE`] adds FreeBSD's `-F pipe`.
+const SCRIPT_OPTIONS: Getopt = Getopt {
+    short: &[
+        ('c', "command"),
+        ('E', "echo"),
+        ('I', "log-in"),
+        ('O', "log-out"),
+        ('B', "log-io"),
+        ('T', "log-timing"),
+        ('m', "logging-format"),
+        ('o', "output-limit"),
+        ('t', "timing"),
+    ],
+    long: SCRIPT_LONGS,
+};
+
+/// [`SCRIPT_OPTIONS`] with FreeBSD's `-F pipe`, the named pipe it also
+/// writes the session to.
+const SCRIPT_PIPE: Getopt = Getopt {
+    short: &[
+        ('c', "command"),
+        ('E', "echo"),
+        ('I', "log-in"),
+        ('O', "log-out"),
+        ('B', "log-io"),
+        ('T', "log-timing"),
+        ('m', "logging-format"),
+        ('o', "output-limit"),
+        ('t', "timing"),
+        ('F', "pipe"),
+    ],
+    long: SCRIPT_LONGS,
+};
+
+/// util-linux `script`'s long options. `--timing` takes its file only after
+/// `=`, which [`script_option`] reads.
+const SCRIPT_LONGS: &[(&str, bool)] = &[
+    ("append", false),
+    ("command", true),
+    ("echo", true),
+    ("flush", false),
+    ("force", false),
+    ("help", false),
+    ("log-in", true),
+    ("log-io", true),
+    ("log-out", true),
+    ("log-timing", true),
+    ("logging-format", true),
+    ("output-limit", true),
+    ("quiet", false),
+    ("return", false),
+    ("timing", false),
+    ("version", false),
+];
+
+/// The options of `script` whose value is a file it writes.
+const SCRIPT_WRITES: [&str; 6] = [
+    "log-in",
+    "log-out",
+    "log-io",
+    "log-timing",
+    "timing",
+    "pipe",
+];
+
+/// What a tracer, a recorder or a timer writes its own output to, beside
+/// the command it runs.
+pub(super) enum Output {
+    /// A file, written as a redirect writes it.
+    File(Arg),
+    /// A command a shell runs, given the output on its input: `strace -o
+    /// '|cmd'` (or `'!cmd'`).
+    Command(Arg),
+}
+
+/// What the program `key` writes its own output to, by `args`: `strace -o`
+/// (`--output`), `ltrace -o` (`--output`), `time -o` (`--output`, with or
+/// without `-a`), and `script`'s file (`typescript` when it names none) and
+/// the files of its `-B`, `-I`, `-O`, `-T` and `-t` (see [`script_outputs`]).
+pub(super) fn outputs(key: &str, args: &[Arg]) -> Vec<Output> {
+    match key {
+        "strace" => written(args, false, strace_option)
+            .into_iter()
+            .map(strace_output)
+            .collect(),
+        "ltrace" => written(args, false, |text, next| {
+            named(getopt(text, next, &LTRACE_OPTIONS), &["output"])
+        })
+        .into_iter()
+        .map(Output::File)
+        .collect(),
+        "time" => written(args, false, |text, next| {
+            named(getopt(text, next, &TIME_OPTIONS), &["output"])
+        })
+        .into_iter()
+        .map(Output::File)
+        .collect(),
+        "script" => script_outputs(args).into_iter().map(Output::File).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The values of the options among a program's own, before what it runs,
+/// that `read` says are files it writes: `read` is given each word that
+/// starts with a dash and the word after it, and says what the word is (see
+/// [`Word`]) and the file it names. When the program `permutes` its
+/// arguments, as GNU `getopt` does, its options are read among its operands
+/// too, up to a `--`.
+fn written(
+    args: &[Arg],
+    permutes: bool,
+    read: impl Fn(&str, Option<&Arg>) -> (Word, Option<Arg>),
+) -> Vec<Arg> {
+    let mut files = Vec::new();
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("--") => break,
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                let (word, file) = read(text, args.get(at + 1));
+                files.extend(file);
+                at += match word {
+                    Word::Flag => 1,
+                    Word::Value => 2,
+                    Word::Operand if permutes => 1,
+                    Word::Operand => break,
+                };
+            }
+            _ if permutes => at += 1,
+            _ => break,
+        }
+    }
+    files
+}
+
+/// What [`getopt`] read, with the value of an option among `writes`.
+fn named(read: (Word, Option<(&str, Option<Arg>)>), writes: &[&str]) -> (Word, Option<Arg>) {
+    let (word, option) = read;
+    let file = option
+        .filter(|(name, _)| writes.contains(name))
+        .and_then(|(_, value)| value);
+    (word, file)
+}
+
+/// `strace`'s option `text`, read as [`strace`] reads it, and the file of
+/// `-o` (in a bundle or attached) or `--output` (or `--output=`).
+fn strace_option(text: &str, next: Option<&Arg>) -> (Word, Option<Arg>) {
+    let word = getopt_word(text, STRACE_SHORT, STRACE_LONG);
+    let file = if let Some(long) = text.strip_prefix("--") {
+        match long.split_once('=') {
+            Some(("output", value)) => Some(Arg::Known(value.to_string())),
+            None if long == "output" => next.cloned(),
+            _ => None,
+        }
+    } else {
+        let bundle = text.strip_prefix('-').unwrap_or(text);
+        bundle
+            .char_indices()
+            .find(|(_, letter)| STRACE_SHORT.contains(*letter))
+            .filter(|(_, letter)| *letter == 'o')
+            .and_then(|(at, letter)| match &bundle[at + letter.len_utf8()..] {
+                "" => next.cloned(),
+                rest => Some(Arg::Known(rest.to_string())),
+            })
+    };
+    (word, file)
+}
+
+/// The output `file` of `strace -o`: a name that starts with `|` or `!` is
+/// a command strace pipes its output to, run by a shell.
+fn strace_output(file: Arg) -> Output {
+    match &file {
+        Arg::Known(text) => match text.strip_prefix(['|', '!']) {
+            Some(command) => Output::Command(Arg::Known(command.to_string())),
+            None => Output::File(file),
+        },
+        Arg::Template { text, .. } if text.starts_with(['|', '!']) => Output::Command(file),
+        _ => Output::File(file),
+    }
+}
+
+/// The files `script` writes: the one it records to, the first word after
+/// its options (`typescript`, in the folder it runs in, when there is none),
+/// unless `-p` plays that back (see [`plays_back`]), and the files of `-B`, `-I`, `-O` and `-T`
+/// (`--log-io`, `--log-in`, `--log-out`, `--log-timing`), of `-t` and
+/// `--timing=`, and of FreeBSD's `-F pipe`, wherever they stand, as
+/// util-linux reads its options. Both readings of `-F` (see [`script`]) are
+/// taken.
+fn script_outputs(args: &[Arg]) -> Vec<Arg> {
+    let mut files: Vec<Arg> = Vec::new();
+    let mut seen: HashSet<Arg> = HashSet::new();
+    for (short, spec) in [
+        (SCRIPT_SHORT.to_string(), &SCRIPT_OPTIONS),
+        (format!("{SCRIPT_SHORT}F"), &SCRIPT_PIPE),
+    ] {
+        let file = after_getopt(args, &short, SCRIPT_LONG);
+        let recorded = match file {
+            _ if plays_back(&args[..file.unwrap_or(args.len())], &short) => None,
+            Some(at) => args.get(at).cloned(),
+            None => Some(Arg::Known("typescript".to_string())),
+        };
+        let options = written(args, true, |text, next| script_option(text, next, spec));
+        for file in recorded.into_iter().chain(options) {
+            if seen.insert(file.clone()) {
+                files.push(file);
+            }
+        }
+    }
+    files
+}
+
+/// `script`'s option `text` read by `spec`, and the file it names:
+/// `--timing=FILE` (or a shorter start of it) names one too.
+fn script_option(text: &str, next: Option<&Arg>, spec: &Getopt) -> (Word, Option<Arg>) {
+    if let Some((name, value)) = text
+        .strip_prefix("--")
+        .and_then(|long| long.split_once('='))
+    {
+        if !name.is_empty() && "timing".starts_with(name) {
+            return (Word::Flag, Some(Arg::Known(value.to_string())));
+        }
+    }
+    named(getopt(text, next, spec), &SCRIPT_WRITES)
 }
 
 /// `ssh-agent` runs the program after its options with the agent's socket in
