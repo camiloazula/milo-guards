@@ -5,7 +5,7 @@ use super::hedged;
 use super::Checker;
 use crate::launch::{git_global, git_long, is_submodule, Global};
 use crate::said::Said;
-use crate::unit::{could_be, has_flag, may_be_option, operands, unknown_start, Arg, Unit};
+use crate::unit::{could_be, has_flag, may_be_option, operands, unknown_start, Arg, Flagged, Unit};
 use crate::{Rule, Shell};
 
 impl Checker<'_> {
@@ -26,7 +26,7 @@ impl Checker<'_> {
                     None,
                 );
             }
-            "awk" | "gawk" | "mawk" | "nawk" => self.awk(args),
+            "awk" | "gawk" | "mawk" | "nawk" => self.awk(unit),
             "osascript" => self.add(
                 Rule::Unknown,
                 "runs AppleScript the guard does not read",
@@ -38,35 +38,41 @@ impl Checker<'_> {
 
     /// awk code that runs commands (`system(…)`, a pipe) or writes files
     /// (`print > "f"`) is risky; so is code the guard cannot read (`-f script`,
-    /// a variable).
-    fn awk(&mut self, args: &[Arg]) {
-        let mut programs = Vec::new();
+    /// a library `-i` or `@include` loads, a variable). gawk's `inplace`
+    /// library (`-i inplace`) edits each file awk reads, so each is a write,
+    /// as is the file `-o`, `-p` or `-d` is given. The options are read as
+    /// gawk's `getopt_long` reads them (see [`awk_options`]).
+    fn awk(&mut self, unit: &Unit) {
+        let args = unit.args.as_slice();
+        let read = awk_options(args);
+        let mut programs: Vec<Value<'_>> = Vec::new();
         let mut file = false;
-        let mut iter = args.iter();
-        while let Some(arg) = iter.next() {
-            match arg.known() {
-                Some("-f" | "--file") => {
-                    file = true;
-                    iter.next();
-                }
-                Some("-e" | "--source") => programs.extend(iter.next()),
-                Some(
-                    "-F" | "-v" | "--field-separator" | "--assign" | "-i" | "--include" | "-l"
-                    | "--load",
-                ) => {
-                    iter.next();
-                }
-                Some("--") => {
-                    programs.extend(iter.next());
-                    break;
-                }
-                Some(text) if text.len() > 1 && text.starts_with('-') => {}
-                _ => {
-                    if programs.is_empty() && !file {
-                        programs.push(arg);
+        let mut libraries: Vec<Library<'_>> = Vec::new();
+        for &(name, value) in &read.options {
+            match name {
+                "file" | "exec" => file = true,
+                "source" => programs.extend(value),
+                "include" => libraries.push(value.map_or(Library::Other, library)),
+                "dump-variables" | "pretty-print" | "profile" => {
+                    if let Some(value) = value {
+                        self.write(unit.shell, unit.scope(), &value.arg(), "writes to");
                     }
-                    break;
                 }
+                _ => {}
+            }
+        }
+        if let Some(arg) = read.unread {
+            self.add(
+                Rule::Unknown,
+                "gives awk an option the guard does not read",
+                Some(arg),
+            );
+        }
+        let mut operands = args.get(read.end..).unwrap_or_default();
+        if programs.is_empty() && !file {
+            if let Some((program, rest)) = operands.split_first() {
+                programs.push(Value::Word(program));
+                operands = rest;
             }
         }
         if file {
@@ -78,19 +84,54 @@ impl Checker<'_> {
         }
         for program in programs {
             match program.known() {
-                Some(code) if awk_runs_commands(code) => self.add(
-                    Rule::Unknown,
-                    "runs commands or writes files from awk code",
-                    None,
-                ),
-                Some(_) => {}
+                Some(code) => {
+                    if awk_runs_commands(code) {
+                        self.add(
+                            Rule::Unknown,
+                            "runs commands or writes files from awk code",
+                            None,
+                        );
+                    }
+                    libraries.extend(included(code));
+                }
                 None => self.add(
                     Rule::Unknown,
                     "runs awk code only known when it runs",
-                    Some(program),
+                    Some(&program.arg()),
                 ),
             }
         }
+        if libraries.iter().any(|library| *library != Library::InPlace) {
+            self.add(
+                Rule::Unknown,
+                "runs an awk script the guard does not read",
+                libraries.iter().find_map(|library| match library {
+                    Library::Unread(arg) => Some(*arg),
+                    _ => None,
+                }),
+            );
+        }
+        let in_place = if libraries.contains(&Library::InPlace) {
+            Flagged::Written
+        } else if libraries
+            .iter()
+            .any(|library| matches!(library, Library::Unread(_)))
+        {
+            Flagged::Unread
+        } else {
+            Flagged::Absent
+        };
+        // Each file awk reads, but `-` (its input) and an assignment
+        // (`x=1`), which it reads as one.
+        self.flagged(in_place, |checker| {
+            for operand in operands.iter().filter(|operand| {
+                !operand
+                    .known()
+                    .is_some_and(|text| text == "-" || assigns(text))
+            }) {
+                checker.write(unit.shell, unit.scope(), operand, "edits");
+            }
+        });
     }
 
     /// git's commands that throw work away. An argument only known when it
@@ -408,6 +449,278 @@ fn clean_dry_run(args: &[Arg]) -> Option<String> {
         }
     }
     Some(format!("git clean -{options}"))
+}
+
+/// A library awk loads with `-i`, `--include` or `@include`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Library<'a> {
+    /// gawk's `inplace`, which edits each file awk reads.
+    InPlace,
+    /// Any other, which the guard does not read.
+    Other,
+    /// One only known when it runs, which may be either.
+    Unread(&'a Arg),
+}
+
+/// The library an `-i` value names.
+fn library(value: Value<'_>) -> Library<'_> {
+    match value {
+        Value::Joined(name) => named_library(name),
+        Value::Word(arg) => match arg.known() {
+            Some(name) => named_library(name),
+            None => Library::Unread(arg),
+        },
+    }
+}
+
+/// How a gawk option takes a value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Takes {
+    Nothing,
+    /// The rest of the word, or else the next word.
+    Value,
+    /// Only the rest of the word (`-oFILE`, `--profile=FILE`).
+    Optional,
+}
+
+/// gawk's options as its `getopt_long` table has them: the long name, the
+/// letter (none for a space), and how it takes a value.
+const AWK_OPTIONS: [(&str, char, Takes); 33] = [
+    ("assign", 'v', Takes::Value),
+    ("bignum", 'M', Takes::Nothing),
+    ("characters-as-bytes", 'b', Takes::Nothing),
+    ("copyright", 'C', Takes::Nothing),
+    ("csv", 'k', Takes::Nothing),
+    ("debug", 'D', Takes::Optional),
+    ("dump-variables", 'd', Takes::Optional),
+    ("exec", 'E', Takes::Value),
+    ("field-separator", 'F', Takes::Value),
+    ("file", 'f', Takes::Value),
+    ("gen-pot", 'g', Takes::Nothing),
+    ("help", 'h', Takes::Nothing),
+    ("include", 'i', Takes::Value),
+    ("lint", 'L', Takes::Optional),
+    ("lint-old", 't', Takes::Nothing),
+    ("load", 'l', Takes::Value),
+    ("locale", 'Z', Takes::Value),
+    ("no-optimize", 's', Takes::Nothing),
+    ("non-decimal-data", 'n', Takes::Nothing),
+    ("nostalgia", ' ', Takes::Nothing),
+    ("optimize", 'O', Takes::Nothing),
+    ("parsedebug", 'Y', Takes::Nothing),
+    ("persist", ' ', Takes::Optional),
+    ("posix", 'P', Takes::Nothing),
+    ("pretty-print", 'o', Takes::Optional),
+    ("profile", 'p', Takes::Optional),
+    ("re-interval", 'r', Takes::Nothing),
+    ("sandbox", 'S', Takes::Nothing),
+    ("source", 'e', Takes::Value),
+    ("trace", 'I', Takes::Nothing),
+    ("traditional", 'c', Takes::Nothing),
+    ("use-lc-numeric", 'N', Takes::Nothing),
+    ("version", 'V', Takes::Nothing),
+];
+
+/// An option's value: the rest of its word, or the next word.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Value<'a> {
+    Joined(&'a str),
+    Word(&'a Arg),
+}
+
+impl<'a> Value<'a> {
+    fn known(self) -> Option<&'a str> {
+        match self {
+            Self::Joined(text) => Some(text),
+            Self::Word(arg) => arg.known(),
+        }
+    }
+
+    fn arg(self) -> Arg {
+        match self {
+            Self::Joined(text) => Arg::Known(text.to_string()),
+            Self::Word(arg) => arg.clone(),
+        }
+    }
+}
+
+/// What gawk's options say.
+#[derive(Default)]
+struct AwkOptions<'a> {
+    /// Each option given, by its long name, with its value.
+    options: Vec<(&'static str, Option<Value<'a>>)>,
+    /// The first word that is an option the guard cannot tell: a long one
+    /// more than one name starts with, or a `-W` one only known when it
+    /// runs.
+    unread: Option<&'a Arg>,
+    /// Where the operands start: past the options, `--` and `-E`'s file.
+    end: usize,
+}
+
+/// gawk's options, read as its `getopt_long` reads them up to the first word
+/// that is not one (its option list starts with `+`): a bundle one letter
+/// at a time (`-bf s.awk`), a letter that takes a value taking the rest of
+/// the bundle or else the next word, and one that may take one only the
+/// rest; a long option by any prefix only one name starts with
+/// (`--incl=inplace`), its value after `=` or in the next word; `-W name`
+/// as `--name`. `-E` is the last option gawk reads.
+fn awk_options(args: &[Arg]) -> AwkOptions<'_> {
+    let mut read = AwkOptions::default();
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        let Some(text) = arg.known() else {
+            break;
+        };
+        if text == "--" {
+            at += 1;
+            break;
+        }
+        let Some(option) = text.strip_prefix('-').filter(|option| !option.is_empty()) else {
+            break;
+        };
+        at += 1;
+        if let Some(long) = option.strip_prefix('-') {
+            awk_long(long, arg, args, &mut at, &mut read);
+        } else {
+            awk_bundle(option, arg, args, &mut at, &mut read);
+        }
+        if read.options.last().is_some_and(|(name, _)| *name == "exec") {
+            break;
+        }
+    }
+    read.end = at.min(args.len());
+    read
+}
+
+/// The letters of the bundle `bundle` (past its dash), from the word `arg`;
+/// a value in the next word is the one at `at`.
+fn awk_bundle<'a>(
+    bundle: &'a str,
+    arg: &'a Arg,
+    args: &'a [Arg],
+    at: &mut usize,
+    read: &mut AwkOptions<'a>,
+) {
+    for (index, letter) in bundle.char_indices() {
+        let rest = &bundle[index + letter.len_utf8()..];
+        if letter == 'W' {
+            if rest.is_empty() {
+                let word = args.get(*at);
+                *at += 1;
+                match word.map(|word| (word, word.known())) {
+                    Some((word, None)) => read.unread = read.unread.or(Some(word)),
+                    Some((_, Some(long))) => awk_long(long, arg, args, at, read),
+                    None => {}
+                }
+            } else {
+                awk_long(rest, arg, args, at, read);
+            }
+            return;
+        }
+        let Some(&(name, _, takes)) = AWK_OPTIONS
+            .iter()
+            .find(|(_, short, _)| *short == letter && letter != ' ')
+        else {
+            continue;
+        };
+        let value = match takes {
+            Takes::Nothing => {
+                read.options.push((name, None));
+                continue;
+            }
+            Takes::Optional => (!rest.is_empty()).then_some(Value::Joined(rest)),
+            Takes::Value if rest.is_empty() => {
+                *at += 1;
+                args.get(*at - 1).map(Value::Word)
+            }
+            Takes::Value => Some(Value::Joined(rest)),
+        };
+        read.options.push((name, value));
+        return;
+    }
+}
+
+/// The long option `text` names (`name` or `name=value`, past its dashes),
+/// from the word `arg`; a value in the next word is the one at `at`.
+fn awk_long<'a>(
+    text: &'a str,
+    arg: &'a Arg,
+    args: &'a [Arg],
+    at: &mut usize,
+    read: &mut AwkOptions<'a>,
+) {
+    let (name, joined) = match text.split_once('=') {
+        Some((name, value)) => (name, Some(value)),
+        None => (text, None),
+    };
+    if name.is_empty() {
+        return;
+    }
+    let prefixed: Vec<_> = AWK_OPTIONS
+        .iter()
+        .filter(|(full, _, _)| full.starts_with(name))
+        .collect();
+    let found =
+        AWK_OPTIONS
+            .iter()
+            .find(|(full, _, _)| *full == name)
+            .or(match prefixed.as_slice() {
+                [only] => Some(*only),
+                _ => None,
+            });
+    let Some(&(full, _, takes)) = found else {
+        // A prefix more than one name starts with: gawk stops there, and
+        // the guard cannot tell which it would have been.
+        if prefixed.len() > 1 {
+            read.unread = read.unread.or(Some(arg));
+        }
+        return;
+    };
+    let value = match (takes, joined) {
+        (Takes::Nothing, _) | (Takes::Optional, None) => None,
+        (_, Some(value)) => Some(Value::Joined(value)),
+        (Takes::Value, None) => {
+            *at += 1;
+            args.get(*at - 1).map(Value::Word)
+        }
+    };
+    read.options.push((full, value));
+}
+
+/// The library `name` is: gawk finds `inplace` as `inplace.awk` in its own
+/// folder.
+fn named_library(name: &str) -> Library<'static> {
+    if matches!(name, "inplace" | "inplace.awk") {
+        Library::InPlace
+    } else {
+        Library::Other
+    }
+}
+
+/// The libraries awk code loads with `@include "name"`: one whose name is
+/// not a plain string is one the guard does not read.
+fn included(code: &str) -> Vec<Library<'static>> {
+    code.split("@include")
+        .skip(1)
+        .map(|after| {
+            after
+                .trim_start()
+                .strip_prefix('"')
+                .and_then(|name| name.split_once('"'))
+                .map_or(Library::Other, |(name, _)| named_library(name))
+        })
+        .collect()
+}
+
+/// Whether an awk operand is an assignment (`x=1`, `ns::x=1`), which awk
+/// reads as one and not as a file.
+fn assigns(text: &str) -> bool {
+    text.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':')
+    })
 }
 
 /// Whether awk code runs a command or writes a file: `system`, a single

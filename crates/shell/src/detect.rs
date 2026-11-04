@@ -23,9 +23,11 @@ use milo_guards_core::Flavour;
 mod archives;
 
 pub(crate) use archives::commands as archive_commands;
+pub(crate) use editors::{reads_input as editor_reads_input, EDITORS};
 
 mod code;
 mod data;
+mod editors;
 mod files;
 mod processes;
 mod regex;
@@ -1878,7 +1880,10 @@ fn written_with(unit: &Unit, handed: Option<&dyn Fn() -> Vec<Arg>>) -> (Vec<Arg>
     }
     let args = unit.args.as_slice();
     let written = match key.as_str() {
-        "curl" | "wget" if unit.shell != Shell::PowerShell => downloads_to(&key, args),
+        // In PowerShell a bare `curl` or `wget` is `Invoke-WebRequest`; the
+        // key is `curl` only for the program itself (`curl.exe`).
+        "curl" | "wget" => downloads_to(&key, args),
+        "certutil" => certutil_writes(args),
         "invoke-webrequest" | "invoke-restmethod" => Params::read(args)
             .values(&["outfile"])
             .into_iter()
@@ -2157,12 +2162,7 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
             .filter_map(Arg::known)
             .filter(|text| text.contains("://"))
         {
-            let path = url.split(['?', '#']).next().unwrap_or(url);
-            let name = path
-                .rsplit('/')
-                .next()
-                .filter(|name| !name.is_empty() && !name.contains(':'))
-                .unwrap_or("index.html");
+            let name = remote_name(url).unwrap_or("index.html");
             let file = prefix
                 .as_deref()
                 .map_or_else(|| name.to_string(), |dir| format!("{dir}/{name}"));
@@ -2171,6 +2171,67 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
     }
     files.retain(|file| file.known() != Some("-"));
     files
+}
+
+/// The last part of a URL's path, the name a download given no file saves
+/// to: `None` when the path ends in `/` or names no file.
+fn remote_name(url: &str) -> Option<&str> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty() && !name.contains(':'))
+}
+
+/// The files `certutil` writes: `-urlcache` downloads its URL to each
+/// operand after it, or with `-split` and none to the URL's name in the
+/// folder the line is in (`-urlcache * delete` works on the cache, no file);
+/// `-decode`, `-encode`, `-decodehex` and `-encodehex` write each operand
+/// after the first. A verb or an option is `-`, `/` or a Unicode dash
+/// (U+2010 to U+2015, U+2212, which certutil reads as `-`) and a name, in
+/// any case; every other word is an operand, so an option's value only adds
+/// a file judged where it lands.
+pub(crate) fn certutil_writes(args: &[Arg]) -> Vec<Arg> {
+    let mut verb = None;
+    let mut split = false;
+    let mut operands = Vec::new();
+    for arg in args {
+        let name = arg.known().and_then(|text| {
+            text.strip_prefix(|c: char| {
+                matches!(c, '-' | '/' | '\u{2010}'..='\u{2015}' | '\u{2212}')
+            })
+            .filter(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric()))
+        });
+        let Some(name) = name else {
+            operands.push(arg);
+            continue;
+        };
+        let name = name.to_ascii_lowercase();
+        if name == "split" {
+            split = true;
+        } else if verb.is_none()
+            && matches!(
+                name.as_str(),
+                "urlcache" | "decode" | "encode" | "decodehex" | "encodehex"
+            )
+        {
+            verb = Some(name);
+        }
+    }
+    let Some((first, rest)) = operands.split_first() else {
+        return Vec::new();
+    };
+    match verb.as_deref() {
+        Some("urlcache") if first.known() == Some("*") => Vec::new(),
+        // A URL only known when it runs saves to a name only known then.
+        Some("urlcache") if rest.is_empty() && split => match first.known() {
+            Some(url) => {
+                remote_name(url).map_or_else(Vec::new, |name| vec![Arg::Known(name.to_string())])
+            }
+            None => vec![(*first).clone()],
+        },
+        Some(_) => rest.iter().map(|&arg| arg.clone()).collect(),
+        None => Vec::new(),
+    }
 }
 
 /// The characters that separate the parts of a path in `shell`.
