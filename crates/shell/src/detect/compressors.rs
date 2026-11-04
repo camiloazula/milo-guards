@@ -4,7 +4,9 @@
 //! any write what it writes. `-c` (`--stdout`) writes to the screen and
 //! deletes nothing, `-k` (`--keep`) keeps the file, and `zstd`, `lz4`,
 //! `lzop` and `brotli` keep it unless told not to (`--rm`). Decompressing
-//! (`-d`, `gunzip`) deletes `x.gz` and writes `x`.
+//! (`-d`, `gunzip`) deletes `x.gz` and writes `x`. The last mode given wins
+//! (`xz -t -z x` compresses), and a file `-o` names is written whatever
+//! else the line says, even with no file given (`zstd -o x < y`).
 
 use super::Checker;
 use crate::path::within;
@@ -250,9 +252,9 @@ pub(super) fn spec(key: &str, shell: Shell) -> Option<Spec> {
         "unxz" | "unlzma" => decompressing(XZ),
         "bzip2" | "pbzip2" | "lbzip2" => BZIP2,
         "bunzip2" => decompressing(BZIP2),
-        "zstd" | "pzstd" => ZSTD,
+        "zstd" | "pzstd" | "zstdmt" => ZSTD,
         "unzstd" => decompressing(ZSTD),
-        "lz4" => LZ4,
+        "lz4" | "lz4c" => LZ4,
         "unlz4" => decompressing(LZ4),
         "compress" if shell == Shell::Posix => COMPRESS,
         "uncompress" if shell == Shell::Posix => decompressing(COMPRESS),
@@ -298,8 +300,12 @@ struct Run {
     /// An argument only known when it runs may name the file or the folder
     /// it writes, or its suffix.
     maybe_output: bool,
-    /// Test or list (`-t`, `-l`): write nothing.
+    /// Test or list (`-t`, `-l`), unless a later `-d` or `-z` says
+    /// otherwise: write nothing.
     nothing: bool,
+    /// An argument only known when it runs after the last `-t` or `-l` may
+    /// be `-d` or `-z`, which would undo it.
+    maybe_mode: bool,
     /// Every operand is a folder whose files it compresses (`-r`).
     recursive: bool,
     /// Every operand is an input (`lz4 -m`).
@@ -316,6 +322,20 @@ struct Run {
 }
 
 impl Run {
+    /// `-d` (`decompress`) or `-z`: the last mode given wins, so a `-t` or
+    /// `-l` before it is undone.
+    fn mode(&mut self, decompress: bool) {
+        self.decompress = decompress;
+        self.nothing = false;
+        self.maybe_mode = false;
+    }
+
+    /// `-t` or `-l`: test or list, unless a later mode says otherwise.
+    fn test(&mut self) {
+        self.nothing = true;
+        self.maybe_mode = false;
+    }
+
     /// The long option `name`, with its value attached with `=` if any.
     fn long<'a>(
         &mut self,
@@ -326,9 +346,9 @@ impl Run {
     ) {
         let mut value = |attached: Option<Arg>| attached.or_else(|| iter.next().cloned());
         if long_is(name, &["decompress", "uncompress"], true) {
-            self.decompress = true;
+            self.mode(true);
         } else if long_is(name, &["compress"], false) {
-            self.decompress = false;
+            self.mode(false);
         } else if long_is(name, &["stdout", "to-stdout"], false) {
             self.screen = true;
         } else if spec.keeps && long_is(name, &["keep"], false) {
@@ -336,7 +356,7 @@ impl Run {
         } else if long_is(name, spec.remove.1, true) {
             self.remove = true;
         } else if long_is(name, spec.nothing.1, false) {
-            self.nothing = true;
+            self.test();
         } else if long_is(name, &["recursive"], true) {
             self.recursive = true;
         } else if long_is(name, &["multiple"], true) {
@@ -386,14 +406,14 @@ impl Run {
                 return;
             }
             match letter {
-                'd' => self.decompress = true,
-                'z' => self.decompress = false,
+                'd' => self.mode(true),
+                'z' => self.mode(false),
                 'c' => self.screen = true,
                 'k' if spec.keeps => self.keep = true,
                 'r' => self.recursive = true,
                 'm' if spec.positional_output => self.multiple = true,
                 _ if spec.remove.0 == Some(letter) => self.remove = true,
-                _ if spec.nothing.0.contains(letter) => self.nothing = true,
+                _ if spec.nothing.0.contains(letter) => self.test(),
                 _ => {}
             }
         }
@@ -406,7 +426,9 @@ impl Run {
             could_be(start, letter, None)
                 || longs.iter().any(|long| could_be(start, None, Some(long)))
         };
-        self.maybe_decompress |= any((Some('d'), &["decompress", "uncompress"]));
+        let decompress = any((Some('d'), &["decompress", "uncompress"]));
+        self.maybe_decompress |= decompress;
+        self.maybe_mode |= self.nothing && (decompress || any((Some('z'), &["compress"])));
         self.maybe_remove |= any(spec.remove);
         self.maybe_output |= any(spec.output) || any(spec.folder) || any(spec.suffix_option);
     }
@@ -495,6 +517,21 @@ fn file_name(arg: &Arg) -> Arg {
     }
 }
 
+/// The file `name` makes in `folder` (`--output-dir-flat`): its last part
+/// there, with the folder's text kept when either is only known when it
+/// runs (`$D/a.zst`).
+fn in_folder(folder: &Arg, name: &Arg, shell: Shell) -> Arg {
+    let name = file_name(name);
+    match (folder, &name) {
+        (Arg::Known(_), Arg::Known(_)) => within(Some(folder), &name, shell),
+        _ => Arg::Unknown(format!(
+            "{}/{}",
+            folder.text().trim_end_matches(['/', '\\']),
+            name.text()
+        )),
+    }
+}
+
 impl Checker<'_> {
     /// A compressor (`gzip`, `xz`, `zstd`, …) run on files: it deletes each
     /// unless it keeps it, and writes the file it makes, each judged where
@@ -505,21 +542,60 @@ impl Checker<'_> {
             return;
         };
         let mut run = read(&spec, &unit.args, shell);
-        if run.nothing || run.screen {
+        // `-t` or `-l` writes nothing, unless an argument only known when
+        // it runs after it is the mode that undoes it.
+        if run.nothing && !run.maybe_mode {
+            return;
+        }
+        let before = self.found.len();
+        self.compressing(unit, &spec, &mut run);
+        if run.nothing {
+            self.hedge(before);
+        }
+    }
+
+    /// What a compressor that writes does, as `run` says.
+    fn compressing(&mut self, unit: &Unit, spec: &Spec, run: &mut Run) {
+        let shell = unit.shell;
+        let scope = unit.scope();
+        let stdin = |arg: &Arg| arg.known() == Some("-");
+        // A file `-o` names is written whatever else the line says: `zstd -c
+        // -o x` and `brotli -o x -c` write `x`, and so does one that reads
+        // its input (`zstd -o x < y`). `-c` then deletes nothing only when
+        // no `-o` names a file.
+        let named = !run.outputs.is_empty();
+        for output in run.outputs.iter().filter(|arg| !stdin(arg)) {
+            self.write(shell, scope, output, "writes to");
+        }
+        if run.screen && !named {
             return;
         }
         // `lz4 in out` writes `out`; `-` is the input or the screen.
-        let positional = spec.positional_output && !run.multiple && !run.recursive;
+        let positional = spec.positional_output && !run.multiple && !run.recursive && !named;
         if positional && run.operands.len() >= 2 {
-            run.outputs.extend(run.operands.drain(1..));
+            let outputs: Vec<Arg> = run.operands.drain(1..).collect();
+            for output in outputs.iter().filter(|arg| !stdin(arg)) {
+                self.write(shell, scope, output, "writes to");
+            }
+            run.outputs.extend(outputs);
         }
-        let stdin = |arg: &Arg| arg.known() == Some("-");
+        if run.maybe_output {
+            let before = self.found.len();
+            self.write(
+                shell,
+                scope,
+                &Arg::Unknown("<a file named by an option>".to_string()),
+                "writes to",
+            );
+            self.hedge(before);
+        }
         let inputs: Vec<Arg> = run
             .operands
             .iter()
             .filter(|arg| !stdin(arg))
             .cloned()
             .collect();
+        // What it reads from its input it writes to `-o`, or the screen.
         if inputs.is_empty() {
             return;
         }
@@ -528,7 +604,6 @@ impl Checker<'_> {
         } else {
             Flagged::of(run.remove, run.maybe_remove)
         };
-        let scope = unit.scope();
         self.flagged(removes, |checker| {
             checker.delete(unit, &inputs.iter().collect::<Vec<_>>(), "deletes");
         });
@@ -537,11 +612,7 @@ impl Checker<'_> {
             for folder in &inputs {
                 self.write_folder(shell, scope, folder, "writes into");
             }
-        } else if !run.outputs.is_empty() {
-            for output in run.outputs.iter().filter(|arg| !stdin(arg)) {
-                self.write(shell, scope, output, "writes to");
-            }
-        } else {
+        } else if run.outputs.is_empty() {
             let mut seen = HashSet::new();
             let mut written = Vec::new();
             for input in &inputs {
@@ -552,9 +623,9 @@ impl Checker<'_> {
                         std::slice::from_ref(&run.decompress)
                     };
                     for &decompress in modes {
-                        let name = written_for(&spec, &found, decompress, run.suffix.as_ref());
+                        let name = written_for(spec, &found, decompress, run.suffix.as_ref());
                         let name = match &run.folder {
-                            Some(folder) => within(Some(folder), &file_name(&name), shell),
+                            Some(folder) => in_folder(folder, &name, shell),
                             None => name,
                         };
                         if seen.insert(name.clone()) {
@@ -566,16 +637,6 @@ impl Checker<'_> {
             for name in &written {
                 self.write(shell, scope, name, "writes to");
             }
-        }
-        if run.maybe_output {
-            let before = self.found.len();
-            self.write(
-                shell,
-                scope,
-                &Arg::Unknown("<a file named by an option>".to_string()),
-                "writes to",
-            );
-            self.hedge(before);
         }
     }
 }

@@ -9,11 +9,26 @@
 mod common;
 
 use common::{assert_linear, filled, posix};
-use milo_guards_shell::Shell;
+use milo_guards_shell::{classify, Shell};
 
 #[test]
 fn every_case_holds() {
     common::cases::check("compressors");
+}
+
+/// The file written into a folder only known when it runs keeps the folder
+/// in what a prompt shows, not only its own name.
+#[test]
+fn a_folder_only_known_when_it_runs_stays_in_the_target() {
+    let assessment = classify(
+        "zstd --output-dir-flat \"$D\" src/a",
+        Shell::Posix,
+        &posix(),
+    );
+    assert_eq!(
+        assessment.findings()[0].target.as_deref(),
+        Some("\"$D\"/a.zst")
+    );
 }
 
 #[test]

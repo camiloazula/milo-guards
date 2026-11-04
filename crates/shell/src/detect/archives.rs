@@ -41,21 +41,27 @@ impl Checker<'_> {
                 // stored in the archive: they land wherever those say.
                 let absolute = tar.unpacks && tar.absolute;
                 let written = tar.written.clone();
+                let may_write = tar.may_write;
                 Archiving {
                     unpack: tar
                         .unpacks_into()
                         .map(|folders| Unpack::filling(folders).absolute(absolute)),
                     written,
+                    may_write,
                     ..Archiving::default()
                 }
             }
             "unzip" | "bsdunzip" => Archiving::unpacking(unzip(args).map(Unpack::filling)),
             "zip" => Archiving::writing(zip(args, shell).written),
-            "7z" | "7za" | "7zr" | "7zz" => Archiving {
-                unpack: seven_zip(args).map(Unpack::filling),
-                written: seven_zip_written(args),
-                ..Archiving::default()
-            },
+            "7z" | "7za" | "7zr" | "7zz" => {
+                let (written, may_write) = seven_zip_written(args);
+                Archiving {
+                    unpack: seven_zip(args).map(Unpack::filling),
+                    written,
+                    may_write,
+                    ..Archiving::default()
+                }
+            }
             "expand-archive" => Archiving::unpacking(Some(Unpack::filling(expand_archive(args)))),
             "compress-archive" => Archiving::writing(compress_archive(args)),
             _ => unpackers::archiving(key, args, shell),
@@ -68,6 +74,7 @@ impl Checker<'_> {
             );
         }
         if let Some(unpack) = archiving.unpack {
+            let before = self.found.len();
             if let Some(reason) = unpack.anywhere {
                 self.add(Rule::Overwrite, reason, None);
             }
@@ -78,13 +85,20 @@ impl Checker<'_> {
                     self.write_folder(shell, unit.scope(), folder, unpack.verb);
                 }
             }
+            if archiving.may_unpack {
+                self.hedge(before);
+            }
         }
         // `-` is the program's output, which a redirect sends on.
+        let before = self.found.len();
         let mut judged = HashSet::new();
         for archive in &archiving.written {
             if archive.known() != Some("-") && judged.insert(archive) {
                 self.write(shell, unit.scope(), archive, "writes to");
             }
+        }
+        if archiving.may_write {
+            self.hedge(before);
         }
     }
 
@@ -130,6 +144,12 @@ struct Archiving {
     /// Whether it takes arguments from a file the line does not show
     /// (`jar @opts`).
     unread: bool,
+    /// Whether it writes the archives only with a mode or command only
+    /// known when it runs (`7z "$c" x.7z`): each write is said as what it
+    /// may do.
+    may_write: bool,
+    /// The same for the unpack (`atool "$m" a.zip`).
+    may_unpack: bool,
 }
 
 impl Archiving {
@@ -241,6 +261,8 @@ struct Tar {
     /// `--delete`), or is only known when it runs and no mode letter rules
     /// that out.
     written: Vec<Arg>,
+    /// Whether it writes them only with a mode only known when it runs.
+    may_write: bool,
 }
 
 impl Tar {
@@ -452,6 +474,7 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
     } else {
         Flagged::Absent
     };
+    let may_write = mode_unknown && !read.pack && !read.rewrites;
     let written = if read.pack || read.rewrites || mode_unknown {
         read.archives
     } else {
@@ -465,6 +488,7 @@ fn tar(args: &[Arg], shell: Shell, key: &str) -> Tar {
         members: read.members,
         commands: read.commands,
         written,
+        may_write,
     }
 }
 
@@ -1280,13 +1304,16 @@ fn may_be_switch(arg: &Arg) -> bool {
 
 /// The archive `7z a`, `u`, `d` and `rn` write: the operand after the
 /// command. A command only known when it runs may be one of them. An
-/// argument whose readable start is `-` is a switch.
-fn seven_zip_written(args: &[Arg]) -> Vec<Arg> {
+/// argument whose readable start is `-` is a switch. With it, whether the
+/// command is only known when it runs.
+fn seven_zip_written(args: &[Arg]) -> (Vec<Arg>, bool) {
     let mut positional = args.iter().filter(|arg| {
         let start = readable(arg);
         !(start.starts_with('-') && start.len() > 1)
     });
-    let writes = positional.next().is_some_and(|command| {
+    let command = positional.next();
+    let unsure = command.is_some_and(|command| command.known().is_none());
+    let writes = command.is_some_and(|command| {
         command.known().is_none_or(|command| {
             matches!(
                 command.to_ascii_lowercase().as_str(),
@@ -1295,9 +1322,9 @@ fn seven_zip_written(args: &[Arg]) -> Vec<Arg> {
         })
     });
     if !writes {
-        return Vec::new();
+        return (Vec::new(), false);
     }
-    positional.next().cloned().into_iter().collect()
+    (positional.next().cloned().into_iter().collect(), unsure)
 }
 
 /// The files `7z a` and `7z u` delete after adding them, which `-sdel`
@@ -1442,8 +1469,9 @@ fn seven_zip_removes(args: &[Arg], shell: Shell) -> (Vec<Arg>, bool) {
 /// adds to or changes one (`a`, `m`, `mf`, `u`, `f`, `d`, `c`, `ch`, `k`,
 /// `rn`, `rr`, `s`, any case): the operand after the command. A command
 /// only known when it runs may be one of them. Switches are single words
-/// that start with `-`, anywhere before `--`.
-pub(super) fn rar_written(args: &[Arg]) -> Vec<Arg> {
+/// that start with `-`, anywhere before `--`. With it, whether the command
+/// is only known when it runs.
+pub(super) fn rar_written(args: &[Arg]) -> (Vec<Arg>, bool) {
     let mut options_done = false;
     let mut positional = args.iter().filter(|arg| {
         let start = readable(arg);
@@ -1453,7 +1481,9 @@ pub(super) fn rar_written(args: &[Arg]) -> Vec<Arg> {
         options_done |= arg.known() == Some("--");
         false
     });
-    let writes = positional.next().is_some_and(|command| {
+    let command = positional.next();
+    let unsure = command.is_some_and(|command| command.known().is_none());
+    let writes = command.is_some_and(|command| {
         command.known().is_none_or(|command| {
             matches!(
                 command.to_ascii_lowercase().as_str(),
@@ -1462,9 +1492,9 @@ pub(super) fn rar_written(args: &[Arg]) -> Vec<Arg> {
         })
     });
     if !writes {
-        return Vec::new();
+        return (Vec::new(), false);
     }
-    positional.next().cloned().into_iter().collect()
+    (positional.next().cloned().into_iter().collect(), unsure)
 }
 
 /// The files `rar` deletes after adding them: those of `m` and `mf`, and of

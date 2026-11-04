@@ -1167,6 +1167,24 @@ powershell finds=overwrite | Compress-Archive src C:\\Windows\\x.zip
 powershell finds=overwrite | Compress-Archive -Path src -DestinationPath ~\\x.zip
 powershell finds=overwrite | Compress-Archive -DestinationPath C:\\Windows\\x.zip -Path src
 posix finds=overwrite reason="writes to a file only known when it runs" | zip -r "$OUT" src
+posix finds=overwrite reason="writes to a shell startup file" | cpio -o --fi ~/.bashrc < list
+posix finds=overwrite | cpio -o --fi=/etc/x.cpio < list
+posix finds=overwrite | atool --ad ~/.bashrc src
+posix finds=overwrite | atool --a ~/x.zip src
+posix finds=overwrite | aunpack --sav=/etc/x a.zip
+posix safe | cpio -o --fi x.cpio < list
+posix safe | atool --ad x.zip src
+
+# A command or mode only known when it runs may be the one that writes the
+# archive, and the write is said as what it may do.
+posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | 7z "$c" ~/.bashrc src
+posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | rar "$c" ~/.bashrc src
+posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | tar "$mode" -f ~/.bashrc src
+posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | jar "$mode" --file ~/.bashrc src
+posix finds=overwrite | pax "$mode" -f ~/.bashrc src
+posix finds=overwrite reason="may unpack into a shell startup file with an option only known when it runs" | atool "$m" ~/.bashrc
+posix safe | 7z "$c" x.7z src
+posix safe | rar "$c" x.rar src
 posix safe | tar -cf /tmp/x.tar src
 posix safe | tar -czf - src
 posix safe | cd ~ && tar -czf - src
@@ -1200,6 +1218,14 @@ posix finds=overwrite | cd ~ && aunpack a.zip
 posix finds=overwrite | cd ~ && atool -x a.zip
 posix finds=overwrite | aunpack "$O" ~ a.zip
 posix finds=overwrite | aunpack --save-outdir=/etc/x a.zip
+posix finds=overwrite reason="unpacks into a system folder" | aunpack --extract-t=/etc a.zip
+posix finds=overwrite | aunpack --extract-t /etc a.zip
+posix finds=overwrite | atool --extract-t=/etc a.zip
+posix finds=overwrite | aunpack --extract- ~ a.zip
+posix finds=overwrite | cd ~ && atool --ext a.zip
+posix safe | aunpack --extract-t=build a.zip
+posix safe | aunpack --simulate -X ~ a.zip
+posix finds=overwrite | aunpack --sim -X ~ a.zip
 posix safe | bsdunzip x.zip
 posix safe | bsdunzip -d build x.zip
 posix safe | bsdunzip -l ~/x.zip

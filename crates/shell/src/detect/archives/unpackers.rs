@@ -24,11 +24,15 @@ pub(super) fn archiving(key: &str, args: &[Arg], shell: Shell) -> Archiving {
         "pax" => pax(args),
         "unrar" => Archiving::unpacking(rar(args)),
         // WinRAR.exe takes the commands and switches of `rar`.
-        "rar" | "winrar" => Archiving {
-            unpack: rar(args),
-            written: rar_written(args),
-            ..Archiving::default()
-        },
+        "rar" | "winrar" => {
+            let (written, may_write) = rar_written(args);
+            Archiving {
+                unpack: rar(args),
+                written,
+                may_write,
+                ..Archiving::default()
+            }
+        }
         "unar" => Archiving::unpacking(unar(args, shell)),
         "jar" => jar(args),
         "aunpack" | "atool" | "apack" => atool(key, args, shell),
@@ -131,7 +135,7 @@ impl Cpio {
             self.absolute = true;
         } else if long_option(name, "no-absolute-filenames", 4) {
             self.relative = true;
-        } else if long_option(name, "file", 3) {
+        } else if long_option(name, "file", 2) {
             self.archives.extend(value(attached));
         } else if long_option(name, "directory", 2) {
             self.folders.extend(value(attached));
@@ -225,8 +229,13 @@ fn cpio(args: &[Arg], shell: Shell, key: &str) -> Archiving {
     } else {
         Vec::new()
     };
+    let may_write = mode_unknown && !read.create;
     if !(read.extract || mode_unknown) || read.other_mode || read.writes_nothing {
-        return Archiving::writing(written);
+        return Archiving {
+            written,
+            may_write,
+            ..Archiving::default()
+        };
     }
     if read.folders.is_empty() {
         read.folders.push(here());
@@ -237,6 +246,7 @@ fn cpio(args: &[Arg], shell: Shell, key: &str) -> Archiving {
     Archiving {
         unpack: Some(Unpack::filling(read.folders).absolute(read.absolute || stored)),
         written,
+        may_write,
         ..Archiving::default()
     }
 }
@@ -344,6 +354,7 @@ fn pax(args: &[Arg]) -> Archiving {
     } else {
         Vec::new()
     };
+    let may_write = mode_unknown;
     let mut folders = Vec::new();
     if (reads && !writes) || mode_unknown {
         folders.push(here());
@@ -373,6 +384,7 @@ fn pax(args: &[Arg]) -> Archiving {
     Archiving {
         unpack: Some(unpack),
         written,
+        may_write,
         ..Archiving::default()
     }
 }
@@ -514,6 +526,10 @@ fn unar(args: &[Arg], shell: Shell) -> Option<Unpack> {
 /// names; `--save-outdir` writes the file it names; `-S` (`--simulate`)
 /// writes nothing. A word only known when it runs may be a mode of
 /// `atool`, and one that may be `-X` names a folder only known when it runs.
+/// atool reads its options with Perl's `Getopt::Long`, which takes any
+/// unique prefix of a long name (`--extract-t`, `--ad`, `--sav`): the
+/// options that make it write are read from a prefix, and those that make
+/// it write less (`--simulate`, `--list`) only from the whole name.
 fn atool(key: &str, args: &[Arg], shell: Shell) -> Archiving {
     // The letters that take a value, which ends the bundle.
     const VALUES: &str = "XFOoV";
@@ -561,20 +577,23 @@ fn atool(key: &str, args: &[Arg], shell: Shell) -> Archiving {
                 None => (long, None),
             };
             let mut value = || attached.clone().or_else(|| iter.next().cloned());
-            match name {
-                "extract" => extract = true,
-                "extract-to" => {
-                    extract = true;
-                    folders.extend(value());
-                }
-                "add" => add = true,
-                "list" | "cat" | "diff" | "repack" => other_mode = true,
-                "simulate" => simulate = true,
-                "save-outdir" => written.extend(value()),
-                _ if attached.is_none() && LONG_VALUES.contains(&name) => {
-                    value();
-                }
-                _ => {}
+            // `--extract-` and longer is `--extract-to`; a shorter prefix is
+            // `--extract`, or one Getopt::Long refuses as ambiguous.
+            if long_option(name, "extract-to", "extract-".len()) {
+                extract = true;
+                folders.extend(value());
+            } else if long_option(name, "extract", 1) {
+                extract = true;
+            } else if long_option(name, "add", 1) {
+                add = true;
+            } else if long_option(name, "save-outdir", 2) {
+                written.extend(value());
+            } else if matches!(name, "list" | "cat" | "diff" | "repack") {
+                other_mode = true;
+            } else if name == "simulate" {
+                simulate = true;
+            } else if attached.is_none() && LONG_VALUES.contains(&name) {
+                value();
             }
             continue;
         }
@@ -624,6 +643,8 @@ fn atool(key: &str, args: &[Arg], shell: Shell) -> Archiving {
     Archiving {
         unpack,
         written,
+        may_write: mode_unknown,
+        may_unpack: mode_unknown,
         ..Archiving::default()
     }
 }
@@ -734,6 +755,8 @@ fn jar(args: &[Arg]) -> Archiving {
         unpack,
         written,
         unread,
+        may_write: mode_unknown && !writes,
+        ..Archiving::default()
     }
 }
 

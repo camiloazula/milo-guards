@@ -16,6 +16,11 @@ posix finds=delete,overwrite | bzip2 ~/.bashrc
 posix finds=delete,overwrite | zstd --rm ~/.bashrc
 posix finds=delete,overwrite | lz4 --rm ~/.bashrc
 posix finds=delete,overwrite | compress ~/.bashrc
+posix finds=delete,overwrite | zstdmt --rm ~/.bashrc
+posix finds=delete,overwrite | lz4c --rm ~/.bashrc
+posix rules=overwrite | zstdmt ~/.bashrc
+posix safe | zstdmt --rm src/a.txt
+posix safe | lz4c --rm src/a.txt
 posix finds=delete,overwrite | pigz ~/.bashrc
 posix finds=delete,overwrite | lzma ~/.bashrc
 posix finds=delete,overwrite | lzip ~/.bashrc
@@ -53,6 +58,8 @@ posix safe | gzip -t ~/x.gz
 posix safe | gzip -l ~/x.gz
 posix safe | xz --list ~/x.xz
 posix safe | zstd -t ~/x.zst
+posix safe | xz -z -t ~/.bashrc
+posix safe | zstd -d -l ~/x.zst
 posix safe | gzip
 posix safe | gzip -
 posix safe | zcat ~/x.gz
@@ -73,6 +80,21 @@ posix safe | lz4 src/a.txt
 posix safe | brotli src/a.txt
 posix finds=delete reason="may delete a path outside the workspace with an option only known when it runs" | zstd "--$X" ~/notes.txt
 posix finds=delete,overwrite | zstd $OPTS ~/notes.txt
+
+# The last mode given wins: a `-z` or `-d` after `-t` or `-l` compresses or
+# decompresses, and deletes. One only known when it runs after it may.
+posix finds=delete,overwrite | xz -t -z ~/.bashrc
+posix finds=delete,overwrite | bzip2 -tz ~/.bashrc
+posix finds=delete,overwrite | zstd -l -z --rm ~/.bashrc
+posix finds=delete,overwrite | zstd -t -d --rm ~/.bashrc.zst
+posix finds=delete,overwrite | xz -ld ~/.bashrc.xz
+posix finds=delete,overwrite | xz -t --decompress ~/x.xz
+posix finds=delete,overwrite | xz --test --compress ~/x
+posix rules=overwrite | lz4 -t -z ~/x ~/.bashrc
+posix finds=delete reason="may delete a shell startup file with an option only known when it runs" | xz -t "-$M" ~/.bashrc
+posix safe | xz "-$M" -t ~/.bashrc
+posix safe | xz -t -z src/a.txt
+posix safe | zstd -t -d --rm src/a.txt.zst
 
 # Decompressing deletes the compressed file and writes the one it held,
 # which may be a startup file.
@@ -109,12 +131,31 @@ posix rules=overwrite | lz4 -d x.lz4 /etc/hosts
 posix safe | lz4 -m src/a.txt src/b.txt
 posix safe | lz4 src/a.txt out.lz4
 posix safe | zstd -o out.zst src/a.txt
+posix safe | zstd -d -o out < x.zst
+posix safe | lz4 -d - out < x.lz4
 posix safe | zstd -o - src/a.txt
 posix safe | zstd -D ~/dict src/a.txt
 posix first=overwrite reason="writes to a shell startup file" | gzip -k -S rc ~/.bash
 posix finds=overwrite | gzip -k -S rc src/.env
 posix safe | gzip -S .bak src/a.txt
 posix finds=overwrite reason="may write to a file only known when it runs with an option only known when it runs" | zstd "-$L" src/a.txt
+
+# A file `-o` names is written also when the compressor reads its input
+# (no file, or `-`), and also when `-c` comes before it.
+posix finds=overwrite reason="writes to a shell startup file" | zstd -d -o ~/.bashrc < x.zst
+posix finds=overwrite reason="writes to a shell startup file" | echo x | zstd -o ~/.bashrc
+posix finds=overwrite reason="writes to a shell startup file" | zstd -o ~/.bashrc -
+posix finds=overwrite reason="writes to a shell startup file" | lz4 -d - ~/.bashrc < x.lz4
+posix finds=overwrite reason="writes to a shell startup file" | brotli -d -o ~/.bashrc < x.br
+posix finds=overwrite reason="writes to a shell startup file" | lzip -d -o ~/.bashrc < x.lz
+posix finds=overwrite reason="writes to a shell startup file" | lzop -d -o ~/.bashrc < x.lzo
+posix first=overwrite lacks=delete reason="writes to a shell startup file" | zstd -c -o ~/.bashrc x
+posix rules=delete | zstd -c -o out --rm ~/x
+posix finds=overwrite reason="writes to a shell startup file" | brotli -o ~/.bashrc -c x
+posix safe | zstd -c -o out x
+posix safe | brotli -d -o out < x.br
+posix safe | lz4 -c x out
+posix finds=overwrite reason="writes to a file only known when it runs" | zstd --output-dir-flat "$D" src/a
 
 # A folder given to `-r` has every file in it compressed.
 posix finds=delete reason="deletes your home directory" | gzip -r ~
