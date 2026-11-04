@@ -1335,7 +1335,9 @@ impl Checker<'_> {
     /// `call`, which run a program); `key` is `None` for a program only
     /// known when it runs. A file that is the null device runs nothing.
     fn startup_then_run(&mut self, unit: &Unit, key: Option<&str>) {
-        if key.is_some_and(|key| STARTS_NOTHING.contains(&key)) {
+        if (unit.startup.is_empty() && self.split.startup.is_empty())
+            || key.is_some_and(|key| STARTS_NOTHING.contains(&key))
+        {
             return;
         }
         let own = match unit.shell {
@@ -1346,7 +1348,7 @@ impl Checker<'_> {
                 !matches!(key, "start" | "call") && crate::cmd::is_built_in(key)
             }),
         };
-        if own || (unit.startup.is_empty() && self.split.startup.is_empty()) {
+        if own {
             return;
         }
         // The files the line sets for every shell it starts count wherever
