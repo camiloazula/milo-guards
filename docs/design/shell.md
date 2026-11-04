@@ -470,7 +470,9 @@ each with the options it reads and those of them that take a value, as
 `getopt` reads them (in a bundle, `strace -fo log rm`, or attached):
 
 - Tracers and runners: `strace` (`-o`, `-e`, `-p`, `-s`, `--detach-on` and
-  its other options that take one), `ssh-agent`, `chronic` and `script`.
+  its other options that take one), `ltrace` (`-o`, `-e`, `-l`, `-p` and the
+  rest, as `getopt_long` reads them, a long one also by a shorter start of
+  it), `ssh-agent`, `chronic` and `script`.
   `script -c` (`--command`, wherever it stands, as util-linux reads it) runs
   a shell line; otherwise the words after the file it records to are the
   command (the BSDs and macOS), and `-p` plays a recording back and runs
@@ -506,6 +508,41 @@ each with the options it reads and those of them that take a value, as
   `--cd` names, read as a Linux path: `~` is the home directory, and an
   absolute Windows path is where WSL mounts it (`C:\Windows` is
   `/mnt/c/Windows`), so `wsl --cd C:\Windows rm -rf System32` is `delete`.
+
+**The files a wrapper writes its own output to**, beside the command it
+runs, are written as a redirect writes them: judged by where they land,
+from the folder the wrapper runs in, a file only known when it runs is not
+known, and a file the line writes and then runs is a script nobody read
+(see "A script a line writes and then runs" under [What cannot be read is
+risky](#what-cannot-be-read-is-risky)). So
+`strace -o /etc/passwd ls` is `overwrite` and `time -o ~/.bashrc ls` is
+`overwrite`, `writes to a shell startup file`, while `strace -o trace.log
+ls` is Safe. Only the wrapper's own options are read, before the command it
+runs (`strace ls -o /etc/passwd` gives `ls` its `-o`); every one is judged,
+not only the last, which is the one the program keeps.
+
+- `strace -o FILE` (in a bundle, `-fo FILE`, or attached, `-oFILE`) and
+  `--output FILE` (or `--output=FILE`). With `-ff` strace writes `FILE.PID`
+  beside `FILE`, and the guard judges `FILE`, in the same folder. A
+  `FILE` that starts with `|` or `!` is a command strace pipes its output to,
+  which a shell runs: it is read as a POSIX line of its own (`strace -o '|rm
+  -rf ~' ls` is `delete`), and one only known when it runs is `unknown`.
+- `ltrace -o FILE` and `--output FILE`, which may be shortened (`--out=`).
+- `time -o FILE` and `--output FILE` (GNU's, which may be shortened:
+  `--out`; `-a` and `--append` add to the file, which is a write too), the
+  BSDs' and macOS's `-o`. bash's and zsh's own `time` takes no `-o`, but a
+  POSIX shell without one runs the program, so the option is read whichever
+  runs. The options are read as GNU `time` reads them for what it runs too:
+  `time -ao log rm -rf ~` and `time --out log rm -rf ~` judge the `rm`.
+- `script FILE`, the file it records to: the first word after its options,
+  after `-c` too, or `typescript` in the folder it runs in when there is
+  none (`cd /etc && script` is `overwrite`), unless `-p` plays it back,
+  which reads it; and the files of util-linux's `-B`, `-I`, `-O` and `-T`
+  (`--log-io`, `--log-in`, `--log-out`, `--log-timing`, any of them also
+  shortened), `-t` (its file attached on util-linux, a time on the BSDs,
+  read as a file either way) and `--timing=FILE`, wherever they stand, as
+  util-linux reads its options, and FreeBSD's `-F pipe`. Both readings of
+  `-F` are taken, so the file of either is judged.
 
 GNU **`parallel`** runs a command once for each value: its options, the
 command, then the values after `:::` (or the files after `::::`, or `-a`),

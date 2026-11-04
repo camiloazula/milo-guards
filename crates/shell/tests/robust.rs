@@ -604,3 +604,54 @@ fn input_redirects_over_many_units_are_read_in_linear_time() {
         .iter()
         .any(|finding| finding.rule == Rule::SendSecret));
 }
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn a_wrapper_that_names_its_output_many_times_is_read_quickly_and_not_safe() {
+    // Each output option is a write of its own, read once; `script` reads
+    // its options among its operands, both ways `-F` reads; and a command
+    // `strace -o '|…'` pipes to is a script of its own, nested no deeper than
+    // any other.
+    for count in [16, 2_000] {
+        // Each level quotes the one inside it again, so the line grows
+        // fast: as deep as fits in a line.
+        let mut nested = "rm -rf ~".to_string();
+        for _ in 0..count {
+            let deeper = format!("strace -o '|{}' ls", nested.replace('\'', r"'\''"));
+            if deeper.len() > 64 * 1024 {
+                break;
+            }
+            nested = deeper;
+        }
+        let lines = [
+            format!("strace {}ls", "-o /etc/passwd ".repeat(count)),
+            format!("strace {}ls", "-fo/etc/passwd ".repeat(count)),
+            format!("time {}ls", "-ao /etc/passwd ".repeat(count)),
+            format!("ltrace {}ls", "--out=/etc/passwd ".repeat(count)),
+            format!("script -c ls {}", "-F /etc/passwd -O x ".repeat(count)),
+            format!("strace {}ls", "-o '|ls' ".repeat(count)),
+            nested,
+        ];
+        for line in lines {
+            if line.len() > 64 * 1024 {
+                continue;
+            }
+            let took = took(&line, Shell::Posix, &posix());
+            assert!(
+                took < Duration::from_millis(200),
+                "took {took:?} for {count} x {}",
+                &line[..20]
+            );
+            if !line.contains("'|ls'") {
+                assert!(
+                    !classify(&line, Shell::Posix, &posix()).is_safe(),
+                    "{count} x {}",
+                    &line[..20]
+                );
+            }
+        }
+    }
+}
