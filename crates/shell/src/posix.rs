@@ -28,7 +28,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         );
     }
     let language = tree_sitter_bash::LANGUAGE.into();
-    let Some(tree) = unit::parse(split, text, &language) else {
+    let Some(tree) = unit::parse(split, text, &language, unit::Recovery::Counted) else {
         return;
     };
     // The grammar may read quotes that never close, and then says so; if it

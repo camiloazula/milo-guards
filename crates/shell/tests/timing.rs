@@ -613,13 +613,21 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // each other folder a `cd` that may have failed or not run may have left
     // the line in, which made the `cd` rows two to three times slower until a
     // `cd ..` back from one after `&&` added none and every folder only known
-    // when it runs counted as one (`MAX_ELSEWHERE` in `unit.rs`). An
-    // optimized build reads the slowest, a PowerShell line or a runner that
-    // starts another at the length limit, in about a tenth of a second; the
-    // bound leaves room for a machine several times slower and busy. Most of
+    // when it runs counted as one (`MAX_ELSEWHERE` in `unit.rs`). Noise the
+    // POSIX and PowerShell grammars recover from at every token (`${a}`,
+    // `1 2 ` or `$a[0]` repeated, `{` ten deep then closed) took a second at
+    // the length limit, a few tens of microseconds for each recovery, while
+    // it read no more text than a plain line: the recoveries are counted
+    // from the grammar's log (`MAX_RECOVERIES` in `unit.rs`). A `cp` of
+    // thousands of names into a folder thousands of bytes long placed each
+    // name with the whole folder, for every time it was given: each name is
+    // now placed once, and the bytes placed are counted (`MAX_LANDING_BYTES`
+    // in `detect.rs`). An optimized build reads the slowest, a PowerShell
+    // line or a runner that starts another at the length limit, in about a
+    // tenth of a second; the bound leaves room for a slower machine. Most of
     // these are held to a budget or a count, not to their length, so the
     // bound is on the time, not on how it grows.
-    const LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+    const LIMIT: std::time::Duration = std::time::Duration::from_millis(250);
     let fit = |unit: &str, head: &str, tail: &str| {
         let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
         format!("{head}{}{tail}", unit.repeat(count))
@@ -691,6 +699,42 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         (Shell::Posix, fit("cat <<EOF; ", "", "")),
         (Shell::Posix, fit("a(D);", "", "")),
         (Shell::PowerShell, "()".repeat(4_096)),
+        (Shell::PowerShell, fit("()", "", "")),
+        (Shell::PowerShell, fit("(echo) ", "", "")),
+        (Shell::PowerShell, fit("<<A;\n", "", "")),
+        (Shell::PowerShell, fit("$((1<<2)); echo ", "echo ", "")),
+        // Noise the grammar recovers from at every token: each took from a
+        // fifth of a second to more than half of one before the recoveries
+        // were counted.
+        (Shell::PowerShell, fit("${a}", "", "")),
+        (Shell::PowerShell, fit("${a} ", "", "")),
+        (Shell::PowerShell, fit("$a${a}", "", "")),
+        (Shell::PowerShell, fit("{{{{{{{{{{}}}}}}}}}}", "", "")),
+        (Shell::PowerShell, fit("-a ", "", "")),
+        (Shell::PowerShell, fit("$a[0]", "", "")),
+        (Shell::PowerShell, fit("$a($a)", "", "")),
+        (Shell::PowerShell, fit("$($a)", "", "")),
+        (Shell::PowerShell, fit("1 2 ", "", "")),
+        (
+            Shell::Posix,
+            fit(&format!("{}{}", "${a".repeat(10), "}".repeat(10)), "", ""),
+        ),
+        // cmd's grammar reading the rest of the line again at each `for`.
+        (Shell::Cmd, fit("for %%i in (a) do ", "", "")),
+        // Thousands of names into a folder thousands of bytes long, the same
+        // name each time and each a name of its own.
+        (
+            Shell::Posix,
+            format!("cp -r {}{}", "a ".repeat(4_000), "/b".repeat(2_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("cp -r {}{}", distinct_names(4_000), "/b".repeat(2_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("mv {}{}", distinct_names(4_000), "b/".repeat(2_000)),
+        ),
         // A runner that starts another, each read in turn: about a tenth of
         // a second in a release build.
         (Shell::Cmd, fit("bun exec ", "", "")),
@@ -871,6 +915,16 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
 
 /// A chain of PowerShell assignments, each to a variable of its own
 /// (`$a0 = $a1 = … gc .env`), as long as a line may be.
+/// `count` names, each other than the rest: `a0 a1 a2 …`, each with a space
+/// after it.
+fn distinct_names(count: usize) -> String {
+    (0..count)
+        .map(|at| format!("a{at}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        + " "
+}
+
 fn distinct_assignments() -> String {
     let tail = "gc .env";
     let mut line = String::new();

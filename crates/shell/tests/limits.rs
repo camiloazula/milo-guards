@@ -643,6 +643,58 @@ fn the_longest_folder_a_line_is_followed_into_is_the_limit() {
 }
 
 #[test]
+fn the_most_recoveries_from_an_error_that_read_is_the_limit() {
+    // `MAX_RECOVERIES` in `unit.rs`: the POSIX and PowerShell grammars
+    // start to recover from an error at each of these, as their log says;
+    // 256 are read, as far as an error is (unreadable, `cannot be read in
+    // full`), and the next stops the parse. The first `${a}` is a variable,
+    // and only each after it an error.
+    let why = "takes too long";
+    for (shell, unit, expected) in [
+        (Shell::PowerShell, "1 2 ", 256),
+        (Shell::PowerShell, "${a}", 257),
+        (Shell::Posix, "echo a; ) ", 256),
+    ] {
+        let found = edge(2_000, |n| !stopped_by(&unit.repeat(n), shell, why));
+        assert_eq!(found, expected, "{shell:?} {unit:?}");
+    }
+    // The count is the line's: a script the line runs adds to it.
+    let found = edge(2_000, |n| {
+        let line = format!(
+            "{}; bash -c '{}'",
+            "echo a; ) ".repeat(200),
+            "echo a; ) ".repeat(n)
+        );
+        !stopped_by(&line, Shell::Posix, why)
+    });
+    assert_eq!(found, 56);
+    // cmd's grammar recovers cheaply, and its recoveries are not counted.
+    assert!(!stopped_by(&"if a (echo) ".repeat(2_000), Shell::Cmd, why));
+}
+
+#[test]
+fn the_most_bytes_a_copy_places_its_names_at_is_the_limit() {
+    // `MAX_LANDING_BYTES` in `detect.rs`: each name a copy, move or link
+    // gives lands at the folder and the name, and those add up to 256 KiB at
+    // most. Here each is 1,023 bytes of folder, a separator and a name of
+    // four, so 255 are read and 256 are too many.
+    let folder = format!("/{}", "f".repeat(1_022));
+    for program in ["cp", "cp -r", "mv", "ln"] {
+        let line = |n: usize| {
+            let names: Vec<String> = (0..n).map(|at| format!("a{at:03}")).collect();
+            format!("{program} {} {folder}", names.join(" "))
+        };
+        let found = edge(1_000, |n| {
+            !stopped_by(&line(n), Shell::Posix, "too many paths")
+        });
+        assert_eq!(found, 255, "{program}");
+    }
+    // The same name again and again lands at one path.
+    let same = format!("cp -r {}{folder}", "a ".repeat(4_000));
+    assert!(!stopped_by(&same, Shell::Posix, "too many paths"));
+}
+
+#[test]
 fn the_most_paths_an_item_cmdlet_is_read_for_is_the_limit() {
     // `MAX_ITEM_PAIRS` in `detect/files.rs`: `Copy-Item` and `Move-Item`
     // read each operand as the destination of the others, once for each
