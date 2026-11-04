@@ -478,25 +478,38 @@ impl Checker<'_> {
 /// - `Remove-`, in every cloud: `Remove-AzVM`, `Remove-AzureRmResourceGroup`,
 ///   `Remove-EC2Instance`, `Remove-S3Bucket`, `Remove-GcsBucket`,
 ///   `Remove-GkeCluster` and `Remove-MgUser` delete what they name.
-/// - `Clear-` and `Reset-`, in every cloud: they wipe what a resource holds
-///   or set it back (`Clear-SQSQueue` purges a queue, `Clear-AzRedisCache`
-///   flushes a cache, `Reset-AzRedisCache` reboots it and may lose its data,
+/// - `Clear-` and `Reset-` of Azure, Google Cloud, Microsoft Entra and
+///   Microsoft 365: they wipe what a resource holds or set it back
+///   (`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it
+///   and may lose its data, `Reset-GcSqlSslConfig` deletes an instance's
+///   client certificates, `Clear-MgDeviceManagementManagedDevice` wipes a
+///   device), but for the nouns of those modules that only set a setting
+///   back, flush a cache of responses, reset a counter or reboot a gateway
+///   ([`AZURE_KEEPS`], [`ENTRA_KEEPS`]). A noun of such a prefix that no list
+///   names stays read as one that wipes.
+/// - `Clear-` and `Reset-` of AWS, by the whole noun: the AWS prefixes are
+///   short, so other modules' nouns start like them (`Clear-SPLogLevel`, of
+///   the `SharePoint` module, like `SP`), and AWS's own `Reset-` cmdlets
+///   mostly set one attribute back (`Reset-EC2ImageAttribute`). Only the cmdlets of
+///   [`AWS_DESTROYS`] destroy (`Clear-SQSQueue` purges a queue,
 ///   `Reset-RDSDBParameterGroup` sets a database's parameters back).
 /// - `Unregister-`, for AWS and Azure: AWS names its deregister and
 ///   disassociate verbs so (`Unregister-EC2Image` deregisters an image,
 ///   `Unregister-ELB2Target` takes targets off a load balancer), and Azure's
-///   take a provider or a server off a subscription.
+///   take a provider or a server off a subscription. Google Cloud's and
+///   Microsoft Graph's modules have no `Unregister-` cmdlet.
 /// - `Disable-` of a key or a backup, in every cloud: a noun that ends in
 ///   `key` or `keys`, or names a backup or a retention (`Disable-KMSKey`,
 ///   `Disable-AzRecoveryServicesBackupProtection`,
 ///   `Disable-AzStorageDeleteRetentionPolicy`). Other `Disable-` cmdlets
 ///   (`Disable-KMSKeyRotation`) are left to the rules that read them.
-/// - For AWS, the cmdlets its terminate verbs are named: `Stop-EC2Instance`
-///   with `-Terminate` (see [`terminates`]), or on a line that sets
-///   `$PSDefaultParameterValues` (`defaults`, see [`Split::defaults`]),
-///   which may give it the switch; `Stop-EBEnvironment`, `Stop-EMRJobFlow`
-///   and `Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion`,
-///   which schedules a key's deletion.
+/// - For AWS, `Stop-EC2Instance` with `-Terminate` (see [`terminates`]), or on
+///   a line that sets `$PSDefaultParameterValues` (`defaults`, see
+///   [`Split::defaults`]), which may give it the switch; and the cmdlets of
+///   [`AWS_DESTROYS`] of other verbs: the `Stop-` cmdlets AWS's terminate
+///   operations are named, `Close-ORGAccount`, the deletes AWS names with
+///   another verb, and `Request-KMSKeyDeletion`, which schedules a key's
+///   deletion.
 /// - Exchange's mobile devices ([`EXCHANGE_DEVICES`]), in Exchange and
 ///   Microsoft 365: `Clear-` wipes the phone (`Clear-ActiveSyncDevice`,
 ///   `Clear-MobileDevice`), and `Remove-` takes the device, or a rule for
@@ -520,19 +533,27 @@ fn cloud_cmdlet(key: &str, args: &[Arg], defaults: bool) -> Option<(Flagged, &'s
         };
         return Some((Flagged::Written, reason));
     }
+    if let Ok(found) = AWS_DESTROYS.binary_search_by(|(name, _)| (*name).cmp(key)) {
+        return Some((Flagged::Written, AWS_DESTROYS[found].1));
+    }
     let (cloud, rest) = cloud_of(noun)?;
+    let keeps_setting = match cloud {
+        Azure => AZURE_KEEPS.contains(&(verb, rest)),
+        Entra => ENTRA_KEEPS.contains(&(verb, rest.strip_prefix("beta").unwrap_or(rest))),
+        Aws | Google => false,
+    };
     let reason = match (verb, cloud) {
         ("remove", Azure) => "deletes Azure resources",
         ("remove", Google) => "deletes Google Cloud resources",
         ("remove", Aws) => "deletes AWS resources",
         ("remove", Entra) => "deletes Microsoft Entra or Microsoft 365 objects",
+        ("clear" | "reset", Aws) => return None,
+        ("clear" | "reset", _) if keeps_setting => return None,
         ("clear", Azure) => "clears data in Azure",
         ("clear", Google) => "clears data in Google Cloud",
-        ("clear", Aws) => "clears data in AWS",
         ("clear", Entra) => "clears data in Microsoft Entra or Microsoft 365",
         ("reset", Azure) => "resets Azure resources",
         ("reset", Google) => "resets Google Cloud resources",
-        ("reset", Aws) => "resets AWS resources",
         ("reset", Entra) => "resets Microsoft Entra or Microsoft 365 objects",
         ("unregister", Azure) => "deregisters Azure resources",
         ("unregister", Aws) => "deregisters AWS resources",
@@ -550,8 +571,6 @@ fn cloud_cmdlet(key: &str, args: &[Arg], defaults: bool) -> Option<(Flagged, &'s
                 (flagged, _) => (flagged, "terminates EC2 instances"),
             });
         }
-        ("stop", Aws) if AWS_TERMINATES.contains(&noun) => "terminates AWS resources",
-        ("request", Aws) if noun == "kmskeydeletion" => "schedules a KMS key's deletion",
         _ => return None,
     };
     Some((Flagged::Written, reason))
@@ -695,13 +714,255 @@ fn has_extension(unit: &Unit) -> bool {
 /// like the AWS prefix `act`, and is read here before it.
 const EXCHANGE_DEVICES: &[&str] = &["activesyncdevice", "mobiledevice"];
 
-/// The nouns of the AWS `Stop-` cmdlets that terminate what they name (AWS's
-/// terminate verbs): an Elastic Beanstalk environment, an EMR cluster, and
-/// an instance of an Auto Scaling group.
-const AWS_TERMINATES: &[&str] = &[
-    "ebenvironment",
-    "emrjobflow",
-    "asinstanceinautoscalinggroup",
+/// The AWS cmdlets that destroy beyond `Remove-` and `Unregister-`, by key
+/// (lower case, sorted, so a search finds one), with the reason each gives,
+/// checked against the cmdlet reference of AWS Tools for PowerShell v5 and
+/// the API operation each calls:
+///
+/// - The `Clear-` cmdlets that wipe data: a queue purged (`PurgeQueue`), a
+///   connection's stored authorization taken off (`DeauthorizeConnection`)
+///   and an index's query suggestions. Its other `Clear-` cmdlets flush a
+///   cache of responses (`Clear-AGStageCache`, `Clear-ASYNApiCache`), unset
+///   a default (`Clear-IOTDefaultAuthorizer`) or release locks.
+/// - The `Reset-` cmdlets that wipe data or a credential, or set a set of
+///   values tuned by hand back: a graph emptied, a database backtracked
+///   (`Reset-RDSDBCluster`), a workspace rebuilt, a channel's content, a
+///   storage gateway's cache disks, a job's bookmark, a group's deployments,
+///   a password, PIN, service credential or a token vault's key, a parameter
+///   group, a landing zone, a baseline or a control, and the two named after
+///   disassociate and unlabel operations. Its other `Reset-` cmdlets set one
+///   attribute or setting back (`Reset-EC2ImageAttribute`,
+///   `Reset-EC2EbsDefaultKmsKeyId`, `Reset-SSMServiceSetting`, log levels),
+///   invalidate a cache of builds or responses, log devices out or roll back
+///   the caller's own transaction.
+/// - The `Stop-` cmdlets AWS's terminate operations are named (`Terminate*`):
+///   an Elastic Beanstalk environment, an EMR cluster, an instance of an Auto
+///   Scaling group, a workflow execution, a job, a recovery instance, a
+///   microVM, a session, a connection. The other `Stop-` cmdlets stop what
+///   can start again, or cancel (`Stop-KMSKeyDeletion` cancels a deletion).
+/// - `Close-ORGAccount`, which closes a member account of an organization.
+/// - The deletes AWS names with another verb: `Uninstall-` (a workflow or
+///   activity type), `Dismount-FSXAndDeleteS3AccessPoint`,
+///   `Unlock-BAKRecoveryPoint` (which deletes a continuous backup's recovery
+///   point), `Start-` (a remote file, configuration items, a monitor, an
+///   approval team), `New-PERSDataDeletionJob`, the batch deletes named
+///   `Set-` and `Group-`, `Start-EBEnvironmentRebuild`, which deletes and
+///   recreates an environment's resources, and `Invoke-NEPTFastReset`, which
+///   removes a Neptune graph's data.
+/// - `Request-KMSKeyDeletion`, which schedules a key's deletion.
+const AWS_DESTROYS: &[(&str, &str)] = &[
+    ("clear-cweconnection", "clears data in AWS"),
+    ("clear-evbconnection", "clears data in AWS"),
+    ("clear-kndrquerysuggestion", "clears data in AWS"),
+    ("clear-sqsqueue", "clears data in AWS"),
+    ("close-orgaccount", "closes an AWS account"),
+    (
+        "dismount-fsxanddeletes3accesspoint",
+        "deletes AWS resources",
+    ),
+    ("group-chmvodeletephonenumber", "deletes AWS resources"),
+    ("invoke-neptfastreset", "clears data in AWS"),
+    ("new-persdatadeletionjob", "deletes AWS resources"),
+    ("request-kmskeydeletion", "schedules a KMS key's deletion"),
+    ("reset-actenabledbaseline", "resets AWS resources"),
+    ("reset-actenabledcontrol", "resets AWS resources"),
+    ("reset-actlandingzone", "resets AWS resources"),
+    ("reset-bacctokenvaultkeymaterial", "resets AWS resources"),
+    ("reset-cgipuserpasswordadmin", "resets AWS resources"),
+    ("reset-chmpersonalpin", "resets AWS resources"),
+    ("reset-docdbclusterparametergroup", "resets AWS resources"),
+    ("reset-dsuserpassword", "resets AWS resources"),
+    ("reset-dzenvironmentrole", "resets AWS resources"),
+    ("reset-eccacheparametergroup", "resets AWS resources"),
+    ("reset-ggdeployment", "resets AWS resources"),
+    ("reset-gluejobbookmark", "resets AWS resources"),
+    ("reset-iamservicespecificcredential", "resets AWS resources"),
+    ("reset-mdbparametergroup", "resets AWS resources"),
+    ("reset-mpv2channelstate", "resets AWS resources"),
+    ("reset-mpv2originendpointstate", "resets AWS resources"),
+    ("reset-neptggraph", "resets AWS resources"),
+    ("reset-nptdbclusterparametergroup", "resets AWS resources"),
+    ("reset-nptdbparametergroup", "resets AWS resources"),
+    ("reset-rdsdbcluster", "resets AWS resources"),
+    ("reset-rdsdbclusterparametergroup", "resets AWS resources"),
+    ("reset-rdsdbparametergroup", "resets AWS resources"),
+    ("reset-rsclusterparametergroup", "resets AWS resources"),
+    ("reset-sgcache", "resets AWS resources"),
+    ("reset-ssmparameterversionlabel", "resets AWS resources"),
+    ("reset-wksworkspace", "resets AWS resources"),
+    ("reset-wmpassword", "resets AWS resources"),
+    ("set-bdrbatchdeleteevaluationjob", "deletes AWS resources"),
+    (
+        "set-qsbatchdeletetopicreviewedanswer",
+        "deletes AWS resources",
+    ),
+    ("set-smdeleteclusternode", "deletes AWS resources"),
+    (
+        "start-adsbatchdeleteconfigurationtask",
+        "deletes AWS resources",
+    ),
+    (
+        "start-ebenvironmentrebuild",
+        "deletes and recreates AWS resources",
+    ),
+    ("start-emldeletemonitordeployment", "deletes AWS resources"),
+    (
+        "start-mpaactiveapprovalteamdeletion",
+        "deletes AWS resources",
+    ),
+    ("start-tfrremotedelete", "deletes AWS resources"),
+    (
+        "stop-asinstanceinautoscalinggroup",
+        "terminates AWS resources",
+    ),
+    ("stop-batservicejob", "terminates AWS resources"),
+    ("stop-batservicejobcollection", "terminates AWS resources"),
+    ("stop-ebenvironment", "terminates AWS resources"),
+    ("stop-ec2clientvpnconnection", "terminates AWS resources"),
+    ("stop-edrsrecoveryinstance", "terminates AWS resources"),
+    ("stop-emrjobflow", "terminates AWS resources"),
+    ("stop-emrserverlesssession", "terminates AWS resources"),
+    ("stop-emrsession", "terminates AWS resources"),
+    ("stop-gmlgamesession", "terminates AWS resources"),
+    ("stop-gmlsstreamsession", "terminates AWS resources"),
+    ("stop-lmvm2microvm", "terminates AWS resources"),
+    ("stop-orgresponsibilitytransfer", "terminates AWS resources"),
+    ("stop-ssmsession", "terminates AWS resources"),
+    ("stop-swfworkflowexecution", "terminates AWS resources"),
+    ("uninstall-swfactivitytype", "deletes AWS resources"),
+    ("uninstall-swfworkflowtype", "deletes AWS resources"),
+    ("unlock-bakrecoverypoint", "deletes AWS resources"),
+];
+
+/// The `Clear-` and `Reset-` cmdlets of the Az modules (and their `AzureRM`
+/// and `AzureAD` names) that destroy nothing, by verb and the noun after the
+/// prefix, checked against the Az 16.5.0 reference and the `AzureAD`
+/// module's: a cache of responses purged from a CDN, a vulnerability
+/// assessment's, audit's or threat protection's settings, a gateway,
+/// connection or router reset (rebooted), a rule's counter, a Spark
+/// session's timeout, and a group renewed (`Reset-AzureADMSLifeCycleGroup`). Every other `Clear-` and
+/// `Reset-` of Azure destroys: a soft-deleted store purged, a cache wiped, a
+/// node reimaged, a password, key, shared key, certificate or publishing
+/// profile reset.
+const AZURE_KEEPS: &[(&str, &str)] = &[
+    ("clear", "cdnendpointcontent"),
+    ("clear", "frontdoorcdnendpointcontent"),
+    ("clear", "sqldatabasevulnerabilityassessmentrulebaseline"),
+    ("clear", "sqldatabasevulnerabilityassessmentsetting"),
+    (
+        "clear",
+        "sqlinstancedatabasevulnerabilityassessmentrulebaseline",
+    ),
+    ("clear", "sqlinstancedatabasevulnerabilityassessmentsetting"),
+    ("clear", "sqlinstancevulnerabilityassessmentsetting"),
+    ("clear", "sqlservervulnerabilityassessmentsetting"),
+    ("clear", "synapsesqlpoolvulnerabilityassessmentrulebaseline"),
+    ("reset", "admslifecyclegroup"),
+    ("reset", "hubrouter"),
+    ("reset", "p2svpngateway"),
+    ("reset", "paloaltonetworkslocalrulecounter"),
+    ("reset", "synapsesparksessiontimeout"),
+    ("reset", "synapsesqladvancedthreatprotectionsetting"),
+    ("reset", "synapsesqlauditsetting"),
+    ("reset", "synapsesqlpooladvancedthreatprotectionsetting"),
+    ("reset", "synapsesqlpoolauditsetting"),
+    ("reset", "synapsesqlpoolvulnerabilityassessmentsetting"),
+    ("reset", "synapsesqlvulnerabilityassessmentsetting"),
+    ("reset", "virtualnetworkgateway"),
+    ("reset", "virtualnetworkgatewayconnection"),
+    ("reset", "vpngateway"),
+    ("reset", "vpnsitelinkconnection"),
+];
+
+/// The `Clear-` and `Reset-` cmdlets of Microsoft Graph (`Mg`, and `MgBeta`
+/// for its beta module), Entra PowerShell (`Entra`, `EntraBeta`) and
+/// `MSOnline` that destroy nothing, by verb and the noun after the prefix
+/// (and `Beta`), checked against Graph's command metadata and the Entra
+/// module's cmdlets: a reaction to a message taken off, a presence or its
+/// location cleared, a verified publisher unset, a workflow's quarantine
+/// lifted, a membership target cleared, an unseen count, a printer's
+/// defaults or an eDiscovery case's settings set back, and a group renewed.
+/// Every other `Clear-` and `Reset-` of these modules destroys: a device or
+/// an app's data wiped, eDiscovery data purged, a password, passcode or
+/// sign-in method reset, review decisions reset, a policy set back to the
+/// system's default.
+const ENTRA_KEEPS: &[(&str, &str)] = &[
+    ("clear", "applicationverifiedpublisher"),
+    ("clear", "chatmessagereaction"),
+    ("clear", "chatmessagereplyreaction"),
+    ("clear", "chattargetedmessagereplyreaction"),
+    ("clear", "communicationpresence"),
+    ("clear", "communicationpresenceautomaticlocation"),
+    ("clear", "communicationpresencelocation"),
+    ("clear", "communicationpresenceuserpreferredpresence"),
+    (
+        "clear",
+        "devicemanagementandroiddeviceownerenrollmentprofileenrollmenttimedevicemembershiptarget",
+    ),
+    (
+        "clear",
+        "devicemanagementconfigurationpolicyenrollmenttimedevicemembershiptarget",
+    ),
+    ("clear", "groupteamchannelmessagereaction"),
+    ("clear", "groupteamchannelmessagereplyreaction"),
+    (
+        "clear",
+        "groupteamchannelplannerplanbuckettaskmessagereaction",
+    ),
+    ("clear", "groupteamchannelplannerplantaskmessagereaction"),
+    ("clear", "groupteamprimarychannelmessagereaction"),
+    ("clear", "groupteamprimarychannelmessagereplyreaction"),
+    (
+        "clear",
+        "groupteamprimarychannelplannerplanbuckettaskmessagereaction",
+    ),
+    (
+        "clear",
+        "groupteamprimarychannelplannerplantaskmessagereaction",
+    ),
+    (
+        "clear",
+        "identitygovernancelifecycleworkflowdeleteditemworkflowquarantine",
+    ),
+    ("clear", "identitygovernancelifecycleworkflowquarantine"),
+    ("clear", "plannertaskmessagereaction"),
+    (
+        "clear",
+        "solutionbusinessscenarioplannertaskmessagereaction",
+    ),
+    ("clear", "teamchannelmessagereaction"),
+    ("clear", "teamchannelmessagereplyreaction"),
+    ("clear", "teamchannelplannerplanbuckettaskmessagereaction"),
+    ("clear", "teamchannelplannerplantaskmessagereaction"),
+    ("clear", "teamprimarychannelmessagereaction"),
+    ("clear", "teamprimarychannelmessagereplyreaction"),
+    (
+        "clear",
+        "teamprimarychannelplannerplanbuckettaskmessagereaction",
+    ),
+    ("clear", "teamprimarychannelplannerplantaskmessagereaction"),
+    ("clear", "teamworkdeletedteamchannelmessagereaction"),
+    ("clear", "teamworkdeletedteamchannelmessagereplyreaction"),
+    (
+        "clear",
+        "teamworkdeletedteamchannelplannerplanbuckettaskmessagereaction",
+    ),
+    (
+        "clear",
+        "teamworkdeletedteamchannelplannerplantaskmessagereaction",
+    ),
+    ("clear", "userchatmessagereaction"),
+    ("clear", "userchatmessagereplyreaction"),
+    ("clear", "userchattargetedmessagereplyreaction"),
+    ("clear", "userpresence"),
+    ("clear", "userpresenceautomaticlocation"),
+    ("clear", "userpresencelocation"),
+    ("clear", "userpresenceuserpreferredpresence"),
+    ("reset", "complianceediscoverycasesettingtodefault"),
+    ("reset", "groupunseencount"),
+    ("reset", "lifecyclegroup"),
+    ("reset", "printprinterdefault"),
+    ("reset", "securitycaseediscoverycasesettingtodefault"),
 ];
 
 /// The nouns the Azure modules' cmdlets take after their prefix when they
@@ -3653,5 +3914,40 @@ fn complete_deployment<'a>(args: &'a [Arg], values: &[&str]) -> Say<'a> {
             }
         }
         None => Unread(Some("deploys in a mode only known when it runs")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AWS_DESTROYS, AZURE_KEEPS, ENTRA_KEEPS};
+
+    /// [`AWS_DESTROYS`] is searched by halves, so it must be sorted, with one
+    /// row to a key, each a lower-case `verb-noun` key as a cmdlet's is.
+    #[test]
+    fn aws_destroys_is_sorted_by_key() {
+        assert!(AWS_DESTROYS.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        for (key, _) in AWS_DESTROYS {
+            assert_eq!(*key, key.to_ascii_lowercase(), "{key}");
+            assert!(
+                key.split_once('-')
+                    .is_some_and(|(verb, noun)| !verb.is_empty()
+                        && !noun.is_empty()
+                        && !noun.contains('-')),
+                "{key}"
+            );
+        }
+    }
+
+    /// The lists of nouns that keep their data are lower case, of a `Clear-`
+    /// or `Reset-` verb, one row to a noun.
+    #[test]
+    fn keeps_lists_are_lower_case_clears_and_resets() {
+        for list in [AZURE_KEEPS, ENTRA_KEEPS] {
+            assert!(list.windows(2).all(|pair| pair[0] < pair[1]));
+            for (verb, noun) in list {
+                assert!(matches!(*verb, "clear" | "reset"), "{verb}");
+                assert_eq!(*noun, noun.to_ascii_lowercase(), "{noun}");
+            }
+        }
     }
 }
