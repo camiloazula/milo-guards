@@ -206,7 +206,17 @@ multi-call firewall programs `xtables-nft-multi`, `xtables-legacy-multi` and
 `xtables-multi` run the program they name (`xtables-nft-multi iptables -F`
 is `iptables -F`), and their own names for it too: `main4` is `iptables`,
 `main6` is `ip6tables`, `restore4` and `restore6` are `iptables-restore`
-and `ip6tables-restore`, `save4` and `save6` their `-save`.
+and `ip6tables-restore`, `save4` and `save6` their `-save`. `nsenter` runs
+the program after its options in another process's namespaces (`nsenter -t
+1 -a systemctl stop sshd` is `systemctl stop sshd`): `-t`, `-N`, `-S` and
+`-G` (and `--target`, `--net-socket`, `--setuid`, `--setgid`, or a prefix
+that names one alone) take a value, the namespace options, `-r`, `-w` and
+`-W` take theirs only in the same word (`-m/proc/1/ns/mnt`, `-W/srv`), and
+`-w`, `-W` and `-r` (`--wd`, `--wdns`, `--root`) start the program in a
+folder of that process's, as entering its mount namespace does (`-m`,
+`--mount`, `-a`, `--all`), since the kernel then moves it to that
+namespace's root: where it runs is then only known when it does
+(`nsenter -t 1 -m rm -rf etc` deletes a path only known when it runs).
 
 `Start-Process` joins its argument list (`-ArgumentList`, `-Args`, or the
 words after the program) with spaces into one command line, which the program
@@ -561,8 +571,18 @@ shell handed an input of its own, a file redirected onto it or something
 piped into it, hands it on to what its script runs: `cmd /c python < x.py`
 and `type x.py | cmd /c python` run `x.py`, which is `Unknown` as `python <
 x.py` is (an interpreter in cmd reads its input when it is handed one, see
-[Inline code](#inline-code)). The null device holds nothing to read, so
-`python < NUL` is handed no input.
+[Inline code](#inline-code)). A handle copied onto the input hands it one
+the line does not show, as a file does: cmd reads `N<&M` and `N>&M` alike as
+a copy of handle `M` into handle `N` (0 for `<&` and 1 for `>&` when it is
+not written), so `python 0<&3`, `python <&3` and `python 0>&3` are `Unknown`
+and `cmd 0<&3` is `RunInput`, while `python 0<&0`, `python 2>&1` and
+`python >&3` are handed no new input. Every input redirect of a command
+counts, whatever its order. cmd applies redirects left to right and the last
+one for handle 0 wins, so in `python < x.py < NUL` python reads nothing, but
+the guard still reads `x.py` as an input given on purpose: it errs on the
+risky side rather than track which redirect wins. The null device holds
+nothing to read, so `python < NUL` is handed no input, but
+`python < NUL < x.py` and `python < x.py < NUL` are.
 
 cmd does not split a program's arguments: it hands every program it starts,
 all but its own built-in commands, the text after its name as written, with
@@ -2773,6 +2793,58 @@ of their strictest, so each family below was added on that test.
   system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
   A `kill` whose ids come from a substitution (`kill $(pidof auditd)`) is
   `stop_unknown`, as every such `kill` is.
+- **Other service managers.** The rest are read through the same two
+  verbs: a stop is a stop of each service it names, judged by the names
+  above (one that protects the machine is `system_settings`, one the system
+  needs `stop_system`, one only known when it runs `system_settings`, any
+  other safe), and taking a service out of what starts at boot is
+  `system_settings` whatever the service, as `systemctl disable` is.
+  OpenBSD's `rcctl stop` stops each daemon, and `rcctl disable`, `rcctl set
+  daemon status off` disables it; a command, a variable or a value of `set
+  status` only known when it runs may be either, and `start`, `restart`,
+  `check`, `ls`, `get` and `enable` are safe, as is `rcctl set daemon flags
+  NO`, which `rcctl` refuses. FreeBSD's
+  `sysrc` disables a service when it sets a `NAME_enable` to anything
+  `rc.subr` does not read as on (`YES`, `TRUE`, `ON`, `1`, without case),
+  changes one with `+=` or `-=`, or removes one (`-x`, `-X`); a word only
+  known when it runs may be such an assignment unless what is known of it
+  names another variable, and an option only known when it runs may be `-x`.
+  `sysrc -c` only checks, and `sysrc -f FILE` of a file in the workspace is
+  the workspace's own (a file elsewhere, or only known when it runs, is not,
+  nor is any under `-R` or `-j`, where `sysrc` runs again in that root or
+  jail and reads the file there).
+  s6's `s6-svc` stops each service folder under `-d` or `-D`, and under
+  `-p`, `-P` or `-s STOP` (a pause freezes it, as runit's `sv pause` does),
+  or an option only known when it runs; `-u`, `-r`, `-l` and the signals
+  that end the process, which s6 starts again, are safe, unless `-O`, `-o`
+  or `-Q` says not to start it again: then a signal that ends it (any but
+  `CONT` and `WINCH`) or a restart stops it (`s6-svc -Ot`). `s6-rc -d change` (or `-D`, or
+  `stop`) stops each service, `-a` adds every service that is up (`stops
+  every system service`), `-p` takes down every service it is not given,
+  as `isolate` does, and `-n` is a dry run. `dinitctl stop` and `release`
+  stop each service, `signal SIG service` is read as `systemctl kill`,
+  `disable` disables it, and `shutdown` is `stop_system`; `-u` (`--user`)
+  is the user's own instance unless a later `-s` (`--system`), a socket
+  (`-p`, `--socket-path`), which `dinitctl` uses whatever `-u` says, or an
+  argument only known when it runs may name the system's. `insserv -r`
+  (`--remove` or a prefix of it, or an option only known when it runs)
+  takes a script out of the boot sequence, unless `-n` makes it a dry run.
+  The legacy `update-rc.d name stop NN runlevel... .` disables the service
+  when a stop group names a runlevel the system runs in (`2` to `5`, or
+  `S`), one only known when it runs, or none (`update-rc.d ssh stop`); stopping it in `0`, `1` and `6`,
+  as the old default did, is safe. A script run from a runlevel folder
+  (`/etc/rc0.d` to `/etc/rc6.d`, `/etc/rcS.d`, and the same under
+  `/etc/rc.d`) is the init script its link names, without the `S` or `K`
+  and the number that order it: `/etc/rc2.d/K01ssh stop` is `stop_system`
+  as `/etc/init.d/ssh stop` is. Renaming or linking one (`mv
+  /etc/rc2.d/S01ssh /etc/rc2.d/K01ssh`) is already a write to a system
+  folder. Homebrew's `brew services stop` and `kill` (or a command only
+  known when it runs) stop each formula's service, and `--all` every one
+  it runs, any of which may protect the machine: `brew services stop
+  postgresql` is safe, `brew services stop fail2ban` and `brew services stop
+  --all` are not. `nsenter` is a wrapper: what it runs in the init
+  process's namespaces is judged (`nsenter -t 1 -a systemctl stop sshd` is
+  `stop_system`; see [Wrappers and scripts](#wrappers-and-scripts)).
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
   `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
   `listbackups`, `status`, `startbackup` and `enable` are safe.
@@ -5436,6 +5508,53 @@ cmdlets that only change what this machine is signed in to
 as do listing and creating (`Get-AzVM`, `Get-S3Bucket`, `New-AzResourceGroup`).
 `-WhatIf` does not make one safe: a quoted `'-WhatIf'` is a value, and the
 guard reads the two as the same word.
+
+Other verbs of those modules destroy too, and are `destroy_resources` the
+same way. A `Clear-` or `Reset-` cmdlet of any of the clouds wipes what a
+resource holds or sets it back (`Clear-SQSQueue` purges a queue,
+`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
+`Reset-RDSDBParameterGroup` sets a database's parameters back). An
+`Unregister-` cmdlet of AWS is one of its deregister or disassociate verbs
+(`Unregister-EC2Image`, `Unregister-ECSTaskDefinition`,
+`Unregister-ELB2Target`), and one of Azure takes a provider or a server off a
+subscription (`Unregister-AzResourceProvider`). A `Disable-` cmdlet is one
+when its noun names a key or a backup: it ends in `Key` or `Keys`, or holds
+`Backup` or `Retention` (`Disable-KMSKey`,
+`Disable-AzRecoveryServicesBackupProtection`,
+`Disable-AzStorageDeleteRetentionPolicy`); `Disable-KMSKeyRotation` is not.
+The AWS cmdlets its terminate verbs are named are: `Stop-EC2Instance` with
+`-Terminate` (by any prefix of the name, in any case; `-Terminate:$false` or
+`:0` is off, a value only known when it runs and a splat may turn it on, and
+the finding then says it may), `Stop-EBEnvironment`, `Stop-EMRJobFlow` and
+`Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion` schedules a
+key's deletion. `Stop-EC2Instance` without `-Terminate` stops instances and
+stays safe, also with a variable as an argument (`-InstanceId $id`), whose
+value is a value whatever it holds; so do `Stop-AzVM` and `Get-EC2Image`.
+PowerShell also binds a parameter the line does not write from
+`$PSDefaultParameterValues`: on a line that sets it (an entry, the whole
+table, `.Add`, or `Set-Variable` by the variable's name), any key may reach
+`Stop-EC2Instance:Terminate` (`'*:Terminate'`, `'Stop-EC2Instance:T*'`), so a
+`Stop-EC2Instance` that does not name the switch may terminate, and the
+finding says so. A default set before the line (in a profile) is not the
+line's. Nor does the guard read the properties of objects piped to the
+cmdlet, which the AWS Tools bind by property name: the current AWS Tools
+(v4 and v5) have no `-Terminate` on `Stop-EC2Instance` at all, and reading
+every piped one as a terminate would flag `Get-EC2Instance |
+Stop-EC2Instance`. Exchange's cmdlets for mobile devices (`ActiveSyncDevice`,
+which starts like the AWS prefix `act`, and its newer name `MobileDevice`)
+destroy off the machine too: `Clear-ActiveSyncDevice` and
+`Clear-MobileDevice` wipe the phone, and a `Remove-` one takes a device or a
+rule for devices off the organization; listing them stays safe. A program
+whose name has an extension (`clear-cache.cmd`) is found on the path, and is
+no module's cmdlet. The cmdlets that only change the module's
+settings on this machine stay safe (`Clear-AzContext`, `Clear-AzDefault`,
+`Clear-AzConfig`, `Disable-AzContextAutosave`, and AWS's own `AWS` noun:
+`Clear-AWSCredential`, `Clear-AWSHistory`), and so do other modules' cmdlets
+of these verbs whose noun starts like a prefix (`Clear-Content`, which is
+judged as a write, `Clear-PcsvDeviceLog`,
+`Reset-ComputerMachinePassword`, `Reset-ADServiceAccountPassword`,
+`Unregister-ScheduledTask`, `Unregister-ScheduledJob`,
+`Unregister-SecretVault`, `Disable-ScheduledTask`, `Disable-MMAgent`).
 
 A family of delete verbs read by its prefix (`delete-*` for `gcloud`, `az`
 and `doctl`, `purge-*` for `az`) is a verb only where a verb can be: after a

@@ -864,12 +864,16 @@ impl Walker<'_> {
         }
     }
 
-    /// Whether the redirect `node` hands the command an input: a file (`<`,
-    /// `0<`) or another handle (`0<&3`). The null device holds nothing to
-    /// read (`python < NUL`), so it is none.
+    /// Whether the redirects of `node` hand the command an input: a file
+    /// (`<`, `0<`) or another handle (`0<&3`, `<&3`, `0>&3`), whose content
+    /// the line does not show. The null device holds nothing to read
+    /// (`python < NUL`), and handle 0 made a copy of itself (`0<&0`) is the
+    /// input the command had, so neither is one. Every redirect counts, not
+    /// only the first: `python < NUL < x.py` reads `x.py`.
     fn reads_input(&self, node: Node<'_>) -> bool {
         let mut cursor = node.walk();
         let mut reads = false;
+        let mut input = false;
         for child in node.named_children(&mut cursor) {
             match child.kind() {
                 "redirect_op" => {
@@ -879,14 +883,46 @@ impl Walker<'_> {
                 }
                 "redirect_target" if reads => {
                     let target = self.quoted_value(child);
-                    return !target
+                    input |= !target
                         .known()
                         .is_some_and(|target| path::null_device(target, Shell::Cmd));
+                    reads = false;
                 }
+                "fd_redirect" => input |= self.duplicates_input(child),
                 _ => {}
             }
         }
-        reads
+        input
+    }
+
+    /// Whether the handle duplication `node` (`N<&M`, `N>&M`) makes the
+    /// input, handle 0, a copy of another handle. cmd reads both operators
+    /// as a copy of handle `M` into handle `N`; `N` is 0 for `<&` and 1 for
+    /// `>&` when it is not written. `M` may be a variable (`0<&%h%`), read
+    /// as cmd expands it; one only known when it runs may be any handle.
+    fn duplicates_input(&self, node: Node<'_>) -> bool {
+        let text = unit::text(&node, self.source);
+        let Some((handle, rest)) = text.split_once('&') else {
+            return true;
+        };
+        let into = match handle.strip_suffix(['<', '>']) {
+            Some("") if handle.ends_with('<') => "0",
+            Some("") => "1",
+            Some(digit) => digit,
+            None => return true,
+        };
+        if into != "0" {
+            return false;
+        }
+        let mut cursor = node.walk();
+        let source = match node
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "variable_reference")
+        {
+            Some(variable) => self.value(&[variable]),
+            None => Arg::Known(rest.to_string()),
+        };
+        source.known().is_none_or(|source| source.trim() != "0")
     }
 
     /// A redirect that writes to a file: `>`, `>>`, `2>`. A duplication

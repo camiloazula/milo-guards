@@ -551,6 +551,7 @@ fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_
             format!("pnpm {}exec rimraf etc", "-C / ".repeat(count)),
             format!("env -S '{}rm -rf etc'", "-C / ".repeat(count)),
             format!("env -S '-C / rm -rf etc {long}'"),
+            format!("{}rm -rf etc", "nsenter -t 1 -w ".repeat(count)),
         ];
         let pwsh = [
             format!(

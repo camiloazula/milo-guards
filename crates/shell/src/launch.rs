@@ -1095,6 +1095,8 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
             ),
         ),
         "prlimit" if posix => runs(args, after_options(args, &[])),
+        // `nsenter -t 1 -a cmd` runs `cmd` in the init process's namespaces.
+        "nsenter" if posix => tools::nsenter(args),
         "xcrun" if posix => runs(
             args,
             after_options(args, &["--sdk", "-sdk", "--toolchain", "-toolchain"]),
