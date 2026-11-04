@@ -16,11 +16,21 @@ pub(crate) struct Global<'a> {
 }
 
 /// Read git's own options, up to its subcommand. They take no abbreviation.
+/// A long option written with its value joined to it, where the value is
+/// only known when it runs (`--git-dir="$D"`, `--work-tree=$W`), is one of
+/// them all the same: the subcommand comes after it.
 pub(crate) fn global(args: &[Arg]) -> Global<'_> {
     let mut at = 0;
     let mut repository = None;
     let mut configs = Vec::new();
-    while let Some(text) = args.get(at).and_then(Arg::known) {
+    while let Some(arg) = args.get(at) {
+        let Some(text) = arg.known() else {
+            if joined_option(arg.text()) {
+                at += 1;
+                continue;
+            }
+            break;
+        };
         match text {
             "-C" => {
                 repository = args.get(at + 1);
@@ -43,6 +53,19 @@ pub(crate) fn global(args: &[Arg]) -> Global<'_> {
         repository,
         configs,
     }
+}
+
+/// Whether `text`, a word as written, is a long option whose name is
+/// written out and whose value is joined to it with `=`: `--git-dir="$D"`.
+/// A name that is itself only known when it runs (`--$o`) may be one that
+/// takes the next word as its value, so it is not one.
+fn joined_option(text: &str) -> bool {
+    text.strip_prefix("--")
+        .and_then(|rest| rest.split_once('='))
+        .is_some_and(|(name, _)| {
+            name.starts_with(|c: char| c.is_ascii_alphabetic())
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
 }
 
 /// Whether a git long option `--name` or `--name=value`, as written, is
@@ -135,6 +158,21 @@ mod tests {
         assert!(!is_long("--forced", "force"));
         assert!(!is_long("-f", "force"));
         assert!(!is_long("--no-force", "force"));
+    }
+
+    #[test]
+    fn a_long_option_with_a_joined_value_is_one_of_gits_own() {
+        assert!(joined_option("--git-dir=\"$D\""));
+        assert!(joined_option("--work-tree=$W"));
+        assert!(!joined_option("--$o"));
+        assert!(!joined_option("--$o=x"));
+        assert!(!joined_option("$CMD"));
+        assert!(!joined_option("-c$x"));
+        let args = [
+            Arg::Unknown("--git-dir=\"$D\"".to_string()),
+            Arg::Known("clean".to_string()),
+        ];
+        assert_eq!(global(&args).at, 1);
     }
 
     #[test]

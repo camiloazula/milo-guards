@@ -252,6 +252,13 @@ fn add_launched(
     unit.depth = depth;
     let mut given = given;
     for used in 0..wrappers {
+        // `alias g=git; g clean -fdx` runs `git clean -fdx`.
+        if given.is_none() && !unit.aliased {
+            if let Some(readings) = alias_readings(split, &unit) {
+                add_aliased(split, unit, readings, depth, wrappers - used);
+                return;
+            }
+        }
         // `env GLOBIGNORE=x bash -c '…'` hands the option to what it runs.
         if unit.args.iter().any(dotglob::assigns_hiding) {
             split.scope_hidden(true);
@@ -533,7 +540,9 @@ fn add_launched(
                         // alias turns on for the line, as each runs in
                         // this shell.
                         let outer_autocd = split.autocd;
-                        split.autocd |= starts_autocd;
+                        if starts_autocd {
+                            split.turn_autocd_on();
+                        }
                         // A `trap`'s script runs later: when the line ends,
                         // or between its commands. It is a body, judged with
                         // the option on if the line ever turns it on, and
@@ -576,12 +585,19 @@ fn add_launched(
                             // function's body: it is read as one (see
                             // `Split::end_body`), and its `cd` moves the line.
                             for (name, value) in definitions {
+                                // One the line surely runs, in this shell,
+                                // takes the place of those before it.
+                                let replaces =
+                                    split.branches == 0 && split.repeats == 0 && split.apart == 0;
                                 let first = split.units.len();
                                 split.branches += 1;
                                 split.bodies += 1;
                                 split.repeats += 1;
                                 split.begin_body();
+                                split.last_read = 0..0;
                                 unit::script_in(split, &value, shell, depth + 1, true);
+                                let command = std::mem::take(&mut split.last_read);
+                                split.alias_command(&name, command, replaces);
                                 split.end_body(Some(&name));
                                 split.repeats -= 1;
                                 split.bodies -= 1;
@@ -710,6 +726,134 @@ fn add_launched(
         None,
     );
     split.push(unit);
+}
+
+/// The words in front of a command after which zsh and bash still expand
+/// an alias in its place: `time` (and `!`, which is no wrapper), and zsh's
+/// `nocorrect`. Behind any other (`sudo x`, `env x`, `command x`,
+/// `builtin x`, `noglob x`) the name is a program's.
+fn expands_alias(wrappers: &[String]) -> bool {
+    wrappers
+        .iter()
+        .all(|wrapper| matches!(wrapper.as_str(), "time" | "nocorrect"))
+}
+
+/// The most commands one use of an alias is read as, through the aliases
+/// its value's last command names in turn.
+const MAX_ALIAS_READINGS: usize = 16;
+
+/// What a use of an alias the line defines runs when it has words of its
+/// own, as the shell expands it: the last command of the alias's value with
+/// the use's words after its own (`alias x='rm -rf'; x /etc` runs `rm -rf
+/// /etc`, `alias x='env '; x rm -rf /etc` runs `env rm -rf /etc`), one for
+/// each value the alias may have. When that command names an alias in turn
+/// it is expanded too, but never an alias the expansion has already gone
+/// through (`alias rm='rm -i'; rm -rf build` runs `rm -i -rf build`).
+/// `None` when `unit` is no such use. A use without words runs the value as
+/// it is, which is read where the alias is defined, and placed from where
+/// the use is made (see [`Split::alias_body`]).
+#[inline(never)]
+fn alias_readings(split: &mut Split, unit: &Unit) -> Option<Vec<Unit>> {
+    if unit.shell != Shell::Posix || unit.args.is_empty() || !expands_alias(&unit.wrappers) {
+        return None;
+    }
+    split.alias_commands(unit.program.known()?)?;
+    let mut readings = Vec::new();
+    let mut todo = vec![(unit.clone(), Vec::<String>::new())];
+    while let Some((mut current, mut seen)) = todo.pop() {
+        let name = current
+            .program
+            .known()
+            .filter(|name| {
+                expands_alias(&current.wrappers) && !seen.iter().any(|seen| seen == name)
+            })
+            .map(str::to_string);
+        let commands = name
+            .as_deref()
+            .and_then(|name| split.alias_commands(name))
+            .map(|commands| match commands {
+                unit::AliasCommands::Known(known) => Some(known.to_vec()),
+                unit::AliasCommands::Unread => None,
+            });
+        let (Some(name), Some(commands)) = (name, commands) else {
+            current.aliased = true;
+            readings.push(current);
+            continue;
+        };
+        let Some(commands) = commands else {
+            split.problem(
+                Rule::Unknown,
+                "runs an alias the line defines more times than the guard reads",
+                Some(&name),
+            );
+            current.aliased = true;
+            readings.push(current);
+            continue;
+        };
+        if commands.is_empty() {
+            current.aliased = true;
+            readings.push(current);
+            continue;
+        }
+        seen.push(name);
+        for at in commands {
+            let Some(last) = split.units.get(at) else {
+                continue;
+            };
+            split.alias_words += last.args.len();
+            if split.alias_words > unit::MAX_ALIAS_WORDS
+                || readings.len() + todo.len() >= MAX_ALIAS_READINGS
+            {
+                split.problem(
+                    Rule::Unreadable,
+                    "uses aliases in more ways than the guard reads",
+                    unit.program.known(),
+                );
+                current.aliased = true;
+                readings.push(current);
+                return Some(readings);
+            }
+            let reading = Unit {
+                program: last.program.clone(),
+                args: last.args.iter().chain(&current.args).cloned().collect(),
+                wrappers: current
+                    .wrappers
+                    .iter()
+                    .chain(&last.wrappers)
+                    .cloned()
+                    .collect(),
+                ..current.clone()
+            };
+            todo.push((reading, seen.clone()));
+        }
+    }
+    Some(readings)
+}
+
+/// Add `unit`, a use of an alias with words of its own, and the `readings`
+/// of what it runs (see [`alias_readings`]): the use itself, by its name, is
+/// a call of the alias's value, placed where it is made; each reading is
+/// judged as a command written there, with at most `wrappers` more to come
+/// off. Each of two or more may be the one that runs, so each is read as a
+/// branch.
+#[inline(never)]
+fn add_aliased(split: &mut Split, unit: Unit, readings: Vec<Unit>, depth: usize, wrappers: usize) {
+    let program = unit.program.text().to_string();
+    split.push(unit);
+    let several = readings.len() > 1;
+    split.branches += usize::from(several);
+    for (index, reading) in readings.into_iter().enumerate() {
+        if index > 0 && !split.fork(MAX_FORKS) {
+            split.problem(
+                Rule::Unreadable,
+                "reads in too many ways to judge each",
+                Some(&program),
+            );
+            break;
+        }
+        add_launched(split, reading, depth, wrappers, None);
+    }
+    split.branches -= usize::from(several);
 }
 
 /// A script only known when it runs: a download when it is a process
@@ -891,6 +1035,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         downloaded: false,
         relocates: false,
         autocd: false,
+        aliased: false,
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),

@@ -997,6 +997,12 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
             "TRAPEXIT() { rm -rf b > o; }; ",
             "cd /a || cd b; ",
         ),
+        // A use of an alias with words runs its last command with them.
+        (
+            "alias x='…' y=x; cd …; y ……",
+            "alias x='rm -rf b' y=x; ",
+            "cd d; y c > o; ",
+        ),
     ] {
         assert_linear(what, shell, &paths, |size| {
             let tail = if head.contains(" do ") { "done" } else { "" };
@@ -1027,6 +1033,17 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
         ),
         // With `autocd` on, a command of one word is a `cd`.
         ("setopt autocd; a; b…", "setopt autocd; a; rm -rf b; ", ""),
+        (
+            "alias x='…' y=x; y ……",
+            "alias x='rm -rf b' y=x; y c > o; ",
+            "",
+        ),
+        // A body may run after the line turns it on.
+        (
+            "f() { a; … }; setopt autocd; f…",
+            "f() { a; rm -rf b; }; setopt autocd; f; ",
+            "",
+        ),
     ] {
         assert_linear(what, shell, &paths, |size| {
             format!("{}{tail}", filled(part, size, tail.len()))

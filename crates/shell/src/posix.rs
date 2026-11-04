@@ -70,6 +70,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     }
     walker.walk(tree.root_node(), None, 0);
     walker.fork_bombs(tree.root_node());
+    walker.split.last_read = walker.last_command.clone();
 }
 
 /// Whether a character may stand in a zsh glob qualifier the guard reads:
@@ -2657,7 +2658,7 @@ impl Walker<'_> {
             self.split.extend_glob();
         }
         if self.sets_option(node, extended::AUTO_CD) {
-            self.split.autocd = true;
+            self.split.turn_autocd_on();
         }
         // Set on a line of its own, or after `export`: the programs after it
         // have it, so it stays for the rest of the line.

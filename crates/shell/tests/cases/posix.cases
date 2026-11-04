@@ -740,6 +740,29 @@ posix finds=delete | alias x='rm -rf build'; (cd /; x)
 posix safe | alias ll='ls -l'; cd /; ll
 posix safe | alias x='rm -rf build'; x
 posix safe | cd src; alias x='rm -rf build'; x
+# A use with words of its own runs the value's last command with the words
+# after its own, as the shell expands it, judged by every rule from where
+# the use is made.
+posix finds=delete | alias x='rm -rf'; x /etc
+posix finds=delete | alias x='rm -rf'; cd /; x etc
+posix finds=delete | alias x='rm'; cd /; x -rf etc
+posix finds=git_discard | alias g='git'; g clean -fdx
+posix finds=unknown reason="runs a git command only known when it runs" | alias g='git'; g $CMD
+posix finds=destroy_resources | alias k='kubectl'; k delete ns prod
+posix finds=read_secret | alias x='cat'; x ~/.ssh/id_rsa
+posix finds=delete | alias x='env '; x rm -rf /etc
+posix finds=delete | alias x='sudo rm'; x -rf /etc
+posix finds=delete | alias x='ls | xargs'; x rm -rf /etc
+posix finds=delete | alias x='bash -c'; x 'rm -rf /'
+posix finds=delete | alias x=y y='rm -rf'; x /etc
+posix finds=delete | alias x='echo'; if true; then alias x='rm -rf'; fi; x /etc
+posix finds=delete | alias x='rm -rf'; time x /etc
+posix finds=delete | alias rm='rm -i'; rm -rf /etc
+posix safe | alias rm='rm -i'; rm -rf build
+posix safe | alias g='git'; g status
+posix safe | alias ll='ls -l'; ll src
+posix safe | alias x='rm -rf'; alias x='echo'; x /etc
+posix safe | alias a=b b=a; a /etc
 # The action runs with the options the line ends with.
 posix safe | trap 'rm -rf *git' EXIT
 posix safe | trap 'shopt -u dotglob; rm -rf *git' EXIT
@@ -986,6 +1009,12 @@ powershell finds=unknown | git $cmd
 cmd finds=unknown | git %CMD%
 posix safe | git status
 posix safe | git -C repo status
+# git's own options come before it, a value only known when it runs joined
+# to one among them.
+posix safe | git --git-dir="$D" status
+posix safe | git --work-tree="$W" status
+posix finds=git_discard | git --git-dir="$D" clean -fdx
+posix finds=unknown | git --$o status
 posix finds=overwrite reason="may edit a shell startup file with an option only known when it runs" | sed $FLAGS 's/a/b/' ~/.bashrc
 posix finds=overwrite | sed "-$I" s/a/b/ ~/.bashrc
 posix finds=overwrite reason="may edit a file only known when it runs with an option only known when it runs" | sed -n 1,10p $F

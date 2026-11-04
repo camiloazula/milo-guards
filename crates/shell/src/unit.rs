@@ -160,6 +160,10 @@ pub(crate) struct Unit {
     /// line may have turned zsh's `autocd` on: zsh runs it as a `cd` to the
     /// word when that names a folder (see [`Split::autocd`]).
     pub(crate) autocd: bool,
+    /// Whether it is what a use of an alias the line defines runs: the
+    /// alias's last command with the use's words after its own (see
+    /// [`Split::alias_command`]). It is not expanded again.
+    pub(crate) aliased: bool,
     /// The `Get-Process` listings written inside the arguments of a
     /// `Stop-Process` (`-InputObject (Get-Process)`), which it stops.
     pub(crate) listings: Vec<Listing>,
@@ -278,6 +282,7 @@ impl Unit {
             downloaded: false,
             relocates: false,
             autocd: false,
+            aliased: false,
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
@@ -744,6 +749,15 @@ pub(crate) struct Nested {
     pub(crate) inside: Range<usize>,
 }
 
+/// The last commands of the values an `alias` gives one name (see
+/// [`Split::alias_commands`]).
+pub(crate) enum AliasCommands<'a> {
+    /// The line defines the name more times than the guard keeps.
+    Unread,
+    /// The unit of each value's last command.
+    Known(&'a [usize]),
+}
+
 /// A variable set from what a substitution prints: `k=$(cat f)`.
 #[derive(Debug, Clone)]
 pub(crate) struct Assigned {
@@ -1087,9 +1101,17 @@ pub(crate) struct Split {
     /// (`/etc`, `..`, `src`) then runs as a `cd` to it when it names a
     /// folder, and as itself when it does not, so as a plain `cd` that may
     /// fail (see [`Unit::autocd`]). zsh reads it only from commands it reads
-    /// on its input, which may be how the line is given; turning it off is
-    /// not read, so once on it stays on.
+    /// on its input, and bash (`shopt -s autocd`) only in an interactive
+    /// shell, which may be how the line is given; turning it off is not
+    /// read, so once on it stays on.
     pub(crate) autocd: bool,
+    /// Whether the line ever turned `autocd` on, in this shell or in a
+    /// script it ran (see [`Self::turn_autocd_on`]).
+    ever_autocd: bool,
+    /// Whether the line is read a second time because it turns `autocd` on
+    /// and has a function body, a loop, an alias or a trap, which may run
+    /// after that: what they hold is read with it on (see [`split`]).
+    autocd_bodies: bool,
     /// The folders the last unit added to [`Self::stayed`], when it is a
     /// plain `cd`: the right side of `&&` after it runs only when it ran.
     last_stayed: Vec<Option<Arg>>,
@@ -1267,6 +1289,18 @@ pub(crate) struct Split {
     /// call is its value followed by the call's words (see
     /// [`Split::is_alias`]).
     aliases: HashSet<String>,
+    /// For each name an `alias` defines, the last command of each value,
+    /// by its unit, which a use of the name with words of its own runs with
+    /// them after its own; `None` once the name is defined more times than
+    /// [`MAX_BODIES`] (see [`Split::alias_command`]).
+    alias_commands: HashMap<String, Option<Vec<usize>>>,
+    /// How many words the uses of aliases have taken from the aliases'
+    /// commands so far (see [`MAX_ALIAS_WORDS`]).
+    pub(crate) alias_words: usize,
+    /// The units of the last command the last POSIX script read ran, its
+    /// own and not those of its substitutions: an alias's value's last
+    /// command (see [`Split::alias_command`]).
+    pub(crate) last_read: Range<usize>,
     /// The functions whose body moves the line, or whose definition is
     /// redirected, which a call reaches from a folder the walk cannot always
     /// name.
@@ -1828,9 +1862,9 @@ impl Split {
                 .and_then(|key| extended::change(AUTO_CD, &key, &unit.args))
                 == Some(true)
         {
-            self.autocd = true;
+            self.turn_autocd_on();
         }
-        unit.autocd = self.autocd && self.runs_as_cd(&unit);
+        unit.autocd = self.autocd_on() && self.runs_as_cd(&unit);
         let mut moved = moves_to(&unit);
         // Whether this `cd` may not have run, so the line may still be where
         // it was.
@@ -2990,6 +3024,43 @@ impl Split {
         self.aliases.insert(name.to_string());
     }
 
+    /// Note that `command` are the units of the last command of a value of
+    /// `alias name=…`, a definition that takes the place of every one
+    /// before it when `replaces`. Its own unit is the last of the outermost
+    /// among them (`sudo rm` is `rm`, `bash -c '…'` is `bash`).
+    pub(crate) fn alias_command(&mut self, name: &str, command: Range<usize>, replaces: bool) {
+        let at = self.units.get(command.clone()).and_then(|units| {
+            let depth = units.iter().map(|unit| unit.depth).min()?;
+            units
+                .iter()
+                .rposition(|unit| unit.depth == depth)
+                .map(|at| command.start + at)
+        });
+        let commands = self
+            .alias_commands
+            .entry(name.to_string())
+            .or_insert_with(|| Some(Vec::new()));
+        if replaces {
+            *commands = Some(Vec::new());
+        }
+        match (commands.as_mut(), at) {
+            (Some(known), Some(_)) if known.len() >= MAX_BODIES => *commands = None,
+            (Some(known), Some(at)) => known.push(at),
+            _ => {}
+        }
+    }
+
+    /// The units of the last commands of the values an `alias` gives
+    /// `name`, or `None` when no `alias` on the line defines it.
+    pub(crate) fn alias_commands(&self, name: &str) -> Option<AliasCommands<'_>> {
+        self.alias_commands
+            .get(name)
+            .map(|commands| match commands {
+                Some(known) => AliasCommands::Known(known),
+                None => AliasCommands::Unread,
+            })
+    }
+
     /// Whether an `alias` on the line defines `name`.
     pub(crate) fn is_alias(&self, name: &str) -> bool {
         self.aliases.contains(name)
@@ -3267,14 +3338,32 @@ impl Split {
         self.functions.push(name.to_string());
     }
 
+    /// Turn `autocd` on for the rest of the shell (see [`Self::autocd`]).
+    pub(crate) fn turn_autocd_on(&mut self) {
+        self.autocd = true;
+        self.ever_autocd = true;
+    }
+
+    /// Whether a command of one word that names a folder runs as a `cd` to
+    /// it here: `autocd` is on, or the line turns it on somewhere and this
+    /// is a function body, a loop, an alias or a trap, which may run after.
+    fn autocd_on(&self) -> bool {
+        self.autocd || (self.autocd_bodies && self.bodies > 0)
+    }
+
     /// Whether zsh, with `autocd` on, may run `unit` as a `cd` to its
     /// program: a POSIX command of one word, written out, with nothing in
-    /// front of it, that is not a builtin or a reserved word, and not a
+    /// front of it but zsh's precommand modifiers that still look the word
+    /// up as a command (`noglob`, `nocorrect`, `-`, `time`; `!` is not a
+    /// wrapper), that is not a builtin or a reserved word, and not a
     /// function or an alias the line defines, which run as themselves.
     fn runs_as_cd(&self, unit: &Unit) -> bool {
         unit.shell == Shell::Posix
             && unit.args.is_empty()
-            && unit.wrappers.is_empty()
+            && unit
+                .wrappers
+                .iter()
+                .all(|wrapper| matches!(wrapper.as_str(), "noglob" | "nocorrect" | "-" | "time"))
             && unit.program.known().is_some_and(|program| {
                 !program.is_empty()
                     && !ZSH_BUILTINS.contains(&program)
@@ -4295,7 +4384,7 @@ fn cdable(unit: &Unit) -> bool {
 /// [`Split::cdable`]), which takes a name that is not a folder for a
 /// variable that holds one.
 fn by_cdpath(unit: &Unit, target: Arg) -> Arg {
-    let searched = matches!(unit.key().as_deref(), Some("cd" | "chdir" | "pushd"))
+    let searched = (unit.autocd || matches!(unit.key().as_deref(), Some("cd" | "chdir" | "pushd")))
         && target.known().is_some_and(|text| {
             let first = text.split('/').next().unwrap_or_default();
             !text.is_empty() && !matches!(first, "" | "." | "..") && !text.starts_with('~')
@@ -4776,6 +4865,13 @@ const ZSH_BUILTINS: &[&str] = &[
     "while",
 ];
 
+/// The most words the uses of aliases on one line take from the aliases'
+/// commands, each use the words of the command it runs: as many as the
+/// longest line holds. Past them, a use is not expanded and the line is
+/// unreadable, so a long alias used many times is not read again for each
+/// use.
+pub(crate) const MAX_ALIAS_WORDS: usize = MAX_LEN / 2;
+
 /// The most bodies kept apart for one function or alias name (see
 /// [`Split::body`]): a name defined again runs the last definition, or one of
 /// those before it when a later one may not have run. Each body a call may
@@ -4803,9 +4899,9 @@ pub(crate) fn split(
         script(&mut split, command, shell, 0);
     }
     // A function body or a loop may run after the line turns `extendedglob`
-    // on, wherever it is written: read the line again, reading their words
-    // with it on.
-    if split.ever_extended
+    // or `autocd` on, wherever it is written: read the line again, reading
+    // their words with it on.
+    if (split.ever_extended || split.ever_autocd)
         && !(split.in_body.is_empty()
             && split.write_in_body.is_empty()
             && split.read_in_body.is_empty())
@@ -4837,7 +4933,8 @@ fn start(split: &mut Split, psdrive: bool, (drive, home_drive): (Option<char>, O
 }
 
 /// Clear `split` for a second read of the line that reads the words of its
-/// function bodies and loops with `extendedglob` on, keeping what it was
+/// function bodies and loops with `extendedglob` on, and their commands of
+/// one word with `autocd` on, whichever the line turns on, keeping what it was
 /// started with. A function of its own, so that the `Split` it builds is
 /// not held on the stack while [`split`] reads the line: the walk of a
 /// deeply nested line needs all of it.
@@ -4845,7 +4942,8 @@ fn start(split: &mut Split, psdrive: bool, (drive, home_drive): (Option<char>, O
 fn start_again_extended(split: &mut Split) {
     let fresh = Split {
         psdrive: split.psdrive,
-        extended_bodies: true,
+        extended_bodies: split.ever_extended,
+        autocd_bodies: split.ever_autocd,
         drive: split.drive,
         home_drive: split.home_drive,
         ..Split::default()
