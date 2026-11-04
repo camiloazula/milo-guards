@@ -838,6 +838,22 @@ posix finds=system_settings | /usr/local/etc/rc.d/nginx onedisable
 posix finds=system_settings | /etc/rc.d/sshd disable
 posix finds=system_settings | cd /etc/rc.d && ./sshd disable
 posix finds=system_settings | invoke-rc.d nginx disable
+# `-j jail` and `-E var=value` take a value, which is not the service: the
+# name and the action are the words after it. A word only known when it
+# runs may be such an option, and the word after it its value.
+posix safe | service -j jail nginx onestart
+posix safe | service -E FOO=1 nginx restart
+posix safe | service $opt nginx restart
+posix finds=system_settings reason="disables a system service" | service -E FOO=1 sshd onedisable
+posix finds=system_settings reason="disables a system service" | service -j jail sshd onedisable
+posix finds=system_settings reason="disables a system service" | service -jjail sshd onedisable
+posix finds=system_settings | service -v -j jail sshd disable
+posix finds=stop_system | service -j jail sshd stop
+posix finds=stop_system | service -E FOO=1 sshd stop
+posix finds=system_settings | service -j jail ufw stop
+posix finds=system_settings | service $opt sshd onedisable
+posix finds=system_settings | service $opt FOO=1 sshd onedisable
+posix finds=stop_system | service $opt sshd stop
 powershell finds=system_settings | service sshd onedisable
 
 # A service folder named from inside it (`.`, `..`, `./`) is the folder the

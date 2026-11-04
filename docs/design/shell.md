@@ -3123,10 +3123,16 @@ of their strictest, so each family below was added on that test.
   is. For `service name action`, an action only known when it runs may be a
   stop or a disable, so it is `system_settings` (`service nginx $action`,
   `changes a system service only known when it runs`), and also what a stop
-  of that name is (`service sshd $action` is `stop_system` too). Every
-  other service manager is read as `service`, a disable included (`invoke-rc.d
-  nginx disable`, `/usr/local/etc/rc.d/nginx onedisable`): a program run from an init script folder
-  (`/etc/init.d`, `/etc/rc.d/init.d`, `/etc/rc.d`, `/usr/local/etc/rc.d`),
+  of that name is (`service sshd $action` is `stop_system` too). FreeBSD's
+  `-j jail` and `-E var=value` take a value, so the name and the action are
+  the words after it (`service -j jail sshd onedisable`, `service -jjail
+  sshd onedisable`); a word only known when it runs before them may be such
+  an option and the word after it its value, so the name and the action may
+  be the words after either (`service $opt sshd onedisable`). Every other
+  service manager is read as `service`, a disable included (`invoke-rc.d
+  nginx disable`, `/usr/local/etc/rc.d/nginx onedisable`): a program run
+  from an init script folder (`/etc/init.d`, `/etc/rc.d/init.d`,
+  `/etc/rc.d`, `/usr/local/etc/rc.d`),
   placed where it lands so that `cd /etc/init.d && ./ufw stop` is the same
   as `/etc/init.d/ufw stop`, is the service of its name with its first
   operand as the action. So is the script a shell runs (`sh

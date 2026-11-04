@@ -848,11 +848,12 @@ impl Checker<'_> {
             "systemctl" => self.systemctl(args),
             // pwsh on Linux and macOS runs the native `service` and
             // `hostname`; cmd's `hostname` is Windows', which sets nothing.
-            "service" if unit.shell != Shell::Cmd => self.service(args),
+            // FreeBSD's `service -j jail` and `-E var=value` take a value.
+            "service" if unit.shell != Shell::Cmd => self.service(args, "Ej"),
             // `--query` only asks whether the action would be allowed.
             "invoke-rc.d" => {
                 if !args.iter().any(|arg| arg.known() == Some("--query")) {
-                    self.service(args);
+                    self.service(args, "");
                 }
             }
             "rc-service" => self.rc_service(args),
@@ -1452,13 +1453,25 @@ impl Checker<'_> {
     /// service ([`stops`]); `invoke-rc.d name action`, Debian's way for
     /// package scripts, reads the same. An action only known when it runs
     /// may be `stop`; a name only known when it runs may protect the
-    /// machine.
-    fn service(&mut self, args: &[Arg]) {
-        let words = operands(args, &[]);
-        let (Some(name), Some(action)) = (words.first(), words.get(1)) else {
-            return;
-        };
-        self.service_action(name, action);
+    /// machine. `shorts` are the options that take a value (`-j jail`,
+    /// `-jjail`). A word only known when it runs before the name may be an
+    /// option, and the word after it its value, so the name and the action
+    /// may be the words after either (`service $opt sshd onedisable`).
+    fn service(&mut self, args: &[Arg], shorts: &str) {
+        let words = getopt_operands(args, shorts, &[]);
+        let unknown_option = |arg: &Arg| arg.known().is_none() && may_be_option(arg);
+        let mut at = 0;
+        while let (Some(name), Some(action)) = (words.get(at), words.get(at + 1)) {
+            self.service_action(name, action);
+            let shifts = unknown_option(name)
+                || at
+                    .checked_sub(1)
+                    .is_some_and(|before| unknown_option(words[before]));
+            if !shifts {
+                break;
+            }
+            at += 1;
+        }
     }
 
     /// The `action` of `service`, `invoke-rc.d` or an init script on the

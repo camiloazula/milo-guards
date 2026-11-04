@@ -477,7 +477,7 @@ posix safe | systemctl start systemd-logind
 posix safe | systemctl --user stop dbus
 posix safe | service nginx stop
 posix safe | service sshd status
-posix finds=system_settings | service nginx $action
+posix lacks=stop_system | service nginx $action
 posix finds=stop_system | systemctl stop systemd-logind
 posix finds=stop_system | systemctl stop systemd-logind.service
 posix finds=stop_system | sudo systemctl stop systemd-logind
