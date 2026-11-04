@@ -561,8 +561,14 @@ shell handed an input of its own, a file redirected onto it or something
 piped into it, hands it on to what its script runs: `cmd /c python < x.py`
 and `type x.py | cmd /c python` run `x.py`, which is `Unknown` as `python <
 x.py` is (an interpreter in cmd reads its input when it is handed one, see
-[Inline code](#inline-code)). The null device holds nothing to read, so
-`python < NUL` is handed no input.
+[Inline code](#inline-code)). A handle copied onto the input hands it one
+the line does not show, as a file does: cmd reads `N<&M` and `N>&M` alike as
+a copy of handle `M` into handle `N` (0 for `<&` and 1 for `>&` when it is
+not written), so `python 0<&3`, `python <&3` and `python 0>&3` are `Unknown`
+and `cmd 0<&3` is `RunInput`, while `python 0<&0`, `python 2>&1` and
+`python >&3` are handed no new input. Every redirect of a command counts,
+not only its first. The null device holds nothing to read, so
+`python < NUL` is handed no input, but `python < NUL < x.py` is.
 
 cmd does not split a program's arguments: it hands every program it starts,
 all but its own built-in commands, the text after its name as written, with
