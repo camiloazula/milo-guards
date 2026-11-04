@@ -16,8 +16,9 @@
 //!   into it, `place_into`) and `place_hidden=` give a place (below);
 //!   `startup=`, `below=` (`startup_below`), `picks=` (`picks_secret`),
 //!   `holds=` (`holds_protected`), `kernel=` and `git=` give their words, or
-//!   `none`; `absolute=` and `opened=` give the path, or `none`; `reaches=` (`reaches_secret`) and
-//!   `network=` (`spelling::network`) give `yes` or `no`.
+//!   `none`; `absolute=` and `opened=` give the path, or `none`; `reaches=`
+//!   (`reaches_secret`) and `network=` (`spelling::network`) give `yes` or
+//!   `no`.
 //!
 //! A place is `inside`, `outside`, `unknown`, `disk`, `null`, `registry`,
 //! `temp` (a temporary folder itself), `in_temp` (below one), `workspace`

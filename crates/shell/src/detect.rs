@@ -826,6 +826,11 @@ impl Checker<'_> {
                 ..unit.scope()
             };
             for arg in found {
+                // A folder handed on whole is deleted whole, in its own words.
+                let arg = match arg.known().and_then(path::whole_folder) {
+                    Some(folder) => Arg::Known(folder.to_string()),
+                    None => arg,
+                };
                 match self.place(unit.shell, scope, &arg, Access::Item) {
                     place if place.harmless() => {}
                     Place::Registry => {
@@ -1008,9 +1013,13 @@ impl Checker<'_> {
 
     /// A program that changes files in `folder` the line does not name
     /// (a patch, an archive): when the folder can hold a protected path, it
-    /// may change it.
+    /// may change it, and a folder only known when it runs can hold any.
     fn changes_in(&mut self, shell: Shell, scope: Scope<'_>, folder: &Arg) {
-        if let Some(words) = self.protected_in(shell, scope, folder) {
+        let words = match self.place(shell, scope, folder, Access::Item) {
+            Place::Unknown => self.resolver.any_protected(),
+            _ => self.protected_in(shell, scope, folder),
+        };
+        if let Some(words) = words {
             self.add_once(Rule::Overwrite, format!("may change {words}"), folder);
         }
     }
@@ -1592,7 +1601,7 @@ fn inside(text: &str, name: &str) -> String {
 /// The hidden files of a folder a listing hands on whole, read as `.*`.
 fn hidden_files_of(arg: Arg) -> Arg {
     match &arg {
-        Arg::Known(text) => Arg::Known(inside(text, ".*")),
+        Arg::Known(text) => Arg::Known(inside(path::whole_folder(text).unwrap_or(text), ".*")),
         _ => arg,
     }
 }
@@ -1761,7 +1770,8 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
         places.push(Arg::Known(".".to_string()));
     }
     let extra = hidden_matches(&places, &patterns, recurses);
-    let mut found = found_by(places, filtered);
+    let whole = unit.key()?.as_str() != "get-item";
+    let mut found = found_by(places, filtered, recurses, whole);
     found.extend(extra);
     Some(found)
 }
@@ -1793,12 +1803,15 @@ fn passes_on(
 }
 
 /// What a listing of `places` finds, as paths the resolver reads.
-fn found_by(places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
+fn found_by(places: Vec<Arg>, filtered: bool, recurses: bool, whole: bool) -> Vec<Arg> {
     places
         .into_iter()
-        .map(|place| match place {
-            Arg::Known(text) => Arg::Known(path::listed(&text, filtered)),
-            other => other,
+        .flat_map(|place| match place {
+            Arg::Known(text) => path::listed(&text, filtered, recurses, whole)
+                .into_iter()
+                .map(Arg::Known)
+                .collect(),
+            other => vec![other],
         })
         .collect()
 }

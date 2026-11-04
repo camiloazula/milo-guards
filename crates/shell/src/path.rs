@@ -761,6 +761,25 @@ impl Resolver {
         self.holds_protected_of(within(dir, arg, shell).known()?, shell, hidden)
     }
 
+    /// The words of a protected path a program that changes files in a folder
+    /// only known when it runs can reach (see `Resolver::any_protected`).
+    pub(crate) fn any_protected(&self) -> Option<&'static str> {
+        self.core.any_protected()
+    }
+
+    /// The workspace folder that holds `arg`, run from `dir`, or is it: the
+    /// top of the work tree git works at from there (see
+    /// `Resolver::workspace_of`). `None` when it is in none, or is only
+    /// known when it runs.
+    pub(crate) fn workspace_of(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<Arg> {
+        let absolute = self.absolute(within(dir, arg, shell).known()?, shell)?;
+        let text = absolute.to_string_lossy();
+        let top = self
+            .core
+            .workspace_of(Spelling::Plain(&text), flavour(shell))?;
+        Some(Arg::Known(top.to_string_lossy().into_owned()))
+    }
+
     fn holds_protected_of(&self, text: &str, shell: Shell, hidden: bool) -> Option<&'static str> {
         if brace_list(text)
             || device(text, shell).is_some()
@@ -791,10 +810,27 @@ impl Resolver {
     }
 
     fn place_of(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
+        // A folder a search or a listing hands on whole is the folder, and
+        // everything it holds, a protected path among them.
+        if let Some(folder) = marked_folder(text, WHOLE) {
+            return match self.place_spelled(folder, shell, hidden, holding) {
+                place
+                    if place.harmless()
+                        || matches!(
+                            place,
+                            Place::Workspace { exact: true } | Place::Temp { exact: true }
+                        ) =>
+                {
+                    self.holds_protected_of(folder, shell, hidden)
+                        .map_or(place, Place::Protected)
+                }
+                place => place,
+            };
+        }
         let place = self.place_spelled(text, shell, hidden, holding);
         // What a search or a filtered listing finds in a folder may be any
         // entry below it, a protected one among them.
-        match found_folder(text) {
+        match marked_folder(text, FOUND) {
             Some(folder) if place.harmless() => self
                 .holds_protected_of(folder, shell, hidden)
                 .map_or(place, Place::Protected),
@@ -1226,16 +1262,21 @@ fn share_root(dir: &str) -> Option<Root> {
     Some(share.map_or(Root::Unknown, Root::Share))
 }
 
-/// What a listing of `text` hands on, as a path the resolver reads: a
+/// What a listing of `text` hands on, as paths the resolver reads: a
 /// pattern is handed on as written, so the resolver judges it as it would
-/// judge a delete of it (`..` applied, then what it can match); a filtered
-/// listing hands files inside its folder; a folder listed whole (`.`, `~`)
-/// hands everything in it, which is as much as the folder itself.
-pub(crate) fn listed(text: &str, filtered: bool) -> String {
-    if filtered && !glob::has_wildcard(text) {
-        found_in(text)
-    } else {
-        text.to_string()
+/// judge a delete of it (`..` applied, then what it can match), and with
+/// `recurses` also as what it finds at any depth below the folder it starts
+/// in, since its last part then matches in every folder below
+/// (`Get-ChildItem *.yaml -Recurse`); a filtered listing hands files inside
+/// its folder; a folder listed whole (`.`, `~`) hands everything in it,
+/// which is the folder itself and what it holds (see [`WHOLE`]), unless it
+/// is an item handed on as itself (`Get-Item`, not `whole`).
+pub(crate) fn listed(text: &str, filtered: bool, recurses: bool, whole: bool) -> Vec<String> {
+    match (glob::has_wildcard(text), filtered) {
+        (true, _) if recurses => vec![text.to_string(), found_below(text)],
+        (false, true) => vec![found_in(text)],
+        (false, false) if whole => vec![whole_of(text)],
+        _ => vec![text.to_string()],
     }
 }
 
@@ -1244,21 +1285,51 @@ pub(crate) fn listed(text: &str, filtered: bool) -> String {
 /// one, the line does not show, so it may be any entry at any depth below
 /// the folder. A name that is not a wildcard, a device or anything else a
 /// path is read as, so the entry is judged as a plain file in the folder,
-/// and then as what the folder holds (see [`found_folder`]). A path a line
-/// spells with it is read the same way, which costs only a finding where
-/// the folder holds a protected path.
+/// and then as what the folder holds. A path a line spells with it is read
+/// the same way (`rm ./…`), which costs only a finding where the folder
+/// holds a protected path.
 pub(crate) const FOUND: &str = "\u{2026}";
+
+/// The name that stands for a folder a search or a listing hands on whole
+/// (`find . -type f`, `ls`, `Get-ChildItem -Recurse`): the folder itself,
+/// judged as it is (a delete of it says so), and every entry below it,
+/// which may be a protected path the folder holds. Read as [`FOUND`] is.
+pub(crate) const WHOLE: &str = "\u{22ef}";
+
+/// What a pattern whose last part matches in every folder below the one it
+/// starts in finds (`Get-ChildItem *.yaml -Recurse`, `del /s *.yaml`): an
+/// entry at any depth below that folder (see [`FOUND`]).
+pub(crate) fn found_below(pattern: &str) -> String {
+    let mut folder = pattern_folder(pattern);
+    // A drive's root is its folder with the separator (`C:\*`).
+    if folder.ends_with(':') {
+        folder.push('\\');
+    }
+    found_in(&folder)
+}
 
 /// An entry a search finds inside `folder` (see [`FOUND`]).
 pub(crate) fn found_in(folder: &str) -> String {
     format!("{folder}/{FOUND}")
 }
 
-/// The folder a search found the entry `text` in, when `text` is one or
-/// is made from one (`-exec cp {} {}.bak`): what comes before the first
-/// [`FOUND`] part.
-fn found_folder(text: &str) -> Option<&str> {
-    let at = text.find(FOUND)?;
+/// `folder` handed on whole (see [`WHOLE`]).
+pub(crate) fn whole_of(folder: &str) -> String {
+    format!("{folder}/{WHOLE}")
+}
+
+/// The folder `text` stands for when it is exactly a folder handed on whole
+/// (see [`WHOLE`]), not a path made from one: what a delete of it deletes.
+pub(crate) fn whole_folder(text: &str) -> Option<&str> {
+    let folder = text.strip_suffix(WHOLE)?.strip_suffix(['/', '\\'])?;
+    Some(if folder.is_empty() { "/" } else { folder })
+}
+
+/// The folder a search or a listing found the entry `text` in, when `text`
+/// is one, marked with `marker`, or is made from one (`-exec cp {} {}.bak`):
+/// what comes before the first `marker` part.
+fn marked_folder<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    let at = text.find(marker)?;
     let folder = text[..at].strip_suffix(['/', '\\'])?;
     Some(if folder.is_empty() { "/" } else { folder })
 }

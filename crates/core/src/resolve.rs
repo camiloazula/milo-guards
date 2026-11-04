@@ -1249,6 +1249,36 @@ impl Resolver {
         self.place_as(path, flavour, hidden, true, Writes::Below).1
     }
 
+    /// The words of a protected path that a program which changes files in
+    /// a folder only known when it runs can reach: any of them, so the
+    /// first's. `None` when no path is protected.
+    #[must_use]
+    pub fn any_protected(&self) -> Option<&'static str> {
+        self.protected.first().map(|(_, words, _)| *words)
+    }
+
+    /// The workspace folder `path` is in, or is, the deepest when folders
+    /// nest, as an absolute path: the top of the work tree a program such as
+    /// `git am` changes when it runs anywhere below it. `None` when `path`
+    /// is in no workspace folder, and when it is not one definite place on
+    /// a disk (a device, a wildcard, a path on another drive's own working
+    /// directory).
+    #[must_use]
+    pub fn workspace_of(&self, path: Spelling<'_>, flavour: Flavour) -> Option<PathBuf> {
+        let device = matches!(path, Spelling::Plain(text) if device(text, flavour).is_some());
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if device || glob::has_wildcard(path.text()) || self.elsewhere(path, flavour) {
+            return None;
+        }
+        let loc = self.locate(path, flavour);
+        self.workspaces
+            .iter()
+            .filter(|workspace| below(&loc, &workspace.loc))
+            .max_by_key(|workspace| workspace.loc.parts.len())
+            .map(|workspace| PathBuf::from(workspace.loc.render()))
+    }
+
     /// The caller's words for a protected path that a program can reach when
     /// it changes files below `path` that the line does not name: the files
     /// a search finds there, the ones a patch or an archive names, what a

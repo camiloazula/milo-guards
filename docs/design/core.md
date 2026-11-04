@@ -580,6 +580,14 @@ path made absolute, with the working directory and `~` applied.
   `place`. It is `None` for a device and a path known only when it runs. It
   does not change `place`: a guard asks it of a folder whose files it cannot
   name, and what to say where the folder is already risky is the guard's.
+- `any_protected()` is the words of the first protected path, for a folder
+  only known when it runs, which may hold any of them; `None` when nothing
+  is protected.
+- `workspace_of(path, flavour)` is the workspace folder `path` is in, or is,
+  the deepest when folders nest, as an absolute path: the top of the work
+  tree a program such as `git am` changes wherever below it it runs. It is
+  `None` for a path in no workspace folder, a device, a wildcard, and a path
+  on another drive's own working directory.
 - `cwd_is_clear()` says whether a path written from the working directory, with
   no `..`, `~`, drive or variable in it, can only land in the agent's own
   workspace: the working directory is in a workspace folder that holds no key,
@@ -671,9 +679,9 @@ sensitive place, case, short names, other users' homes, long paths,
 drive-relative paths and a Mac's links), `startup.cases` (`startup`,
 `startup_below` and what a write into one is), `picks.cases`
 (`picks_secret`), `holds_protected.cases`, `reaches_secret.cases`,
-`absolute.cases` and `opened.cases`. A case asks the `Resolver` one or more questions of one path,
-on one machine, and gives each answer. What is made in a loop or asks the API
-itself stays in Rust: the folds NTFS does not make and the flavour in
+`absolute.cases` and `opened.cases`. A case asks the `Resolver` one or more
+questions of one path, on one machine, and gives each answer. What is made
+in a loop or asks the API itself stays in Rust: the folds NTFS does not make and the flavour in
 `sensitive.rs`, and that applying the `..` of what is opened gives the
 absolute path in `opened.rs`. `tests/cases.rs` tests the shared reading of
 the format and core's runner (`tests/common/runner.rs`), and dumps every

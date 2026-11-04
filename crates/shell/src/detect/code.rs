@@ -405,11 +405,15 @@ impl Checker<'_> {
 
 impl Checker<'_> {
     /// git's commands that write files in the work tree from data the line
-    /// does not show: `apply` and `am` the files a patch names, `checkout`
-    /// and `restore` given paths the files a revision holds below them. Each
-    /// may change a protected path the folder holds (see
-    /// [`Checker::changes_in`]); the folder git works in is `-C`'s, or the
-    /// one the line is in.
+    /// does not show: `apply` the files a patch names, below the folder git
+    /// runs in; `am`, `cherry-pick`, `revert`, `stash apply` and `pop`,
+    /// `read-tree -u` and `checkout-index` the files a patch, a commit or
+    /// the index holds, anywhere in the work tree; `checkout` and `restore`
+    /// given paths the files a revision holds below them. Each may change a
+    /// protected path the folder holds (see [`Checker::changes_in`]). The
+    /// folder git runs in is `-C`'s, or the one the line is in; the top of
+    /// the work tree is the workspace folder that holds it, and is only
+    /// known when it runs outside every workspace folder.
     fn git_work_tree(&mut self, unit: &Unit) {
         let args = unit.args.as_slice();
         let shell = unit.shell;
@@ -420,31 +424,50 @@ impl Checker<'_> {
         let rest = &args[at + 1..];
         let flag = |short: Option<char>, long: Option<&str>| git_flag(rest, short, long);
         // `--work-tree` moves the work tree where the line may not show.
-        let moved = args[..at].iter().any(|arg| {
-            arg.known()
-                .map_or(arg.text().starts_with("--work-tree"), |text| {
-                    text.starts_with("--work-tree")
-                })
-        });
-        let here = Arg::Known(".".to_string());
-        let folder = if moved {
-            Arg::Unknown("the work tree git is given".to_string())
-        } else {
-            repository.cloned().unwrap_or(here)
-        };
+        let moved = args[..at]
+            .iter()
+            .any(|arg| arg.text().starts_with("--work-tree"));
         let scope = unit.scope();
+        let unknown = || Arg::Unknown("the work tree git is given".to_string());
+        let (folder, top) = if moved {
+            (unknown(), unknown())
+        } else {
+            let folder = repository
+                .cloned()
+                .unwrap_or_else(|| Arg::Known(".".to_string()));
+            let top = self
+                .resolver
+                .workspace_of(scope.dir, &folder, shell)
+                .unwrap_or_else(unknown);
+            (folder, top)
+        };
+        let anywhere = match sub {
+            "am" => !flag(None, Some("quit")) && !flag(None, Some("show-current-patch")),
+            "cherry-pick" | "revert" => !flag(None, Some("quit")),
+            "stash" => matches!(rest.first().and_then(Arg::known), Some("apply" | "pop")),
+            "read-tree" => flag(Some('u'), None),
+            "checkout-index" => !flag(None, Some("temp")),
+            _ => false,
+        };
+        if anywhere {
+            let before = self.found.len();
+            self.write_folder(shell, scope, &folder, "patches files in");
+            if self.found.len() == before {
+                self.changes_in(shell, scope, &top);
+            }
+            return;
+        }
         match sub {
+            // `--check`, `--stat`, `--numstat` and `--summary` only report,
+            // unless `--apply` turns the patching back on.
             "apply"
                 if !flag(None, Some("cached"))
-                    && !flag(None, Some("check"))
                     && (flag(None, Some("apply"))
-                        || !(flag(None, Some("stat"))
+                        || !(flag(None, Some("check"))
+                            || flag(None, Some("stat"))
                             || flag(None, Some("numstat"))
                             || flag(None, Some("summary")))) =>
             {
-                self.write_folder(shell, scope, &folder, "patches files in");
-            }
-            "am" if !flag(None, Some("quit")) && !flag(None, Some("show-current-patch")) => {
                 self.write_folder(shell, scope, &folder, "patches files in");
             }
             "checkout" | "restore" => {
@@ -454,8 +477,14 @@ impl Checker<'_> {
                 {
                     return;
                 }
-                for path in pathspecs(sub, rest) {
-                    let path = within(Some(&folder), &path, shell);
+                // Paths read from a file or the input may be any in the
+                // work tree, `:/` among them.
+                if flag(None, Some("pathspec-from-file")) {
+                    self.changes_in(shell, scope, &top);
+                    return;
+                }
+                for (path, from_top) in pathspecs(sub, rest) {
+                    let path = within(Some(if from_top { &top } else { &folder }), &path, shell);
                     self.changes_in(shell, scope, &path);
                 }
             }
@@ -465,11 +494,13 @@ impl Checker<'_> {
 }
 
 /// The paths `git checkout` or `git restore` is given, each as the folder
-/// it reaches below: what follows `--`, or every operand (a revision among
-/// them is a name that holds nothing). A pathspec with a wildcard matches at
-/// any depth below the folder it starts in, since git's `*` matches `/`
-/// too; magic (`:/x`, `:(glob)x`) is read as the whole folder.
-fn pathspecs(sub: &str, rest: &[Arg]) -> Vec<Arg> {
+/// it reaches below and whether it starts at the top of the work tree:
+/// what follows `--`, or every operand (a revision among them is a name
+/// that holds nothing). A pathspec with a wildcard matches at any depth
+/// below the folder it starts in, since git's `*` matches `/` too; magic is
+/// read as the whole folder, the top of the work tree for `:/` and
+/// `:(top)`.
+fn pathspecs(sub: &str, rest: &[Arg]) -> Vec<(Arg, bool)> {
     let valued: &[&str] = if sub == "checkout" {
         &["-b", "-B", "--orphan", "--conflict", "--pathspec-from-file"]
     } else {
@@ -480,14 +511,27 @@ fn pathspecs(sub: &str, rest: &[Arg]) -> Vec<Arg> {
         Some(at) => rest[at + 1..].iter().collect(),
         None => operands(rest, valued),
     };
+    let whole = || Arg::Known(".".to_string());
     paths
         .into_iter()
         .map(|path| match path.known() {
-            Some(text) if text.starts_with(':') => Arg::Known(".".to_string()),
-            Some(text) if glob::has_wildcard(text) => Arg::Known(pattern_folder(text)),
-            _ => path.clone(),
+            Some(text) if text.starts_with(":/") || top_magic(text) => (whole(), true),
+            Some(text) if text.starts_with(':') => (whole(), false),
+            Some(text) if glob::has_wildcard(text) => (Arg::Known(pattern_folder(text)), false),
+            _ => (path.clone(), false),
         })
         .collect()
+}
+
+/// Whether a pathspec's long magic names `top` (`:(top)x`, `:(glob,top)x`).
+fn top_magic(text: &str) -> bool {
+    text.strip_prefix(":(")
+        .and_then(|magic| magic.split_once(')'))
+        .is_some_and(|(magic, _)| {
+            magic
+                .split(',')
+                .any(|word| word.trim().eq_ignore_ascii_case("top"))
+        })
 }
 
 /// What a push that rewrites or deletes says, when nothing better is known.

@@ -723,6 +723,101 @@ posix@workspace_folder rules=git_discard | git checkout HEAD~1 -- src/main.rs
 posix@workspace_folder safe | git restore --staged .
 posix@workspace_folder safe | git checkout -b feature
 
+# A search or a listing that hands a folder on whole, with no filter, hands
+# on what the folder holds too: a write, a permission change or a rename of
+# what it finds may reach a protected path there. A delete of it says it
+# deletes the folder.
+posix@workspace_folder finds=overwrite reason="edits the agent's settings" | find . -type f -exec sed -i s/a/b/ {} +
+posix@workspace_folder finds=overwrite | find . -exec cp x {} \\;
+posix@workspace_folder finds=overwrite | find . -type f -exec truncate -s0 {} +
+posix@workspace_folder finds=permissions reason="changes permissions of the agent's settings" | find . -type f -exec chmod 600 {} +
+posix@workspace_folder finds=overwrite | find . -newer x -exec touch {} +
+posix@workspace_folder finds=overwrite | ls | xargs sed -i s/a/b/
+posix@workspace_folder first=delete reason="deletes the whole workspace" | find . -type f -delete
+posix@workspace_folder first=delete reason="deletes the whole workspace" | find . -exec rm {} +
+posix@workspace_folder safe | find src -type f -exec sed -i s/a/b/ {} +
+posix@workspace_folder safe | find src -exec chmod 600 {} +
+posix@workspace_folder safe | find . -type f -exec cat {} +
+powershell@windows_folder_and_file finds=overwrite | Get-ChildItem -Recurse | Set-Content -Value x
+powershell@windows_folder_and_file finds=overwrite | Get-ChildItem -Recurse -File | Clear-Content
+powershell@windows_folder_and_file finds=delete reason="renames the agent's settings" | Get-ChildItem -Recurse | Rename-Item -NewName x
+powershell@windows_folder_and_file first=delete reason="deletes the whole workspace" | Get-ChildItem -Recurse | Remove-Item
+powershell@windows_folder_and_file safe | Get-ChildItem src -Recurse | Set-Content -Value x
+# A wildcard path's last part matches in every folder below, with
+# `-Recurse` and with cmd's `/s`, as a search's filter does.
+powershell@windows_folder_and_file finds=delete reason="deletes the agent's settings" | Get-ChildItem *.yaml -Recurse | Remove-Item
+powershell@windows_folder_and_file finds=delete | Get-ChildItem -Path .\\*.yaml -Recurse | Remove-Item
+powershell@windows_folder_and_file finds=delete | dir -Recurse *.yaml | del
+powershell@windows_folder_and_file finds=delete | Remove-Item *.yaml -Recurse
+powershell@windows_folder_and_file safe | Get-ChildItem *.yaml | Remove-Item
+powershell@windows_folder_and_file safe | Remove-Item *.yaml
+powershell@windows_folder_and_file safe | Get-ChildItem src\\*.o -Recurse | Remove-Item
+cmd@windows_folder_and_file finds=delete reason="deletes the agent's settings" | del /s *.yaml
+cmd@windows_folder_and_file finds=delete | del /s config.yaml
+cmd@windows_folder_and_file finds=delete | erase /s *.yaml
+cmd@windows_folder_and_file finds=delete | del /s .agent\\*.yaml
+cmd@windows_folder_and_file safe | del *.yaml
+cmd@windows_folder_and_file safe | del /s src\\*.o
+# `--apply` patches the files after `--check`, `--stat` or `--summary`.
+posix@workspace_folder finds=overwrite | git apply --check --apply p.diff
+posix@workspace_folder finds=overwrite | git apply --summary --check --apply p.diff
+posix@workspace_folder finds=overwrite | git apply --check --apply --index p.diff
+cmd@windows_folder_and_file finds=overwrite | git apply --check --apply p.diff
+powershell@windows_folder_and_file finds=overwrite | git apply --check --apply p.diff
+posix@workspace_folder safe | git apply --check --index p.diff
+# `patch -u` takes no value; its long options are GNU patch's.
+posix@workspace_folder finds=overwrite reason="patches the agent's settings" | patch -u .agent/config.yaml fix.diff
+posix@workspace_folder finds=overwrite | patch -Nu .agent/config.yaml fix.diff
+posix@workspace_folder finds=overwrite | patch --version-control numbered -p1 < p.diff
+posix@workspace_folder finds=overwrite | patch --verbose -p1 < p.diff
+posix@workspace_folder safe | patch -u src/main.rs fix.diff
+posix@workspace_folder safe | patch --version-control numbered -d src -p1 < p.diff
+posix@workspace_folder safe | patch --help
+posix@workspace_folder safe | patch -v
+posix@workspace_folder safe | patch --version
+# The reject file and the backups a prefix puts in a folder are written.
+posix@workspace_folder finds=overwrite reason="writes to the agent's settings" | patch -d src -r ../.agent/config.yaml -p1 < p.diff
+posix@workspace_folder finds=overwrite | patch -d src --reject-file=../.agent/x -p1 < p.diff
+posix@workspace_folder finds=overwrite | patch -d src -B ../.agent/ -p1 < p.diff
+posix@workspace_folder finds=overwrite | patch -d src --basename-prefix=../.agent/ -p1 < p.diff
+posix@workspace_folder safe | patch -d src -r - -p1 < p.diff
+posix@workspace_folder safe | patch -d src -r ../out.rej -B bak/ -p1 < p.diff
+# git applies a patch, a commit, a stash or the index at the top of the work
+# tree, whatever folder it runs in, and so does a pathspec that starts there.
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | cd src && git am
+posix@workspace_folder finds=overwrite | git -C src am x.patch
+posix@workspace_folder finds=overwrite | env -C src git am
+posix@workspace_folder finds=overwrite | sh -c 'cd src && git am'
+posix@workspace_folder finds=overwrite | cd src && git checkout HEAD -- :/
+posix@workspace_folder finds=overwrite | cd src && git checkout HEAD -- ':(top).agent'
+posix@workspace_folder finds=overwrite | cd src && git restore --source=HEAD~1 ':(top,glob)**'
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | git stash apply
+posix@workspace_folder finds=overwrite | git stash pop
+posix@workspace_folder finds=overwrite | git cherry-pick abc
+posix@workspace_folder finds=overwrite | git cherry-pick --no-commit abc
+posix@workspace_folder finds=overwrite | git revert abc
+posix@workspace_folder finds=overwrite | git read-tree -u -m HEAD
+posix@workspace_folder finds=overwrite | git checkout-index -a -f
+posix@workspace_folder finds=overwrite | cd /tmp && git am
+posix@workspace_folder rules=git_discard | cd src && git checkout HEAD -- main.rs
+posix@workspace_folder safe | git stash list
+posix@workspace_folder safe | git stash show -p
+posix@workspace_folder safe | git cherry-pick --quit
+posix@workspace_folder safe | git read-tree -m HEAD
+posix@workspace_folder safe | git checkout-index --temp -a
+# Paths read from a file or the input, and a folder only known when it runs,
+# may be any.
+posix@workspace_folder finds=overwrite | git checkout HEAD --pathspec-from-file=list.txt
+posix@workspace_folder finds=overwrite | git checkout HEAD --pathspec-from-file=-
+posix@workspace_folder finds=overwrite | git checkout --pathspec-from-file list HEAD
+posix@workspace_folder finds=overwrite | git restore --pathspec-from-file=list.txt
+posix@workspace_folder rules=git_discard,overwrite | git checkout HEAD -- "$X"
+posix@workspace_folder finds=overwrite | git --work-tree=. checkout HEAD -- .
+# A name a search's entry stands as, written on the line, is read as one:
+# it fails closed.
+posix@workspace_folder finds=delete | rm ./…
+posix@workspace_folder first=delete reason="deletes the whole workspace" | rm ./⋯
+
 # Nothing changes without protected paths: the same lines are as they were,
 # with the guard's own words.
 posix safe | rm *.rs
@@ -740,3 +835,22 @@ posix safe | cp -r tmpl/. .
 posix safe | rsync -a tmpl/ .
 posix rules=git_discard | git restore --source=HEAD~1 .
 posix rules=git_discard | git checkout HEAD~1 -- .
+posix safe | find . -type f -exec sed -i s/a/b/ {} +
+posix safe | find . -type f -exec chmod 600 {} +
+posix safe | git apply --check --apply p.diff
+posix safe | patch -u src/main.rs fix.diff
+posix safe | patch --version-control numbered -p1 < p.diff
+posix safe | patch -d src -r out.rej -B bak/ -p1 < p.diff
+posix safe | cd src && git am
+posix safe | git stash pop
+posix safe | git cherry-pick abc
+posix safe | git checkout HEAD --pathspec-from-file=list.txt
+posix safe | rm ./…
+posix first=overwrite reason="patches a shell startup file" | patch -u ~/.bashrc fix.diff
+posix finds=overwrite | patch -u /etc/hosts fix.diff
+posix finds=overwrite | patch -r ~/.bashrc -d src -p1 < p.diff
+powershell safe | Get-ChildItem -Recurse | Set-Content -Value x
+powershell safe | Get-ChildItem *.yaml -Recurse | Remove-Item
+powershell safe | Remove-Item *.yaml -Recurse
+cmd safe | del /s *.yaml
+cmd safe | del /s config.yaml
