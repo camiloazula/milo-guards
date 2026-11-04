@@ -23,6 +23,7 @@ use milo_guards_core::Flavour;
 mod archives;
 
 pub(crate) use archives::commands as archive_commands;
+pub(crate) use editors::{reads_input as editor_reads_input, EDITORS};
 
 mod code;
 mod data;
@@ -2131,17 +2132,20 @@ fn remote_name(url: &str) -> Option<&str> {
 /// operand after it, or with `-split` and none to the URL's name in the
 /// folder the line is in (`-urlcache * delete` works on the cache, no file);
 /// `-decode`, `-encode`, `-decodehex` and `-encodehex` write each operand
-/// after the first. A verb or an option is `-` or `/` and a name, in any
-/// case; every other word is an operand, so an option's value only adds a
-/// file judged where it lands.
+/// after the first. A verb or an option is `-`, `/` or a Unicode dash
+/// (U+2010 to U+2015, U+2212, which certutil reads as `-`) and a name, in
+/// any case; every other word is an operand, so an option's value only adds
+/// a file judged where it lands.
 pub(crate) fn certutil_writes(args: &[Arg]) -> Vec<Arg> {
     let mut verb = None;
     let mut split = false;
     let mut operands = Vec::new();
     for arg in args {
         let name = arg.known().and_then(|text| {
-            text.strip_prefix(['-', '/'])
-                .filter(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric()))
+            text.strip_prefix(|c: char| {
+                matches!(c, '-' | '/' | '\u{2010}'..='\u{2015}' | '\u{2212}')
+            })
+            .filter(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric()))
         });
         let Some(name) = name else {
             operands.push(arg);

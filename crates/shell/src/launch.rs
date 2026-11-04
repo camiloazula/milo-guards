@@ -1171,6 +1171,15 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
                 None => Launch::Reads(Reads::Shell),
             }
         }
+        // An editor handed an input reads its commands, or the keys it is
+        // typed, from there.
+        key if input && crate::detect::EDITORS.contains(&key) => {
+            if crate::detect::editor_reads_input(unit, key) {
+                Launch::Reads(Reads::Interpreter)
+            } else {
+                Launch::Itself
+            }
+        }
         "start-process" if unit.shell == Shell::PowerShell => start_process(unit),
         "start" if unit.shell == Shell::Cmd => start(args),
         "runas" => match unit::plain(args).last() {

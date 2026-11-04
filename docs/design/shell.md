@@ -3248,7 +3248,8 @@ guard does not know is not judged as a writer; these are the ones it knows.
   (`cd /d C:\Windows & certutil -urlcache -split -f URL/a.dll`);
   `-urlcache *` works on the cache and writes no file. `-decode`,
   `-encode`, `-decodehex` and `-encodehex` write each operand after the
-  first. A verb or an option is `-` or `/` and a name, in any case
+  first. A verb or an option is `-`, `/` or a Unicode dash certutil reads as
+  `-` (U+2010 to U+2015, U+2212: `–urlcache`) and a name, in any case
   (`/URLCache`); every other word is an operand, so the value of an option
   only adds a file judged where it lands. A file it writes is also one a
   later run of a script on the line is judged for, as `curl -o`'s is.
@@ -3263,25 +3264,46 @@ guard does not know is not judged as a writer; these are the ones it knows.
   program) edits each file awk reads, every operand after the program but
   `-` and an assignment (`x=1`). Any other library is code the guard does
   not read, `unknown` as `-f script` is; one only known when it runs
-  (`-i "$L"`) is both, the edit said as one that may happen.
-- **`ex`, `vi`, `vim`, `nvim`, `view`, `vimdiff` and `gvim`** edit each file
-  they are given: its input may hold `:wq` as well as a `-c` may, so every
-  file operand is a write, whatever the commands (`vim /etc/hosts` is
-  `overwrite` with the reason `edits a system folder`). The options are read
-  as vim reads them: a bundle a letter at a time (`-es`, `-sc wq`), a letter
-  that takes a value taking the rest of the bundle or the next argument, `-s`
-  silent in ex mode (`ex`, after `-e` or `-E`) and otherwise a script of keys.
-  `-w`, `-W`, `--startuptime`, `--log` and `-i` (not `NONE`) write the file
-  they name. The ex commands of `-c`, `--cmd` and `+cmd` are read: a write
+  (`-i "$L"`) is both, the edit said as one that may happen. The options are
+  read as gawk's `getopt_long` reads them: a bundle a letter at a time
+  (`-bi inplace`, `-Oiinplace`), `f E i l v F e Z` taking the rest of the
+  bundle or else the next word and `d D L o p` only the rest; a long option
+  by any prefix only one name starts with (`--in inplace`, `--fil s.awk`),
+  and one more than one name starts with (`--p`) an option the guard cannot
+  tell, `unknown`; `-W name` as `--name`; `-E` the last option. The file
+  `-o`, `-p` or `-d` is given (`-o/etc/x`, `--profile=FILE`) is a write.
+- **`ex`, `vi`, `vim`, `nvim`, `view`, `vimdiff` and `gvim`**, and vim under
+  its other names (`vim.tiny`, `vim.basic`, `vimx`, `rvim`, `rview`,
+  `gview`, `evim`, ...), edit each file they are given: the keys typed may
+  hold `:wq` as well as a `-c` may, so every file operand is a write,
+  whatever the commands (`vim /etc/hosts` is `overwrite` with the reason
+  `edits a system folder`); but a file opened read-only (`-R`, `-M`, `-m`,
+  `view`, `rview`, `gview`) is written only by a command that writes it
+  (`-c 'wq!'`). The options are read as vim reads them: a bundle a letter at
+  a time (`-es`, `-sc wq`), a letter that takes a value taking the rest of
+  the bundle or the next argument, `-s` silent in ex mode (`ex`, after `-e`
+  or `-E`) and otherwise a script of keys, `-V[N][file]` only the rest of its
+  bundle, a level and a file it writes. `-w`, `-W`, `-V`, `--startuptime`,
+  `--log` and `-i` (not `NONE`) write the file they name. An editor handed an
+  input (a pipe, `< file`, a here-document) reads its ex commands from there
+  in ex mode, and the keys it types otherwise: `unknown`, "runs code the guard
+  does not read", or `run_downloaded` for a download (`curl … | vim -es a`),
+  as an interpreter's input is; not when the input is the text it edits
+  (`vim -` out of ex mode) or `-s` gives the keys. A here-document of plain
+  text in ex mode is read as more ex commands (`ex -s a <<EOF`, a line to a
+  command). The ex commands of `-c`, `--cmd` and `+cmd` are read: a write
   (`w`, `wq`, `x`, `update`, `saveas`, their forms that take all buffers,
   after a range, with `!` or `>>`) writes the file it names, which is only
-  known when it runs when vim expands it (`%`, `#`, `$X`, a wildcard, a
-  backtick); quitting, `:s` (without a `\=` expression), `:d`, `:j`, `:m`,
-  `:t`, `:co`, `:p`, `:sort`, a range alone and a `:g` or `:v` running these
-  write nothing else. A bar ends each command but `:g`, as in vim, so
+  known when it runs when vim expands it (`#`, `$X`, a wildcard, a backtick,
+  `%` but where it stands for the one file edited: `w %.bak`); quitting, `:s` (without a `\=` expression), `:d`, `:j`, `:m`,
+  `:t`, `:co`, `:p`, `:sort`, a `:set` of options that only change how the
+  text is read or written (`set ff=unix`, `se noet ts=4`), a comment (`"`),
+  a range alone and a `:g` or `:v` running these write nothing else. A bar or
+  a new line ends each command but `:g`, which a new line ends, as in vim, so
   `%s/a|b/c/` runs `b/c/`. Any other command (`!`, `w !sh`, `r`, `call`,
-  `source`, `normal`, `edit`, `set`), a command only known when it runs, a
-  script `-S` or `-s` reads, a vimrc `-u` names (not `NONE`, `NORC` or
+  `source`, `normal`, `edit`, another `set`), a command only known when it
+  runs, a script `-S` or `-s` reads, nvim's Lua script `-l` (`-ll`, every
+  word after it the script's), a vimrc `-u` names (not `NONE`, `NORC` or
   `DEFAULTS`), `--remote-send`, `--remote-expr` and an argument only known
   when it runs that may be an option are code the guard does not read:
   `unknown`, "runs editor commands the guard does not read".
@@ -3291,7 +3313,8 @@ guard does not know is not judged as a writer; these are the ones it knows.
 | `curl.exe -o C:\Windows\x URL`, `certutil -urlcache -f URL C:\Windows\x`, `Get-Process \| Export-Csv C:\Windows\x.csv`, `sort a \| sponge /etc/x`, `awk -i inplace 1 /etc/x`, `ex -sc wq /etc/x`, `vim -es /etc/x` | `overwrite`: a system folder |
 | `curl.exe -o .envrc URL`, `certutil -decode a.b64 .vscode\tasks.json`, `sponge ~/.bashrc`, `ex -sc wq .envrc`, `ex -sc 'w ~/.bashrc' a` | `overwrite`: a startup file, or one a tool runs on its own |
 | `curl.exe -o out.txt URL`, `certutil -urlcache -f URL out.txt`, `Export-Csv out.csv`, `sponge a`, `awk -i inplace 1 src/a.txt`, `vim -es -c '%s/a/b/g' -c wq src/a.txt` | safe |
-| `awk -i lib 1 a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `vim -es -c 'e /etc/x' -c wq a` | `unknown` |
+| `awk -i lib 1 a`, `awk --fil s.awk a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `nvim -l s.lua`, `vim -es -c 'e /etc/x' -c wq a`, `echo 'w /etc/x' \| vim -es a` | `unknown` |
+| `view /etc/hosts`, `vim -R /etc/hosts`, `ex -sc 'w %.bak' -c q src/a.txt`, `ex -s a <<EOF` with `%s/a/b/g` and `wq` | safe |
 
 ### Files a tool runs on its own
 

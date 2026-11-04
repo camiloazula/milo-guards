@@ -642,7 +642,7 @@ impl Checker<'_> {
                     self.write(shell, unit.scope(), file, "writes to");
                 }
             }
-            "ex" | "vi" | "vim" | "nvim" | "view" | "vimdiff" | "gvim" => self.editor(unit, key),
+            key if super::EDITORS.contains(&key) => self.editor(unit, key),
             "invoke-webrequest" | "invoke-restmethod" => {
                 if let Some(file) = Params::read(args).values(&["outfile"]).first() {
                     self.write(shell, unit.scope(), file, "writes to");
