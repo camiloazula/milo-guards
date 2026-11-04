@@ -1014,6 +1014,13 @@ impl Walker<'_> {
                 self.split
                     .note_argument_variable("npm_config_call".to_string(), value.clone());
             }
+            // A name only known when it runs may be the config git reads.
+            if is(unit::GIT_CONFIG_PARAMETERS)
+                && !unit::GIT_CONFIG_PARAMETERS.eq_ignore_ascii_case(name)
+            {
+                self.split
+                    .note_argument_variable(unit::GIT_CONFIG_PARAMETERS.to_string(), value.clone());
+            }
             if is("NODE_OPTIONS") {
                 self.split.node_options.push(value.clone());
             }
@@ -3345,27 +3352,9 @@ impl Walker<'_> {
     /// The arguments a method call is given, as the guard reads each;
     /// `children` are the call's parts.
     fn call_arguments(&self, children: &[Node<'_>]) -> Vec<Arg> {
-        let Some(list) = children
-            .iter()
-            .find(|child| child.kind() == "argument_list")
-            .and_then(|list| list.named_child(0))
-        else {
-            return Vec::new();
-        };
-        let mut cursor = list.walk();
-        list.named_children(&mut cursor)
-            .map(|mut argument| {
-                // The grammar wraps an argument in a chain of one-child nodes.
-                while argument.kind().ends_with("argument_expression")
-                    && argument.named_child_count() == 1
-                {
-                    match argument.named_child(0) {
-                        Some(inner) => argument = inner,
-                        None => break,
-                    }
-                }
-                self.expr(argument)
-            })
+        argument_nodes(children)
+            .into_iter()
+            .map(|argument| self.expr(argument))
             .collect()
     }
 
@@ -3524,6 +3513,118 @@ impl Walker<'_> {
         }
     }
 
+    /// A .NET call that writes an archive is judged as `Compress-Archive`
+    /// to it: `CreateFromDirectory`
+    /// (`[IO.Compression.ZipFile]::CreateFromDirectory('src', 'x.zip')`,
+    /// `[Formats.Tar.TarFile]::CreateFromDirectory(…)`) reads the folder its
+    /// first argument names and writes its second, and `ZipFile.Open`
+    /// (`[IO.Compression.ZipFile]::Open('x.zip', 'Create')`, on that type or
+    /// one only known when it runs) its first, unless its mode is written
+    /// out as `Read` (`'Read'`, `0`, `[IO.Compression.ZipArchiveMode]::Read`).
+    /// `ZipFile.Open` also reads the archive in every mode, as `Get-Content`
+    /// of it. Whether the call is an `Open` of `ZipFile` written out, judged
+    /// so, is returned: it is then no other open of a file.
+    fn archive_call(
+        &mut self,
+        node: Node<'_>,
+        method: &str,
+        children: &[Node<'_>],
+        stage: Option<Stage>,
+    ) -> bool {
+        let mut cursor = node.walk();
+        let operator = node
+            .children(&mut cursor)
+            .find(|child| matches!(child.kind(), "::" | "."))
+            .map(|child| child.kind());
+        let arguments = argument_nodes(children);
+        // `[IO.Compression.ZipFile]::Open(…)` is no other open of a file; a
+        // type only known when it runs may be it, or another.
+        let mut judged = false;
+        // The folder it reads, if the line shows which argument it is.
+        let mut source = None;
+        // The archive `Open` reads, in every mode.
+        let mut read = None;
+        let targets: Vec<Node<'_>> = match method {
+            "createfromdirectory" | "createfromdirectoryasync" => match operator {
+                Some(_) => {
+                    source = arguments.first().copied();
+                    arguments.into_iter().skip(1).take(1).collect()
+                }
+                None => arguments.into_iter().take(2).collect(),
+            },
+            "open" | "openasync" if operator == Some("::") && !arguments.is_empty() => {
+                let Some(object) = children.first().map(|object| blocks::unwrap(*object)) else {
+                    return false;
+                };
+                let literal = object.kind() == "type_literal";
+                if literal && !names_type(object, self.source, "system.io.compression.zipfile") {
+                    return false;
+                }
+                judged = literal;
+                read = arguments.first().copied();
+                if arguments.get(1).is_some_and(|mode| self.reads_only(*mode)) {
+                    Vec::new()
+                } else {
+                    arguments.into_iter().take(1).collect()
+                }
+            }
+            _ => return false,
+        };
+        let names = children
+            .iter()
+            .find(|child| child.kind() == "argument_list")
+            .map(|list| variables(*list, self.source))
+            .unwrap_or_default();
+        let push = |walker: &mut Self, program: &str, args: Vec<Arg>| {
+            let mut unit = Unit::new(
+                Shell::PowerShell,
+                Arg::Known(program.to_string()),
+                args,
+                stage,
+            );
+            unit.names = Some(names.clone());
+            walker.split.push(unit);
+        };
+        if let Some(archive) = read {
+            let archive = self.expr(archive);
+            push(self, "Get-Content", vec![archive]);
+        }
+        for target in &targets {
+            let mut args = Vec::new();
+            if let Some(folder) = source {
+                args.push(Arg::Known("-Path".to_string()));
+                args.push(self.expr(folder));
+            }
+            args.push(Arg::Known("-DestinationPath".to_string()));
+            args.push(self.expr(*target));
+            push(self, "Compress-Archive", args);
+        }
+        judged
+    }
+
+    /// Whether `mode`, the mode given to `ZipFile.Open`, is written out as
+    /// `Read`: the text `'Read'` in any case, `0`, or
+    /// `[IO.Compression.ZipArchiveMode]::Read`.
+    fn reads_only(&self, mode: Node<'_>) -> bool {
+        let mode = blocks::unwrap(mode);
+        if mode.kind() == "member_access" {
+            let mut cursor = mode.walk();
+            let parts: Vec<Node<'_>> = mode.named_children(&mut cursor).collect();
+            return match parts.as_slice() {
+                [object, member] => {
+                    object.kind() == "type_literal"
+                        && names_type(*object, self.source, "system.io.compression.ziparchivemode")
+                        && member.kind() == "member_name"
+                        && unit::text(member, self.source).eq_ignore_ascii_case("read")
+                }
+                _ => false,
+            };
+        }
+        self.expr(mode)
+            .known()
+            .is_some_and(|text| text.trim().eq_ignore_ascii_case("read") || text.trim() == "0")
+    }
+
     /// A .NET method call that changes files or the system
     /// (`[IO.Directory]::Delete(…)`, `(Get-Item ~).Delete()`): its arguments
     /// are expressions the guard does not resolve, so the call is risky
@@ -3549,6 +3650,7 @@ impl Walker<'_> {
         };
         let sends = self.secret_call(&method, &children, stage);
         self.unpack_call(node, &method, &children, stage);
+        let archived = self.archive_call(node, &method, &children, stage);
         // A member of the session reached by a way the guard cannot name
         // (`$ExecutionContext.InvokeCommand.psobject.…`) may be a hook or a
         // method that runs code.
@@ -3682,7 +3784,8 @@ impl Walker<'_> {
                 );
             }
         }
-        if let Some((rule, reason)) = dotnet_rule(&method, &object, file_like) {
+        if let Some((rule, reason)) = dotnet_rule(&method, &object, file_like).filter(|_| !archived)
+        {
             self.split
                 .problem(rule, reason, Some(unit::text(&node, self.source)));
         }
@@ -3995,6 +4098,47 @@ fn process_by_id(text: &str) -> Option<String> {
     .find_map(|call| lower.strip_prefix(call))?
     .strip_suffix(')')?;
     (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| id.to_string())
+}
+
+/// The arguments of a method call, each unwrapped from the chain of one-child
+/// nodes the grammar wraps it in; `children` are the call's parts.
+fn argument_nodes<'a>(children: &[Node<'a>]) -> Vec<Node<'a>> {
+    let Some(list) = children
+        .iter()
+        .find(|child| child.kind() == "argument_list")
+        .and_then(|list| list.named_child(0))
+    else {
+        return Vec::new();
+    };
+    let mut cursor = list.walk();
+    list.named_children(&mut cursor)
+        .map(|mut argument| {
+            while argument.kind().ends_with("argument_expression")
+                && argument.named_child_count() == 1
+            {
+                match argument.named_child(0) {
+                    Some(inner) => argument = inner,
+                    None => break,
+                }
+            }
+            argument
+        })
+        .collect()
+}
+
+/// Whether a type literal (`[IO.Compression.ZipFile]`) names the type whose
+/// full name, lower case, is `full`: the name written is all of it, or its
+/// end after a dot (`[ZipFile]` under `using namespace`), so neither
+/// `[Evil.MyZipFile]` nor `[Evil.ZipFile]` is `ZipFile`.
+fn names_type(literal: Node<'_>, source: &str, full: &str) -> bool {
+    let written = unit::text(&literal, source)
+        .trim_matches(['[', ']'])
+        .trim()
+        .to_ascii_lowercase();
+    !written.is_empty()
+        && full
+            .strip_suffix(written.as_str())
+            .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
 }
 
 /// What a .NET method does to files or the system, by its lower-case name:

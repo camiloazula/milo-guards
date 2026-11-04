@@ -136,6 +136,19 @@ fn stops(action: &str) -> bool {
     )
 }
 
+/// Whether an action of `service` or an init script takes the service out
+/// of what starts at boot: FreeBSD's `disable` and `delete`, which write
+/// `rc.conf` as `sysrc NAME_enable=NO` and `sysrc -x NAME_enable` do, alone
+/// or after a prefix `rc.subr` reads (`one`, `force`, `fast`, `quiet`).
+fn disables(action: &str) -> bool {
+    let lower = action.to_ascii_lowercase();
+    let verb = ["one", "force", "fast", "quiet"]
+        .iter()
+        .find_map(|prefix| lower.strip_prefix(prefix))
+        .unwrap_or(&lower);
+    matches!(verb, "disable" | "delete")
+}
+
 /// Whether a command of runit's `sv` takes the service down. `sv` reads
 /// most commands by their first letter: `d` (down), `x` and `e` (exit), `p`
 /// (pause, which freezes it), and `D`, `X` and `E` (the same, killing it if
@@ -835,22 +848,23 @@ impl Checker<'_> {
             "systemctl" => self.systemctl(args),
             // pwsh on Linux and macOS runs the native `service` and
             // `hostname`; cmd's `hostname` is Windows', which sets nothing.
-            "service" if unit.shell != Shell::Cmd => self.service(args),
+            // FreeBSD's `service -j jail` and `-E var=value` take a value.
+            "service" if unit.shell != Shell::Cmd => self.service(args, "Ej"),
             // `--query` only asks whether the action would be allowed.
             "invoke-rc.d" => {
                 if !args.iter().any(|arg| arg.known() == Some("--query")) {
-                    self.service(args);
+                    self.service(args, "");
                 }
             }
             "rc-service" => self.rc_service(args),
             "rc-update" => self.rc_update(args),
             "update-rc.d" => self.update_rc(args),
             "chkconfig" => self.chkconfig(args),
-            "sv" if unit.shell == Shell::Posix => self.sv(args),
+            "sv" if unit.shell == Shell::Posix => self.sv(unit),
             "launchctl" => self.launchctl(unit),
             "rcctl" => self.rcctl(args),
             "sysrc" => self.sysrc(unit),
-            "s6-svc" => self.s6_svc(args),
+            "s6-svc" => self.s6_svc(unit),
             "s6-rc" => self.s6_rc(args),
             "dinitctl" => self.dinitctl(args),
             "insserv" => self.insserv(args),
@@ -1439,15 +1453,73 @@ impl Checker<'_> {
     /// service ([`stops`]); `invoke-rc.d name action`, Debian's way for
     /// package scripts, reads the same. An action only known when it runs
     /// may be `stop`; a name only known when it runs may protect the
-    /// machine.
-    fn service(&mut self, args: &[Arg]) {
-        let words = operands(args, &[]);
-        let (Some(name), Some(action)) = (words.first(), words.get(1)) else {
-            return;
-        };
-        if action.known().is_none_or(stops) {
-            self.stop_service("stops", name);
+    /// machine. `shorts` are the options that take a value (`-j jail`,
+    /// `-jjail`). A word only known when it runs before the name may be an
+    /// option, and the word after it its value, so the name and the action
+    /// may be the words after either (`service $opt sshd onedisable`).
+    fn service(&mut self, args: &[Arg], shorts: &str) {
+        let words = getopt_operands(args, shorts, &[]);
+        let unknown_option = |arg: &Arg| arg.known().is_none() && may_be_option(arg);
+        let mut at = 0;
+        while let (Some(name), Some(action)) = (words.get(at), words.get(at + 1)) {
+            self.service_action(name, action);
+            let shifts = unknown_option(name)
+                || at
+                    .checked_sub(1)
+                    .is_some_and(|before| unknown_option(words[before]));
+            if !shifts {
+                break;
+            }
+            at += 1;
         }
+    }
+
+    /// The `action` of `service`, `invoke-rc.d` or an init script on the
+    /// service `name`: a stop ([`stops`]) is `systemctl stop`, a disable
+    /// ([`disables`]) is `systemctl disable`, and an action only known when
+    /// it runs may be either.
+    fn service_action(&mut self, name: &Arg, action: &Arg) {
+        match action.known() {
+            None => {
+                let before = self.found.len();
+                self.stop_service("stops", name);
+                // A stop of a service that protects the machine already
+                // says what a disable of it would.
+                if !self.found[before..]
+                    .iter()
+                    .any(|finding| finding.rule == Rule::SystemSettings)
+                {
+                    self.add(Rule::SystemSettings, services::UNKNOWN_VERB, Some(name));
+                }
+            }
+            Some(action) if stops(action) => self.stop_service("stops", name),
+            Some(action) if disables(action) => self.disable_service(Some(name)),
+            Some(_) => {}
+        }
+    }
+
+    /// The service a folder of runit or s6 names (`/etc/service/sshd`): the
+    /// word as written, unless it names the folder from inside it (`.`,
+    /// `..`, `sshd/.`), when it is the last part of the folder that lands
+    /// in from where the line is. A folder whose place is only known when
+    /// it runs is a service only known when it runs.
+    fn service_folder(&self, unit: &Unit, folder: &Arg) -> Arg {
+        let Some(text) = folder.known() else {
+            return folder.clone();
+        };
+        let trimmed = text.trim_end_matches('/');
+        let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
+        if !matches!(last, "." | "..") {
+            return folder.clone();
+        }
+        self.resolver
+            .file_key(unit.dir.as_ref(), folder, unit.shell)
+            .and_then(|key| {
+                let path = key.split_once('|').map_or("", |(_, path)| path);
+                let name = path.rsplit('/').next().unwrap_or(path);
+                (!name.is_empty()).then(|| Arg::Known(name.to_string()))
+            })
+            .unwrap_or_else(|| Arg::Unknown(text.to_string()))
     }
 
     /// A script a shell runs (`sh /etc/init.d/ufw stop`, `bash -x …`) or the
@@ -1517,9 +1589,7 @@ impl Checker<'_> {
         let Some(action) = words.first() else {
             return;
         };
-        if action.known().is_none_or(stops) {
-            self.stop_service("stops", &Arg::Known(name.to_string()));
-        }
+        self.service_action(&Arg::Known(name.to_string()), action);
     }
 
     /// `rc-service name command`, `OpenRC`'s `service`. `-e` and `-r` take a
@@ -1589,14 +1659,15 @@ impl Checker<'_> {
     }
 
     /// `sv command service...`, runit's: a command that takes the service
-    /// down ([`sv_stops`]) is a stop of each one. `-w` takes a number of
-    /// seconds.
-    fn sv(&mut self, args: &[Arg]) {
-        let words = operands(args, &["-w"]);
+    /// down ([`sv_stops`]) is a stop of each one, named as its folder is
+    /// ([`Checker::service_folder`]). `-w` takes a number of seconds.
+    fn sv(&mut self, unit: &Unit) {
+        let words = operands(&unit.args, &["-w"]);
         let Some(command) = words.first() else { return };
         if command.known().is_none_or(sv_stops) {
             for service in &words[1..] {
-                self.stop_service("stops", service);
+                let service = self.service_folder(unit, service);
+                self.stop_service("stops", &service);
             }
         }
     }

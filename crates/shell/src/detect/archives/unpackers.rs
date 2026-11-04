@@ -35,7 +35,7 @@ pub(super) fn archiving(key: &str, args: &[Arg], shell: Shell) -> Archiving {
         }
         "unar" => Archiving::unpacking(unar(args, shell)),
         "jar" => jar(args),
-        "aunpack" | "atool" | "apack" => atool(key, args, shell),
+        "aunpack" | "atool" | "apack" | "arepack" => atool(key, args, shell),
         // Any Python of the interpreter table, past its own options.
         _ if is_python(key) => {
             let args = own_args(key, args);
@@ -523,11 +523,15 @@ fn unar(args: &[Arg], shell: Shell) -> Option<Unpack> {
 /// What atool is asked to do. `aunpack` (`atool -x`, `--extract`) unpacks
 /// into the folder `-X` (`--extract-to`) names, or the working directory;
 /// `apack` (`atool -a`, `--add`) writes the archive its first operand
-/// names; `--save-outdir` writes the file it names; `-S` (`--simulate`)
+/// names; `arepack` (`atool -r`, `--repack`) writes the archive its second
+/// operand names, or with `-e` (`--each`) each archive it is given again,
+/// beside itself in the format `-F` names, judged by the name as written;
+/// `--save-outdir` writes the file it names; `-S` (`--simulate`)
 /// writes nothing. A word only known when it runs may be a mode of
-/// `atool`, and one that may be `-X` names a folder only known when it runs.
+/// `atool`, which may write any operand, and one that may be `-X` names a
+/// folder only known when it runs.
 /// atool reads its options with Perl's `Getopt::Long`, which takes any
-/// unique prefix of a long name (`--extract-t`, `--ad`, `--sav`): the
+/// unique prefix of a long name (`--extract-t`, `--ad`, `--rep`, `--sav`): the
 /// options that make it write are read from a prefix, and those that make
 /// it write less (`--simulate`, `--list`) only from the whole name.
 fn atool(key: &str, args: &[Arg], shell: Shell) -> Archiving {
@@ -536,6 +540,8 @@ fn atool(key: &str, args: &[Arg], shell: Shell) -> Archiving {
     const LONG_VALUES: [&str; 5] = ["format", "format-option", "option", "config", "verbosity"];
     let mut extract = key == "aunpack";
     let mut add = key == "apack";
+    let mut repack = key == "arepack";
+    let mut each = false;
     let mut other_mode = false;
     let mut simulate = false;
     let mut unknown = false;
@@ -586,9 +592,13 @@ fn atool(key: &str, args: &[Arg], shell: Shell) -> Archiving {
                 extract = true;
             } else if long_option(name, "add", 1) {
                 add = true;
+            } else if long_option(name, "repack", 1) {
+                repack = true;
+            } else if long_option(name, "each", 2) {
+                each = true;
             } else if long_option(name, "save-outdir", 2) {
                 written.extend(value());
-            } else if matches!(name, "list" | "cat" | "diff" | "repack") {
+            } else if matches!(name, "list" | "cat" | "diff") {
                 other_mode = true;
             } else if name == "simulate" {
                 simulate = true;
@@ -618,7 +628,9 @@ fn atool(key: &str, args: &[Arg], shell: Shell) -> Archiving {
             match letter {
                 'x' => extract = true,
                 'a' => add = true,
-                'l' | 'c' | 'd' | 'r' => other_mode = true,
+                'r' => repack = true,
+                'e' => each = true,
+                'l' | 'c' | 'd' => other_mode = true,
                 'S' => simulate = true,
                 _ => {}
             }
@@ -629,9 +641,20 @@ fn atool(key: &str, args: &[Arg], shell: Shell) -> Archiving {
     }
     // `atool` with no mode read but a word only known when it runs may
     // unpack, or add.
-    let mode_unknown = key == "atool" && unknown && !extract && !add && !other_mode;
-    if add || mode_unknown {
+    let mode_unknown = key == "atool" && unknown && !extract && !add && !repack && !other_mode;
+    if add {
         written.extend(operands.first().cloned());
+    }
+    // `arepack old.tgz new.zip` writes `new.zip`; `arepack -e -F zip a.tgz`
+    // writes `a.zip`, beside `a.tgz`, and one operand alone is read so too.
+    if repack {
+        let skip = usize::from(!each && operands.len() > 1);
+        written.extend(operands.iter().skip(skip).cloned());
+    }
+    // A mode only known when it runs may add to the first operand, or
+    // repack into any.
+    if mode_unknown {
+        written.extend(operands.iter().cloned());
     }
     let unpack = (extract || mode_unknown).then(|| {
         if folders.is_empty() {
