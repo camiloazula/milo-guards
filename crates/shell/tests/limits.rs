@@ -712,8 +712,10 @@ fn finds_in_finds_cost_what_the_line_is_long_not_what_it_multiplies_to() {
 fn the_most_work_find_exec_may_do_is_counted_in_bytes_and_is_the_limit() {
     // `MAX_EXEC_WORK` in `find.rs`: every place `find` searches runs the
     // program once, with the bytes of its arguments, `{}` replaced by the
-    // place. Here each of the places (`a`) costs the bytes of `echo` and
-    // five hundred `{}`, and the edge is where the budget (1 MiB) runs out.
+    // place. Here each of the places (`a`, searched whole, so handed on as
+    // the folder and what it holds, five bytes) costs the bytes of `echo`
+    // and five hundred `{}`, and the edge is where the budget (1 MiB) runs
+    // out.
     let why = "runs too many programs";
     let line = |places: usize| {
         format!(
@@ -723,7 +725,7 @@ fn the_most_work_find_exec_may_do_is_counted_in_bytes_and_is_the_limit() {
         )
     };
     let found = edge(2_000, |n| !stopped_by(&line(n), Shell::Posix, why));
-    assert_eq!(found, 522);
+    assert_eq!(found, 261);
     // One argument of a thousand `{}` is fewer arguments and more bytes, so
     // fewer places fit: the bytes count, not the arguments.
     let heavy = |places: usize| {
@@ -733,8 +735,8 @@ fn the_most_work_find_exec_may_do_is_counted_in_bytes_and_is_the_limit() {
             "{}".repeat(1_000)
         )
     };
-    assert!(!stopped_by(&heavy(348), Shell::Posix, why));
-    assert!(stopped_by(&heavy(349), Shell::Posix, why));
+    assert!(!stopped_by(&heavy(149), Shell::Posix, why));
+    assert!(stopped_by(&heavy(150), Shell::Posix, why));
     // Everyday finds are far under it (in limits.cases).
 }
 

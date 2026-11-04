@@ -186,11 +186,12 @@ fn starts_expression(arg: &Arg) -> bool {
 }
 
 /// The paths a `find` acts on, for each folder it searches: the folder
-/// itself when its expression may act on `.git` there as a folder, or on an
-/// entry no name or path pattern picks out, else an entry inside it, and
-/// `.git` too when the expression may act on `.git` as a file or on one of
-/// the entries it holds (`-name HEAD`, `-name '*.pack'`), which a name search
-/// finds at any depth (see [`search`]).
+/// handed on whole (the folder itself and what it holds, see
+/// [`crate::path::WHOLE`]) when its expression may act on `.git` there as a
+/// folder, or on an entry no name or path pattern picks out, else an entry
+/// inside it, and `.git` too when the expression may act on `.git` as a
+/// file or on one of the entries it holds (`-name HEAD`, `-name '*.pack'`),
+/// which a name search finds at any depth (see [`search`]).
 pub(crate) fn find_targets(args: &[Arg]) -> Vec<Arg> {
     let starts = find_starts(args);
     let search = Search::read(expression(args));
@@ -198,9 +199,12 @@ pub(crate) fn find_targets(args: &[Arg]) -> Vec<Arg> {
     let mut targets = Vec::new();
     for (start, reach) in starts.into_iter().zip(reach) {
         match (start, reach) {
+            (Arg::Known(text), Reach::Whole) => {
+                targets.push(Arg::Known(crate::path::whole_of(&text)));
+            }
             (start, Reach::Whole) => targets.push(start),
             (Arg::Known(text), Reach::Inside { git }) => {
-                targets.push(Arg::Known(format!("{text}/x")));
+                targets.push(Arg::Known(crate::path::found_in(&text)));
                 if git {
                     targets.push(Arg::Known(git_inside(&text)));
                 }

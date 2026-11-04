@@ -31,6 +31,7 @@ mod compressors;
 mod data;
 mod editors;
 mod files;
+mod patches;
 mod processes;
 mod regex;
 mod resources;
@@ -825,6 +826,11 @@ impl Checker<'_> {
                 ..unit.scope()
             };
             for arg in found {
+                // A folder handed on whole is deleted whole, in its own words.
+                let arg = match arg.known().and_then(path::whole_folder) {
+                    Some(folder) => Arg::Known(folder.to_string()),
+                    None => arg,
+                };
                 match self.place(unit.shell, scope, &arg, Access::Item) {
                     place if place.harmless() => {}
                     Place::Registry => {
@@ -982,6 +988,42 @@ impl Checker<'_> {
             .place(scope.dir, arg, shell, scope.hidden, access)
     }
 
+    /// The caller's words for a protected path that a program which picks
+    /// the files it changes in `folder` itself (the files a patch names, an
+    /// archive holds, a recursive copy brings) can reach: one the folder is,
+    /// is under or holds. Only where the folder's own place is the agent's,
+    /// the workspace or a temporary folder itself included: a place that is
+    /// already risky keeps its own words.
+    fn protected_in(&self, shell: Shell, scope: Scope<'_>, folder: &Arg) -> Option<&'static str> {
+        match self.place(shell, scope, folder, Access::Item) {
+            Place::Protected(words) => Some(words),
+            place
+                if place.harmless()
+                    || matches!(
+                        place,
+                        Place::Workspace { exact: true } | Place::Temp { exact: true }
+                    ) =>
+            {
+                self.resolver
+                    .holds_protected(scope.dir, folder, shell, scope.hidden)
+            }
+            _ => None,
+        }
+    }
+
+    /// A program that changes files in `folder` the line does not name
+    /// (a patch, an archive): when the folder can hold a protected path, it
+    /// may change it, and a folder only known when it runs can hold any.
+    fn changes_in(&mut self, shell: Shell, scope: Scope<'_>, folder: &Arg) {
+        let words = match self.place(shell, scope, folder, Access::Item) {
+            Place::Unknown => self.resolver.any_protected(),
+            _ => self.protected_in(shell, scope, folder),
+        };
+        if let Some(words) = words {
+            self.add_once(Rule::Overwrite, format!("may change {words}"), folder);
+        }
+    }
+
     /// As [`place`](Self::place), for a path something is written into.
     fn place_into(&self, shell: Shell, scope: Scope<'_>, arg: &Arg, access: Access) -> Place {
         self.resolver
@@ -1019,9 +1061,15 @@ impl Checker<'_> {
         self.write_as(shell, scope, target, verb, Access::Content);
     }
 
-    /// A write into a folder, as an archive unpacked into it makes.
+    /// A write into a folder, as an archive unpacked into it makes: what it
+    /// writes there is what the archive holds, which may be a protected
+    /// path the folder holds.
     fn write_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
+        let before = self.found.len();
         self.write_to(shell, scope, target, verb, "a folder", Access::Content);
+        if self.found.len() == before {
+            self.changes_in(shell, scope, target);
+        }
     }
 
     /// A write of `target`, by how it reaches it (see [`Access`]).
@@ -1115,8 +1163,10 @@ impl Checker<'_> {
             Place::Protected(words) => Some(words),
             _ => None,
         };
+        // The workspace or a temporary folder itself holds what is below it
+        // too (`cp -r tmpl/. .`).
         let words = recursive
-            .then(|| protected(self.place(shell, scope, destination, Access::Item)))
+            .then(|| self.protected_in(shell, scope, destination))
             .flatten();
         match words {
             Some(words) => {
@@ -1551,7 +1601,7 @@ fn inside(text: &str, name: &str) -> String {
 /// The hidden files of a folder a listing hands on whole, read as `.*`.
 fn hidden_files_of(arg: Arg) -> Arg {
     match &arg {
-        Arg::Known(text) => Arg::Known(inside(text, ".*")),
+        Arg::Known(text) => Arg::Known(inside(path::whole_folder(text).unwrap_or(text), ".*")),
         _ => arg,
     }
 }
@@ -1720,7 +1770,8 @@ fn listed(unit: &Unit) -> Option<Vec<Arg>> {
         places.push(Arg::Known(".".to_string()));
     }
     let extra = hidden_matches(&places, &patterns, recurses);
-    let mut found = found_by(places, filtered);
+    let whole = unit.key()?.as_str() != "get-item";
+    let mut found = found_by(places, filtered, recurses, whole);
     found.extend(extra);
     Some(found)
 }
@@ -1752,12 +1803,15 @@ fn passes_on(
 }
 
 /// What a listing of `places` finds, as paths the resolver reads.
-fn found_by(places: Vec<Arg>, filtered: bool) -> Vec<Arg> {
+fn found_by(places: Vec<Arg>, filtered: bool, recurses: bool, whole: bool) -> Vec<Arg> {
     places
         .into_iter()
-        .map(|place| match place {
-            Arg::Known(text) => Arg::Known(path::listed(&text, filtered)),
-            other => other,
+        .flat_map(|place| match place {
+            Arg::Known(text) => path::listed(&text, filtered, recurses, whole)
+                .into_iter()
+                .map(Arg::Known)
+                .collect(),
+            other => vec![other],
         })
         .collect()
 }

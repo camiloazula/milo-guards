@@ -203,12 +203,13 @@ that a folder is read whole. The answer is one or more questions asked of the
 `unknown`, `disk`, `null`, `registry`, `temp`, `in_temp`, `workspace`,
 `holds_workspace`, `home`, `holds_home`, or `top:`, `secret:`, `startup:`,
 `history:` and `protected:` with the words); `startup=`, `below=`
-(`startup_below`), `picks=` (`picks_secret`), `kernel=` and `git=` give the
-words or `none`; `absolute=` and `opened=` the path or `none`; `reaches=`
-(`reaches_secret`) and `network=` give `yes` or `no`. The code reader's case
-is `WHAT ANSWER... | CODE`: `WHAT` is `python`, `javascript`, `python2`
-(`understand_python2`) or `module` (a module specifier), and the answer is
-`acts="..."` (the acts `read` finds, as `tests/common` spells them),
+(`startup_below`), `picks=` (`picks_secret`), `holds=` (`holds_protected`),
+`kernel=` and `git=` give the words or `none`; `absolute=` and `opened=` the
+path or `none`; `reaches=` (`reaches_secret`) and `network=` give `yes` or
+`no`. The code reader's case is `WHAT ANSWER... | CODE`: `WHAT` is
+`python`, `javascript`, `python2` (`understand_python2`) or `module` (a
+module specifier), and the answer is `acts="..."` (the acts `read` finds,
+as `tests/common` spells them),
 `understand=yes|importing|no`, `other_encoding=yes|no` (Python), and
 `data_url=yes|no` and `foreign=yes|no` (a module). Their dumps are the same
 command with `-p milo-guards-core` and `-p milo-guards-code`.
