@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{posix, took};
+use common::{assert_linear, at, posix, took, Maker};
 use milo_guards_shell::{Rule, Shell};
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -36,24 +36,27 @@ fn stop_unknown_is_named_beside_stop_system() {
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
-fn the_process_rules_read_long_patterns_quickly() {
-    let linux = posix();
-    for line in [
-        format!("pkill '{}}}'", "x{".repeat(31_000)),
-        format!("pkill 'x{}'", "{1".repeat(31_000)),
-        format!("pkill '{}'", "(".repeat(60_000)),
-        format!("pkill '{}'", "a|".repeat(30_000)),
-        format!("pkill '{}'", "^(.*".repeat(15_000)),
-        format!("pkill '{}'", "[a-z]x?(a|b)+".repeat(4_000)),
-        format!("pkill '{}'", "(a|b|c)".repeat(8_000)),
-        format!("pkill '{}x'", "[a]*".repeat(15_000)),
+fn the_process_rules_read_long_patterns_in_linear_time() {
+    // Each pattern, the head, the part repeated, the tail and the count a
+    // line of 64 KB holds (`at`): at 16 KB a quarter of them, which must
+    // take about a quarter of the time, not a sixteenth.
+    for (head, part, tail, count) in [
+        ("", "x{", "}", 31_000),
+        ("x", "{1", "", 31_000),
+        ("", "(", "", 60_000),
+        ("", "a|", "", 30_000),
+        ("", "^(.*", "", 15_000),
+        ("", "[a-z]x?(a|b)+", "", 4_000),
+        ("", "(a|b|c)", "", 8_000),
+        ("", "[a]*", "x", 15_000),
     ] {
-        assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::Posix, &linux);
-        assert!(
-            took < Duration::from_millis(500),
-            "{} bytes took {took:?}",
-            line.len()
+        let line = |size| format!("pkill '{head}{}{tail}'", part.repeat(at(count, size)));
+        assert!(line(64 * 1024).len() <= 64 * 1024, "{part}");
+        assert_linear(
+            &format!("pkill '{head}{part}…{tail}'"),
+            Shell::Posix,
+            &posix(),
+            line,
         );
     }
 }
@@ -73,7 +76,46 @@ fn nested(open: &str, close: &str, depth: usize, calls: usize) -> String {
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
+fn the_fork_bomb_scan_reads_many_words_and_functions_in_linear_time() {
+    // A loop over thousands of words in a function body, and thousands of
+    // functions that call each other in one long cycle: at 64 KB each holds
+    // the count written here (`at`), at 16 KB a quarter of it.
+    let cycle = |size| {
+        let count = at(2_400, size);
+        (0..count).fold(String::new(), |mut line, at| {
+            let _ = write!(
+                line,
+                "f{at}(){{ f{} & f{}; }}; ",
+                (at + 1) % count,
+                at * 7 % count
+            );
+            line
+        })
+    };
+    let lines: [(&str, Maker); 2] = [
+        ("f() { for x in a …; do f & done; }", &|size| {
+            format!(
+                "f() {{ for x in {}; do f & done; }}",
+                "a ".repeat(at(30_000, size))
+            )
+        }),
+        ("f0(){ f1 & f0; }; …", &cycle),
+    ];
+    for (what, line) in lines {
+        assert!(line(64 * 1024).len() <= 64 * 1024, "{what}");
+        assert_linear(what, Shell::Posix, &posix(), line);
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn the_fork_bomb_scan_reads_nested_functions_quickly() {
+    // Each line is as deep as the guard reads, or deeper: its time is set by
+    // the depth, not by the length, so it is held to a fixed bound, which
+    // an optimized build here takes a twentieth of or less.
     let linux = posix();
     let slow = Duration::from_millis(500);
     let lines = [
@@ -86,18 +128,6 @@ fn the_fork_bomb_scan_reads_nested_functions_quickly() {
             "echo x; ".repeat(2_500)
         ),
         format!("f() {{ {}{}f & }}", "{ ".repeat(1_500), "f; ".repeat(5_000)),
-        // A loop over thousands of words in a function body.
-        format!("f() {{ for x in {}; do f & done; }}", "a ".repeat(30_000)),
-        // Thousands of functions that call each other in one long cycle.
-        (0..4_000).fold(String::new(), |mut line, at| {
-            let _ = write!(
-                line,
-                "f{at}(){{ f{} & f{}; }}; ",
-                (at + 1) % 4_000,
-                at * 7 % 4_000
-            );
-            line
-        }),
     ];
     // A body of balanced `if`, `while` and `( )` nested near the depth limit,
     // with thousands of calls to the function inside it. A read that climbs
