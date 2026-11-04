@@ -1014,6 +1014,13 @@ impl Walker<'_> {
                 self.split
                     .note_argument_variable("npm_config_call".to_string(), value.clone());
             }
+            // A name only known when it runs may be the config git reads.
+            if is(unit::GIT_CONFIG_PARAMETERS)
+                && !unit::GIT_CONFIG_PARAMETERS.eq_ignore_ascii_case(name)
+            {
+                self.split
+                    .note_argument_variable(unit::GIT_CONFIG_PARAMETERS.to_string(), value.clone());
+            }
             if is("NODE_OPTIONS") {
                 self.split.node_options.push(value.clone());
             }

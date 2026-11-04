@@ -848,6 +848,44 @@ posix@workspace_folder safe | git checkout --orphan new
 posix@workspace_folder safe | git checkout
 posix@workspace_folder safe | git fetch origin
 posix@workspace_folder rules=git_discard | cd src && git checkout .
+# A reset that keeps or merges given a commit, and a bisect, move the work
+# tree too; so does a checkout of a commit found by its message or a reflog
+# entry, whatever its search holds.
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | git reset --keep HEAD~1
+posix@workspace_folder finds=overwrite | git reset --merge main
+posix@workspace_folder finds=overwrite | git reset --merge
+posix@workspace_folder finds=overwrite | git bisect start HEAD v1
+posix@workspace_folder finds=overwrite | git bisect start --term-new fixed HEAD v1 -- src
+posix@workspace_folder finds=overwrite | git bisect good
+posix@workspace_folder finds=overwrite | git bisect reset
+posix@workspace_folder finds=overwrite | git bisect "$step"
+posix@workspace_folder finds=overwrite | git checkout 'HEAD^{/fix*}'
+posix@workspace_folder finds=overwrite | git checkout 'HEAD^{/a\\.b}'
+posix@workspace_folder finds=overwrite | git checkout 'HEAD^{/.x}'
+posix@workspace_folder finds=overwrite | git checkout ':/fix*'
+posix@workspace_folder finds=overwrite | git checkout 'main@{1}'
+powershell@windows_folder_and_file finds=overwrite | git checkout 'HEAD^{/fix*}'
+powershell@windows_folder_and_file finds=overwrite | git checkout 'HEAD^{/a\\.b}'
+posix@workspace_folder safe | git reset --keep
+posix@workspace_folder safe | git reset --soft HEAD~1
+posix@workspace_folder safe | git reset HEAD~1
+posix@workspace_folder safe | git bisect log
+posix@workspace_folder safe | git bisect visualize
+posix@workspace_folder safe | git bisect terms
+posix@workspace_folder safe | git bisect start
+posix@workspace_folder safe | git bisect start -- src
+posix@workspace_folder safe | git bisect start --no-checkout HEAD v1
+# How to use it is all a move given `-h` or `--help` shows.
+posix@workspace_folder safe | git pull --help
+posix@workspace_folder safe | git merge -h
+posix@workspace_folder safe | git rebase --help
+posix@workspace_folder safe | git checkout -h
+# A move that may change a protected path says so once, though its paths
+# may too.
+posix@workspace_folder rules=overwrite | git checkout "$B"
+posix@workspace_folder rules=git_discard,overwrite | xargs git checkout
+posix@workspace_folder rules=git_discard,overwrite | git checkout $X src/main.rs
+powershell@windows_folder_and_file rules=overwrite | git --% checkout %B%
 # Paths read from a file or the input, and a folder only known when it runs,
 # may be any.
 posix@workspace_folder finds=overwrite | git checkout HEAD --pathspec-from-file=list.txt
@@ -894,6 +932,11 @@ posix safe | git switch other
 posix safe | git rebase main
 posix safe | git checkout feature
 posix safe | cd src && git checkout feature
+posix safe | git reset --keep HEAD~1
+posix safe | git reset --merge main
+posix safe | git bisect start HEAD v1
+posix safe | git bisect good
+posix safe | git checkout 'HEAD^{/fix*}'
 posix safe | rm ./…
 posix first=overwrite reason="patches a shell startup file" | patch -u ~/.bashrc fix.diff
 posix finds=overwrite | patch -u /etc/hosts fix.diff
