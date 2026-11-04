@@ -25,7 +25,7 @@ fn every_case_holds() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_chain_of_dash_c_is_read_quickly() {
@@ -44,7 +44,7 @@ fn a_long_chain_of_dash_c_is_read_quickly() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn many_options_and_folders_of_an_unpacker_are_read_quickly() {
@@ -100,7 +100,7 @@ fn many_options_and_folders_of_an_unpacker_are_read_quickly() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn many_archives_written_are_read_in_linear_time() {

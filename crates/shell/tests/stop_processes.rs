@@ -33,7 +33,7 @@ fn stop_unknown_is_named_beside_stop_system() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn the_process_rules_read_long_patterns_quickly() {
@@ -70,7 +70,7 @@ fn nested(open: &str, close: &str, depth: usize, calls: usize) -> String {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn the_fork_bomb_scan_reads_nested_functions_quickly() {

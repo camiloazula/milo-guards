@@ -33,7 +33,7 @@ fn distinct(option: &str, size: usize) -> String {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn the_files_a_wrapper_names_are_told_apart_in_linear_time() {

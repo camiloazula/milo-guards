@@ -144,7 +144,7 @@ fn a_redirect_on_calls_to_many_functions_from_other_folders_is_unknown() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn many_functions_that_move_the_line_and_many_calls_are_read_in_linear_time() {
@@ -173,7 +173,7 @@ fn many_functions_that_move_the_line_and_many_calls_are_read_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn one_function_defined_many_times_and_called_many_times_is_read_in_linear_time() {
@@ -214,7 +214,7 @@ fn one_function_defined_many_times_and_called_many_times_is_read_in_linear_time(
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn many_definitions_that_may_not_run_are_unknown_once_and_read_in_linear_time() {

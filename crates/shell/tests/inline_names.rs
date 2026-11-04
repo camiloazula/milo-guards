@@ -45,12 +45,12 @@ fn chain(interpreter: &str, levels: usize, line: impl Fn(usize) -> String, last:
     text
 }
 
-#[test]
-fn names_each_set_to_twice_the_one_before_are_read_in_bounded_time() {
-    // A name put back as its string, when the next name is set, doubled the
-    // string at every line: 30 lines took seconds and 36 ran out of memory.
-    // A string is cut at a length now, and the name that went over it is a
-    // path the guard does not read.
+/// Scripts whose names are each set to twice the one before, and the rule
+/// each must find. A name put back as its string, when the next name is set,
+/// doubled the string at every line: 30 lines took seconds and 36 ran out of
+/// memory. A string is cut at a length now, and the name that went over it
+/// is a path the guard does not read.
+fn doubled_names() -> Vec<(String, Rule)> {
     let base = "xy";
     let mut lines: Vec<(String, Rule)> = Vec::new();
     let python: Vec<Box<dyn Fn(usize) -> String>> = vec![
@@ -140,14 +140,13 @@ fn names_each_set_to_twice_the_one_before_are_read_in_bounded_time() {
     ] {
         lines.push((format!("node - <<'JS'\n{body}\nJS"), Rule::Unknown));
     }
-    for (line, rule) in &lines {
+    lines
+}
+
+#[test]
+fn names_each_set_to_twice_the_one_before_are_not_read() {
+    for (line, rule) in &doubled_names() {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let took = took(line, Shell::Posix, &posix());
-        assert!(
-            took < std::time::Duration::from_secs(2),
-            "{} bytes took {took:?}: {line}",
-            line.len()
-        );
         // Not read, so not safe: a name that went over the limit is no path
         // the guard knows.
         let rules: Vec<Rule> = classify(line, Shell::Posix, &posix())
@@ -203,6 +202,22 @@ fn names_each_set_to_twice_the_one_before_are_read_in_bounded_time() {
             ),
         ],
     );
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn names_each_set_to_twice_the_one_before_are_read_in_bounded_time() {
+    for (line, _) in &doubled_names() {
+        let took = took(line, Shell::Posix, &posix());
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "{} bytes took {took:?}: {line}",
+            line.len()
+        );
+    }
 }
 
 /// The lines made of many strings; the names that hold one or two are in

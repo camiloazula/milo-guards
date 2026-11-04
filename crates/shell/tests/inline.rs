@@ -82,11 +82,11 @@ fn code_that_starts_code_is_read_to_a_limit() {
     assert!(!found.is_empty(), "too deep to read must be risky");
 }
 
-#[test]
-fn long_inline_code_is_read_in_linear_time() {
-    // Reading inline code asked the tree for each name's parent, which walks
-    // it from the root, and built a dotted name again from each member of it:
-    // a chain of 30,000 members (60 KB, under the limit) took a minute.
+/// Long inline code, and the chain of members in it, if any. Reading inline
+/// code asked the tree for each name's parent, which walks it from the root,
+/// and built a dotted name again from each member of it: a chain of 30,000
+/// members (60 KB, under the limit) took a minute.
+fn long_code() -> (Vec<String>, String) {
     let chain = ".b".repeat(30_000);
     let calls = format!("{}{}", "f(".repeat(10_000), ")".repeat(10_000));
     // Chains just under the depth limit, many of them: every one is read.
@@ -104,14 +104,14 @@ fn long_inline_code_is_read_in_linear_time() {
             rows.push(format!("{interpreter} - <<'{end}'\n{body}\n{end}"));
         }
     }
+    (rows, chain)
+}
+
+#[test]
+fn long_inline_code_is_read_unless_it_nests_too_deep() {
+    let (rows, chain) = long_code();
     for line in rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::Posix, &posix());
-        assert!(
-            took < std::time::Duration::from_secs(2),
-            "{:?} took {took:?}",
-            &line[..20]
-        );
         // What nests too deeply to read is not safe, and the rest is read.
         // The body of a quoted here-document is a literal to the shell, so
         // the shell's count of open parentheses does not see it: the reader
@@ -126,5 +126,21 @@ fn long_inline_code_is_read_in_linear_time() {
         if line.contains(&"f(".repeat(500)) {
             assert!(!assessment.is_safe(), "{:?}", &line[..20]);
         }
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn long_inline_code_is_read_in_linear_time() {
+    for line in long_code().0 {
+        let took = took(&line, Shell::Posix, &posix());
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "{:?} took {took:?}",
+            &line[..20]
+        );
     }
 }

@@ -43,7 +43,7 @@ fn a_printf_blown_up_past_the_line_is_unknown() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_group_too_large_to_read_is_unknown_and_quick() {
@@ -67,7 +67,7 @@ fn a_group_too_large_to_read_is_unknown_and_quick() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_where_is_found_for_every_verb_in_one_pass() {
@@ -115,7 +115,7 @@ fn numbered(size: usize, make: impl Fn(usize) -> String) -> String {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn the_files_and_programs_a_client_names_are_read_in_linear_time() {

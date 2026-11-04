@@ -15,7 +15,7 @@ mod common;
 use std::fmt::Write;
 use std::time::Duration;
 
-use common::{assert_linear, check, filled, posix, took};
+use common::{assert_linear, assert_within, check, filled, posix, took, STAGE_SIZES};
 use milo_guards_shell::{classify, Rule, Shell};
 
 #[test]
@@ -25,7 +25,7 @@ fn every_case_holds() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_stage_that_says_too_much_is_not_read_and_stays_quick() {
@@ -40,7 +40,7 @@ fn a_stage_that_says_too_much_is_not_read_and_stays_quick() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn many_clients_on_one_line_are_read_in_linear_time() {
@@ -50,11 +50,14 @@ fn many_clients_on_one_line_are_read_in_linear_time() {
     for part in ["redis-cli del $x; ", "psql <<< x; "] {
         assert_linear(part, Shell::Posix, &posix(), |size| filled(part, size, 0));
     }
-    // Many clients of a stage that backs up to many files.
-    assert_linear(
+    // Many clients of a stage that backs up to many files: the files are
+    // read only to a count, reached between 16 and 24 KB, so the line is held
+    // to a bound at each size up to and past it.
+    assert_within(
         "a stage of backups to many clients",
-        Shell::Posix,
-        &posix(),
+        Duration::from_secs(1),
+        &STAGE_SIZES,
+        |line| took(line, Shell::Posix, &posix()),
         |size| {
             let mut said = String::new();
             for at in 0..size / 80 {
@@ -110,7 +113,7 @@ fn many_clients_on_one_line_are_read_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn sql_in_sql_is_read_a_few_levels_deep() {

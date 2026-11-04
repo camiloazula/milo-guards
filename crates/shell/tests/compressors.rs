@@ -33,7 +33,7 @@ fn a_folder_only_known_when_it_runs_stays_in_the_target() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn many_files_and_options_are_read_in_linear_time() {

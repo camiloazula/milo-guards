@@ -77,7 +77,7 @@ fn the_paths_of_a_cd_with_a_read_are_placed_from_where_it_starts() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn many_redirects_and_substitutions_on_one_command_are_read_in_linear_time() {
