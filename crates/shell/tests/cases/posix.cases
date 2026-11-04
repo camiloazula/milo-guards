@@ -487,6 +487,69 @@ posix finds=delete | parallel --trim=l rm -rf ::: ' /'
 posix finds=unreadable | parallel --trim x rm -rf ::: ' /'
 posix safe | parallel --tmux --total-jobs 4 --group-by 1 echo ::: a
 
+# `nix shell` and `nix develop` run the command after `-c` (`--command`),
+# `nix-shell` the shell line `--run` or `--command` gives, `limactl shell`
+# the words after the instance, and `sem` (`parallel --semaphore`) its
+# command once, as `parallel` runs a job. Without one, each starts a shell.
+posix finds=delete | nix shell nixpkgs#hello -c rm -rf ~
+posix finds=delete | nix shell nixpkgs#hello nixpkgs#jq --command rm -rf ~
+posix finds=delete | nix shell -L --impure nixpkgs#hello -c sh -c 'rm -rf ~'
+posix finds=delete | nix develop -c rm -rf ~
+posix finds=delete | nix develop .#dev --command rm -rf ~
+posix finds=delete | nix --offline develop -c rm -rf ~
+posix finds=delete | nix develop -i -k HOME -c rm -rf ~
+posix finds=delete | nix develop -vvL -c rm -rf ~
+posix finds=delete | nix-shell --run 'rm -rf ~'
+posix finds=delete | nix-shell --command 'rm -rf ~'
+posix finds=delete | nix-shell -p hello jq --run 'rm -rf ~'
+posix finds=delete | nix-shell shell.nix --pure -A dev --run 'cd / && rm -rf usr'
+posix finds=delete | nix-shell --arg x 1 --run 'rm -rf ~'
+posix finds=unknown | nix-shell --run "$CMD"
+posix finds=delete | limactl shell default rm -rf ~
+posix finds=delete | limactl shell --shell /bin/bash default rm -rf ~
+posix finds=delete | limactl --debug shell --reconnect default rm -rf ~
+posix finds=delete | limactl shell --workdir / default rm -rf usr
+posix finds=delete | limactl shell --workdir=/ default rm -rf usr
+posix finds=delete | sem rm -rf ~
+posix finds=delete | sem -j 2 --id build rm -rf ~
+posix finds=delete | sem --fg 'rm -rf ~'
+posix finds=delete | parallel --semaphore rm -rf ~
+posix finds=delete | doppler run --forward-signals --preserve-env -- rm -rf ~
+posix safe | nix shell nixpkgs#hello -c ls
+posix safe | nix shell nixpkgs#hello
+posix safe | nix develop
+posix safe | nix develop -c ls
+posix safe | nix develop --command cargo build
+posix safe | nix build .#pkg
+posix safe | nix flake update --commit-lock-file
+posix safe | nix-shell --run ls
+posix safe | nix-shell -p hello
+posix safe | nix-shell
+posix safe | limactl shell default ls
+posix safe | limactl shell default
+posix safe | limactl list
+posix safe | limactl shell --workdir /tmp default ls
+posix safe | sem ls
+posix safe | sem -j 4 make
+posix safe | sem --wait
+posix safe | doppler run --forward-signals -- npm test
+# An option one of these wrappers does not know may take the word after it,
+# so where its command starts, or what it is, is not known.
+posix finds=unreadable | nix shell nixpkgs#hello --frobnicate -c ls
+posix finds=unreadable | nix shell --frobnicate x nixpkgs#hello -c ls
+posix finds=unreadable | nix --frobnicate x develop -c ls
+posix finds=unreadable | nix develop -Z -c ls
+posix finds=unreadable | nix run --frobnicate x nixpkgs#hello -- rm -rf ~
+posix finds=unreadable | nix-shell --frobnicate --run ls
+posix finds=unreadable | nix-shell --frobnicate
+posix finds=unreadable | limactl shell --frobnicate default ls
+posix finds=unreadable | limactl --frobnicate shell default ls
+posix finds=unreadable | sem --frobnicate ls
+posix finds=unreadable | doppler run --frobnicate x rm -rf ~
+posix finds=unreadable | doppler --frobnicate x run -- ls
+posix safe | nix --frobnicate build
+posix safe | limactl --frobnicate list
+
 # `env -S` with its string attached, `--split-string=` and its shorter
 # spellings split the string as `env -S STRING`, with the arguments after it.
 posix finds=delete | env -S"rm -rf ~"

@@ -240,8 +240,8 @@ fn a_line_at_the_length_limit_is_read_in_time() {
 fn wrappers_that_build_their_command_are_read_in_time() {
     let _serial = serial();
     // `parallel` builds a line for each job from its command and its values,
-    // and `wsl`, `env -S`, `nix run` and the other runners read their words
-    // as a command. The bound is for the debug build `just test` runs.
+    // and `wsl`, `env -S`, `nix run`, `nix shell`, `nix-shell`, `limactl
+    // shell`, `sem` and the other runners read their words as a command. The bound is for the debug build `just test` runs.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let values = |count: usize, each: usize| {
         (0..count)
@@ -300,6 +300,16 @@ fn wrappers_that_build_their_command_are_read_in_time() {
         format!("{}rm -rf ~", "env -S".repeat(10_000)),
         format!("env -S'{}'", "a ".repeat(32_000)),
         format!("nix run{} nixpkgs#hello -- rm", " --arg a b".repeat(6_000)),
+        format!("nix shell{} -c rm", " nixpkgs#a".repeat(6_000)),
+        format!("nix develop{} -c rm", " -vvL".repeat(12_000)),
+        format!("{}rm -rf ~", "nix shell x -c ".repeat(4_000)),
+        format!("nix --frobnicate{} shell -c rm", " a".repeat(30_000)),
+        format!("nix-shell{} ls", " --run".repeat(10_000)),
+        format!("nix-shell -p{} --run ls", " a".repeat(30_000)),
+        format!("limactl shell{} default rm", " --shell a".repeat(6_000)),
+        format!("{}rm -rf ~", "limactl shell default ".repeat(2_500)),
+        format!("{}rm -rf ~", "sem ".repeat(16_000)),
+        format!("sem{} rm", " -j 1".repeat(12_000)),
         format!("launchctl submit{} -- rm -rf ~", " -l x".repeat(12_000)),
         format!("script{} /dev/null rm", " -t 1".repeat(12_000)),
         format!("script{} -c ls /dev/null", " -t 1".repeat(12_000)),
