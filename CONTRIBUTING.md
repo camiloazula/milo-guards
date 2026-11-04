@@ -233,7 +233,9 @@ and the runner, are in its `tests/common/cases.rs` (for the path model,
 ## Submitting a change
 
 - `main` takes pull requests only. The commits that set the repository up are
-  the one exception.
+  the one exception. A ruleset on `main` refuses a direct push, a force-push
+  and a deletion, so a pull request is the only way in; the release tags
+  (`v*`) are created, moved or deleted by the owner only.
 - Commit messages describe the change and why. No tool trailers (no
   `Co-Authored-By` or "Generated with" lines) on commits or pull request
   descriptions.
@@ -251,8 +253,7 @@ and the runner, are in its `tests/common/cases.rs` (for the path model,
   does and of its edge cases in `crates/<crate>/tests/<what-it-checks>.rs`,
   with shared helpers in `tests/common`; a test of the front door from end to
   end in `crates/guards/tests`.
-- Nothing is released yet, and the repository is private. Callers depend on a
-  git commit.
+- Nothing is released yet. Callers depend on a git commit.
 
 ## How a change reaches a caller
 
