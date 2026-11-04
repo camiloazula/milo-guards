@@ -317,6 +317,11 @@ fn add_launched(
                 output_of(split, unit.shell, output, depth);
             }
         }
+        // `repeat 3; do rm -rf build; done`: the `do` the walk read as the
+        // list of the `repeat` before it runs the command after it.
+        if key == "do" && unit.shell == Shell::Posix && std::mem::take(&mut split.repeat_do) {
+            given = Some(command_after(&unit.args, 0, true));
+        }
         let launched = given.take().unwrap_or_else(|| launch(&key, &unit, input));
         // The command `npm_config_call` sets runs once for each `npx`: its
         // readings are bounded as a line's own text is.
@@ -378,6 +383,17 @@ fn add_launched(
                         split.open_groups += groups;
                         return;
                     }
+                }
+                // `repeat 3 {` and `repeat 3 do` with the body on the lines
+                // after them, and `repeat 3` with its body the statement
+                // after it.
+                if key == "repeat" && unit.shell == Shell::Posix {
+                    if let Some((groups, opens_do)) = repeat_opens_only(&unit.args) {
+                        split.begin_repeat(opens_do, false);
+                        split.open_groups += groups;
+                        return;
+                    }
+                    split.repeat_alone |= unit.args.len() == 1;
                 }
                 // What `find` picks is handed to the programs its `-exec` runs.
                 let first = split.units.len();
@@ -534,11 +550,19 @@ fn runs_after(split: &mut Split, mut unit: Unit, key: String, start: usize, dept
     // `coproc { … }`, `time { … }`, `! { … }`, `repeat 3 { … }`: the `}`
     // that closes the group is a command of its own to the grammar, and
     // runs nothing.
-    if unit.shell == Shell::Posix && (key == "coproc" || starts_command(&key)) {
+    // So is the `done` that closes the list of a `do` the walk read as a
+    // `repeat`'s (`repeat 3; do { …; }; done`).
+    if unit.shell == Shell::Posix && (key == "coproc" || key == "do" || starts_command(&key)) {
         // zsh's `repeat N` runs what comes after its count again and again:
-        // a loop whose body the grammar does not see.
+        // a loop whose body the grammar does not see. Its body is a group
+        // or a list after `do` when one follows the count, or else the
+        // chain of `&&`, `||` and `|` the command after it starts.
         if key == "repeat" {
-            split.begin_repeat(own.get(1).and_then(Arg::known) == Some("do"));
+            let after = own.get(1).and_then(Arg::known);
+            split.begin_repeat(
+                after == Some("do"),
+                !after.is_some_and(|word| word == "do" || opens_group(word)),
+            );
         }
         let program = if opens_group(&key) {
             key.matches('{').count()
@@ -1671,6 +1695,22 @@ fn coproc_opens_only(args: &[Arg]) -> Option<usize> {
     let rest = args.get(coproc_name(args)..).unwrap_or_default();
     (!rest.is_empty() && rest.iter().all(|arg| arg.known().is_some_and(opens_group)))
         .then(|| coproc_groups(rest))
+}
+
+/// The groups `args`, a zsh `repeat`'s, open, and whether they open a list
+/// after `do`, when nothing comes after them: `repeat 3 {` and `repeat 3
+/// do` with the body on the lines after them.
+fn repeat_opens_only(args: &[Arg]) -> Option<(usize, bool)> {
+    let rest = args.get(1..).unwrap_or_default();
+    let mut opens_do = false;
+    for arg in rest {
+        match arg.known() {
+            Some("do") => opens_do = true,
+            Some(text) if opens_group(text) => {}
+            _ => return None,
+        }
+    }
+    (!rest.is_empty()).then(|| (coproc_groups(rest), opens_do))
 }
 
 /// What runs after a word that starts a command of its own (`coproc`,

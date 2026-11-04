@@ -991,6 +991,42 @@ posix safe | repeat 3 { ls; (cd /; ls); rm -rf build; }
 posix safe | repeat 3 { rm -rf build; }; cd /
 posix safe | repeat 3 do rm -rf build; done; cd /
 posix safe | repeat 3 cd /; ls
+# The body may start on the lines after the `{` or `do`, or after the count:
+# a group, a list after `do`, or else the statement there whole.
+posix finds=delete | repeat 3 do\nrm -rf build\ncd /\ndone
+posix finds=delete | repeat 3 {\nrm -rf build\ncd /\n}
+posix finds=delete | repeat 3\n{ rm -rf build; cd /; }
+posix finds=delete | repeat 3 do # c\nrm -rf build\ncd /\ndone
+posix finds=delete | repeat 3; do rm -rf build; cd /; done
+posix finds=delete | repeat 3; rm -rf build && cd /
+posix finds=delete | repeat 3 # c\n\nrm -rf build && cd /
+posix finds=delete | repeat 3 { {\nrm -rf build\ncd /\n}\n}
+posix safe | repeat 3 do\nls\ndone
+posix safe | repeat 3 {\nrm -rf build\n}\ncd /
+posix safe | repeat 3\n{ rm -rf build; } && cd /
+posix safe | repeat 3\ndo\nrm -rf build\ndone && cd /
+posix finds=unreadable | repeat 3
+posix finds=unreadable | repeat 3 {\nls
+# zsh's short `repeat N cmd` repeats the whole chain of `&&`, `||` and `|`
+# that `cmd` starts, up to the next `;`, `&` or line.
+posix finds=delete | repeat 3 rm -rf build && cd /
+posix finds=delete | repeat 3 rm -rf build || cd /
+posix finds=delete | repeat 3 rm -rf build | cd /
+posix finds=delete | repeat 3 time rm -rf build && cd /
+posix finds=delete | repeat 3 rm -rf build && { cd /; }
+posix finds=delete | repeat 3 ! rm -rf build || cd /
+posix finds=delete | repeat 3 time { rm -rf build; } && cd /
+posix finds=delete | repeat 3 repeat 2 rm -rf build && cd /
+posix finds=delete | true && repeat 3 rm -rf build && cd /
+posix finds=delete | repeat 3 rm -rf build > log && cd /
+posix finds=overwrite | repeat 2 echo x > out.txt && cd /
+posix finds=read_secret | repeat 2 cat id_rsa && cd ~/.ssh
+posix safe | repeat 3 ls && cd sub
+posix safe | repeat 3 rm -rf build && ls; cd /
+posix safe | repeat 3 { rm -rf build; } && cd /
+posix safe | repeat 3 do rm -rf build; done && cd /
+posix safe | { repeat 3 rm -rf build; cd /; } > log
+posix safe | { repeat 3 rm -rf build; cd /; } && ls
 # A list `do` opens that no `done` closes is not run, and a body that closes
 # where the grammar has another loop open cannot be read.
 posix finds=unreadable | repeat 3 do ls

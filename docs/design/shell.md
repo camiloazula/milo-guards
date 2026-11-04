@@ -469,9 +469,11 @@ grammar as after `coproc`, and are `Unreadable`: a program named `while`, `if`,
 `for` or any of the words that open such a command, and one that starts with a
 `{`, is read so wherever it stands. So is a program named `do`, `then`, `elif`
 or `else`, the body of a loop or a conditional the grammar cut off from the
-words that open it: zsh skips the separators after `repeat`'s count, so
-`repeat 3; do rm -rf ~; done`, on one line or on three, runs the `rm` three
-times, and the grammar reads `repeat 3` and a program named `do`.
+words that open it, but right after a `repeat` that stands alone: zsh skips
+the separators after `repeat`'s count, so `repeat 3; do rm -rf ~; done`, on
+one line or on three, runs the `rm` three times, and the grammar reads
+`repeat 3` and a program named `do`, which the walk reads as the `repeat`'s
+list (`Delete`; `repeat 3; do ls; done` is safe).
 
 The program after a wrapper is the word the shell makes of it. A brace list
 (`command {rm,-rf,~}`, `r{m,x} -rf ~`) or a sequence expression (`r{m..m} -rf
@@ -955,18 +957,34 @@ and its findings are the line's, since the shell runs it as the same user.
   closes it as a command of its own. The walk reads the body from the
   `repeat` to where it takes that `}` or `done` off (groups and lists that
   other words open inside it, `coproc { … }`, `time { … }`, a `repeat`
-  within, close first), or to the end of its command when it opens neither
-  (`repeat 3 eval 'rm -rf build; cd /'`, `repeat 3 time { … }` to its
-  `}`): `repeat 3 { rm -rf build; cd /; }` and `repeat 3 do rm -rf build;
-  cd /; done` delete a top-level folder, while `repeat 3 { ls; }`, `repeat
-  3 ls` and `repeat 3 { rm -rf build; }; cd /` stay safe. A `do` that no
-  `done` closes (`repeat 3 do ls`) is `Unreadable`, `opens a loop that
-  never closes`, as a group that never closes is; so is a body that closes
-  where the grammar has a loop or a function body open that began inside
-  it, or has closed one that began before it (`while true; do repeat 3 do
-  ls; done; cd /; done`, where the grammar's `done` ends the `while`):
-  `repeats a body that cannot be read`. Each body closes in the script it
-  opens in. The
+  within, close first), whether the body starts on the same line or on the
+  next (`repeat 3 {` or `repeat 3 do` ending a line, a comment after them
+  or not). When neither a `{` nor a `do` follows the count, the body is
+  zsh's short form, `repeat N` and a sublist: the whole chain of `&&`, `||`
+  and `|` that the command after the count starts, up to the next `;`, `&`
+  or line, which the walk reads to the end of that chain, past the `}` of a
+  group a word in it opens (`repeat 3 eval 'rm -rf build; cd /'`, `repeat
+  3 rm -rf build && cd /`, `repeat 3 rm -rf build | cd /`, since zsh runs
+  a pipeline's last stage in the shell itself, `repeat 3 time { rm -rf
+  build; } && cd /`). After a `{` or a `do` the body is the group or the
+  list alone: `repeat 3 { rm -rf build; } && cd /` runs the `cd` once. A
+  `repeat N` that stands alone, its count ending its command, has its body
+  in the statement after it, since zsh skips the separators: a group there
+  is the body (`repeat 3` and `{ rm -rf build; cd /; }` on the next line),
+  a statement that starts with `do` opens the list (`repeat 3; do …;
+  done`), and any other statement is the body whole, as the short form's
+  (`repeat 3; rm -rf build && cd /`); with none after it the line is one
+  zsh refuses, `Unreadable`, `repeats a body that cannot be read`. `repeat
+  3 { rm -rf build; cd /; }`, `repeat 3 do rm -rf build; cd /; done` and
+  `repeat 3 rm -rf build && cd /` delete a top-level folder, while `repeat
+  3 { ls; }`, `repeat 3 ls`, `repeat 3 ls && cd sub` and `repeat 3 { rm -rf
+  build; }; cd /` stay safe. A `do` that no `done` closes (`repeat 3 do
+  ls`) is `Unreadable`, `opens a loop that never closes`, as a group that
+  never closes is; so is a body that closes where the grammar has a loop or
+  a function body open that began inside it, or has closed one that began
+  before it (`while true; do repeat 3 do ls; done; cd /; done`, where the
+  grammar's `done` ends the `while`): `repeats a body that cannot be
+  read`. Each body closes in the script it opens in. The
   same holds for PowerShell's `function`, `foreach`, `for`, `while`, `do`,
   `switch` and `ForEach-Object` blocks (a call names a function in any case,
   without its scope: `function global:Build` is called as `build`), and for
@@ -4993,7 +5011,8 @@ A line is never safe because the guard gave up on it. These come back risky:
 - A loop, a conditional or a `{` stuck to a word after `time`, `!`, `coproc`
   or zsh's `repeat` (`time for …; do …; done`, `! {rm -rf ~;}`), and words
   after the file of a redirect on a group, a loop or a subshell (`{ ls; } >
-  out rm -rf ~`), which the grammar cuts up.
+  out rm -rf ~`), which the grammar cuts up, and a zsh `repeat N` with no
+  statement after it.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, a line longer
   than the limit, or one the grammar would read over and over past its

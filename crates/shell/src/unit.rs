@@ -1445,6 +1445,19 @@ pub(crate) struct Split {
     /// Each zsh `repeat` whose body the walk is reading (see
     /// [`Split::begin_repeat`]).
     repeating: Vec<Repeating>,
+    /// The short `repeat` bodies that end with the chain of `&&`, `||` and
+    /// `|` their last command is in, or with a statement the walk reads as
+    /// a body: the node id of that chain or statement, and where the body
+    /// is among `repeating` (see [`Split::left`]).
+    waits: Vec<(usize, usize)>,
+    /// Set by a zsh `repeat N` whose count ends its command (`repeat 3;
+    /// do …; done`, `repeat 3` and a group on the line after it): the walk
+    /// reads the statement after it as its body.
+    pub(crate) repeat_alone: bool,
+    /// Set when the walk reads a statement that starts with `do` as the
+    /// list of a `repeat N` before it (`repeat 3; do …; done`): that `do`
+    /// runs the command after it.
+    pub(crate) repeat_do: bool,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -1617,17 +1630,29 @@ struct BodyStart {
     relative_moves: usize,
 }
 
+/// The `repeat` bodies, `do` lists and waits a script read in the middle
+/// of them sets aside (see [`Split::take_repeats`]).
+pub(crate) struct Repeats {
+    repeating: Vec<Repeating>,
+    dos: usize,
+    waits: Vec<(usize, usize)>,
+}
+
 /// A zsh `repeat` whose body the walk is reading as a loop's (see
 /// [`Split::begin_repeat`]): how many groups and `do` lists were open
 /// before it, which it closes when they are all that is open again, where
-/// its start is among [`Split::bodies_began`], and whether the command
-/// that starts it has been read.
+/// its start is among [`Split::bodies_began`], whether it may close (the
+/// command that starts it has been read, and a short body has left its
+/// chain), and whether it is short: `repeat N` and a command, which repeats
+/// the chain of `&&`, `||` and `|` that command starts, not a group or a
+/// list after `do`.
 #[derive(Debug)]
 pub(crate) struct Repeating {
     groups: usize,
     dos: usize,
     body: usize,
     read: bool,
+    short: bool,
 }
 
 /// What the walk added while it read a loop or a function body that may
@@ -3634,10 +3659,13 @@ impl Split {
     /// body as words of the one command, and the rest of the body as the
     /// commands after it, up to a `}` or `done` of their own. The body is
     /// read as a loop's (see [`Self::end_body`]) from here to where the walk
-    /// takes that `}` or `done` off, or to the end of the command when it
-    /// opens neither (see [`Self::end_repeats`]). Called before the groups
-    /// the command opens are counted.
-    pub(crate) fn begin_repeat(&mut self, opens_do: bool) {
+    /// takes that `}` or `done` off. A `short` body, a command that opens
+    /// neither (`repeat 3 rm -rf build && cd /`, `repeat 3 time { … } &&
+    /// …`), is zsh's `repeat N` and a sublist: it ends with the chain of
+    /// `&&`, `||` and `|` where the groups it opens close (see
+    /// [`Self::end_repeats`]). Called before the groups the command opens
+    /// are counted; gives where the body is among those open.
+    pub(crate) fn begin_repeat(&mut self, opens_do: bool, short: bool) -> usize {
         self.branches += 1;
         self.bodies += 1;
         self.repeats += 1;
@@ -3646,9 +3674,26 @@ impl Split {
             dos: self.open_dos,
             body: self.bodies_began.len(),
             read: false,
+            short,
         });
         self.begin_body();
         self.open_dos += usize::from(opens_do);
+        self.repeating.len() - 1
+    }
+
+    /// Note that the `repeat` body at `at` (see [`Self::begin_repeat`])
+    /// ends with the statement whose node id is `node`, when the walk
+    /// leaves it (see [`Self::left`]), or that it may close as soon as its
+    /// groups and lists do, when `node` is `None`.
+    pub(crate) fn repeat_until(&mut self, at: usize, node: Option<usize>) {
+        match node {
+            Some(node) => self.waits.push((node, at)),
+            None => {
+                if let Some(repeating) = self.repeating.get_mut(at) {
+                    repeating.read = true;
+                }
+            }
+        }
     }
 
     /// How many `repeat` bodies are open, for [`Self::end_repeats`].
@@ -3657,29 +3702,60 @@ impl Split {
     }
 
     /// Note that the command whose walk began with `open` `repeat` bodies
-    /// open has been read: a `repeat` it started whose body is that
-    /// command alone (`repeat 3 eval '…'`) ends here.
-    pub(crate) fn end_repeats(&mut self, open: usize) {
+    /// open has been read, in the chain of `&&`, `||` and `|` whose node id
+    /// is `chain`, if it is in one: a `repeat` it started whose body is
+    /// that command alone (`repeat 3 eval '…'`) ends here, and a short one
+    /// in a chain (`repeat 3 rm -rf build && cd /`) where the walk leaves
+    /// the chain.
+    pub(crate) fn end_repeats(&mut self, open: usize, chain: Option<usize>) {
         for repeating in self.repeating.iter_mut().skip(open) {
             repeating.read = true;
         }
-        self.close_repeats();
+        self.close_repeats(chain);
+    }
+
+    /// Note that the walk left the statement whose node id is `node`, in
+    /// the chain `chain`, if it is in one: each `repeat` body that waited
+    /// for it may close.
+    pub(crate) fn left(&mut self, node: usize, chain: Option<usize>) {
+        let mut any = false;
+        while self.waits.last().is_some_and(|(id, _)| *id == node) {
+            if let Some((_, at)) = self.waits.pop() {
+                if let Some(repeating) = self.repeating.get_mut(at) {
+                    repeating.read = true;
+                }
+                any = true;
+            }
+        }
+        if any {
+            self.close_repeats(chain);
+        }
     }
 
     /// Note that the walk took off a `done` that closes a list a `repeat`
-    /// opened.
+    /// opened; the body closes once its command is read.
     pub(crate) fn close_do(&mut self) {
         self.open_dos = self.open_dos.saturating_sub(1);
-        self.close_repeats();
     }
 
     /// End each `repeat` body that closes now, the innermost first: its
     /// command is read, and the groups and lists open are those that were
-    /// open before it.
-    pub(crate) fn close_repeats(&mut self) {
-        while self.repeating.last().is_some_and(|repeating| {
-            repeating.read && repeating.groups == self.open_groups && repeating.dos == self.open_dos
-        }) {
+    /// open before it. A short body in the chain `chain` waits for the walk
+    /// to leave the chain instead.
+    fn close_repeats(&mut self, chain: Option<usize>) {
+        while let Some(repeating) = self.repeating.last_mut() {
+            if !(repeating.read
+                && repeating.groups == self.open_groups
+                && repeating.dos == self.open_dos)
+            {
+                break;
+            }
+            if let (true, Some(chain)) = (repeating.short, chain) {
+                repeating.read = false;
+                let at = self.repeating.len() - 1;
+                self.waits.push((chain, at));
+                break;
+            }
             if let Some(repeating) = self.repeating.pop() {
                 self.end_repeat(&repeating, true);
             }
@@ -3711,17 +3787,27 @@ impl Split {
 
     /// Set aside the `repeat` bodies and `do` lists open, for a script read
     /// in the middle of them: a body closes in the script it opens in.
-    pub(crate) fn take_repeats(&mut self) -> (Vec<Repeating>, usize) {
-        (
-            std::mem::take(&mut self.repeating),
-            std::mem::take(&mut self.open_dos),
-        )
+    pub(crate) fn take_repeats(&mut self) -> Repeats {
+        Repeats {
+            repeating: std::mem::take(&mut self.repeating),
+            dos: std::mem::take(&mut self.open_dos),
+            waits: std::mem::take(&mut self.waits),
+        }
     }
 
     /// Put back what [`Self::take_repeats`] set aside, once the script is
     /// read: a body or a `do` list it left open is a script the shell does
     /// not run as written.
-    pub(crate) fn restore_repeats(&mut self, (repeating, dos): (Vec<Repeating>, usize)) {
+    pub(crate) fn restore_repeats(
+        &mut self,
+        Repeats {
+            repeating,
+            dos,
+            waits,
+        }: Repeats,
+    ) {
+        // The node ids a body waited for are the script's own.
+        self.waits = waits;
         if std::mem::replace(&mut self.open_dos, dos) > 0 {
             self.problem(
                 Rule::Unreadable,

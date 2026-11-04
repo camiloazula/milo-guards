@@ -217,8 +217,10 @@ posix finds=delete | repeat 3 do rm -rf ~; done
 posix safe | repeat 3 echo hi
 posix safe | repeat 3 { ls; }
 # zsh skips the separators after the count: the grammar reads `repeat 3` and
-# a program named `do`, the body of a loop it cut off from its start.
-posix finds=unreadable | repeat 3; do rm -rf ~; done
-posix finds=unreadable | repeat 3\ndo rm -rf ~\ndone
+# a program named `do`, which the walk reads as the list of the `repeat`.
+# Anywhere else, `do` is the body of a loop the grammar cut off from its start.
+posix finds=delete | repeat 3; do rm -rf ~; done
+posix finds=delete | repeat 3\ndo rm -rf ~\ndone
+posix safe | repeat 3; do ls; done
 posix finds=unreadable | do rm -rf ~
 posix finds=unreadable | then rm -rf ~
