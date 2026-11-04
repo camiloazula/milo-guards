@@ -115,6 +115,30 @@ posix finds=overwrite,unknown | awk -i inplace -f s.awk /etc/x
 posix finds=overwrite,unknown | awk -i "$L" 1 /etc/x
 posix finds=unknown | awk -i lib 1 a
 posix finds=unknown | awk '@include "lib"; 1' a
+# gawk's `-l`/`--load` and `@load` load a shared library, native code the
+# guard does not read, whatever its name.
+posix finds=unknown reason="loads an awk extension the guard does not read" | awk -l ./ext.so '{print}' x
+posix finds=unknown | awk '@load "ext"; {print}' f
+posix finds=unknown | gawk -l ext 1 a
+posix finds=unknown | awk -lext 1 a
+posix finds=unknown | awk --load ext 1 a
+posix finds=unknown | awk --load=ext 1 a
+posix finds=unknown | awk --loa ext 1 a
+posix finds=unknown | awk -bl ext 1 a
+posix finds=unknown | awk -W load ext 1 a
+posix finds=unknown | awk -Wload=ext 1 a
+posix finds=unknown | awk -l "$L" 1 a
+posix finds=unknown | awk -l inplace 1 a
+posix finds=unknown | awk -l
+posix finds=unknown | awk '@load"ext"; 1' a
+posix finds=unknown | awk -e '@load "ext"' -e 1 a
+posix finds=unknown | awk -i inplace '@load "ext"; 1' a
+posix finds=overwrite,unknown | awk -i inplace -l ext 1 /etc/x
+posix finds=unknown | awk '@include "file.awk"; 1' a
+posix finds=unknown | awk --include file.awk 1 a
+posix safe | awk -i inplace '{print}' f
+posix safe | awk '{print}' f
+posix safe | awk '{print "load"}' f
 posix safe | awk -i inplace 1 src/a.txt
 posix safe | awk -i inplace '{sub(/a/, "b")} 1' a b
 posix safe | awk -i inplace 1 x=1 a

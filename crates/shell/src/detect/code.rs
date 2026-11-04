@@ -43,19 +43,30 @@ impl Checker<'_> {
 
     /// awk code that runs commands (`system(…)`, a pipe) or writes files
     /// (`print > "f"`) is risky; so is code the guard cannot read (`-f script`,
-    /// a library `-i` or `@include` loads, a variable). gawk's `inplace`
-    /// library (`-i inplace`) edits each file awk reads, so each is a write,
-    /// as is the file `-o`, `-p` or `-d` is given. The options are read as
-    /// gawk's `getopt_long` reads them (see [`awk_options`]).
+    /// a library `-i` or `@include` loads, a variable), and so is a shared
+    /// library `-l` or `@load` loads, native code whatever its name. gawk's
+    /// `inplace` library (`-i inplace`) edits each file awk reads, so each
+    /// is a write, as is the file `-o`, `-p` or `-d` is given. The options
+    /// are read as gawk's `getopt_long` reads them (see [`awk_options`]).
     fn awk(&mut self, unit: &Unit) {
         let args = unit.args.as_slice();
         let read = awk_options(args);
         let mut programs: Vec<Value<'_>> = Vec::new();
         let mut file = false;
         let mut libraries: Vec<Library<'_>> = Vec::new();
+        // A shared library `-l` or `@load` loads, with the word that names
+        // it when that is only known when it runs.
+        let mut extension: Option<Option<&Arg>> = None;
         for &(name, value) in &read.options {
             match name {
                 "file" | "exec" => file = true,
+                "load" => {
+                    let unread = match value {
+                        Some(Value::Word(arg)) if arg.known().is_none() => Some(arg),
+                        _ => None,
+                    };
+                    extension = Some(extension.flatten().or(unread));
+                }
                 "source" => programs.extend(value),
                 "include" => libraries.push(value.map_or(Library::Other, library)),
                 "dump-variables" | "pretty-print" | "profile" => {
@@ -98,6 +109,9 @@ impl Checker<'_> {
                         );
                     }
                     libraries.extend(included(code));
+                    if code.contains("@load") {
+                        extension = Some(extension.flatten());
+                    }
                 }
                 None => self.add(
                     Rule::Unknown,
@@ -105,6 +119,13 @@ impl Checker<'_> {
                     Some(&program.arg()),
                 ),
             }
+        }
+        if let Some(arg) = extension {
+            self.add(
+                Rule::Unknown,
+                "loads an awk extension the guard does not read",
+                arg,
+            );
         }
         if libraries.iter().any(|library| *library != Library::InPlace) {
             self.add(
