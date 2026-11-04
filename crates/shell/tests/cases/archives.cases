@@ -1176,6 +1176,24 @@ posix finds=overwrite | aunpack --sav=/etc/x a.zip
 posix safe | cpio -o --fi x.cpio < list
 posix safe | atool --ad x.zip src
 
+# `arepack` (`atool -r`, `--repack`) writes the archive its second operand
+# names, and with `-e` (`--each`) writes each archive again beside itself, in
+# the format `-F` names: judged by the name as written.
+posix finds=overwrite reason="writes to a shell startup file" | arepack a.tgz ~/.bashrc
+posix finds=overwrite | arepack -F zip a.tgz ~/x.zip
+posix finds=overwrite | atool -r a.tgz ~/x.zip
+posix finds=overwrite | atool --repack a.tgz /etc/x.zip
+posix finds=overwrite | atool --rep a.tgz ~/x.zip
+posix finds=overwrite | arepack -e -F zip ~/a.tgz
+posix finds=overwrite | arepack --each -F zip a.tgz ~/b.tgz
+posix finds=overwrite | atool -re -F zip ~/a.tgz
+posix finds=overwrite reason="may write to a file outside the workspace with an option only known when it runs" | atool "-$m" a.tgz ~/x.zip
+posix safe | arepack a.tgz out.zip
+posix safe | arepack ~/a.tgz out.zip
+posix safe | arepack -e -F zip a.tgz b.tgz
+posix safe | arepack -S a.tgz ~/x.zip
+posix safe | atool -r a.tgz out.zip
+
 # A command or mode only known when it runs may be the one that writes the
 # archive, and the write is said as what it may do.
 posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | 7z "$c" ~/.bashrc src
@@ -1206,6 +1224,38 @@ posix safe | ditto -c -k src x.zip
 posix safe | apack x.zip src
 powershell safe | Compress-Archive src out.zip
 powershell safe | Compress-Archive -Path src -DestinationPath out.zip
+
+# .NET writes the archive `CreateFromDirectory` names, its second argument,
+# and the one `ZipFile.Open` opens to create or update; opened to read, or
+# with a mode written out as `Read`, it writes nothing.
+powershell finds=overwrite | [IO.Compression.ZipFile]::CreateFromDirectory('src', 'C:\\Windows\\x.zip')
+powershell finds=overwrite reason="writes to a shell startup file" | [System.IO.Compression.ZipFile]::CreateFromDirectory('src', "$HOME\\.bashrc")
+powershell finds=overwrite | [IO.Compression.ZipFile]::CreateFromDirectory('src', 'C:\\Windows\\x.zip', 'Optimal', $true)
+powershell finds=overwrite | [System.Formats.Tar.TarFile]::CreateFromDirectory('src', 'C:\\Windows\\x.tar', $false)
+powershell finds=overwrite | [System.Formats.Tar.TarFile]::CreateFromDirectoryAsync('src', 'C:\\Windows\\x.tar', $false)
+powershell finds=overwrite | $t = [IO.Compression.ZipFile]; $t::CreateFromDirectory('src', 'C:\\Windows\\x.zip')
+powershell finds=overwrite reason="writes to a file only known when it runs" | [IO.Compression.ZipFile]::CreateFromDirectory('src', $out)
+powershell finds=overwrite | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', 'Create')
+powershell finds=overwrite | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', 'update')
+powershell finds=overwrite | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', [IO.Compression.ZipArchiveMode]::Update)
+powershell finds=overwrite | [System.IO.Compression.ZipFile]::Open("$HOME\\.bashrc", [System.IO.Compression.ZipArchiveMode]::Create)
+powershell finds=overwrite | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', 1)
+powershell finds=overwrite | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', $mode)
+powershell finds=overwrite | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip')
+powershell finds=overwrite | $t = [IO.Compression.ZipFile]; $t::Open('C:\\Windows\\x.zip', 'Create')
+powershell finds=overwrite | $zip = [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', 'Update'); $zip.Dispose()
+powershell safe | [IO.Compression.ZipFile]::CreateFromDirectory('src', 'build\\x.zip')
+powershell safe | [System.Formats.Tar.TarFile]::CreateFromDirectory('src', 'build\\x.tar', $false)
+powershell safe | [IO.Compression.ZipFile]::Open('build\\x.zip', 'Create')
+powershell safe | [IO.Compression.ZipFile]::Open('build\\x.zip', [IO.Compression.ZipArchiveMode]::Update)
+powershell safe | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', 'Read')
+powershell safe | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', [IO.Compression.ZipArchiveMode]::Read)
+powershell safe | [IO.Compression.ZipFile]::Open('C:\\Windows\\x.zip', 0)
+powershell safe | $zip = [IO.Compression.ZipFile]::Open('build\\x.zip', 'Update'); $zip.Dispose()
+powershell safe | $t = [IO.Compression.ZipFile]; $t::Open('build\\x.zip', 'Create')
+powershell finds=overwrite | ([IO.Compression.ZipFile])::Open('C:\\Windows\\x.zip', 'Create')
+powershell finds=overwrite | [IO.File]::Open('build\\x.txt', 'Create')
+powershell finds=overwrite | $zipFile::Open()
 
 # `bsdunzip` is `unzip`; `aunpack` (`atool -x`) unpacks into the folder `-X`
 # (`--extract-to`) names, or the working directory.

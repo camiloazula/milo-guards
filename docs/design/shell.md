@@ -2471,7 +2471,7 @@ paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
 | `unrar`, `rar`, `WinRAR.exe` | `x` and `e` (any case): an operand after the archive's name that ends with `/` or `\`; any other, which may be a folder that exists; `-op<dir>`; the working directory when no operand ends with a separator and no `-op` is given | any other command (`l`, `t`, `p`, `a`) |
 | `unar` | `-o dir`, `-output-directory dir` (one dash or two); the working directory without one; the word after a word only known when it runs that may be `-o` | `-o -` (to the screen) |
 | `jar` | `x`, `-x`, `--extract`: the working directory, and `-C dir`, `--dir dir`, `--dir=dir`, which a JDK from 21 on unpacks into instead | `c`, `t`, `u`, `i`, `--list`, `--describe-module`, `--validate` |
-| `aunpack`, `atool -x` | `-X dir`, `-Xdir`, `--extract-to=dir`, `--extract-to dir`, from `--extract-` on, as Perl's `Getopt::Long` takes a unique prefix (`-X` alone also extracts with `atool`); the working directory without one; the word after a word only known when it runs that may be `-X` | `-S`/`--simulate`; `atool -l`, `-c`, `-d`, `-r` |
+| `aunpack`, `atool -x` | `-X dir`, `-Xdir`, `--extract-to=dir`, `--extract-to dir`, from `--extract-` on, as Perl's `Getopt::Long` takes a unique prefix (`-X` alone also extracts with `atool`); the working directory without one; the word after a word only known when it runs that may be `-X` | `-S`/`--simulate`; `atool -l`, `-c`, `-d`; `arepack` (`atool -r`) unpacks only into a folder of its own |
 | `python -m zipfile`, `python -m tarfile` (any Python of the interpreter table) | `-e ARCHIVE DIR` (`--extract`, any prefix of it): every word after the archive; `tarfile` with no `DIR`, or with the archive attached to the option (`--extract=a.tar`, `-ea.tar`), unpacks into the working directory, and a word after an attached archive, which `argparse` refuses, is judged too; a single-dash word is a bundle of letters, as `argparse` reads it, so `-ve` is `-v -e` | `-l`, `-c`, `-t` (also in a bundle, `-vl`) |
 | .NET `ExtractToDirectory`, `ExtractToFile` (PowerShell) | the second argument of a static call, made with `::` (`[IO.Compression.ZipFile]::ExtractToDirectory('x.zip', $HOME)`, `ZipFileExtensions`, `[Formats.Tar.TarFile]`, a type held in a variable, `$t::ExtractToDirectory(…)`, or in parentheses), the first of one called on an archive or an entry with `.` (`$zip.ExtractToDirectory(dir)`, `$entry.ExtractToFile(path)`), both of the first two when the operator cannot be read; judged as `Expand-Archive -DestinationPath` of the folder, `Out-File -FilePath` of the file | |
 
@@ -2566,9 +2566,19 @@ is the program's output, which a redirect sends on, and writes no file.
 | `7z`, `7za`, `7zr`, `7zz` | `a`, `u`, `d`, `rn` (any case, or a command only known when it runs, said as what it may do): the operand after the command | any other command |
 | `rar`, `WinRAR.exe` | `a`, `m`, `mf`, `u`, `f`, `d`, `c`, `ch`, `k`, `rn`, `rr`, `s` (any case, or a command only known when it runs, said as what it may do): the operand after the command | `unrar`, `x`, `e`, `l`, `t`, `p`, `v` |
 | `ditto` | `-c`: its last operand | |
-| `apack`, `atool -a` (`--add`) | its first operand; `--save-outdir=file` (aunpack too) writes `file`; atool takes a unique prefix of a long name (`--ad`, `--sav`), and a mode only known when it runs may be `-a` or `-x`, said as what it may do | `-S`, `--simulate` written whole |
+| `apack`, `atool -a` (`--add`) | its first operand; `--save-outdir=file` (aunpack too) writes `file`; atool takes a unique prefix of a long name (`--ad`, `--sav`), and a mode only known when it runs may be `-a`, `-r` or `-x`, said as what it may do, and may write any operand | `-S`, `--simulate` written whole |
+| `arepack`, `atool -r` (`--repack`, from `--r`) | its second operand (`arepack a.tgz ~/.bashrc`), or its only one; with `-e` (`--each`, from `--ea`) every operand, each written again beside itself in the format `-F` names, judged by its name as written | `-S`, `--simulate` written whole |
 | `python -m zipfile`, `python -m tarfile` | `-c ARCHIVE …` (`--create`): the archive | |
 | `Compress-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+| .NET `CreateFromDirectory`, `CreateFromDirectoryAsync` (PowerShell) | the second argument (`[IO.Compression.ZipFile]::CreateFromDirectory('src', 'C:\Windows\x.zip')`, `[Formats.Tar.TarFile]`, a type held in a variable), both of the first two when the operator cannot be read; a stream given there is a file only known when it runs | |
+| .NET `ZipFile.Open`, `OpenAsync` (PowerShell) | the first argument of `::Open` on `[…ZipFile]` or on a type only known when it runs (`$t::Open(…)`), with a mode of `Create` or `Update` (`'Create'`, `1`, `[IO.Compression.ZipArchiveMode]::Update`), one only known when it runs, or none | a mode written out as `Read` (`'Read'` in any case, `0`, `[IO.Compression.ZipArchiveMode]::Read`) |
+
+The two .NET calls are judged as `Compress-Archive -DestinationPath` of the
+archive; `ZipFile.Open` on the type written out is then no other open of a
+file, so `[IO.Compression.ZipFile]::Open('build\x.zip', 'Create')` and
+`…::Open('C:\Windows\x.zip', 'Read')` stay safe, while the generic
+"calls .NET to write or open files" still holds every other type's `Open`
+(`[IO.File]::Open(…)`, `$zipFile::Open()`).
 
 The archive is judged by its name as written: `zip`, `7z`, `rar` and
 `Compress-Archive` add an extension to a name with none, which is not read,
@@ -2608,19 +2618,24 @@ startup file, and `gzip src/a.txt` and `gunzip src/x.gz` stay safe.
 | `lzip`, `plzip`, `lunzip` | `.lz`; `.lz`, `.tlz` | unless `-k` | `-o`, `--output` |
 | `lzop` | `.lzo`; `.lzo`, `.tzo` | with `-U` (`--unlink`, `--delete`) | `-o`, `--output`, `-p` (`--path`, a folder), `-S`, `--suffix` |
 | `brotli` | `.br`; `.br` | with `-j` (`--rm`) | `-o`, `--output`, `-S`, `--suffix` |
+| `pixz` | `.xz`, and `.tar` becomes `.tpxz`; `.tar.xz` and `.tpxz` (to `.tar`), `.xz` | unless `-k`, or a second operand names what it writes; `-c` is ignored | a second operand; `-o` (with an operand, the name it makes wins, and both are judged); `-i` is the input, `-t` says it is no tarball, and `-l` and `-x` (to the screen) write only the file `-o` names |
+| `bzip3` | `.bz3`; `.bz3` | with `--rm` | a second operand, also with `-c`, unless `-B` (`--batch`) makes every operand an input; `-d` (`--decode`) and `-r` (`--recover`) decompress, `-e` (`--encode`) compresses |
+| `zopfli` | `.gz` (`.zlib` with `--zlib`, `.deflate` with `--deflate`, the last one given); it only compresses | never | `-c` alone writes to the screen: it reads only whole options, so `-vc` is none it knows, and every word that starts with `-` is an option |
 
 - `-c` (`--stdout`, `--to-stdout`) writes to the screen and deletes nothing,
   unless `-o` names a file: `zstd -c -o x` writes `x` (and deletes with
   `--rm`), and `brotli -o x -c` writes `x` too, so a file `-o` names is
   always judged, the cautious reading of `zstd -o x -c`, which writes to the
-  screen. `zcat`, `xzcat`, `bzcat`, `zstdcat` and `lz4cat` only read. With
+  screen. `pixz` ignores `-c`, and `bzip3` writes a second operand with it.
+  `zcat`, `xzcat`, `bzcat`, `zstdcat` and `lz4cat` only read. With
   no file, or `-`, it reads its input and writes its output: to the screen,
   or to the file `-o` names (`zstd -d -o ~/.bashrc < x.zst`, `lz4 -d -
   ~/.bashrc < x.lz4` write a shell startup file).
 - `-d` (`--decompress`, `--uncompress`, from any prefix of three letters or
   more, as `getopt_long` takes it) decompresses, `-z` (`--compress`)
   compresses, and `-t` (`--test`) and `-l` (`--list`, where the program has
-  it) test or list and write nothing: the last mode given wins, as in `xz`,
+  it) test or list and write nothing but a file `-o` names (`pixz -l -o x`
+  opens `x`): the last mode given wins, as in `xz`,
   `zstd`, `bzip2` and `lz4`, so `xz -t -z ~/.bashrc` and `xz -ld
   ~/.bashrc.xz` delete and write, and `xz -z -t ~/.bashrc` writes nothing.
   GNU `gzip` keeps testing after a later `-d`, which is read the same way,
@@ -2629,7 +2644,17 @@ startup file, and `gzip src/a.txt` and `gunzip src/x.gz` stay safe.
   is said as what it may do (`xz -t "-$M" ~/.bashrc` "may delete …"). A name with none of the suffixes
   the program takes off is judged as written over (the program refuses it,
   but `bzip2` writes `x.out`).
-- `-r` (`--recursive`) compresses every file in each folder it is given:
+- Windows' own `compress` (in cmd and PowerShell, `compress.exe`) keeps
+  the files it compresses and writes its last operand, a file or a folder
+  (`compress.exe -r src C:\Windows\x` writes to a system folder); with one
+  operand (`compress -r x.dll`) it writes that file beside itself, the last
+  letter of an extension of three letters or more made `_` (`x.dl_`), `_`
+  added to a shorter one and `._` to a name with none. Its options start
+  with `-` and take no value; a word only known when it runs is an operand
+  unless it starts with `-`, so `compress -r src\a.txt %OUT%` writes to a
+  file only known when it runs.
+- `-r` (`--recursive`) compresses every file in each folder it is given
+  (but in `pixz`, which has none, and `bzip3`, where it recovers):
   each folder is deleted as `rm` judges it and written into (`gzip -r ~`
   deletes your home directory).
 - A file from a list (`--files`, `--filelist`) or one only known when it runs
@@ -2643,7 +2668,8 @@ startup file, and `gzip src/a.txt` and `gunzip src/x.gz` stay safe.
   program that keeps the file by default (`zstd "--$X" ~/x` "may delete …"),
   or one that names the file, folder or suffix it writes, which is then a
   file only known when it runs ("may write to a file only known when it
-  runs with an option only known when it runs").
+  runs with an option only known when it runs"). One that may choose
+  `zopfli`'s format (`zopfli "--$f" x`) writes the name with each suffix.
 - The long options the guard reads as raising what a line does (decompress,
   delete, name the output, recurse, read a list) are read from a prefix of
   three letters or more; those that lower it (`--keep`, `--stdout`,
