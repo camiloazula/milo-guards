@@ -158,9 +158,9 @@ cmd finds=overwrite | cd C:\\ && tar -xf x.zip
 # `-C` (`--dir`), the folder `python -m zipfile -e` and `-m tarfile -e` name,
 # and the destination of .NET's `ExtractToDirectory`; with none, the working
 # directory. Listing and writing to the screen write nothing.
-posix safe | cpio -idm < a.cpio
-posix safe | cpio -idm -D build < a.cpio
-posix safe | cpio -i --directory=build < a.cpio
+posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | cpio -idm < a.cpio
+posix safe | cpio -idm --no-absolute-filenames -D build < a.cpio
+posix safe | cpio -i --no-absolute-filenames --directory=build < a.cpio
 posix safe | cpio -it < a.cpio
 posix safe | cpio -t < a.cpio
 posix safe | cpio -i --list < a.cpio
@@ -169,8 +169,8 @@ posix safe | cpio -i --only-verify-crc < a.cpio
 posix safe | cpio -o < list.txt > a.cpio
 posix safe | cpio -o -D ~ < list.txt > a.cpio
 posix safe | find . | cpio -pdm build
-posix safe | cpio -idm -E ~/patterns.txt < a.cpio
-posix safe | cpio -idm -H newc -D build < a.cpio
+posix safe | cpio -idm --no-absolute-filenames -E ~/patterns.txt < a.cpio
+posix safe | cpio -idm --no-absolute-filenames -H newc -D build < a.cpio
 posix finds=overwrite | cpio -idm -D ~ < a.cpio
 posix finds=overwrite | cd ~ && cpio -idm < a.cpio
 posix finds=overwrite | cpio -idmD ~ < a.cpio
@@ -194,7 +194,7 @@ posix finds=overwrite | find . | cpio -p --warning none ~
 posix finds=overwrite | cpio "$mode" -D ~ < a.cpio
 posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | cpio -idm --absolute-filenames < a.cpio
 posix finds=overwrite | bsdcpio -idm --insecure < a.cpio
-posix finds=overwrite reason="unpacks into your home directory" | cpio -idm -D ~ < a.cpio
+posix finds=overwrite reason="unpacks into your home directory" | cpio -idm --no-absolute-filenames -D ~ < a.cpio
 posix safe | ditto -xk a.zip build
 posix safe | ditto -x -k a.zip build/deps
 posix safe | ditto -xk a.zip .
@@ -210,7 +210,7 @@ posix@macos finds=overwrite | ditto -xk a.zip /Applications
 posix safe | ditto src build
 posix finds=overwrite reason="copies into your home directory" | ditto src ~
 posix finds=overwrite | ditto --rsrc src /Applications/X.app
-posix safe | pax -r -f a.pax
+posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | pax -r -f a.pax
 posix safe | pax -f a.pax
 posix safe | pax -w -f a.pax src
 posix safe | pax -rw src build
@@ -293,8 +293,8 @@ posix safe | python3 -m zipfile -e a.zip build
 posix safe | python3 -m zipfile -l a.zip
 posix lacks=overwrite | python3 -m zipfile -c a.zip src
 posix safe | python3 -m zipfile -t a.zip
-posix safe | python3 -m tarfile -e a.tar
-posix safe | python3 -m tarfile -e a.tar build
+posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | python3 -m tarfile -e a.tar
+posix safe | python3 -m tarfile --filter data -e a.tar build
 posix safe | python3 -m tarfile -l a.tar
 posix safe | python3 -m json.tool a.json
 posix finds=overwrite | python3 -m zipfile -e a.zip ~
@@ -313,7 +313,7 @@ posix finds=overwrite | python3 -m tarfile -e a.tar ~
 posix finds=overwrite | python3 -m tarfile -v --extract a.tar /etc
 posix finds=overwrite | python3 -m tarfile --filter data -e a.tar ~
 posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | python3 -m tarfile --filter fully_trusted -e a.tar build
-posix safe | python3 -m tarfile --extract=a.tar
+posix safe | python3 -m tarfile --filter data --extract=a.tar
 posix safe | python3 -m tarfile -vl a.tar
 posix finds=overwrite | cd ~ && python3 -m tarfile --extract=a.tar
 posix finds=overwrite | cd ~ && python3 -m tarfile --ext=a.tar
@@ -321,7 +321,7 @@ posix finds=overwrite | cd ~ && python3 -m tarfile -ea.tar
 posix finds=overwrite | cd ~ && python3 -m tarfile -ve a.tar
 posix finds=overwrite | python3 -m zipfile -ve a.zip ~
 posix finds=overwrite | pypy3 -m zipfile -e a.zip ~
-posix safe | python3 -m tarfile -ea.tar build
+posix safe | python3 -m tarfile --filter data -ea.tar build
 posix safe | python3 -m zipfile -vl a.zip
 powershell safe | [System.IO.Compression.ZipFile]::ExtractToDirectory('x.zip', 'build')
 powershell safe | [IO.Compression.ZipFile]::ExtractToDirectory('x.zip', "$env:TEMP\\x")
@@ -431,13 +431,13 @@ posix finds=overwrite | tar --ge -f x.tar -C ~
 
 # tar with a mode only known when it runs may unpack. One outside quotes
 # may split into words, `--remove-files` among them.
-posix safe | tar -czf "$out" -C ~ .
-posix safe | tar -cf "$out" -C ~ "$file"
+posix rules=overwrite | tar -czf "$out" -C ~ .
+posix rules=overwrite | tar -cf "$out" -C ~ "$file"
 posix safe | tar -tf "$a" -C ~
 posix safe | tar "$mode" -f x.tar -C build
 posix finds=delete | tar $mode -f x.tar -C .
 posix safe | tar "$mode" -f x.tar -O -C ~
-posix safe | tar --create -f "$out" -C ~ .
+posix rules=overwrite | tar --create -f "$out" -C ~ .
 posix safe | tar -xf x.tar "$file"
 posix finds=overwrite | tar "$mode" -f x.tar -C ~
 posix finds=overwrite | tar $mode -C ~
@@ -605,7 +605,7 @@ posix finds=overwrite | bsdtar -xf x.tar --absolute-paths
 posix finds=overwrite | tar "$mode" -Pf x.tar
 
 # An option with a value only known when it runs is an option, not a member.
-posix safe | tar --create --file="$OUT" src --remove-files
+posix finds=overwrite lacks=delete | tar --create --file="$OUT" src --remove-files
 posix safe | tar -c --exclude="$SKIP" -f x.tar src --remove-files
 posix safe | tar -cf x.tar --transform="$T" src --remove-files
 posix finds=delete | tar --create --file="$OUT" ~ --remove-files
@@ -1052,7 +1052,7 @@ posix finds=overwrite | python3 -m tarfile -v -e a.tar ~/.config
 posix finds=overwrite | py -3 -m zipfile -e a.zip ~
 posix finds=overwrite | python3 -m zipfile -e a.zip /etc
 posix safe | python3 -m zipfile -e a.zip out
-posix safe | python3 -m tarfile -e a.tar out
+posix safe | python3 -m tarfile --filter tar -e a.tar out
 # `argparse` reads a single-dash word as a bundle of letters (`-ve` is `-v
 # -e`), and the rest of the word after `-e` as the archive.
 posix finds=overwrite | python3 -m tarfile -ve a.tar ~
@@ -1061,7 +1061,7 @@ posix finds=overwrite | python3 -m tarfile -vea.tar ~
 posix finds=overwrite | python3 -m zipfile --extract=a.zip ~
 posix finds=overwrite | python3 -m zipfile --ext a.zip ~
 powershell finds=overwrite | py -3 -m tarfile -ve a.tar C:\\Users\\me
-posix safe | python3 -m tarfile -ve a.tar out
+posix safe | python3 -m tarfile --filter data -ve a.tar out
 
 # A value only known when it runs may hide a member or the option that
 # removes what is packed: an expansion outside quotes may split into words,
@@ -1073,7 +1073,7 @@ posix finds=delete | tar --exclude $E -cf x.tar src --remove-files
 posix finds=delete | tar -cf$A src --remove-files
 posix finds=delete | tar -c --file=$A src --remove-files
 posix finds=delete | tar -c --exclude=$E src --remove-files
-posix safe | tar -c --file="$A" src --remove-files
+posix finds=overwrite lacks=delete | tar -c --file="$A" src --remove-files
 posix finds=delete | tar -czf x.tar src $OPTS
 posix finds=delete reason="may delete a path outside the workspace with an option only known when it runs" | tar -cf x.tar ~/src "--$X"
 posix finds=delete | tar -cf x.tar ~/src "--remove-$X"
@@ -1081,8 +1081,8 @@ posix finds=delete | zip $OPTS x.zip src
 posix finds=delete | zip "-$O" x.zip ~/src
 posix finds=delete | 7z a x.7z src $OPTS
 posix finds=delete | 7z a "-s$O" x.7z ~/src
-posix safe | tar -cf "$A" src
-posix safe | tar -cf "$A" src --remove-files
+posix rules=overwrite | tar -cf "$A" src
+posix finds=overwrite lacks=delete | tar -cf "$A" src --remove-files
 posix safe | tar -cf x.tar ~/src "--exclude=$X"
 posix safe | 7z a -p"$PASS" x.7z ~/src
 
@@ -1118,3 +1118,143 @@ cmd finds=delete | 7z a -r x.7z *.pack -sdel
 cmd finds=delete | 7z a -r x.7z head -sdel
 cmd safe | 7z a -r x.7z *.obj -sdel
 cmd safe | 7z a -r x.7z src\\*.pack -sdel
+
+# An archive written is a write of its file: the one `tar -f` (`--file`)
+# names when it makes, adds to or rewrites an archive, `cpio -o -F` (`-O`),
+# `pax -w -f`, `jar cf` (`--file`), the first operand of `zip`, `zip -O`,
+# the archive of `7z a`, `rar a`, `ditto -c`, `apack` and `python -m
+# zipfile -c`, and `Compress-Archive -DestinationPath`. `-` is the output.
+# Reading, listing and unpacking one write no archive.
+posix finds=overwrite reason="writes to a shell startup file" | tar -cf ~/.bashrc src
+posix finds=overwrite reason="writes to a shell startup file" | cpio -o -F ~/.bashrc < list
+posix finds=overwrite reason="writes to a file outside the workspace" | tar -cf ../x.tar src
+posix finds=overwrite | tar cf ~/x.tar src
+posix finds=overwrite | tar -czf ~/x.tgz src
+posix finds=overwrite | tar --create --file=/etc/x.tar src
+posix finds=overwrite | tar --create --file /etc/x.tar src
+posix finds=overwrite | tar --cr --fil /etc/x.tar src
+posix finds=overwrite | tar -rf ~/x.tar src
+posix finds=overwrite | tar -uf ~/x.tar src
+posix finds=overwrite | tar -A -f ~/x.tar y.tar
+posix finds=overwrite | tar --delete -f ~/x.tar member
+posix finds=overwrite | tar "$mode" -f ~/x.tar src
+posix finds=overwrite | cd ~ && tar -czf backup.tgz src
+posix finds=overwrite | cpio -o -O ~/x.cpio < list
+posix finds=overwrite | cpio --create --file=/etc/x.cpio < list
+posix finds=overwrite | cpio -oF ~/x.cpio < list
+posix finds=overwrite | pax -w -f ~/x.pax src
+posix finds=overwrite | pax -wf ~/x.pax src
+posix finds=overwrite reason="writes to a shell startup file" | zip ~/.bashrc src
+posix finds=overwrite | zip -r ~/x.zip src
+posix finds=overwrite | zip -d ~/x.zip member
+posix finds=overwrite | zip x.zip src -O ~/y.zip
+posix finds=overwrite | zip x.zip src --output-file=/etc/y.zip
+posix finds=overwrite | 7z a ~/.bashrc src
+posix finds=overwrite | 7z u ~/x.7z src
+posix finds=overwrite | 7z d ~/x.7z member
+posix finds=overwrite | rar a ~/x.rar src
+posix finds=overwrite | rar a -ep1 ~/x.rar src
+posix finds=overwrite | jar cf ~/x.jar src
+posix finds=overwrite | jar -cf ~/x.jar src
+posix finds=overwrite | jar --create --file ~/x.jar src
+posix finds=overwrite | jar uf ~/x.jar src
+posix finds=overwrite | ditto -c -k src ~/x.zip
+posix finds=overwrite | apack ~/x.zip src
+posix finds=overwrite | atool -a ~/x.zip src
+posix finds=overwrite | python3 -m zipfile -c ~/x.zip src
+posix finds=overwrite | python3 -m tarfile --create ~/x.tar src
+powershell finds=overwrite | Compress-Archive src C:\\Windows\\x.zip
+powershell finds=overwrite | Compress-Archive -Path src -DestinationPath ~\\x.zip
+powershell finds=overwrite | Compress-Archive -DestinationPath C:\\Windows\\x.zip -Path src
+posix finds=overwrite reason="writes to a file only known when it runs" | zip -r "$OUT" src
+posix finds=overwrite reason="writes to a shell startup file" | cpio -o --fi ~/.bashrc < list
+posix finds=overwrite | cpio -o --fi=/etc/x.cpio < list
+posix finds=overwrite | atool --ad ~/.bashrc src
+posix finds=overwrite | atool --a ~/x.zip src
+posix finds=overwrite | aunpack --sav=/etc/x a.zip
+posix safe | cpio -o --fi x.cpio < list
+posix safe | atool --ad x.zip src
+
+# A command or mode only known when it runs may be the one that writes the
+# archive, and the write is said as what it may do.
+posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | 7z "$c" ~/.bashrc src
+posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | rar "$c" ~/.bashrc src
+posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | tar "$mode" -f ~/.bashrc src
+posix finds=overwrite reason="may write to a shell startup file with an option only known when it runs" | jar "$mode" --file ~/.bashrc src
+posix finds=overwrite | pax "$mode" -f ~/.bashrc src
+posix finds=overwrite reason="may unpack into a shell startup file with an option only known when it runs" | atool "$m" ~/.bashrc
+posix safe | 7z "$c" x.7z src
+posix safe | rar "$c" x.rar src
+posix safe | tar -cf /tmp/x.tar src
+posix safe | tar -czf - src
+posix safe | cd ~ && tar -czf - src
+posix safe | tar -tf ~/x.tar
+posix safe | tar -xf ~/x.tar
+posix safe | tar -df ~/x.tar
+posix safe | cpio -o -F x.cpio < list
+posix safe | zip -r x.zip src
+posix safe | zip -r - src
+posix safe | zip -sf ~/x.zip
+posix safe | 7z l ~/x.7z
+posix safe | rar l ~/x.rar
+posix safe | unrar l ~/x.rar
+posix safe | jar cf x.jar src
+posix safe | jar tf ~/x.jar
+posix safe | pax -w -f x.pax src
+posix safe | ditto -c -k src x.zip
+posix safe | apack x.zip src
+powershell safe | Compress-Archive src out.zip
+powershell safe | Compress-Archive -Path src -DestinationPath out.zip
+
+# `bsdunzip` is `unzip`; `aunpack` (`atool -x`) unpacks into the folder `-X`
+# (`--extract-to`) names, or the working directory.
+posix finds=overwrite reason="unpacks into your home directory" | bsdunzip -d ~ x.zip
+posix finds=overwrite reason="unpacks into your home directory" | aunpack -X ~ a.zip
+posix finds=overwrite | aunpack --extract-to=/etc a.zip
+posix finds=overwrite | aunpack --extract-to /etc a.zip
+posix finds=overwrite | atool -X ~ a.zip
+posix finds=overwrite | atool -x -X ~ a.zip
+posix finds=overwrite | cd ~ && aunpack a.zip
+posix finds=overwrite | cd ~ && atool -x a.zip
+posix finds=overwrite | aunpack "$O" ~ a.zip
+posix finds=overwrite | aunpack --save-outdir=/etc/x a.zip
+posix finds=overwrite reason="unpacks into a system folder" | aunpack --extract-t=/etc a.zip
+posix finds=overwrite | aunpack --extract-t /etc a.zip
+posix finds=overwrite | atool --extract-t=/etc a.zip
+posix finds=overwrite | aunpack --extract- ~ a.zip
+posix finds=overwrite | cd ~ && atool --ext a.zip
+posix safe | aunpack --extract-t=build a.zip
+posix safe | aunpack --simulate -X ~ a.zip
+posix finds=overwrite | aunpack --sim -X ~ a.zip
+posix safe | bsdunzip x.zip
+posix safe | bsdunzip -d build x.zip
+posix safe | bsdunzip -l ~/x.zip
+posix safe | aunpack a.zip
+posix safe | aunpack -X build a.zip
+posix safe | aunpack -S -X ~ a.zip
+posix safe | atool -l ~/a.zip
+
+# `jar` takes more arguments from an `@file` the line does not show.
+posix finds=unknown reason="takes arguments from a file the guard does not read" | jar xf a.jar @opts
+posix finds=unknown | jar @opts
+posix finds=unknown | jar cf x.jar @files
+posix finds=unknown | jar "@$F"
+
+# GNU cpio (`cpio` may be it), `pax -r` and Python's `tarfile` before 3.14
+# without `--filter` restore an absolute path stored in the archive as it
+# is: `overwrite`, wherever they unpack. `--no-absolute-filenames`, bsdcpio
+# and a `--filter` of `data` or `tar` do not.
+posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | gcpio -idm < a.cpio
+posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | cpio -idm -D build < a.cpio
+posix finds=overwrite | cpio "$mode" < a.cpio
+posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | pax -rv -f a.pax
+posix finds=overwrite | pax "$mode" -f a.pax
+posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | python3 -m tarfile -e a.tar build
+posix finds=overwrite | python3 -m tarfile --extract=a.tar
+posix safe | cpio -idm --no-absolute-filenames < a.cpio
+posix safe | cpio -idm --no-abs < a.cpio
+posix safe | gcpio -i --no-absolute-filenames -D build < a.cpio
+posix safe | bsdcpio -idm < a.cpio
+posix safe | bsdcpio -idm -D build < a.cpio
+posix safe | python3 -m tarfile --filter data -e a.tar
+posix safe | python3 -m tarfile --filter=tar -e a.tar build

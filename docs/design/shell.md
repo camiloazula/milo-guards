@@ -1978,9 +1978,9 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives. |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives, or compresses them in place (`gzip ~/.bashrc`). |
 | `wipe_disk` | Formats, repartitions or writes over a disk; `dd` writes to a file only known when it runs ([below](#values-only-known-when-they-run)). |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`) or renamed as it runs (`pax -s`). |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`, and by default GNU `cpio -i`, `pax -r` and `python -m tarfile -e` without `--filter`) or renamed as it runs (`pax -s`); writes an archive or a compressed file to such a file (`tar -cf ~/.bashrc src`, `gzip -d ~/.bashrc.gz`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -2394,7 +2394,7 @@ paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
 | Program | Folder | Writes nothing |
 | --- | --- | --- |
 | `tar`, `gtar`, `bsdtar` | `-C dir`, `-Cdir`, `--directory dir`, `--directory=dir`, `--one-top-level=dir` (every one given); an old-style first argument (`tar xf x.tar -C dir`) is read too | no `-x`/`--extract`/`--get`; `-t`, `-c`, `-r`, `-u`, `-A`, `-d`; `-O`/`--to-stdout` |
-| `unzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
+| `unzip`, `bsdunzip` | `-d dir`, `-ddir`, inside a bundle (`-qod dir`) | `-l`, `-v`, `-t`, `-Z`, `-p`, `-c`, `-z` |
 | `7z`, `7za`, `7zr`, `7zz` | `-oDIR` (every one given); `x` and `e` only | any other command (`l`, `a`, `t`) |
 | `Expand-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
 | `cpio`, `gcpio`, `bsdcpio` | copy-in (`-i`, `--extract`): `-D dir`, `-Ddir`, `--directory=dir` (every one given); pass-through (`-p`, `--pass-through`) copies into its first operand, under `-D` | `-t`/`--list`, `-o`/`--create`, `--to-stdout`, `--only-verify-crc` |
@@ -2403,6 +2403,7 @@ paths only known when it runs"), whatever folder `-C` names. `tar -cPf`,
 | `unrar`, `rar`, `WinRAR.exe` | `x` and `e` (any case): an operand after the archive's name that ends with `/` or `\`; any other, which may be a folder that exists; `-op<dir>`; the working directory when no operand ends with a separator and no `-op` is given | any other command (`l`, `t`, `p`, `a`) |
 | `unar` | `-o dir`, `-output-directory dir` (one dash or two); the working directory without one; the word after a word only known when it runs that may be `-o` | `-o -` (to the screen) |
 | `jar` | `x`, `-x`, `--extract`: the working directory, and `-C dir`, `--dir dir`, `--dir=dir`, which a JDK from 21 on unpacks into instead | `c`, `t`, `u`, `i`, `--list`, `--describe-module`, `--validate` |
+| `aunpack`, `atool -x` | `-X dir`, `-Xdir`, `--extract-to=dir`, `--extract-to dir`, from `--extract-` on, as Perl's `Getopt::Long` takes a unique prefix (`-X` alone also extracts with `atool`); the working directory without one; the word after a word only known when it runs that may be `-X` | `-S`/`--simulate`; `atool -l`, `-c`, `-d`, `-r` |
 | `python -m zipfile`, `python -m tarfile` (any Python of the interpreter table) | `-e ARCHIVE DIR` (`--extract`, any prefix of it): every word after the archive; `tarfile` with no `DIR`, or with the archive attached to the option (`--extract=a.tar`, `-ea.tar`), unpacks into the working directory, and a word after an attached archive, which `argparse` refuses, is judged too; a single-dash word is a bundle of letters, as `argparse` reads it, so `-ve` is `-v -e` | `-l`, `-c`, `-t` (also in a bundle, `-vl`) |
 | .NET `ExtractToDirectory`, `ExtractToFile` (PowerShell) | the second argument of a static call, made with `::` (`[IO.Compression.ZipFile]::ExtractToDirectory('x.zip', $HOME)`, `ZipFileExtensions`, `[Formats.Tar.TarFile]`, a type held in a variable, `$t::ExtractToDirectory(…)`, or in parentheses), the first of one called on an archive or an entry with `.` (`$zip.ExtractToDirectory(dir)`, `$entry.ExtractToFile(path)`), both of the first two when the operator cannot be read; judged as `Expand-Archive -DestinationPath` of the folder, `Out-File -FilePath` of the file | |
 
@@ -2456,20 +2457,129 @@ The other unpackers read their folder as `tar` does, with these choices:
   it runs). `pax -s` renames each stored path by a rule that only meets the
   names when it runs: "unpacks to paths only known when it runs" (`copies to
   …` with `-rw`).
-- GNU cpio without `--no-absolute-filenames`, `pax`, and Python's `tarfile`
-  before 3.14 without `--filter` also keep a stored absolute path. As for
-  every other archive, the stored paths are not in the line and are not read:
-  `cpio -idm < a.cpio` is safe in the workspace. A cautious choice would make
-  every such line `overwrite`; it is not taken.
-- `cpio -o`, `ditto -c`, `pax -w` and `jar c` write an archive, which this
-  rule does not judge. Plain `ditto src dst` copies `src` into `dst`, which
-  is judged as the destination of `cp`: `ditto src ~` copies into the home
-  directory.
+- GNU cpio without `--no-absolute-filenames` (`--no-a`, any longer prefix),
+  `pax -r`, and Python's `tarfile` before 3.14 without `--filter` restore an
+  absolute path stored in the archive as it is, by default. The stored paths
+  are not in the line, so such a line may write anywhere: `overwrite`
+  ("unpacks to absolute paths only known when it runs"), wherever it unpacks,
+  so `cpio -idm < a.cpio`, `pax -r -f a.pax` and `python3 -m tarfile -e
+  a.tar` are `overwrite` in the workspace too: the cautious choice, which
+  the owner took. `cpio` may be GNU cpio or bsdcpio and is read as GNU cpio; `bsdcpio`
+  strips the leading `/` unless `--insecure` is given, and a `--filter` of
+  `data` or `tar` strips it too, so `bsdcpio -idm < a.cpio`, `cpio -idm
+  --no-absolute-filenames < a.cpio` and `python3 -m tarfile --filter data
+  -e a.tar` stay safe. `tar`, `unzip`, `7z`, `unrar` and `jar` strip it by
+  default, as Python's `zipfile` does; `pax` has no option that does, other
+  than a rename of its own (`-s`), which is judged above.
+- `cpio -o`, `ditto -c`, `pax -w` and `jar c` write an archive, judged in
+  [Archives and compressed files written](#archives-and-compressed-files-written).
+  Plain `ditto src dst` copies `src` into `dst`, which is judged as the
+  destination of `cp`: `ditto src ~` copies into the home directory.
 
 The reasons say `unpacks into your home directory`, `unpacks into a folder
 outside the workspace`, `unpacks into a folder only known when it runs`
 (`copies into …` for `cpio -p`, `pax -rw` and plain `ditto`). A folder that is the
 workspace, inside it or a temporary file is not risky.
+
+### Archives and compressed files written
+
+An archive written is a write of its file, judged where it lands as any
+write is (see Paths, "writes to …"): beyond the workspace, a startup file or
+a protected one is `overwrite`, and so is one only known when it runs. `-`
+is the program's output, which a redirect sends on, and writes no file.
+
+| Program | The archive it writes | Writes none |
+| --- | --- | --- |
+| `tar`, `gtar`, `bsdtar` | every `-f file` (`-ffile`, the `f` of an old-style bundle, `--file`, `--file=`, any prefix of three letters or more), with `-c`, `-r`, `-u`, `-A` (`--catenate`, `--concatenate`) or `--delete`, or with a mode only known when it runs; it is opened from where the line runs, whatever `-C` says | `-x`, `-t`, `-d` |
+| `cpio`, `gcpio`, `bsdcpio` | copy-out (`-o`, `--create`): `-F file`, `-O file`, `--file=file` (from `--fi`, the shortest unique prefix); a mode only known when it runs may be copy-out | copy-in and pass-through, where `-F` is the archive read |
+| `pax` | `-w` without `-r`: `-f file` (`-ffile`); a mode only known when it runs may be `-w` | `-r`, `-rw` |
+| `jar` | `c`, `u` (`--create`, `--update`): the value of `f` (`--file`) | `x`, `t`, `i` |
+| `zip` | its first operand (a name only known when it runs is one too), and `-O file` (`--output-file`) | `-sf` (`--show-files`) |
+| `7z`, `7za`, `7zr`, `7zz` | `a`, `u`, `d`, `rn` (any case, or a command only known when it runs, said as what it may do): the operand after the command | any other command |
+| `rar`, `WinRAR.exe` | `a`, `m`, `mf`, `u`, `f`, `d`, `c`, `ch`, `k`, `rn`, `rr`, `s` (any case, or a command only known when it runs, said as what it may do): the operand after the command | `unrar`, `x`, `e`, `l`, `t`, `p`, `v` |
+| `ditto` | `-c`: its last operand | |
+| `apack`, `atool -a` (`--add`) | its first operand; `--save-outdir=file` (aunpack too) writes `file`; atool takes a unique prefix of a long name (`--ad`, `--sav`), and a mode only known when it runs may be `-a` or `-x`, said as what it may do | `-S`, `--simulate` written whole |
+| `python -m zipfile`, `python -m tarfile` | `-c ARCHIVE …` (`--create`): the archive | |
+| `Compress-Archive` | `-DestinationPath`, or the second positional argument (the first when `-Path` or `-LiteralPath` is named) | |
+
+The archive is judged by its name as written: `zip`, `7z`, `rar` and
+`Compress-Archive` add an extension to a name with none, which is not read,
+so a name that is a startup file or a hook without its extension is judged
+as one (the cautious reading). `tar -cf ~/.bashrc src`, `cpio -o -F ~/.bashrc
+< list` and `zip ~/.bashrc src` write a shell startup file; `tar -cf
+../x.tar src` writes a file outside the workspace; `tar -czf "$out" src`
+writes a file only known when it runs, as `echo x > "$out"` does; `tar -cf
+x.tar src`, `tar -czf - src` and `tar -cf /tmp/x.tar src` stay safe. A
+mode or command only known when it runs that may be the one that writes
+(`7z "$c" ~/.bashrc src`, `tar "$mode" -f ~/x.tar`) makes each write said as
+what it may do ("may write to a shell startup file with an option only
+known when it runs").
+
+`jar` takes more arguments from an `@file`, which the line does not show
+and which may hold any mode or folder: an argument that starts with `@` is
+`unknown` ("takes arguments from a file the guard does not read"), as
+`jar xf a.jar @opts` is. 7-Zip's and RAR's `@list` files hold only the names
+of members, which are judged in [Archiving that removes what it
+archives](#archiving-that-removes-what-it-archives); they hold no switch.
+
+A compressor run on a file replaces it: `gzip x` writes `x.gz` beside it and
+deletes `x`, and `gzip -d x.gz` (`gunzip`) writes `x` and deletes `x.gz`. The
+file it deletes is judged as the operands of `rm` are ("deletes …"), and
+the file it writes as any write, so `gzip ~/.bashrc` is `delete` ("deletes a
+shell startup file") and `overwrite`, `gunzip ~/.bashrc.gz` writes a shell
+startup file, and `gzip src/a.txt` and `gunzip src/x.gz` stay safe.
+
+| Program | Adds, and takes off | Deletes the file | Names what it writes |
+| --- | --- | --- | --- |
+| `gzip`, `pigz`, `gunzip`, `unpigz` | `.gz`; `.gz`, `-gz`, `.z`, `-z`, `_z`, `.tgz` and `.taz` (to `.tar`) | unless `-k` (`--keep`) | `-S`, `--suffix` |
+| `xz`, `lzma`, `unxz`, `unlzma` | `.xz` (`.lzma`); `.xz`, `.txz`, `.lzma`, `.tlz`, `.lz` | unless `-k` | `-S`, `--suffix`; `--files`, `--files0` read the files from a list |
+| `bzip2`, `pbzip2`, `lbzip2`, `bunzip2` | `.bz2`; `.bz2`, `.bz`, `.tbz2`, `.tbz`, any other name gets `.out` | unless `-k` | |
+| `zstd`, `pzstd`, `zstdmt`, `unzstd` | `.zst`; `.zst`, `.tzst`, `.gz`, `.tgz`, `.xz`, `.txz`, `.lzma`, `.lz4` | with `--rm` | `-o`, `--output-dir-flat`, `--output-dir-mirror` (the file's name in that folder); `--filelist` reads the files from a list |
+| `lz4`, `lz4c`, `unlz4` | `.lz4`; `.lz4`, `.tlz4` | with `--rm` | a second operand, unless `-m` (`--multiple`) or `-r` |
+| `compress`, `uncompress` (POSIX only: in cmd and PowerShell `compress` is Windows' own) | `.Z`; `.Z`, `.taZ` | always | |
+| `lzip`, `plzip`, `lunzip` | `.lz`; `.lz`, `.tlz` | unless `-k` | `-o`, `--output` |
+| `lzop` | `.lzo`; `.lzo`, `.tzo` | with `-U` (`--unlink`, `--delete`) | `-o`, `--output`, `-p` (`--path`, a folder), `-S`, `--suffix` |
+| `brotli` | `.br`; `.br` | with `-j` (`--rm`) | `-o`, `--output`, `-S`, `--suffix` |
+
+- `-c` (`--stdout`, `--to-stdout`) writes to the screen and deletes nothing,
+  unless `-o` names a file: `zstd -c -o x` writes `x` (and deletes with
+  `--rm`), and `brotli -o x -c` writes `x` too, so a file `-o` names is
+  always judged, the cautious reading of `zstd -o x -c`, which writes to the
+  screen. `zcat`, `xzcat`, `bzcat`, `zstdcat` and `lz4cat` only read. With
+  no file, or `-`, it reads its input and writes its output: to the screen,
+  or to the file `-o` names (`zstd -d -o ~/.bashrc < x.zst`, `lz4 -d -
+  ~/.bashrc < x.lz4` write a shell startup file).
+- `-d` (`--decompress`, `--uncompress`, from any prefix of three letters or
+  more, as `getopt_long` takes it) decompresses, `-z` (`--compress`)
+  compresses, and `-t` (`--test`) and `-l` (`--list`, where the program has
+  it) test or list and write nothing: the last mode given wins, as in `xz`,
+  `zstd`, `bzip2` and `lz4`, so `xz -t -z ~/.bashrc` and `xz -ld
+  ~/.bashrc.xz` delete and write, and `xz -z -t ~/.bashrc` writes nothing.
+  GNU `gzip` keeps testing after a later `-d`, which is read the same way,
+  the cautious reading. A word only known when it runs after the last `-t`
+  or `-l` that may be `-d` or `-z` may undo it, and what the line then does
+  is said as what it may do (`xz -t "-$M" ~/.bashrc` "may delete …"). A name with none of the suffixes
+  the program takes off is judged as written over (the program refuses it,
+  but `bzip2` writes `x.out`).
+- `-r` (`--recursive`) compresses every file in each folder it is given:
+  each folder is deleted as `rm` judges it and written into (`gzip -r ~`
+  deletes your home directory).
+- A file from a list (`--files`, `--filelist`) or one only known when it runs
+  is a path only known when it runs, and a folder only known when it runs
+  keeps its text in the file written there (`zstd --output-dir-flat "$D"
+  src/a` writes `"$D"/a.zst`). The files a pipeline hands it (`find ~
+  | xargs gzip`) are what the stage before lists, as for `rm`.
+- A word only known when it runs that may split into words is a file, and
+  may be options too; one that starts as an option (`"-$L"`) is an option.
+  Either may be `-d` (both names are written), the option that deletes in a
+  program that keeps the file by default (`zstd "--$X" ~/x` "may delete …"),
+  or one that names the file, folder or suffix it writes, which is then a
+  file only known when it runs ("may write to a file only known when it
+  runs with an option only known when it runs").
+- The long options the guard reads as raising what a line does (decompress,
+  delete, name the output, recurse, read a list) are read from a prefix of
+  three letters or more; those that lower it (`--keep`, `--stdout`,
+  `--test`, `--list`) only when written whole.
 
 ### Archiving that removes what it archives
 

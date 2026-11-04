@@ -27,6 +27,7 @@ pub(crate) use archives::commands as archive_commands;
 pub(crate) use editors::{reads_input as editor_reads_input, EDITORS};
 
 mod code;
+mod compressors;
 mod data;
 mod editors;
 mod files;
