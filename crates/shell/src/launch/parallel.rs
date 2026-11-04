@@ -1,7 +1,8 @@
 //! GNU `parallel`: a command, then the values it runs it with. Each job is a
 //! line its shell runs: the command's words joined with spaces (with `-q`,
 //! each word quoted), each value put, quoted, where a replacement string
-//! stands (`{}`, `{.}`, `{1}`) or after the words when none does.
+//! stands (`{}`, `{.}`, `{1}`) or after the words when none does. `sem`
+//! (`parallel --semaphore`) runs its command once, with no value.
 
 use super::{join, shell_word, Launch};
 use crate::unit::{Arg, Reads, MAX_LEN};
@@ -155,6 +156,7 @@ const LONG_FLAGS: &[&str] = &[
     "round",
     "round-robin",
     "rrs",
+    "semaphore",
     "show-limits",
     "shuf",
     "silent",
@@ -173,9 +175,21 @@ const LONG_FLAGS: &[&str] = &[
     "use-threads-instead-of-cores",
     "verbose",
     "version",
+    "wait",
     "will-cite",
     "xapply",
     "xargs",
+];
+
+/// The long options that start semaphore mode, as `--semaphore` does.
+const SEMAPHORE: &[&str] = &[
+    "bg",
+    "id",
+    "semaphore",
+    "semaphorename",
+    "semaphoretimeout",
+    "st",
+    "wait",
 ];
 
 /// The options that change how a value is split, named or put in the
@@ -242,6 +256,8 @@ struct Options {
     /// `--trim`: the sides of each value whose spaces are taken off, `l`
     /// and `r` (`n`, none).
     trim: String,
+    /// `--semaphore`: the command runs once, as `sem` runs it.
+    semaphore: bool,
 }
 
 /// `parallel`: its options, the command, and the values after `:::` (or
@@ -250,9 +266,23 @@ struct Options {
 /// builds them in a way the guard does not follow (`--colsep`, a `{= … =}`
 /// expression, an option it does not know), is not read.
 pub(super) fn parallel(args: &[Arg]) -> Launch {
+    read(args, false)
+}
+
+/// `sem`, GNU parallel's `parallel --semaphore`: its options, as
+/// `parallel`'s, then the command, which it runs once, with no value and
+/// without reading its input. With no command (`sem --wait`) it runs
+/// nothing.
+pub(super) fn sem(args: &[Arg]) -> Launch {
+    read(args, true)
+}
+
+/// [`parallel`], or [`sem`] when `semaphore`.
+fn read(args: &[Arg], semaphore: bool) -> Launch {
     let Some(options) = read_options(args) else {
         return Launch::Opaque(UNREAD);
     };
+    let semaphore = semaphore || options.semaphore;
     let separator = args[options.start..]
         .iter()
         .position(|arg| arg.known().is_some_and(is_separator))
@@ -286,7 +316,13 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
         at = end;
     }
     if sources.is_empty() {
-        sources.push(vec![Value::Input]);
+        if semaphore {
+            if command.is_empty() {
+                return Launch::Itself;
+            }
+        } else {
+            sources.push(vec![Value::Input]);
+        }
     }
     if command.is_empty() {
         return values_as_lines(&sources);
@@ -632,16 +668,18 @@ fn read_options(args: &[Arg]) -> Option<Options> {
         grouping: false,
         files: 0,
         trim: String::new(),
+        semaphore: false,
     };
+    let (mut fg, mut tmux) = (false, false);
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         let Some(text) = arg.known() else {
             options.start = at;
-            return Some(options);
+            break;
         };
         if text == "--" {
             options.start = at + 1;
-            return Some(options);
+            break;
         }
         if let Some(long) = text.strip_prefix("--") {
             let (name, value) = long
@@ -653,6 +691,11 @@ fn read_options(args: &[Arg]) -> Option<Options> {
             }
             options.grouping |= LONG_GROUPING.contains(&name);
             options.quote |= name == "quote";
+            // As `--semaphore` does, these start semaphore mode, and so does
+            // `--fg` without `--tmux`.
+            options.semaphore |= SEMAPHORE.contains(&name);
+            fg |= name == "fg";
+            tmux |= name == "tmux";
             options.files += usize::from(name == "arg-file");
             // `--replace` alone is `{}`; its own string only follows `=`.
             if name == "replace" {
@@ -716,8 +759,9 @@ fn read_options(args: &[Arg]) -> Option<Options> {
             continue;
         }
         options.start = at;
-        return Some(options);
+        break;
     }
+    options.semaphore |= fg && !tmux;
     Some(options)
 }
 

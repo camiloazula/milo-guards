@@ -1,0 +1,160 @@
+# A tracer, a recorder or a timer that writes its own output to a file,
+# named by an option or an operand beside the command it runs, writes that
+# file as a redirect does: it is judged by where it lands. The format is in
+# CONTRIBUTING.md.
+
+# The lines of the report.
+posix rules=overwrite | strace -o /etc/passwd ls
+posix rules=overwrite | script -q /etc/passwd ls
+posix rules=overwrite first=overwrite reason="writes to a shell startup file" | /usr/bin/time -o ~/.bashrc ls
+posix safe | strace -o trace.log ls
+posix safe | script -q session.log ls
+posix safe | /usr/bin/time -o time.log ls
+
+# strace: -o, attached, in a bundle, --output and --output=.
+posix rules=overwrite first=overwrite reason="writes to a shell startup file" | strace -o ~/.bashrc ls
+posix rules=overwrite | strace -o/etc/passwd ls
+posix rules=overwrite | strace -fo /etc/passwd ls
+posix rules=overwrite | strace -ff -o /etc/passwd ls
+posix rules=overwrite | strace --output /etc/passwd ls
+posix rules=overwrite | strace --output=/etc/passwd ls
+posix rules=overwrite | strace -e trace=file -o /etc/passwd ls
+posix finds=overwrite | sudo strace -o /etc/passwd ls
+posix rules=overwrite | strace -o ../../x.log ls
+posix safe | strace -fo trace.log ls
+posix safe | strace --output=trace.log ls
+posix safe | strace -o /dev/null ls
+posix safe | strace -e trace=file ls
+# The command it runs is judged too.
+posix finds=delete | strace -o trace.log rm -rf ~
+posix finds=delete,overwrite | strace -o /etc/passwd rm -rf ~
+# From where the line is.
+posix rules=overwrite | cd /etc && strace -o passwd ls
+posix safe | cd sub && strace -o trace.log ls
+posix rules=overwrite | env -C /etc strace -o passwd ls
+posix finds=overwrite | cd "$DIR" && strace -o trace.log ls
+# A file only known when it runs.
+posix finds=overwrite | strace -o "$OUT" ls
+posix finds=overwrite | strace -o "$HOME/.bashrc" ls
+# A file it writes that the line then runs.
+posix finds=unknown | strace -o x.sh ls; ./x.sh
+posix finds=unknown | script -q x.sh ls; sh x.sh
+posix finds=unknown | time -o x.sh ls; sh x.sh
+# Only its own options: the command's are its own.
+posix safe | strace ls -o /etc/passwd
+posix safe | time ls -o /etc/passwd
+posix safe | ltrace ls -o /etc/passwd
+# A file whose name starts with | or ! is a command strace pipes its output
+# to, which a shell runs.
+posix finds=delete | strace -o '|rm -rf ~' ls
+posix finds=delete | strace -o '!rm -rf ~' ls
+posix finds=delete | strace '-o|rm -rf ~' ls
+posix finds=delete | strace --output='|rm -rf ~' ls
+posix safe | strace -o '|cat' ls
+posix safe | strace -o '|gzip > trace.gz' ls
+posix rules=overwrite | strace -o '|gzip > /etc/passwd' ls
+posix finds=unknown | strace -o "|$CMD" ls
+posix finds=unknown | strace -o "|rm -rf $DIR" ls
+posix safe | strace -o '|cd /; ls' ls
+posix safe | strace -o '|cd /' -o trace.log ls
+
+# ltrace: -o, attached, in a bundle, --output and a shorter start of it.
+posix rules=overwrite | ltrace -o /etc/passwd ls
+posix rules=overwrite first=overwrite reason="writes to a shell startup file" | ltrace -o ~/.bashrc ls
+posix rules=overwrite | ltrace -o/etc/passwd ls
+posix rules=overwrite | ltrace -fo /etc/passwd ls
+posix rules=overwrite | ltrace --output /etc/passwd ls
+posix rules=overwrite | ltrace --output=/etc/passwd ls
+posix rules=overwrite | ltrace --out=/etc/passwd ls
+posix rules=overwrite | ltrace -e malloc -o /etc/passwd ls
+posix safe | ltrace -o trace.log ls
+posix safe | ltrace -e malloc ls
+# ltrace runs the program after its options.
+posix finds=delete | ltrace rm -rf ~
+posix finds=delete | ltrace -o trace.log -e malloc rm -rf ~
+
+# script: the file operand, also after -c, and the files of -B, -I, -O and
+# -T (util-linux), and of -t when attached or after --timing=.
+posix rules=overwrite first=overwrite reason="writes to a shell startup file" | script -q ~/.bashrc ls
+posix rules=overwrite | script /etc/passwd
+posix rules=overwrite | script -a /etc/passwd
+posix rules=overwrite | script -c ls /etc/passwd
+posix rules=overwrite | script -q -c ls /etc/passwd
+posix rules=overwrite | script /etc/passwd -c ls
+posix rules=overwrite | script --command ls /etc/passwd
+posix rules=overwrite | script -O /etc/passwd -c ls
+posix rules=overwrite | script -I /etc/passwd -c ls
+posix rules=overwrite | script -B /etc/passwd -c ls
+posix rules=overwrite | script -T /etc/passwd -c ls
+posix rules=overwrite | script --log-out /etc/passwd -c ls
+posix rules=overwrite | script --log-out=/etc/passwd -c ls
+posix rules=overwrite | script --log-in /etc/passwd -c ls
+posix rules=overwrite | script --log-io=/etc/passwd -c ls
+posix rules=overwrite | script --log-timing /etc/passwd -c ls
+posix rules=overwrite | script -t/etc/passwd -c ls
+posix rules=overwrite | script --timing=/etc/passwd -c ls
+posix rules=overwrite | script -q -- /etc/passwd ls
+posix rules=overwrite | script -F /etc/passwd ls
+posix safe | script
+posix safe | script -q
+posix safe | script session.log
+posix safe | script -c ls session.log
+posix safe | script -c ls
+posix safe | script -t 0 session.log ls
+posix safe | script -T timing.log -c ls session.log
+# Without a file it records to typescript, in the folder the line is in.
+posix rules=overwrite | cd /etc && script
+posix rules=overwrite | cd /etc && script -c ls
+# -p plays a recording back: it reads the file.
+posix safe | script -p /etc/passwd
+posix safe | script -dp /etc/passwd
+posix safe | script -q -p /etc/passwd
+# Only a flag letter -p plays back: not a letter in an option's value, nor
+# an option's value.
+posix rules=overwrite | script -cpwd /etc/passwd
+posix rules=overwrite | script -qcpwd /etc/passwd
+posix rules=overwrite | cd /etc && script -cpwd
+posix rules=overwrite | script -Bperf.log /etc/passwd
+posix rules=overwrite | script -Ologs/p.log /etc/passwd
+posix rules=overwrite | script -Iinput.log -c pwd /etc/passwd
+posix rules=overwrite | script -tperf.log /etc/passwd
+posix rules=overwrite | script -c -p /etc/passwd
+posix rules=overwrite | script -Fpipe /etc/passwd
+posix finds=delete | script -q session.log rm -rf ~
+posix finds=delete,overwrite | script -q /etc/passwd rm -rf ~
+
+# time: -o, attached, in a bundle with -a, --output, a shorter start of it,
+# and after -f, -p and -a.
+posix rules=overwrite | time -o /etc/passwd ls
+posix rules=overwrite first=overwrite reason="writes to a shell startup file" | time -o ~/.bashrc ls
+posix rules=overwrite | time -o/etc/passwd ls
+posix rules=overwrite | time -ao /etc/passwd ls
+posix rules=overwrite | time -a -o /etc/passwd ls
+posix rules=overwrite | time -p -o /etc/passwd ls
+posix rules=overwrite | time -f %e -o /etc/passwd ls
+posix rules=overwrite | time --output /etc/passwd ls
+posix rules=overwrite | time --output=/etc/passwd ls
+posix rules=overwrite | time --out /etc/passwd ls
+posix rules=overwrite | time --o=/etc/passwd ls
+posix rules=overwrite | time --append --output=/etc/passwd ls
+posix rules=overwrite | /usr/bin/time -a -o ~/.bashrc ls
+posix rules=overwrite | env time -o /etc/passwd ls
+posix rules=overwrite | command time -o /etc/passwd ls
+posix finds=overwrite | sudo /usr/bin/time -o /etc/passwd ls
+posix safe | time -o time.log ls
+posix safe | time -ao time.log ls
+posix safe | time --out time.log ls
+posix safe | time -p ls
+posix safe | time -f %e ls
+# What it runs is judged, past an option's value in any spelling.
+posix finds=delete | time -o time.log rm -rf ~
+posix finds=delete | time -ao time.log rm -rf ~
+posix finds=delete | time --out time.log rm -rf ~
+posix finds=delete | time --fo %e rm -rf ~
+posix finds=delete,overwrite | time -o /etc/passwd rm -rf ~
+posix finds=delete | /usr/bin/time --output=time.log rm -rf ~
+
+# The same wrappers on a PowerShell line, which also runs them.
+powershell@posix rules=overwrite | strace -o /etc/passwd ls
+powershell@posix rules=overwrite | script -q /etc/passwd ls
+powershell@posix safe | strace -o trace.log ls

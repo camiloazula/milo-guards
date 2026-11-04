@@ -71,6 +71,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     }
     walker.walk(tree.root_node(), None, 0);
     walker.fork_bombs(tree.root_node());
+    walker.split.last_read = walker.last_command.clone();
 }
 
 /// Whether a character may stand in a zsh glob qualifier the guard reads:
@@ -2740,10 +2741,10 @@ impl Walker<'_> {
         })
     }
 
-    /// Whether `assignment` turns zsh's `extendedglob` on through its
-    /// `options` table: `options[extendedglob]=on`, `options+=(extendedglob
-    /// on)` (see [`extended::assigns`]).
-    fn extends_glob(&self, assignment: Node<'_>) -> bool {
+    /// Whether `assignment` turns the zsh option on through its `options`
+    /// table: `options[extendedglob]=on`, `options+=(extendedglob on)`,
+    /// `options[autocd]=on` (see [`extended::assigns`]).
+    fn sets_option(&self, assignment: Node<'_>, option: extended::ZshOption) -> bool {
         let Some(name) = assignment.child_by_field_name("name") else {
             return false;
         };
@@ -2762,7 +2763,7 @@ impl Walker<'_> {
             Some(value) => vec![self.arg(value)],
             None => Vec::new(),
         };
-        extended::assigns(name, &values)
+        extended::assigns(option, name, &values)
     }
 
     /// `export "NODE_OPTIONS=x"` (a quoted assignment is a string), and
@@ -2856,8 +2857,11 @@ impl Walker<'_> {
         if self.sets_hiding(node) {
             self.split.hide();
         }
-        if self.extends_glob(node) {
+        if self.sets_option(node, extended::EXTENDED_GLOB) {
             self.split.extend_glob();
+        }
+        if self.sets_option(node, extended::AUTO_CD) {
+            self.split.turn_autocd_on();
         }
         // Set on a line of its own, or after `export`: the programs after it
         // have it, so it stays for the rest of the line.
