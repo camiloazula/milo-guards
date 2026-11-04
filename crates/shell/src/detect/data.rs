@@ -520,6 +520,15 @@ struct Given {
     programs: Vec<Option<Arg>>,
 }
 
+/// What a database client is given on its command line.
+enum Asked<'u> {
+    /// A client of a database server, and what its statements are written
+    /// in.
+    Server(Given, Language),
+    /// `sqlite3` or `duckdb`, which open a file.
+    Embedded(Embedded<'u>, Dialect),
+}
+
 /// What a long option of a client does with what follows it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Long {
@@ -2241,28 +2250,19 @@ impl Checker<'_> {
                 Some(&unit.program),
             );
         }
+        match self.asked(unit, key) {
+            Some(Asked::Server(given, language)) => {
+                self.client_given(at, unit, given, language);
+                return;
+            }
+            Some(Asked::Embedded(found, dialect)) => {
+                self.embedded_client(at, unit, &found, dialect);
+                return;
+            }
+            None => {}
+        }
         match key {
-            "psql" => self.sql_client(at, unit, &PSQL, args),
-            "mysql" | "mariadb" => self.sql_client(at, unit, &MYSQL, args),
-            "clickhouse-client" => self.sql_client(at, unit, &CLICKHOUSE, args),
-            "clickhouse" if args.first().and_then(Arg::known) == Some("client") => {
-                self.sql_client(at, unit, &CLICKHOUSE, args.get(1..).unwrap_or_default());
-            }
-            "sqlcmd" => self.sql_client(at, unit, &SQLCMD, args),
-            "cqlsh" => self.sql_client(at, unit, &CQLSH, args),
-            "mongosh" | "mongo" => self.sql_client(at, unit, &MONGO, args),
-            "sqlite3" => {
-                let found = embedded(args, &SQLITE);
-                self.embedded_client(at, unit, &found, Dialect::Sqlite);
-            }
-            "duckdb" => {
-                let found = embedded(args, &DUCKDB);
-                self.embedded_client(at, unit, &found, Dialect::DuckDb);
-            }
             "redis-cli" | "valkey-cli" | "keydb-cli" => self.redis(at, unit.shell, args),
-            "invoke-sqlcmd" if unit.shell == Shell::PowerShell => {
-                self.invoke_sqlcmd(at, unit, args);
-            }
             "pg_dropcluster" if !asks_help(args) => {
                 let cluster = resources::words(args, &[]).get(1).copied();
                 self.add(Rule::DropData, "deletes a database cluster", cluster);
@@ -2363,11 +2363,107 @@ impl Checker<'_> {
         }
     }
 
-    /// A client of a database server: every database on a server is risky,
-    /// since the line cannot tell a scratch one from production.
-    fn sql_client(&mut self, at: usize, unit: &Unit, client: &Client, args: &[Arg]) {
-        let args = self.templates(unit, args);
-        self.client_given(at, unit, client.statements(&args), client.language);
+    /// What the database client `key` (the program of `unit`) is given on
+    /// its command line, or `None` for a program that is no such client. A
+    /// client of a database server is judged by [`Self::client_given`]:
+    /// every database on a server is risky, since the line cannot tell a
+    /// scratch one from production. `sqlite3` and `duckdb` open a file, which
+    /// may be the agent's own ([`Self::embedded_client`]).
+    fn asked<'u>(&self, unit: &'u Unit, key: &str) -> Option<Asked<'u>> {
+        let args = unit.args.as_slice();
+        let server = |checker: &Self, client: &Client, args: &[Arg]| {
+            let args = checker.templates(unit, args);
+            Asked::Server(client.statements(&args), client.language)
+        };
+        let asked = match key {
+            "psql" => server(self, &PSQL, args),
+            "mysql" | "mariadb" => server(self, &MYSQL, args),
+            "clickhouse-client" => server(self, &CLICKHOUSE, args),
+            "clickhouse" if args.first().and_then(Arg::known) == Some("client") => {
+                server(self, &CLICKHOUSE, args.get(1..).unwrap_or_default())
+            }
+            "sqlcmd" => server(self, &SQLCMD, args),
+            "cqlsh" => server(self, &CQLSH, args),
+            "mongosh" | "mongo" => server(self, &MONGO, args),
+            // `Invoke-Sqlcmd`: SQL Server's cmdlet, which runs its `-Query`
+            // and its `-InputFile`.
+            "invoke-sqlcmd" if unit.shell == Shell::PowerShell => Asked::Server(
+                invoke_sqlcmd_queries(&self.templates(unit, args)),
+                Language::Sql(Dialect::SqlServer),
+            ),
+            "sqlite3" => Asked::Embedded(embedded(args, &SQLITE), Dialect::Sqlite),
+            "duckdb" => Asked::Embedded(embedded(args, &DUCKDB), Dialect::DuckDb),
+            _ => return None,
+        };
+        Some(asked)
+    }
+
+    /// The files the database client of the unit at `at` writes on this
+    /// machine beside its database, for a script the line then runs: those
+    /// its options name (`psql -o`, `mysql --tee`), and those its statements
+    /// do (`\o`, `.output`, `.backup`), read from the same statements
+    /// [`Self::data`] judges. Each comes with whether the client moved to a
+    /// folder the line does not say first (`\cd`), which puts every file its
+    /// statements write somewhere only known when it runs. A client in a
+    /// container or on another machine writes nothing here.
+    pub(super) fn client_writes(&mut self, at: usize, unit: &Unit) -> Vec<(Arg, bool)> {
+        if self.data.behind > 0 {
+            return Vec::new();
+        }
+        let Some(key) = unit.key() else {
+            return Vec::new();
+        };
+        let (own, mut files, exits, language) = match self.asked(unit, &key) {
+            Some(Asked::Server(given, language)) => {
+                let exits = given.exits && !given.files.iter().any(is_stdin);
+                let outputs = given.outputs.into_iter().map(|file| (file, false));
+                (given.statements, outputs.collect(), exits, language)
+            }
+            Some(Asked::Embedded(found, dialect)) => {
+                (found.statements, Vec::new(), false, Language::Sql(dialect))
+            }
+            None => return Vec::new(),
+        };
+        let mut statements: Vec<Arg> = own
+            .iter()
+            .map(|statement| self.template(unit, statement))
+            .collect();
+        let stages = if exits {
+            Vec::new()
+        } else {
+            self.fed(at, &mut statements).stages
+        };
+        let mut acts = Reading::default();
+        for statement in &statements {
+            acts.add_acts(read_text(language, statement).acts);
+        }
+        for key in stages {
+            for reading in self.stage_readings(key, language).iter() {
+                acts.add_acts(reading.acts.clone());
+            }
+        }
+        let moved = acts.acts.moves_folder;
+        // A folder written into (`EXPORT DATABASE 'DIR'`) gets files by names
+        // the line does not show: any file in it.
+        files.extend(acts.acts.writes.into_iter().map(|written| {
+            let name = if written.folder {
+                format!("{}/*", written.name.trim_end_matches('/'))
+            } else {
+                written.name
+            };
+            (Arg::Known(name), moved)
+        }));
+        files
+    }
+
+    /// Add to `statements` what the line feeds the unit at `at` (a
+    /// here-document, a here-string) and what the commands it runs for are
+    /// fed, and say where else its input comes from.
+    fn fed(&mut self, at: usize, statements: &mut Vec<Arg>) -> Upstream {
+        statements.extend(self.split.fed_to(at).cloned());
+        let mut up = self.upstream(at);
+        statements.append(&mut up.texts);
+        up
     }
 
     /// What a client of a database server is given, its statements written
@@ -2421,9 +2517,7 @@ impl Checker<'_> {
             self.judge_acts(unit, &acts);
             return;
         }
-        statements.extend(self.split.fed_to(at).cloned());
-        let up = self.upstream(at);
-        statements.extend(up.texts);
+        let up = self.fed(at, &mut statements);
         for statement in &statements {
             let reading = read_text(language, statement);
             self.judge(&reading, Some(statement), false);
@@ -2534,7 +2628,7 @@ impl Checker<'_> {
                 split
             }
         };
-        let found = super::nested(&split, self.resolver, self.data.nest.deeper());
+        let found = super::nested(&split, self, self.data.nest.deeper());
         self.found.extend(found);
     }
 
@@ -2555,14 +2649,6 @@ impl Checker<'_> {
         }
     }
 
-    /// `Invoke-Sqlcmd`: SQL Server's cmdlet, which runs its `-Query` and its
-    /// `-InputFile`.
-    fn invoke_sqlcmd(&mut self, at: usize, unit: &Unit, args: &[Arg]) {
-        let args = self.templates(unit, args);
-        let given = invoke_sqlcmd_queries(&args);
-        self.client_given(at, unit, given, Language::Sql(Dialect::SqlServer));
-    }
-
     /// `sqlite3` and `duckdb`: a database in a file is the agent's own when
     /// the file is in the workspace, judged like any file.
     fn embedded_client(&mut self, at: usize, unit: &Unit, found: &Embedded<'_>, dialect: Dialect) {
@@ -2571,9 +2657,7 @@ impl Checker<'_> {
             .iter()
             .map(|statement| self.template(unit, statement))
             .collect();
-        statements.extend(self.split.fed_to(at).cloned());
-        let up = self.upstream(at);
-        statements.extend(up.texts);
+        let up = self.fed(at, &mut statements);
         let own_file = match found.file {
             None => self.data.behind == 0,
             Some(_) if self.data.behind > 0 => false,

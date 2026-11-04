@@ -3,7 +3,8 @@
 //! shell, run as the program itself by its path, with `powershell -File`,
 //! `pwsh -File` or `Invoke-Command -FilePath`, by cmd's look in the working
 //! folder before `PATH`), and however it is written (by a redirect, a
-//! download, a copy, a write cmdlet's named or positional path). Where the
+//! download, a copy, a write cmdlet's named or positional path, a database
+//! client's output). Where the
 //! name the line writes cannot be read for sure (a pattern, an operand that
 //! may be a list, a name only known when it runs, more patterns than the
 //! guard reads), a run that may be of that file is not safe either. The work
@@ -11,13 +12,14 @@
 //!
 //! The lines and their answers are in `tests/cases/write_then_run.cases`;
 //! here are the script a finding names, the lines made of many names or
-//! patterns, and the timed test.
+//! patterns, and the timed tests.
 
 mod common;
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
-use common::{check, classify, posix, took, windows};
+use common::{assert_linear, check, classify, filled, posix, took, windows};
 use milo_guards_shell::{Rule, Shell};
 
 #[test]
@@ -265,4 +267,45 @@ fn many_pattern_writes_and_many_runs_are_read_in_time() {
         let elapsed = took(line, *shell, &paths);
         assert!(elapsed < LIMIT, "{what} in {shell:?}: {elapsed:?}");
     }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn the_files_database_clients_write_are_read_in_linear_time() {
+    let (shell, paths) = (Shell::Posix, posix());
+    // Each client's statements are read once more for the files it writes,
+    // and each run is looked up in what the line writes.
+    assert_linear(
+        "sqlite3 x.db '.output r0.sh'; sh r0.sh; …",
+        shell,
+        &paths,
+        |size| {
+            let mut line = String::new();
+            for at in 0.. {
+                let part = format!("sqlite3 x.db '.output r{at}.sh'; sh r{at}.sh; ");
+                if line.len() + part.len() > size {
+                    break;
+                }
+                line.push_str(&part);
+            }
+            line
+        },
+    );
+    // Many clients of one stage that writes many files, and a run.
+    assert_linear(
+        "a stage of outputs to many clients",
+        shell,
+        &paths,
+        |size| {
+            let mut said = String::new();
+            for at in 0..size / 80 {
+                let _ = write!(said, "echo '.output {at}.sh'; ");
+            }
+            let clients = filled("sqlite3 x.db; ", size / 2, 40);
+            format!("{{ {said}}} | {{ {clients}}}; sh 0.sh")
+        },
+    );
 }

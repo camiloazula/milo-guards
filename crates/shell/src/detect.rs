@@ -93,20 +93,34 @@ pub(crate) struct Judged {
 }
 
 pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
-    judge(split, resolver, data::Nest::default())
+    judge(split, resolver, data::Nest::default(), None)
 }
 
 /// What the rules find in `split`, a program a database client runs, read
-/// as a line of its own `nest` deep in such programs.
-fn nested(split: &Split, resolver: &Resolver, nest: data::Nest) -> Vec<Finding> {
-    judge(split, resolver, nest).found
+/// as a line of its own `nest` deep in such programs. It runs where the
+/// line `outer` judges started, and after it: a file that line writes is
+/// one this program may run.
+fn nested(split: &Split, outer: &Checker<'_>, nest: data::Nest) -> Vec<Finding> {
+    judge(split, outer.resolver, nest, Some(outer)).found
 }
 
 /// [`findings`], for a line `nest` deep in the programs database clients
-/// run (see [`data::Nest`]).
-fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
+/// run (see [`data::Nest`]), and run by the line `outer` judges.
+fn judge(
+    split: &Split,
+    resolver: &Resolver,
+    nest: data::Nest,
+    outer: Option<&Checker<'_>>,
+) -> Judged {
     let mut checker = Checker::new(split, resolver);
     checker.data.nest = nest;
+    if let Some(outer) = outer {
+        checker.written.clone_from(&outer.written);
+        checker.unplaced_write = outer.unplaced_write;
+        checker.patterns.clone_from(&outer.patterns);
+        checker.unsure_names.clone_from(&outer.unsure_names);
+        checker.anywhere = outer.anywhere;
+    }
     checker.found.clone_from(&split.findings);
     for unit in &split.units {
         let by_cmdlet = writes_by_cmdlet(unit);
@@ -126,6 +140,23 @@ fn judge(split: &Split, resolver: &Resolver, nest: data::Nest) -> Judged {
             // $x`) may be any file: a script the line runs may be it.
             if by_cmdlet && matches!(target, Arg::Unknown(_) | Arg::Template { .. }) {
                 checker.anywhere = true;
+            }
+        }
+    }
+    // A file a database client writes (`psql -o`, `\o`, `.output`) is
+    // written as a redirect's is; one written after the client moved to a
+    // folder the line does not say (`\cd`) may be any file of its name.
+    let moved = Arg::Unknown("the folder a database client moves to".to_string());
+    for (at, unit) in split.units.iter().enumerate() {
+        for (target, moves) in checker.client_writes(at, unit) {
+            let dir = if moves {
+                Some(&moved)
+            } else {
+                unit.dir.as_ref()
+            };
+            checker.written(dir, &target, unit.shell);
+            if moves || !unit.elsewhere.is_empty() {
+                checker.written_anywhere(&target, unit.shell);
             }
         }
     }
@@ -259,7 +290,7 @@ const MAX_NAME_LEN: usize = 255;
 
 /// A pattern the line writes by (`Set-Content *.ps1 x`): every file it
 /// matches is written.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct WrittenPattern {
     /// The key of the folder it is in; `None` when that cannot be placed.
     folder: Option<String>,
