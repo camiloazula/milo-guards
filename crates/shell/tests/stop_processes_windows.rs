@@ -133,7 +133,7 @@ fn every_form_of_a_dotnet_match_pattern_is_judged_alike() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn the_process_rules_read_long_patterns_quickly() {

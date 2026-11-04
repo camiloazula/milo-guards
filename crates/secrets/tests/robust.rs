@@ -335,7 +335,7 @@ fn timed(text: &str, runs: usize) -> Duration {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_megabyte_of_one_character_and_of_nested_quotes_is_read_in_a_bound() {
@@ -358,7 +358,7 @@ const LIMIT: Duration = Duration::from_secs(10);
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn every_hostile_text_is_read_in_a_bound() {
@@ -381,7 +381,7 @@ fn check_answer_spans_only(text: &str) {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn reading_takes_time_in_proportion_to_the_text() {
@@ -401,7 +401,7 @@ fn reading_takes_time_in_proportion_to_the_text() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_line_of_hits_costs_the_same_per_hit_as_a_short_one() {

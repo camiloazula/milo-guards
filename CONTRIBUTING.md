@@ -33,7 +33,7 @@ while it fails. It runs, in order, over the whole workspace:
 | `just format-check` | `cargo fmt --all --check` |
 | `just lint` | clippy, `--all-targets --all-features`, zero warnings (`cargo lint` runs the same) |
 | `just coverage` | every unit and integration test, `--all-features --locked`, run once in an instrumented build, and line coverage against the floor in the `justfile` (`--fail-under-lines`); raise it as coverage lands, never lower it to pass |
-| `just timing` | every test, in an optimized build (`cargo test --release --workspace --all-features --locked`): the tests that time the guard compare against limits that describe an optimized build, so they are ignored under coverage (`cfg(coverage)`) and run here |
+| `just timing` | every test, in an optimized build (`cargo test --release --workspace --all-features --locked`): the tests that time the guard compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here |
 | `just doc-test` | every doctest, README example included (`cargo test --doc --workspace --all-features --locked`), which coverage does not run |
 | `just doc` | rustdoc on the workspace with warnings denied, so a broken intra-doc link fails (`--all-features --no-deps --locked`) |
 | `just no-inline` | the shell guard without its `inline` feature (no readers of Python and JavaScript, no grammars): clippy on all its targets with zero warnings, and `tests/inline_off.rs`, which holds every inline line to `unknown`; `--all-features` never builds it that way |
@@ -43,8 +43,18 @@ The code is compiled by clippy's check pass, by the one instrumented build
 every unit and integration test but the timing tests runs from, and by one
 optimized build that runs every test; the doctests and rustdoc build what they
 need on top, and the shell guard is built once more without its `inline`
-feature (`just no-inline`). `just test` runs every test, doctests included,
-without coverage, quicker while working.
+feature (`just no-inline`). `just test` runs every test but the timing
+tests, doctests included, in a debug build without coverage, quicker while
+working.
+
+A timing test reads the clock in an optimized build only, with
+`#[cfg_attr(any(coverage, debug_assertions), ignore = "timing: ...")]`, so a
+slow build or a busy machine does not fail it. Where it checks that a shape
+is read in time that grows with its length, it compares a line of 16 KB with
+one of 64 KB (`assert_linear` in the shell guard's `tests/common`), not one
+line with a fixed limit. Where it holds a line to a fixed limit, the limit
+leaves room for a machine several times slower and busy with another gate:
+about ten times what an optimized build takes here.
 
 `just advisories` is not part of `just verify`. It checks the RustSec database
 (`cargo deny check advisories`), which needs the network and changes without a

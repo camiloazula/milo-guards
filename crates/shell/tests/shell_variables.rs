@@ -15,9 +15,7 @@
 
 mod common;
 
-use std::time::Duration;
-
-use common::{check, posix, took};
+use common::{assert_linear, check, posix, Maker};
 use milo_guards_shell::{Rule, Shell};
 
 #[test]
@@ -34,6 +32,11 @@ fn names(before: &str, after: &str, count: usize) -> String {
     })
 }
 
+/// `count` scaled to a line of `size`: the count a line of 64 KB has.
+fn at(count: usize, size: usize) -> usize {
+    count * size / (64 * 1024)
+}
+
 #[test]
 fn more_bash_env_files_than_are_read_is_unknown() {
     let many = names("BASH_ENV=e", ".sh; ", 40);
@@ -47,69 +50,105 @@ fn more_bash_env_files_than_are_read_is_unknown() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_line_that_sets_bash_env_or_moves_over_and_over_is_judged_within_a_bound() {
-    let distinct = names("BASH_ENV=e", ";", 2500);
-    let lines = [
-        format!(
-            "echo x>e;{}{}",
-            "BASH_ENV=e;".repeat(3000),
-            "bash;".repeat(6000)
-        ),
-        format!("{distinct}{}", "bash;".repeat(5000)),
-        format!("{}{}", "BASH_ENV=e;".repeat(3000), ":;".repeat(15000)),
-        "cd abcdefgh; ".repeat(4000),
-        "cd a; ls; ".repeat(5000),
-        format!("cd 'd$(x)'; {}", "cd abcdefgh; ".repeat(4000)),
-        format!("{}ls", "cd \"$x\"; cd a; ".repeat(3000)),
+    // At 64 KB each line holds the counts written here (`at`), at 16 KB a
+    // quarter of them: the one must take about four times as long as the
+    // other, not sixteen.
+    let lines: [(&str, Maker); 7] = [
+        ("BASH_ENV=e; … bash; …", &|size| {
+            format!(
+                "echo x>e;{}{}",
+                "BASH_ENV=e;".repeat(at(3000, size)),
+                "bash;".repeat(at(6000, size))
+            )
+        }),
+        ("BASH_ENV=e<n>; … bash; …", &|size| {
+            format!(
+                "{}{}",
+                names("BASH_ENV=e", ";", at(2500, size)),
+                "bash;".repeat(at(5000, size))
+            )
+        }),
+        ("BASH_ENV=e; … :; …", &|size| {
+            format!(
+                "{}{}",
+                "BASH_ENV=e;".repeat(at(3000, size)),
+                ":;".repeat(at(15000, size))
+            )
+        }),
+        ("cd abcdefgh; …", &|size| {
+            "cd abcdefgh; ".repeat(at(4000, size))
+        }),
+        ("cd a; ls; …", &|size| "cd a; ls; ".repeat(at(5000, size))),
+        ("cd 'd$(x)'; cd abcdefgh; …", &|size| {
+            format!("cd 'd$(x)'; {}", "cd abcdefgh; ".repeat(at(4000, size)))
+        }),
+        ("cd \"$x\"; cd a; … ls", &|size| {
+            format!("{}ls", "cd \"$x\"; cd a; ".repeat(at(3000, size)))
+        }),
     ];
-    for line in lines {
-        assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::Posix, &posix());
-        assert!(
-            took < Duration::from_millis(500),
-            "took {took:?} for a line of {} bytes",
-            line.len()
-        );
+    for (what, line) in lines {
+        assert_linear(what, Shell::Posix, &posix(), line);
     }
 }
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_line_that_reads_values_again_over_and_over_is_judged_within_a_bound() {
-    let many = names("v", " ", 6000);
-    let chain = (0..2500).fold(String::new(), |mut line, at| {
-        use std::fmt::Write;
-        let _ = write!(line, "a{at}=a{};", at + 1);
-        line
-    });
-    let lines = [
+    // At 64 KB each line holds the counts written here (`at`), at 16 KB a
+    // quarter of them: the one must take about four times as long as the
+    // other, not sixteen.
+    let chain = |count: usize| {
+        (0..count).fold(String::new(), |mut line, at| {
+            use std::fmt::Write;
+            let _ = write!(line, "a{at}=a{};", at + 1);
+            line
+        })
+    };
+    let lines: [(&str, Maker); 7] = [
         // A value that names more variables than are followed.
-        format!("x='{many}'; {}", "echo $((x));".repeat(2000)),
+        ("x='v0 v1 …'; echo $((x)); …", &|size| {
+            format!(
+                "x='{}'; {}",
+                names("v", " ", at(6000, size)),
+                "echo $((x));".repeat(at(2000, size))
+            )
+        }),
         // The same plain value read again and again.
-        format!("x=1; {}", "echo $((x));".repeat(5000)),
+        ("x=1; echo $((x)); …", &|size| {
+            format!("x=1; {}", "echo $((x));".repeat(at(5000, size)))
+        }),
         // An expression that names many variables the line does not set.
-        format!("echo $(({}))", names("v", "+", 9000)),
+        ("echo $((v0+v1+…))", &|size| {
+            format!("echo $(({}))", names("v", "+", at(9000, size)))
+        }),
         // Values that name each other, read again and again.
-        format!("{chain}{}", "echo $((a0));".repeat(2000)),
+        ("a0=a1; …; echo $((a0)); …", &|size| {
+            format!(
+                "{}{}",
+                chain(at(2500, size)),
+                "echo $((a0));".repeat(at(2000, size))
+            )
+        }),
         // Code read again and again, past the budget of nested scripts.
-        format!("x='a[$(:)]'; {}", "echo $((x));".repeat(5000)),
-        "echo \"${x:-'$(:)'}\"; ".repeat(3000),
-        format!("x='$(:)'; {}", "echo \"${x@P}\";".repeat(4000)),
+        ("x='a[$(:)]'; echo $((x)); …", &|size| {
+            format!("x='a[$(:)]'; {}", "echo $((x));".repeat(at(5000, size)))
+        }),
+        ("echo \"${x:-'$(:)'}\"; …", &|size| {
+            "echo \"${x:-'$(:)'}\"; ".repeat(at(3000, size))
+        }),
+        ("x='$(:)'; echo \"${x@P}\"; …", &|size| {
+            format!("x='$(:)'; {}", "echo \"${x@P}\";".repeat(at(4000, size)))
+        }),
     ];
-    for line in lines {
-        assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::Posix, &posix());
-        assert!(
-            took < Duration::from_millis(500),
-            "took {took:?} for a line of {} bytes",
-            line.len()
-        );
+    for (what, line) in lines {
+        assert_linear(what, Shell::Posix, &posix(), line);
     }
 }
 

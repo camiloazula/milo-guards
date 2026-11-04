@@ -27,7 +27,7 @@ fn every_case_holds() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_run_of_posix_class_openers_in_a_word_is_read_in_a_bound() {
@@ -58,7 +58,8 @@ fn a_long_run_of_posix_class_openers_in_a_word_is_read_in_a_bound() {
         ] {
             assert!(line.len() <= 64 * 1024, "{}", line.len());
             let elapsed = took(&line, Shell::Posix, &posix());
-            // The read is linear: well under two seconds in the debug build.
+            // The read is linear: about a tenth of a second in an optimized
+            // build.
             // The quadratic one took ten seconds for the `mv` line alone in
             // a release build, and minutes at the full length.
             assert!(

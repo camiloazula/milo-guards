@@ -17,9 +17,8 @@
 mod common;
 
 use std::fmt::Write as _;
-use std::time::Duration;
 
-use common::{assert_linear, check, classify, filled, posix, took, windows};
+use common::{assert_linear, check, classify, filled, posix, windows, Maker};
 use milo_guards_shell::{Rule, Shell};
 
 #[test]
@@ -151,37 +150,26 @@ fn a_line_that_writes_by_too_many_patterns_writes_any_file() {
 }
 
 /// Each run on a line costs a bounded amount whatever the line writes, so a
-/// long line that writes by patterns and runs scripts is read in time. When
-/// each run was matched against every pattern, with each extension, a line of
-/// 24 KB took seconds in an optimized build and minutes in a debug one.
+/// long line that writes by patterns and runs scripts is read in time that
+/// grows with its length. When each run was matched against every pattern,
+/// with each extension, a line of 24 KB took seconds in an optimized build
+/// and minutes in a debug one.
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn many_pattern_writes_and_many_runs_are_read_in_time() {
-    // A line of this length, whatever it holds, is read in about a tenth of
-    // a second in an optimized build, and a debug build takes ten times
-    // that; a write by a pattern costs the guard more than a write by a name
+    // A write by a pattern costs the guard more than a write by a name
     // whatever the runs are (about 0.1 ms in an optimized build).
-    const SIZE: usize = 24 * 1024;
-    const LIMIT: Duration = if cfg!(debug_assertions) {
-        Duration::from_secs(8)
-    } else {
-        Duration::from_secs(1)
-    };
-    let fit = |unit: &str, head: &str, tail: &str| {
-        let count = (SIZE - head.len() - tail.len()) / unit.len();
-        format!("{head}{}{tail}", unit.repeat(count))
-    };
     // A write and a run, each `#` in them the number of the pair: distinct
     // patterns, written out one after another.
-    let numbered = |write: &str, run: &str| {
+    let numbered = |write: &str, run: &str, size: usize| {
         let mut line = String::new();
         let mut number = 0;
         loop {
             let next = format!("{write}{run}").replace('#', &number.to_string());
-            if line.len() + next.len() > SIZE {
+            if line.len() + next.len() > size {
                 return line;
             }
             line += &next;
@@ -189,89 +177,78 @@ fn many_pattern_writes_and_many_runs_are_read_in_time() {
         }
     };
     let star_name = format!("{}b", "a*".repeat(28));
-    let lines = [
+    let backtracks = format!("sc *a*a*a*a*a*a*a*b x;.\\{};", "a".repeat(40));
+    let star_write = format!("sc *{star_name}# x;");
+    let lines: [(Shell, &str, Maker); 11] = [
         (
             Shell::PowerShell,
             "a pattern and a run, repeated",
-            fit("sc *a x;.\\b;", "", ""),
+            &|size| filled("sc *a x;.\\b;", size, 0),
         ),
-        (
-            Shell::PowerShell,
-            "a pattern that backtracks",
-            fit(
-                &format!("sc *a*a*a*a*a*a*a*b x;.\\{};", "a".repeat(40)),
-                "",
-                "",
-            ),
-        ),
+        (Shell::PowerShell, "a pattern that backtracks", &|size| {
+            filled(&backtracks, size, 0)
+        }),
         (
             Shell::PowerShell,
             "a pattern and a run of a script",
-            fit("sc *a x;.\\b.ps1;", "", ""),
+            &|size| filled("sc *a x;.\\b.ps1;", size, 0),
         ),
         (
             Shell::PowerShell,
             "distinct patterns, each before a run",
-            numbered("sc *a# x;", ".\\b;"),
+            &|size| numbered("sc *a# x;", ".\\b;", size),
         ),
         (
             Shell::PowerShell,
             "patterns that backtrack, distinct",
-            numbered(
-                &format!("sc *{star_name}# x;"),
-                ".\\aaaaaaaaaaaaaaaaaaaaaaaa;",
-            ),
+            &|size| numbered(&star_write, ".\\aaaaaaaaaaaaaaaaaaaaaaaa;", size),
         ),
         (
             Shell::PowerShell,
             "a name only known when it runs, repeated",
-            fit("sc a.txt,$x y;.\\b;", "", ""),
+            &|size| filled("sc a.txt,$x y;.\\b;", size, 0),
         ),
         (
             Shell::PowerShell,
             "a pattern and a run of a long name",
-            format!("sc *a x;.\\{}", "a".repeat(SIZE - 20)),
+            &|size| format!("sc *a x;.\\{}", "a".repeat(size - 20)),
         ),
         (
             Shell::PowerShell,
             "a long pattern and a run of a long name",
-            format!(
-                "sc *{} x;.\\{}",
-                "a*".repeat(SIZE / 8),
-                "a".repeat(SIZE / 2)
-            ),
+            &|size| {
+                format!(
+                    "sc *{} x;.\\{}",
+                    "a*".repeat(size / 8),
+                    "a".repeat(size / 2)
+                )
+            },
         ),
-        (
-            Shell::Posix,
-            "tee a pattern, repeated",
-            fit("tee *a;./b;", "", ""),
-        ),
-        (
-            Shell::Posix,
-            "a redirect to a pattern, repeated",
-            fit("echo x > *a; bash b;", "", ""),
-        ),
+        (Shell::Posix, "tee a pattern, repeated", &|size| {
+            filled("tee *a;./b;", size, 0)
+        }),
+        (Shell::Posix, "a redirect to a pattern, repeated", &|size| {
+            filled("echo x > *a; bash b;", size, 0)
+        }),
         (
             Shell::Posix,
             "distinct patterns, each before a run",
-            numbered("echo x > *a#;", " bash b;"),
+            &|size| numbered("echo x > *a#;", " bash b;", size),
         ),
     ];
-    for (shell, what, line) in &lines {
-        assert!(line.len() <= SIZE, "{what}: {}", line.len());
-        let paths = if *shell == Shell::Posix {
+    for (shell, what, line) in lines {
+        let paths = if shell == Shell::Posix {
             posix()
         } else {
             windows()
         };
-        let elapsed = took(line, *shell, &paths);
-        assert!(elapsed < LIMIT, "{what} in {shell:?}: {elapsed:?}");
+        assert_linear(&format!("{what} in {shell:?}"), shell, &paths, line);
     }
 }
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn the_files_database_clients_write_are_read_in_linear_time() {

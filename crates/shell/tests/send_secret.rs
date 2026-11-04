@@ -47,7 +47,7 @@ fn every_posix_finding_names_what_leaves() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_run_of_variables_in_a_word_is_quoted_in_linear_time() {
@@ -65,7 +65,7 @@ fn a_long_run_of_variables_in_a_word_is_quoted_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_line_that_can_send_nothing_is_read_quickly() {
@@ -81,7 +81,7 @@ fn a_line_that_can_send_nothing_is_read_quickly() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn calls_reads_aliases_and_copies_are_followed_in_linear_time() {

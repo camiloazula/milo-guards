@@ -11,7 +11,7 @@ mod noise;
 
 use std::time::{Duration, Instant};
 
-use common::{check, disagreements, posix, windows};
+use common::{assert_linear_by, check, disagreements, filled, posix, windows};
 use milo_guards_shell::{classify, effect, explain, Effect, Paths, Rule, Shell};
 use noise::Lcg;
 
@@ -356,7 +356,7 @@ fn a_line_that_has_its_nested_scripts_read_too_often_is_unreadable() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_run_of_open_brackets_is_read_quickly() {
@@ -384,25 +384,25 @@ fn a_long_run_of_open_brackets_is_read_quickly() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn nested_loops_that_may_turn_on_dotglob_are_read_quickly() {
     // Each loop body is judged with hidden names matching when the line ever
     // turns that on; that must not scan every loop's text again.
-    let mut line = "while x; do ".repeat(130);
-    line.push_str(&"echo a; ".repeat(7_800));
-    line.push_str("rm -rf *git; shopt -s dotglob; ");
-    line.push_str(&"done; ".repeat(130));
-    assert!(
-        line.len() > 62_000 && line.len() <= 64 * 1024,
-        "{}",
-        line.len()
+    let line = |size: usize| {
+        let (open, close) = ("while x; do ".repeat(130), "done; ".repeat(130));
+        let tail = "rm -rf *git; shopt -s dotglob; ";
+        let slack = open.len() + tail.len() + close.len();
+        format!("{open}{}{tail}{close}", filled("echo a; ", size, slack))
+    };
+    assert_linear_by(
+        "130 loops around echo a; …",
+        |line| took(line, Shell::Posix, &posix()),
+        line,
     );
-    let took = took(&line, Shell::Posix, &posix());
-    assert!(took < Duration::from_millis(200), "took {took:?}");
     assert_eq!(
-        classify(&line, Shell::Posix, &posix())
+        classify(&line(64 * 1024), Shell::Posix, &posix())
             .findings()
             .iter()
             .map(|finding| finding.rule)
@@ -413,7 +413,7 @@ fn nested_loops_that_may_turn_on_dotglob_are_read_quickly() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
@@ -437,35 +437,35 @@ fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn brace_lists_and_redirects_in_loops_are_read_in_linear_time() {
     // A word of many brace lists would make the product of their sizes in
     // words; a redirect in a loop is read with each word in place.
-    let lists = "{a,b}".repeat(12_000);
-    let loops = "for a in 1 2 3; do cat < ~/x$a; done; ".repeat(800);
-    let wide = format!("for a in 1 2 3; do {}; done", "cat < ~/x$a; ".repeat(2_000));
-    for line in [
-        format!("cat ~/.ssh/{lists}"),
-        format!("cat {lists}"),
-        format!("cp ~/{lists} /tmp"),
-        loops,
-        wide,
+    for (head, part, tail) in [
+        ("cat ~/.ssh/", "{a,b}", ""),
+        ("cat ", "{a,b}", ""),
+        ("cp ~/", "{a,b}", " /tmp"),
+        ("", "for a in 1 2 3; do cat < ~/x$a; done; ", ""),
+        ("for a in 1 2 3; do ", "cat < ~/x$a; ", "; done"),
     ] {
-        assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::Posix, &posix());
-        assert!(
-            took < Duration::from_millis(500),
-            "took {took:?} for {}",
-            &line[..40]
+        assert_linear_by(
+            &format!("{head}{part}…"),
+            |line| took(line, Shell::Posix, &posix()),
+            |size| {
+                format!(
+                    "{head}{}{tail}",
+                    filled(part, size, head.len() + tail.len())
+                )
+            },
         );
     }
 }
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
@@ -474,14 +474,14 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
     // it may make, so the work does not double at each group, never
     // recurses without a bound, and a line past them is unreadable.
     for group in ["bun -F x --package run ", "bun -F x run "] {
+        assert_linear_by(
+            group,
+            |line| took(line, Shell::Posix, &posix()),
+            |size| format!("{}rm -rf ~", filled(group, size, "rm -rf ~".len())),
+        );
         for count in [16, 20, 40, 600, 2_000] {
             let line = format!("{}rm -rf ~", group.repeat(count));
             assert!(line.len() <= 64 * 1024, "{}", line.len());
-            let took = took(&line, Shell::Posix, &posix());
-            assert!(
-                took < Duration::from_millis(200),
-                "{count} x {group:?} took {took:?}"
-            );
             assert!(
                 !classify(&line, Shell::Posix, &posix()).is_safe(),
                 "{count} x {group:?}"
@@ -503,7 +503,7 @@ fn a_package_runner_read_two_ways_many_times_is_read_quickly_and_not_safe() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn words_zsh_reads_another_way_many_times_are_read_quickly_and_not_safe() {
@@ -541,7 +541,7 @@ fn words_zsh_reads_another_way_many_times_are_read_quickly_and_not_safe() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_safe() {
@@ -549,59 +549,52 @@ fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_
     // wrapper of its own, so a string of `-S` takes off one at a time until
     // the wrappers a line may have run out. The other shapes repeat an
     // option the guard reads once each, or a wrapper given its folder that
-    // starts the next.
-    let long = "x".repeat(20_000);
-    for count in [16, 2_000] {
-        let posix_lines = [
-            format!("env {}'rm -rf ~'", "-S ".repeat(count)),
-            format!("env {}rm -rf etc", "-C / ".repeat(count)),
-            format!("env {}rm -rf etc", "--ch=/ ".repeat(count)),
-            format!("sudo {}rm -rf etc", "-nD / ".repeat(count)),
-            format!("pnpm {}exec rimraf etc", "-C / ".repeat(count)),
-            format!("env -S '{}rm -rf etc'", "-C / ".repeat(count)),
-            format!("env -S '-C / rm -rf etc {long}'"),
-            format!("{}rm -rf etc", "nsenter -t 1 -w ".repeat(count)),
-        ];
-        let pwsh = [
-            format!(
-                "{}Remove-Item C:\\Windows -Recurse",
-                "pwsh -wd:x ".repeat(count)
-            ),
-            format!(
-                "{}Remove-Item C:\\Windows -Recurse",
-                "pwsh -wd x ".repeat(count)
-            ),
-            format!(
-                "{}Remove-Item C:\\Windows -Recurse",
-                "pwsh --wd x ".repeat(count)
-            ),
-        ];
-        let lines = posix_lines
-            .into_iter()
-            .map(|line| (Shell::Posix, line, posix()))
-            .chain(pwsh.iter().flat_map(|line| {
-                [Shell::PowerShell, Shell::Cmd].map(|shell| (shell, line.clone(), windows()))
-            }))
-            .chain([(
-                Shell::Cmd,
+    // starts the next. Each is the head, the part repeated and the tail.
+    let posix_shapes = [
+        ("env ", "-S ", "'rm -rf ~'"),
+        ("env ", "-C / ", "rm -rf etc"),
+        ("env ", "--ch=/ ", "rm -rf etc"),
+        ("sudo ", "-nD / ", "rm -rf etc"),
+        ("pnpm ", "-C / ", "exec rimraf etc"),
+        ("env -S '", "-C / ", "rm -rf etc'"),
+        ("env -S '-C / rm -rf etc ", "x", "'"),
+        ("", "nsenter -t 1 -w ", "rm -rf etc"),
+    ];
+    let pwsh = ["pwsh -wd:x ", "pwsh -wd x ", "pwsh --wd x "];
+    let shapes = posix_shapes
+        .into_iter()
+        .map(|shape| (Shell::Posix, shape, posix()))
+        .chain(pwsh.into_iter().flat_map(|part| {
+            [Shell::PowerShell, Shell::Cmd].map(|shell| {
+                (
+                    shell,
+                    ("", part, "Remove-Item C:\\Windows -Recurse"),
+                    windows(),
+                )
+            })
+        }))
+        .chain([(
+            Shell::Cmd,
+            ("", "start /d C:\\x cmd /c ", "rd /s /q C:\\Windows"),
+            windows(),
+        )]);
+    for (shell, (head, part, tail), paths) in shapes {
+        assert_linear_by(
+            &format!("{head}{part}… in {shell:?}"),
+            |line| took(line, shell, &paths),
+            |size| {
                 format!(
-                    "{}rd /s /q C:\\Windows",
-                    "start /d C:\\x cmd /c ".repeat(count)
-                ),
-                windows(),
-            )]);
-        for (shell, line, paths) in lines {
+                    "{head}{}{tail}",
+                    filled(part, size, head.len() + tail.len())
+                )
+            },
+        );
+        for count in [16, 2_000] {
+            let line = format!("{head}{}{tail}", part.repeat(count));
             assert!(line.len() <= 64 * 1024, "{}", line.len());
-            let took = took(&line, shell, &paths);
-            assert!(
-                took < Duration::from_millis(200),
-                "took {took:?} for {count} x {} in {shell:?}",
-                &line[..20]
-            );
             assert!(
                 !classify(&line, shell, &paths).is_safe(),
-                "{count} x {} in {shell:?}",
-                &line[..20]
+                "{count} x {head}{part} in {shell:?}"
             );
         }
     }
@@ -609,19 +602,27 @@ fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_alias_used_many_times_with_words_is_read_quickly_and_not_safe() {
     // Each use with words runs the alias's last command with them, so the
     // words it takes from the alias are counted: past as many as the
     // longest line holds, a use is not expanded and the line is unreadable.
+    // Half the line is the alias, half its uses.
     let paths = posix();
-    let value = "rm -f a ".repeat(3_000);
-    let line = format!("alias x='{value}'; {}", "x -rf /etc; ".repeat(3_000));
-    assert!(line.len() <= 64 * 1024, "{}", line.len());
-    let took = took(&line, Shell::Posix, &paths);
-    assert!(took < Duration::from_millis(200), "took {took:?}");
+    let line = |size: usize| {
+        let value = filled("rm -f a ", size / 2, 0);
+        let head = format!("alias x='{value}'; ");
+        let uses = filled("x -rf /etc; ", size - head.len(), 0);
+        format!("{head}{uses}")
+    };
+    assert_linear_by(
+        "alias x='rm -f a …'; x -rf /etc; …",
+        |line| took(line, Shell::Posix, &paths),
+        line,
+    );
+    let line = line(64 * 1024);
     let assessment = classify(&line, Shell::Posix, &paths);
     assert!(!assessment.is_safe());
     assert!(
@@ -632,7 +633,7 @@ fn a_long_alias_used_many_times_with_words_is_read_quickly_and_not_safe() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_chain_of_variable_copies_is_read_in_linear_time() {
@@ -663,7 +664,7 @@ fn a_long_chain_of_variable_copies_is_read_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn input_redirects_over_many_units_are_read_in_linear_time() {
@@ -698,7 +699,7 @@ fn input_redirects_over_many_units_are_read_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_wrapper_that_names_its_output_many_times_is_read_quickly_and_not_safe() {

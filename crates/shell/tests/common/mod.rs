@@ -341,11 +341,21 @@ pub fn took(line: &str, shell: Shell, paths: &Paths) -> Duration {
 /// the line of a size; the two are compared with each other, so a slow or
 /// busy machine, which slows both, does not fail it.
 pub fn assert_linear(what: &str, shell: Shell, paths: &Paths, line: impl Fn(usize) -> String) {
+    assert_linear_by(what, |line| took(line, shell, paths), line);
+}
+
+/// [`assert_linear`] with the time of a line taken by `took`, for a test
+/// that times more than `classify`.
+pub fn assert_linear_by(
+    what: &str,
+    took: impl Fn(&str) -> Duration,
+    line: impl Fn(usize) -> String,
+) {
     let floor = Duration::from_millis(5);
     let mut last = (Duration::ZERO, Duration::ZERO);
     let linear = (0..3).any(|_| {
-        let small = took(&line(16 * 1024), shell, paths);
-        let big = took(&line(64 * 1024), shell, paths);
+        let small = took(&line(16 * 1024));
+        let big = took(&line(64 * 1024));
         last = (small, big);
         big <= 10 * small.max(floor)
     });
@@ -355,6 +365,9 @@ pub fn assert_linear(what: &str, shell: Shell, paths: &Paths, line: impl Fn(usiz
         last.0, last.1
     );
 }
+
+/// What makes a line of about a size, for [`assert_linear`].
+pub type Maker<'a> = &'a dyn Fn(usize) -> String;
 
 /// `part` repeated to fill `size` bytes, less `slack` for what is around it.
 pub fn filled(part: &str, size: usize, slack: usize) -> String {
