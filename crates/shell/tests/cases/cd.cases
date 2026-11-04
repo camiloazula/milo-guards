@@ -258,6 +258,71 @@ posix finds=delete | setopt cdablevars; x=/etc; cd x && rm -rf passwd
 posix finds=delete | setopt CDABLE_VARS; x=/etc; pushd x && rm -rf passwd
 posix safe | shopt -s cdable_vars; cd ./sub && rm -rf build
 posix safe | CDPATH=/; cd /home/me/work/repo/sub && rm -rf build
+# With zsh's `autocd` on, a command that is one word and no builtin runs as
+# a `cd` to it when it names a folder, and as itself when it does not, as a
+# plain `cd` that may fail. However the line turns it on counts, and so does
+# an option only known when it runs.
+posix finds=delete | setopt autocd; /etc; rm -rf passwd
+posix finds=delete | setopt auto_cd; /etc; rm -rf passwd
+posix finds=delete | setopt AUTO_CD; /etc && rm -rf passwd
+posix finds=delete | set -o autocd; /etc; rm -rf passwd
+posix finds=delete | set -J; /etc; rm -rf passwd
+posix finds=delete | unsetopt noautocd; /etc; rm -rf passwd
+posix finds=delete | setopt $opt; /etc; rm -rf passwd
+posix finds=delete | options[autocd]=on; /etc; rm -rf passwd
+posix finds=delete | emulate zsh -o autocd; /etc; rm -rf passwd
+posix finds=delete | zsh -o autocd -c '/etc; rm -rf passwd'
+posix finds=delete | zsh -J -c '/etc; rm -rf passwd'
+posix finds=delete | zsh --auto-cd -c '/etc; rm -rf passwd'
+posix finds=delete | eval 'setopt autocd'; /etc; rm -rf passwd
+posix finds=delete | alias z='setopt autocd'; z; /etc; rm -rf passwd
+posix finds=delete | setopt -J; /etc; rm -rf passwd
+posix finds=delete | source env.sh; /etc; rm -rf passwd
+posix finds=delete | trap 'setopt autocd' DEBUG; /etc; rm -rf passwd
+posix finds=delete | setopt autocd; ..; rm -rf x
+posix finds=delete | setopt autocd; ~; rm -rf .ssh
+posix finds=read_secret | setopt autocd; ~/.ssh; cat id_rsa
+posix finds=delete | setopt autocd; cd ~; .ssh; rm -rf id_rsa
+posix safe | setopt autocd; src; ls
+posix safe | setopt autocd; src && rm -rf build
+posix safe | setopt autocd; ls; rm -rf build
+posix safe | setopt autocd; pwd; rm -rf build
+posix safe | /etc; rm -rf passwd
+posix safe | setopt noautocd; /etc; rm -rf passwd
+posix safe | zsh -c 'setopt autocd'; /etc; rm -rf passwd
+posix safe | zsh -o autocd -c ls; /etc; rm -rf passwd
+posix safe | setopt autocd; f() { rm -rf build; }; f; rm -rf build
+# bash's `shopt -s autocd` does the same in an interactive bash, and the
+# guard does not ask whether it is one; unsetting it is not read.
+posix finds=delete | shopt -s autocd; /etc; rm -rf passwd
+posix finds=delete | shopt -s $o; /etc; rm -rf passwd
+posix finds=delete | bash -c 'shopt -s autocd; /etc; rm -rf passwd'
+posix finds=delete | bash -O autocd -c '/etc; rm -rf passwd'
+posix safe | shopt -u autocd; /etc; rm -rf passwd
+posix safe | shopt -s cdspell; /etc; rm -rf passwd
+# zsh's precommand modifiers that still look the word up as a command leave
+# it a `cd`; `builtin` and `command` do not.
+posix finds=delete | setopt autocd; noglob /etc; rm -rf passwd
+posix finds=delete | setopt autocd; nocorrect /etc; rm -rf passwd
+posix finds=delete | setopt autocd; - /etc; rm -rf passwd
+posix finds=delete | setopt autocd; time /etc; rm -rf passwd
+posix finds=delete | setopt autocd; ! /etc; rm -rf passwd
+# Its `cd` looks through `CDPATH` and `cdable_vars` as a written one does.
+posix finds=delete reason="deletes a path only known when it runs" | setopt autocd cdablevars; x=/etc; x; rm -rf passwd
+posix finds=delete reason="deletes a path only known when it runs" | CDPATH=/; setopt autocd; etc; rm -rf passwd
+# A function body, a loop, an alias or a trap may run after the line turns
+# it on, wherever it is written, so their words of their own are read with it
+# on too.
+posix finds=delete | f() { /etc; }; setopt autocd; f; rm -rf passwd
+posix finds=delete | f() { /etc; rm -rf passwd; }; setopt autocd; f
+posix finds=delete | for i in 1 2; do /etc; setopt autocd; done; rm -rf passwd
+posix finds=delete | trap '/etc; rm -rf passwd' EXIT; setopt autocd
+posix finds=delete | alias x='/etc; rm -rf passwd'; setopt autocd; x
+posix safe | f() { src; }; setopt autocd; f; rm -rf build
+# The word is still judged as the program it may be.
+posix finds=stop_system effect=changes | setopt autocd; reboot
+posix finds=stop_system | zsh -o autocd -c reboot
+posix effect=unknown | zsh -o autocd -c /etc
 # Each plain `cd` doubles the folders the line may be in; past the most the
 # guard keeps, it may be in one only known when it runs, which may be the
 # home directory, so a key read by a name relative to it is still a key.

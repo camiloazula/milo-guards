@@ -545,6 +545,29 @@ fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly_and_not_
     coverage,
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
+fn a_long_alias_used_many_times_with_words_is_read_quickly_and_not_safe() {
+    // Each use with words runs the alias's last command with them, so the
+    // words it takes from the alias are counted: past as many as the
+    // longest line holds, a use is not expanded and the line is unreadable.
+    let paths = posix();
+    let value = "rm -f a ".repeat(3_000);
+    let line = format!("alias x='{value}'; {}", "x -rf /etc; ".repeat(3_000));
+    assert!(line.len() <= 64 * 1024, "{}", line.len());
+    let took = took(&line, Shell::Posix, &paths);
+    assert!(took < Duration::from_millis(200), "took {took:?}");
+    let assessment = classify(&line, Shell::Posix, &paths);
+    assert!(!assessment.is_safe());
+    assert!(
+        explained_unreadable(&line, Shell::Posix, &paths),
+        "{assessment:?}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn a_long_chain_of_variable_copies_is_read_in_linear_time() {
     // Each variable is set from the one set after it on the line, the worst
     // order for finding which of them hold the secret.
