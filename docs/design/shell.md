@@ -3782,7 +3782,16 @@ guard does not know is not judged as a writer; these are the ones it knows.
   program) edits each file awk reads, every operand after the program but
   `-` and an assignment (`x=1`). Any other library is code the guard does
   not read, `unknown` as `-f script` is; one only known when it runs
-  (`-i "$L"`) is both, the edit said as one that may happen. The options are
+  (`-i "$L"`) is both, the edit said as one that may happen. A shared
+  library gawk loads with `-l`, `--load` or `@load` in the program
+  (`awk -l ./ext.so 1 a`, `awk '@load "ext"; 1' a`) runs native code the
+  line does not show, `unknown` whatever its name (`-l inplace` too, and
+  beside `-i inplace` the edit is still judged). A directive is read as
+  gawk's lexer reads it: `@` is a token of its own, and `include` or `load`
+  after it, past spaces, tabs, carriage returns and backslash-newlines, is
+  the directive (`@ load "ext"`, `@ include "inplace"` the edit); only the
+  whole word counts, so `@loader` is none, and one written in a string or
+  regex (`print "@load"`) is found too, risky and not safe. The options are
   read as gawk's `getopt_long` reads them: a bundle a letter at a time
   (`-bi inplace`, `-Oiinplace`), `f E i l v F e Z` taking the rest of the
   bundle or else the next word and `d D L o p` only the rest; a long option
@@ -3831,7 +3840,7 @@ guard does not know is not judged as a writer; these are the ones it knows.
 | `curl.exe -o C:\Windows\x URL`, `certutil -urlcache -f URL C:\Windows\x`, `Get-Process \| Export-Csv C:\Windows\x.csv`, `sort a \| sponge /etc/x`, `awk -i inplace 1 /etc/x`, `ex -sc wq /etc/x`, `vim -es /etc/x` | `overwrite`: a system folder |
 | `curl.exe -o .envrc URL`, `certutil -decode a.b64 .vscode\tasks.json`, `sponge ~/.bashrc`, `ex -sc wq .envrc`, `ex -sc 'w ~/.bashrc' a` | `overwrite`: a startup file, or one a tool runs on its own |
 | `curl.exe -o out.txt URL`, `certutil -urlcache -f URL out.txt`, `Export-Csv out.csv`, `sponge a`, `awk -i inplace 1 src/a.txt`, `vim -es -c '%s/a/b/g' -c wq src/a.txt` | safe |
-| `awk -i lib 1 a`, `awk --fil s.awk a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `nvim -l s.lua`, `vim -es -c 'e /etc/x' -c wq a`, `echo 'w /etc/x' \| vim -es a` | `unknown` |
+| `awk -i lib 1 a`, `awk --fil s.awk a`, `awk -l ./ext.so 1 a`, `awk '@load "ext"; 1' a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `nvim -l s.lua`, `vim -es -c 'e /etc/x' -c wq a`, `echo 'w /etc/x' \| vim -es a` | `unknown` |
 | `view /etc/hosts`, `vim -R /etc/hosts`, `ex -sc 'w %.bak' -c q src/a.txt`, `ex -s a <<EOF` with `%s/a/b/g` and `wq` | safe |
 
 ### Files a tool runs on its own
