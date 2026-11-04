@@ -44,7 +44,9 @@ pub(crate) const POSITIONAL: &str = "@";
 pub(crate) enum Value {
     /// The text, as the variable holds it.
     Text(String),
-    /// A value only known when it runs, as written.
+    /// A value only known when it runs, as written, or the start of it
+    /// where the rest is another assignment (`y=…` for `x=y=0` in `for
+    /// (( ))`).
     Unknown(String),
 }
 

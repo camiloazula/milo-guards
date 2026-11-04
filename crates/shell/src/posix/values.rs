@@ -155,6 +155,17 @@ impl Walker<'_> {
                     })
                     .collect()
             }
+            // An assignment in `for (( ))` whose value is the next one
+            // (`x=y=0`) holds what that one gives, read here as only known
+            // when it runs, and written as the start of the next one (`y=…`):
+            // kept as the rest of the chain at each, a chain at the length
+            // limit copied the square of its length.
+            Some(inner) if inner.kind() == "variable_assignment" => {
+                let next = inner
+                    .child_by_field_name("name")
+                    .map_or("", |name| unit::text(&name, self.source));
+                vec![Value::Unknown(format!("{next}=…"))]
+            }
             // The grammar may end a word early, before a backslash it reads
             // apart (`x=a[\$\(rm\ x\)]`): what the shell reads is more.
             Some(value) if !self.ends_word(value) => {
@@ -212,6 +223,16 @@ impl Walker<'_> {
         let written = unit::text(&node, self.source);
         if self.is_number(node) {
             return Value::Text("0".to_string());
+        }
+        // Any other node is a value only known when it runs, whatever it
+        // holds, so it is not walked: an assignment in `for (( ))` gives
+        // the next one as its value (`x=x=…=0`), and walked from each, a
+        // chain at the length limit took seconds.
+        if !matches!(
+            node.kind(),
+            "arithmetic_expansion" | "raw_string" | "string" | "concatenation" | "word" | "number"
+        ) {
+            return Value::Unknown(written.to_string());
         }
         let mut expands = false;
         let mut stack = vec![node];

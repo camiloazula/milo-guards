@@ -2361,11 +2361,88 @@ fn lead(spelled: &Loc, protected: &Loc) -> bool {
 /// Whether a pattern part can pick `name`, or on Windows its short name,
 /// without case.
 fn pattern_matches(part: &str, name: &str, flavour: Flavour, hidden: bool, windows: bool) -> bool {
+    if !could_pick(part, name, windows) {
+        return false;
+    }
     let fold = |part: &str, name: &str| {
+        if is_plain_pattern(part) && name.is_ascii() {
+            return plain_matches(part.as_bytes(), name.as_bytes(), hidden);
+        }
         glob::matches(part, name, flavour, hidden)
             || glob::matches(&part.to_lowercase(), &name.to_lowercase(), flavour, hidden)
     };
     fold(part, name) || (windows && short_form(name).is_some_and(|short| fold(part, &short)))
+}
+
+/// Whether a pattern part may pick `name` (see [`pattern_matches`]), by a
+/// test that is cheaper than matching and never says no where matching says
+/// yes: a pattern is matched against every protected path, startup file and
+/// secret below its folder, and a line can hold thousands of patterns, each
+/// its own (PowerShell's `sc *a0 x;.\b;sc *a1 x;.\b;…` to the length limit
+/// took half a second).
+///
+/// Every letter and digit of the part before its first `[` (a class) and
+/// first backtick (which makes the next character itself on Windows) is a
+/// literal of every reading of it, as written and in lower case, and a
+/// literal takes one character of the name. An ASCII name holds no other
+/// character that such a literal takes without case, and its short name
+/// holds none but the name's own, `~`, `1` and `.`, so a name without one of
+/// them, in any case, is not picked. A name that is not ASCII is matched, as
+/// a character of it may be one of these without case (the Kelvin sign is a
+/// `k`).
+fn could_pick(part: &str, name: &str, windows: bool) -> bool {
+    !name.is_ascii()
+        || part
+            .bytes()
+            .take_while(|byte| !matches!(byte, b'[' | b'`'))
+            .filter(u8::is_ascii_alphanumeric)
+            .all(|needed| {
+                (windows && needed == b'1')
+                    || name.bytes().any(|byte| byte.eq_ignore_ascii_case(&needed))
+            })
+}
+
+/// Whether a pattern part is ASCII with no class and no backtick: one whose
+/// every character is a `*`, a `?` or itself, in every flavour and reading,
+/// which [`plain_matches`] reads.
+fn is_plain_pattern(part: &str) -> bool {
+    part.is_ascii() && !part.contains(['[', '`'])
+}
+
+/// [`pattern_matches`] for a part [`is_plain_pattern`] and an ASCII name,
+/// without building the pattern's tokens or a name in lower case for each
+/// name: as written and in lower case, the two readings of such a part pick
+/// a name the same without case in ASCII, which this matches. `hidden` is as
+/// for [`glob::matches`]: without it a name that starts with `.` is picked
+/// only by a part that starts with one.
+fn plain_matches(part: &[u8], name: &[u8], hidden: bool) -> bool {
+    if !hidden && name.first() == Some(&b'.') && part.first() != Some(&b'.') {
+        return false;
+    }
+    let (mut at, mut on) = (0, 0);
+    // Where the last `*` was and the name position it has taken up to.
+    let mut star: Option<(usize, usize)> = None;
+    while on < name.len() {
+        match part.get(at) {
+            Some(b'*') => {
+                star = Some((at, on));
+                at += 1;
+            }
+            Some(&byte) if byte == b'?' || byte.eq_ignore_ascii_case(&name[on]) => {
+                at += 1;
+                on += 1;
+            }
+            _ => match star {
+                Some((from, taken)) => {
+                    star = Some((from, taken + 1));
+                    at = from + 1;
+                    on = taken + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    part[at..].iter().all(|byte| *byte == b'*')
 }
 
 /// Whether a pattern part is nothing but two or more stars.
@@ -3722,6 +3799,70 @@ mod tests {
         let empty = testing::posix().with_protected([]);
         for path in [".agent", "*", "set*", "/home/me/.agent/x", "/tmp/x"] {
             assert_eq!(at(&plain, path, POSIX), at(&empty, path, POSIX), "{path}");
+        }
+    }
+
+    /// The cheaper ways a pattern part is matched against a name (a test of
+    /// the letters and digits it must hold, and a matcher of plain ASCII
+    /// parts) say what matching each reading by its tokens says, for every
+    /// part of up to three characters of a few that matter, against names
+    /// that start with a dot, differ in case, or have a short name.
+    #[test]
+    fn a_pattern_part_picks_the_same_names_however_it_is_matched() {
+        let by_tokens = |part: &str, name: &str, flavour, hidden, windows| {
+            let fold = |part: &str, name: &str| {
+                glob::matches(part, name, flavour, hidden)
+                    || glob::matches(&part.to_lowercase(), &name.to_lowercase(), flavour, hidden)
+            };
+            fold(part, name)
+                || (windows && short_form(name).is_some_and(|short| fold(part, &short)))
+        };
+        let pieces = [
+            "*", "?", "a", "A", "s", ".", "1", "~", "j", "[", "]", "`", "\u{212a}",
+        ];
+        let mut parts = vec![String::new()];
+        for _ in 0..3 {
+            let longer: Vec<String> = parts
+                .iter()
+                .flat_map(|part| pieces.iter().map(move |piece| format!("{part}{piece}")))
+                .collect();
+            parts.extend(longer);
+        }
+        parts.sort();
+        parts.dedup();
+        let names = [
+            "a",
+            "A",
+            ".a",
+            "as",
+            "AS1",
+            ".vscode",
+            "tasks.json",
+            "TASKS~1.JSO",
+            "s~1",
+            "k",
+            "\u{212a}",
+            "settings.local.json",
+            ".envrc",
+            "Jenkinsfile",
+            "[a]",
+            "a`s",
+            "",
+        ];
+        for part in &parts {
+            for name in names {
+                for flavour in [Flavour::Posix, Flavour::Windows] {
+                    for hidden in [false, true] {
+                        for windows in [false, true] {
+                            assert_eq!(
+                                pattern_matches(part, name, flavour, hidden, windows),
+                                by_tokens(part, name, flavour, hidden, windows),
+                                "{part:?} {name:?} {flavour:?} hidden {hidden} windows {windows}"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }

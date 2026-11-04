@@ -174,7 +174,15 @@ pub(crate) struct Resolver {
     made: HashMap<String, bool>,
     /// Whether the line makes a drive whose name is only known when it runs.
     made_unknown: bool,
+    /// The places already found for the line (see [`Resolver::place_spelled`]).
+    placed: std::cell::RefCell<HashMap<(String, Shell, bool, bool), Place>>,
 }
+
+/// The most places [`Resolver::place_spelled`] keeps for a line, and the
+/// longest spelling it keeps one for: past either a path is placed again
+/// each time, as before.
+const MOST_PLACED: usize = 4_096;
+const LONGEST_PLACED: usize = 1_024;
 
 impl Resolver {
     pub(crate) fn new(paths: &Paths) -> Self {
@@ -186,12 +194,14 @@ impl Resolver {
             paths: None,
             made: HashMap::new(),
             made_unknown: false,
+            placed: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
     /// Read every path on a drive the line makes with `New-PSDrive` as
     /// that drive's provider (see [`Resolver::made_drive`]).
     pub(crate) fn made(&mut self, made: &[Made]) {
+        self.placed.get_mut().clear();
         for drive in made {
             match &drive.name {
                 Some(name) => {
@@ -838,7 +848,29 @@ impl Resolver {
         }
     }
 
+    /// Where `text` lands, kept for the line: the drives the line makes are
+    /// known before any path is placed, so a spelling lands at one place for
+    /// the whole line. A pattern is matched against every protected and
+    /// secret path, a tenth of a millisecond, so PowerShell's `sc *a x;.\b;`
+    /// repeated to the length limit placed `*a` thousands of times, half a
+    /// second.
     fn place_spelled(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
+        if text.len() > LONGEST_PLACED {
+            return self.place_spelled_now(text, shell, hidden, holding);
+        }
+        let key = (text.to_string(), shell, hidden, holding);
+        if let Some(place) = self.placed.borrow().get(&key) {
+            return *place;
+        }
+        let place = self.place_spelled_now(text, shell, hidden, holding);
+        let mut placed = self.placed.borrow_mut();
+        if placed.len() < MOST_PLACED {
+            placed.insert(key, place);
+        }
+        place
+    }
+
+    fn place_spelled_now(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
         let place_core = |spelling, flavour| {
             if holding {
                 self.core.place_hidden(spelling, flavour, hidden)

@@ -55,6 +55,8 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         sets: std::collections::HashMap::new(),
         functions: std::collections::HashSet::new(),
         chained: std::collections::HashMap::new(),
+        negations: std::collections::HashMap::new(),
+        arithmetic: std::collections::HashMap::new(),
         chain: None,
         contexts: Vec::new(),
         awaiting: false,
@@ -1182,6 +1184,12 @@ struct Walker<'a> {
     /// whether the chain gives `GLOBIGNORE` a value (see
     /// [`Walker::assigns_in_chain`]).
     chained: std::collections::HashMap<usize, bool>,
+    /// Whether each list read down the left side of a chain holds a negated
+    /// command, by node id (see [`Walker::negates`]).
+    negations: std::collections::HashMap<usize, bool>,
+    /// Whether each expression passed on the way up from an operand is in
+    /// arithmetic, by node id (see [`Walker::in_arithmetic`]).
+    arithmetic: std::collections::HashMap<usize, bool>,
     /// The chain of `&&`, `||` and `|` being walked, by the node id of its
     /// outermost list, pipeline, negation or redirected statement: where a
     /// short zsh `repeat` in it ends (see [`unit::Split::end_repeats`]).
@@ -1281,24 +1289,36 @@ impl Walker<'_> {
 
     /// Whether `node` is in arithmetic, `(( ))` or `$(( ))`, where `=`, `++`
     /// and `--` set a variable, and not in a `[` or `[[` test, where `=` is a
-    /// comparison.
-    fn in_arithmetic(node: Node<'_>) -> bool {
+    /// comparison. Each expression passed on the way up keeps the answer
+    /// (`arithmetic`): asked again from each operand of a chain (`x=x=…`),
+    /// the walk up took time that grows with the cube of its depth.
+    fn in_arithmetic(&mut self, node: Node<'_>) -> bool {
+        let mut passed = Vec::new();
         let mut up = node.parent();
-        while let Some(parent) = up {
+        let found = loop {
+            let Some(parent) = up else {
+                break false;
+            };
             match parent.kind() {
                 "arithmetic_expansion" | "c_style_for_statement" | "compound_statement" => {
-                    return true
+                    break true
                 }
                 "binary_expression"
                 | "unary_expression"
                 | "postfix_expression"
                 | "parenthesized_expression"
                 | "ternary_expression" => {}
-                _ => return false,
+                _ => break false,
             }
+            if let Some(&known) = self.arithmetic.get(&parent.id()) {
+                break known;
+            }
+            passed.push(parent.id());
             up = parent.parent();
-        }
-        false
+        };
+        self.arithmetic
+            .extend(passed.into_iter().map(|id| (id, found)));
+        found
     }
 
     /// Whether `node`, a `${…}`, assigns `GLOBIGNORE` a value that is not
@@ -1387,6 +1407,43 @@ impl Walker<'_> {
         });
         self.chained
             .extend(links.into_iter().map(|link| (link, found)));
+        found
+    }
+
+    /// Whether `node` holds a negated command anywhere (see [`negates`]),
+    /// with each list down its left side read once for the whole line: the
+    /// left side of a `||` in a chain is the whole chain before it, so read
+    /// again at each `||`, `cd a || exit || …` at the length limit took a
+    /// quarter of a second. A list holds one when its left side does or
+    /// anything else in it does, so the answer is the one [`negates`] gives.
+    fn negates(&mut self, node: Node<'_>) -> bool {
+        let mut spine = Vec::new();
+        let mut at = node;
+        let mut found = loop {
+            if let Some(&known) = self.negations.get(&at.id()) {
+                break known;
+            }
+            if at.kind() != "list" {
+                break negates(at);
+            }
+            spine.push(at);
+            match first_named(at) {
+                Some(left) => at = left,
+                None => break false,
+            }
+        };
+        for list in spine.into_iter().rev() {
+            if !found {
+                let mut cursor = list.walk();
+                let rest: Vec<_> = list
+                    .named_children(&mut cursor)
+                    .filter(|child| child.kind() != "comment")
+                    .skip(1)
+                    .collect();
+                found = rest.into_iter().any(negates);
+            }
+            self.negations.insert(list.id(), found);
+        }
         found
     }
 
@@ -1625,7 +1682,7 @@ impl Walker<'_> {
         }
         // `((PATH=1))` sets a variable the interpreter after it may
         // be given.
-        self.split.assigned_earlier |= assigns && Self::in_arithmetic(node);
+        self.split.assigned_earlier |= assigns && self.in_arithmetic(node);
         self.children(node, stage, level);
     }
 
@@ -1648,7 +1705,7 @@ impl Walker<'_> {
         if bare.len() < text.len() && bare.trim() == dotglob::GLOBIGNORE {
             self.split.hide();
         }
-        self.split.assigned_earlier |= bare.len() < text.len() && Self::in_arithmetic(node);
+        self.split.assigned_earlier |= bare.len() < text.len() && self.in_arithmetic(node);
         self.children(node, stage, level);
     }
 
@@ -1941,7 +1998,9 @@ impl Walker<'_> {
                     .next_named_sibling()
                     .is_some_and(|right| self.exits(right))
                 && !redirected_last(reading.node)
-                && !child.prev_named_sibling().is_none_or(negates)
+                && !child
+                    .prev_named_sibling()
+                    .is_none_or(|left| self.negates(left))
                 && !["cd", "chdir", "pushd", "popd"]
                     .iter()
                     .any(|name| self.split.defines_function(name))

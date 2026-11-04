@@ -422,6 +422,10 @@ powershell finds=unknown | $h = 'CommandNotFoundAction'; $ExecutionContext.Invok
 powershell finds=unknown | $ExecutionContext.InvokeCommand.psobject.Properties['CommandNotFoundAction'].Value = $b
 powershell finds=unknown | $ExecutionContext.SessionState.InvokeCommand.psobject.Properties.Item('CommandNotFoundAction').Value = $b
 powershell finds=unknown | $ExecutionContext.InvokeCommand.GetType().GetProperty('CommandNotFoundAction').SetValue($ExecutionContext.InvokeCommand, $b)
+# A chain of calls is read once for the whole chain, whichever link names
+# the hook or reaches the session.
+powershell finds=unknown reason="sets a hook that runs a script block only known when it runs" | $x.GetProperty('CommandNotFoundAction').GetType().SetValue($x, $b)
+powershell finds=unknown reason="calls a member of the session only known when it runs" | $x.psobject.InvokeCommand.GetType().Foo($b)
 powershell finds=unknown | $ic = $ExecutionContext.InvokeCommand; $ic.$h = $b
 powershell finds=unknown | $ec = $ExecutionContext; $ec.InvokeCommand.psobject.Properties['PreCommandLookupAction'].Value = $b
 powershell finds=unknown | ($ExecutionContext.InvokeCommand).$h = $b
@@ -664,6 +668,9 @@ powershell safe | $PSDefaultParameterValues.Add('*:Encoding', 'utf8')
 powershell finds=unknown | $PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = $b; Invoke-Command
 powershell finds=unknown | $PSDefaultParameterValues = @{ 'Invoke-Command:ScriptBlock' = $b }
 powershell finds=unknown | $PSDefaultParameterValues.Add('Invoke-Command:ScriptBlock', $b)
+powershell rules=unknown,unknown | $PSDefaultParameterValues.Add(1, $b).Add(1, $b)
+powershell finds=unknown | $PSDefaultParameterValues.Add('*:Encoding', 'utf8').Add(1, $b)
+powershell safe | $PSDefaultParameterValues.Clear().Clear()
 powershell finds=unknown | $global:PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = $b
 powershell finds=unknown | ($PSDefaultParameterValues)['Invoke-Command:ScriptBlock'] = $b
 powershell finds=delete | $PSDefaultParameterValues['Invoke-Command:ScriptBlock'] = { Remove-Item -Recurse -Force .\\build }; cd ~; Invoke-Command

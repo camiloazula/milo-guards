@@ -745,18 +745,21 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
     // now placed once, and the bytes placed are counted (`MAX_LANDING_BYTES`
     // in `detect.rs`), also where the copies are followed for a send
     // (`copied_by` in `detect/send.rs`). The log the recoveries are counted
-    // from makes the lines that read the same 30 to 70 per cent slower: the
-    // slowest, a `cd` back up in PowerShell or a runner that starts another,
-    // take up to 190 ms at the length limit in an optimized build, which a
-    // fixed bound of 250 ms left no room for on a busy machine. So each row
-    // is held to how its time grows instead: written at the length limit
-    // (its counts are the ones a line of 64 KB has, `at`) and a quarter as
-    // long, the one takes about four times as long as the other, not
-    // sixteen. A row read only to a budget or a count, past which it stops
-    // (the openers counted before parsing, the recoveries and the characters
-    // a grammar's lexer moves over counted from its log), takes no longer
-    // past it, so two lengths cannot show how its time grows: it is held to
-    // a fixed bound at each of several lengths instead (`Stops`).
+    // from makes the lines that read the same 30 to 70 per cent slower (a
+    // parse first runs without it for a line's first steps, `MAX_QUIET` in
+    // `unit.rs`, which a line of a few kilobytes fits, so a longer line
+    // still pays for it): the slowest, a `cd` back up in PowerShell or a
+    // runner that starts another, take up to 190 ms at the length limit in
+    // an optimized build, which a fixed bound of 250 ms left no room for on
+    // a busy machine. So each row is held to how its time grows instead:
+    // written at the length limit (its counts are the ones a line of 64 KB
+    // has, `at`) and a quarter as long, the one takes about four times as
+    // long as the other, not sixteen. A row read only to a budget or a
+    // count, past which it stops (the openers counted before parsing, the
+    // recoveries and the characters a grammar's lexer moves over counted
+    // from its log), takes no longer past it, so two lengths cannot show how
+    // its time grows: it is held to a fixed bound at each of several lengths
+    // instead (`Stops`).
     let rows: Vec<(Shell, Time, Grown)> = vec![
         (
             Shell::PowerShell,
@@ -1194,6 +1197,92 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
             Grows,
             Box::new(|size| fit("pwsh -c '1 2 1 2 1 2'; ", "", "", size)),
         ),
+        // Read again from each link of a chain: the left side of each `||`
+        // for a negated `cd`, a quarter of a second at the length limit
+        // (`Walker::negates` in `posix.rs`); each assignment of a chain in
+        // `for (( ))` walked and copied the rest of the chain, seconds
+        // (`value` in `posix/values.rs`), and one in `(( ))` walked up to
+        // the arithmetic from each operand, 0.15 s at 400 deep
+        // (`in_arithmetic`); a chain of PowerShell calls asked of each call
+        // whether the chain before it names a hook, reaches the session or
+        // starts at `$PSDefaultParameterValues`, time that grew with the
+        // square of the chain up to the depth a tree may have, so it is held
+        // at each length too (`Walker::names_hook` in `powershell.rs`).
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("cd a || exit || ", "", "", size)),
+        ),
+        // Whether a unit read so far renames a builtin, asked at each `||`
+        // that ends the shell, read every unit: half a second at the length
+        // limit (`Split::renames_builtins` in `unit.rs`).
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("cd a || exit; ", "", "", size)),
+        ),
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("a || exit; ", "", "", size)),
+        ),
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("x=", "for ((", "0;;)); do a; done", size)),
+        ),
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("x=", "for ((;;", "0)); do a; done", size)),
+        ),
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| fit("x=", "((", "0))", size)),
+        ),
+        (
+            Shell::PowerShell,
+            Stops,
+            Box::new(|size| fit(".Add(1, $b)", "$PSDefaultParameterValues", "", size)),
+        ),
+        (
+            Shell::PowerShell,
+            Grows,
+            Box::new(|size| fit("$PSDefaultParameterValues.Add(1, $b); ", "", "", size)),
+        ),
+        // A pattern matched against every startup file, protected path and
+        // secret, a tenth of a millisecond each, half a second at the length
+        // limit: the same one again (`placed` in `path.rs`), and each its
+        // own, with letters and digits or with none (`could_pick` and
+        // `plain_matches` in core's `resolve.rs`).
+        (
+            Shell::PowerShell,
+            Grows,
+            Box::new(|size| fit("sc *a x;.\\b;", "", "", size)),
+        ),
+        (
+            Shell::PowerShell,
+            Grows,
+            Box::new(|size| distinct_patterns(size, |at| format!("*a{at}"))),
+        ),
+        (
+            Shell::PowerShell,
+            Grows,
+            Box::new(|size| {
+                distinct_patterns(size, |at| {
+                    (0..13)
+                        .map(|bit| if at >> bit & 1 == 1 { '?' } else { '-' })
+                        .collect()
+                })
+            }),
+        ),
+        // Thousands of names into a short folder.
+        (
+            Shell::Posix,
+            Grows,
+            Box::new(|size| format!("cp {}b", distinct_names(at(9_000, size)))),
+        ),
         // A runner that starts another, each read in turn: up to a fifth of
         // a second at the length limit in a release build.
         (
@@ -1419,6 +1508,21 @@ fn distinct_names(count: usize) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         + " "
+}
+
+/// PowerShell writes of a pattern each other than the rest, `pattern` of
+/// each count, each followed by a run of a script (`sc *a0 x;.\b;sc *a1
+/// x;.\b;…`), of at most `size` bytes.
+fn distinct_patterns(size: usize, pattern: impl Fn(usize) -> String) -> String {
+    let mut line = String::new();
+    for at in 0.. {
+        let next = format!("sc {} x;.\\b;", pattern(at));
+        if line.len() + next.len() > size {
+            break;
+        }
+        line.push_str(&next);
+    }
+    line
 }
 
 /// A chain of PowerShell assignments, each to a variable of its own
