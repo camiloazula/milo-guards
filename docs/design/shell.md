@@ -4115,14 +4115,18 @@ Some risks only show when units are read together.
   into a shell), and so is `sqlite3 x.db '.output run.sh' 'select 1'; sh
   run.sh`. The guard matches the two by the file they name (core's `key`).
   A client reads the same statements for this as its rule judges (its
-  options, operands, a here-document, a stage before it). A folder it
-  writes into (`EXPORT DATABASE 'DIR'`) holds files by names the line does
-  not show, so any script in it may be one. One that moved (`\cd`, `.cd`)
-  wrote its files in a folder the line does not say, so a script of the
-  same name, run from any folder, may be one of them. A
-  program a client runs (`.shell`, `\!`) runs after the files the line
-  writes, the client's own too: `sqlite3 x.db '.output run.sh' '.shell sh
-  run.sh'` is `unknown`.
+  options, operands, a here-document, a stage before it). A folder it writes
+  into (`EXPORT DATABASE 'DIR'`) holds files by names the line does not show,
+  so any script in it may be one. One that moved (`\cd`, `.cd`) wrote its
+  files in a folder the line does not say, so a script of the same name, run
+  from any folder, may be one of them. A program a client runs (`.shell`,
+  `\!`, a pager) and reads as a line of its own writes files the line
+  writes, so `sqlite3 x.db '.shell echo x > run.sh'; sh run.sh` is `unknown`;
+  each is read for this once more, on a budget as large as the one it is
+  judged on, and one past it may write any file. Such a program runs after
+  the files the line writes, the client's own and those its other programs
+  write too: `sqlite3 x.db '.output run.sh' '.shell sh run.sh'` and `psql -c
+  '\! echo x > run.sh' -c '\! sh run.sh'` are `unknown`.
   When the line writes a file (a device such as `/dev/null` does not count),
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.

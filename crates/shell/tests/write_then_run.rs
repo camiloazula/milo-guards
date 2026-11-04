@@ -4,11 +4,11 @@
 //! `pwsh -File` or `Invoke-Command -FilePath`, by cmd's look in the working
 //! folder before `PATH`), and however it is written (by a redirect, a
 //! download, a copy, a write cmdlet's named or positional path, a database
-//! client's output). Where the
-//! name the line writes cannot be read for sure (a pattern, an operand that
-//! may be a list, a name only known when it runs, more patterns than the
-//! guard reads), a run that may be of that file is not safe either. The work
-//! for each run is bounded whatever the line writes.
+//! client's output). Where the name the line writes cannot be read for sure
+//! (a pattern, an operand that may be a list, a name only known when it
+//! runs, more patterns than the guard reads), a run that may be of that file
+//! is not safe either. The work for each run is bounded whatever the line
+//! writes.
 //!
 //! The lines and their answers are in `tests/cases/write_then_run.cases`;
 //! here are the script a finding names, the lines made of many names or
@@ -291,6 +291,42 @@ fn the_files_database_clients_write_are_read_in_linear_time() {
                 }
                 line.push_str(&part);
             }
+            line
+        },
+    );
+    // Many clients, each running a program that writes a file, and a run of
+    // each: every program is read once more for what it writes.
+    assert_linear(
+        "sqlite3 x.db '.shell echo x > r0.sh'; sh r0.sh; …",
+        shell,
+        &paths,
+        |size| {
+            let mut line = String::new();
+            for at in 0.. {
+                let part = format!("sqlite3 x.db '.shell echo x > r{at}.sh'; sh r{at}.sh; ");
+                if line.len() + part.len() > size {
+                    break;
+                }
+                line.push_str(&part);
+            }
+            line
+        },
+    );
+    // One client running many programs that each start a client, and a run.
+    assert_linear(
+        "sqlite3 x.db \".shell sqlite3 y.db '.output r0.sh'\" …; sh r0.sh",
+        shell,
+        &paths,
+        |size| {
+            let mut line = String::from("sqlite3 x.db");
+            for at in 0.. {
+                let part = format!(" \".shell sqlite3 y.db '.output r{at}.sh'\"");
+                if line.len() + part.len() + 10 > size {
+                    break;
+                }
+                line.push_str(&part);
+            }
+            line.push_str("; sh r0.sh");
             line
         },
     );
