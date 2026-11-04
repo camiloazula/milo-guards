@@ -68,8 +68,12 @@ impl Checker<'_> {
     /// Containers, clusters, infrastructure stacks and cloud resources.
     pub(super) fn resources(&mut self, unit: &Unit, key: &str) {
         if unit.shell == Shell::PowerShell {
-            if let Some(reason) = cloud_cmdlet(key) {
-                self.add(Rule::DestroyResources, reason, None);
+            if let Some((flagged, reason)) = cloud_cmdlet(key, &unit.args) {
+                match flagged {
+                    Flagged::Written => self.add(Rule::DestroyResources, reason, None),
+                    Flagged::Unread => self.add(Rule::DestroyResources, hedged(reason), None),
+                    Flagged::Absent => {}
+                }
                 return;
             }
         }
@@ -464,38 +468,99 @@ impl Checker<'_> {
     }
 }
 
-/// What a cmdlet of a cloud's PowerShell modules removes, by its name (the
-/// key: lower case, without a module's qualifier): a `Remove-` cmdlet whose
-/// noun starts with one of the cloud's prefixes. `Remove-AzVM`,
-/// `Remove-AzureRmResourceGroup`, `Remove-EC2Instance`, `Remove-S3Bucket`,
-/// `Remove-GcsBucket`, `Remove-GkeCluster` and `Remove-MgUser` delete what
-/// they name in the cloud, and the guard cannot tell a scratch resource from
-/// one that matters, so each is a delete whatever its parameters (`-WhatIf`
-/// among them: a quoted `'-WhatIf'` is a value, and the guard reads both as
-/// the same word).
+/// What a cmdlet of a cloud's PowerShell modules destroys, by its name (the
+/// key: lower case, without a module's qualifier) and, for a stop, its
+/// `-Terminate` switch: the reason a prompt shows, and whether the cmdlet
+/// is sure to destroy, may, or does not. A cmdlet is a cloud's when its noun
+/// starts with one of the cloud's prefixes (see [`cloud_of`]), and it
+/// destroys by its verb:
+///
+/// - `Remove-`, in every cloud: `Remove-AzVM`, `Remove-AzureRmResourceGroup`,
+///   `Remove-EC2Instance`, `Remove-S3Bucket`, `Remove-GcsBucket`,
+///   `Remove-GkeCluster` and `Remove-MgUser` delete what they name.
+/// - `Clear-` and `Reset-`, in every cloud: they wipe what a resource holds
+///   or set it back (`Clear-SQSQueue` purges a queue, `Clear-AzRedisCache`
+///   flushes a cache, `Reset-AzRedisCache` reboots it and may lose its data,
+///   `Reset-RDSDBParameterGroup` sets a database's parameters back).
+/// - `Unregister-`, for AWS and Azure: AWS names its deregister and
+///   disassociate verbs so (`Unregister-EC2Image` deregisters an image,
+///   `Unregister-ELB2Target` takes targets off a load balancer), and Azure's
+///   take a provider or a server off a subscription.
+/// - `Disable-` of a key or a backup, in every cloud: a noun that ends in
+///   `key` or `keys`, or names a backup or a retention (`Disable-KMSKey`,
+///   `Disable-AzRecoveryServicesBackupProtection`,
+///   `Disable-AzStorageDeleteRetentionPolicy`). Other `Disable-` cmdlets
+///   (`Disable-KMSKeyRotation`) are left to the rules that read them.
+/// - For AWS, the cmdlets its terminate verbs are named: `Stop-EC2Instance`
+///   with `-Terminate` (see [`terminates`]), `Stop-EBEnvironment`,
+///   `Stop-EMRJobFlow` and `Stop-ASInstanceInAutoScalingGroup`, and
+///   `Request-KMSKeyDeletion`, which schedules a key's deletion.
+///
+/// The guard cannot tell a scratch resource from one that matters, so each
+/// destroys whatever its other parameters (`-WhatIf` among them: a quoted
+/// `'-WhatIf'` is a value, and the guard reads both as the same word).
+fn cloud_cmdlet(key: &str, args: &[Arg]) -> Option<(Flagged, &'static str)> {
+    use Cloud::{Aws, Azure, Entra, Google};
+    let (verb, noun) = key.split_once('-')?;
+    let (cloud, rest) = cloud_of(noun)?;
+    let reason = match (verb, cloud) {
+        ("remove", Azure) => "deletes Azure resources",
+        ("remove", Google) => "deletes Google Cloud resources",
+        ("remove", Aws) => "deletes AWS resources",
+        ("remove", Entra) => "deletes Microsoft Entra or Microsoft 365 objects",
+        ("clear", Azure) => "clears data in Azure",
+        ("clear", Google) => "clears data in Google Cloud",
+        ("clear", Aws) => "clears data in AWS",
+        ("clear", Entra) => "clears data in Microsoft Entra or Microsoft 365",
+        ("reset", Azure) => "resets Azure resources",
+        ("reset", Google) => "resets Google Cloud resources",
+        ("reset", Aws) => "resets AWS resources",
+        ("reset", Entra) => "resets Microsoft Entra or Microsoft 365 objects",
+        ("unregister", Azure) => "deregisters Azure resources",
+        ("unregister", Aws) => "deregisters AWS resources",
+        ("disable", _) if !keeps(rest) => return None,
+        ("disable", Azure) => "disables a key or a backup in Azure",
+        ("disable", Google) => "disables a key or a backup in Google Cloud",
+        ("disable", Aws) => "disables a key or a backup in AWS",
+        ("disable", Entra) => "disables a key in Microsoft Entra or Microsoft 365",
+        ("stop", Aws) if noun == "ec2instance" => {
+            return Some((terminates(args), "terminates EC2 instances"));
+        }
+        ("stop", Aws) if AWS_TERMINATES.contains(&noun) => "terminates AWS resources",
+        ("request", Aws) if noun == "kmskeydeletion" => "schedules a KMS key's deletion",
+        _ => return None,
+    };
+    Some((Flagged::Written, reason))
+}
+
+/// The cloud whose modules a cmdlet's noun is of (the key's part after the
+/// verb's dash), and what is left of the noun after the cloud's prefix:
+/// `Az` (with `AzureRM`, `Azure` and `AzureAD`) for Azure; every service
+/// prefix of the AWS Tools ([`AWS_PREFIXES`], the longest that starts it)
+/// for AWS; `Gc`, `Gke` and `Bq` for Google Cloud; `Mg`, `Entra` and `Msol`
+/// for Microsoft Entra and Microsoft 365. A prefix with nothing after it
+/// names no cmdlet of the cloud.
 ///
 /// PowerShell reads a cmdlet's name in any case, so the prefix is read in
 /// lower case too, and a noun of another module that starts like one
-/// (`Remove-SmbShare`, `Remove-LocalUser`) is told apart by
-/// [`NOT_CLOUD_NOUNS`], unless a longer AWS prefix starts it too
-/// (`Remove-SecurityIRResourceTag` against `secur`). The cmdlets that only
-/// change the module's own sign-in on this machine (`Remove-AzContext`)
-/// delete nothing in the cloud.
-fn cloud_cmdlet(key: &str) -> Option<&'static str> {
-    let noun = key.strip_prefix("remove-")?;
+/// (`Remove-SmbShare`, `Remove-LocalUser`, `Clear-Content`,
+/// `Unregister-ScheduledTask`) is told apart by [`NOT_CLOUD_NOUNS`], unless
+/// a longer AWS prefix starts it too (`Remove-SecurityIRResourceTag` against
+/// `secur`). The cmdlets that only change the module's own settings on this
+/// machine (`Remove-AzContext`, `Clear-AzDefault`) are of no cloud.
+fn cloud_of(noun: &str) -> Option<(Cloud, &str)> {
     let after = |prefix: &str| noun.strip_prefix(prefix).filter(|rest| !rest.is_empty());
     let aws = AWS_PREFIXES
         .iter()
         .filter(|prefix| after(prefix).is_some())
-        .map(|prefix| prefix.len())
-        .max();
+        .max_by_key(|prefix| prefix.len());
     let other = NOT_CLOUD_NOUNS
         .iter()
         .filter(|other| noun.starts_with(**other))
         .map(|other| other.len())
         .max();
     if let Some(other) = other {
-        if aws.is_none_or(|aws| aws <= other) {
+        if aws.is_none_or(|aws| aws.len() <= other) {
             return None;
         }
     }
@@ -504,28 +569,97 @@ fn cloud_cmdlet(key: &str) -> Option<&'static str> {
             .iter()
             .find_map(|family| rest.strip_prefix(family))
             .unwrap_or(rest);
-        return (!AZURE_SIGN_IN.contains(&rest)).then_some("deletes Azure resources");
+        return (!AZURE_LOCAL.contains(&rest)).then_some((Cloud::Azure, rest));
     }
-    if ["gc", "gke", "bq"]
-        .iter()
-        .any(|prefix| after(prefix).is_some())
-    {
-        return Some("deletes Google Cloud resources");
+    if let Some(rest) = ["gc", "gke", "bq"].iter().find_map(|prefix| after(prefix)) {
+        return Some((Cloud::Google, rest));
     }
-    if aws.is_some() {
-        return Some("deletes AWS resources");
+    if let Some(rest) = aws.and_then(|prefix| after(prefix)) {
+        return Some((Cloud::Aws, rest));
     }
     ["mg", "entra", "msol"]
         .iter()
-        .any(|prefix| after(prefix).is_some())
-        .then_some("deletes Microsoft Entra or Microsoft 365 objects")
+        .find_map(|prefix| after(prefix))
+        .map(|rest| (Cloud::Entra, rest))
 }
 
-/// The nouns the Azure modules' sign-in cmdlets take after their prefix
-/// (`Remove-AzContext`, `Remove-AzureRmAccount`, an alias of
-/// `Disconnect-AzureRmAccount`): they change what this machine is signed in
-/// to, not the cloud.
-const AZURE_SIGN_IN: &[&str] = &["context", "account", "environment"];
+/// The clouds whose PowerShell modules [`cloud_cmdlet`] reads.
+#[derive(Clone, Copy)]
+enum Cloud {
+    Azure,
+    Aws,
+    Google,
+    /// Microsoft Entra and Microsoft 365.
+    Entra,
+}
+
+/// Whether a `Disable-` cmdlet's noun, after its cloud's prefix, names what
+/// keeps data: a key (`KMSKey`, ending in `key` or `keys`), a backup or a
+/// retention, which disabling makes unreadable or stops keeping.
+fn keeps(rest: &str) -> bool {
+    rest.ends_with("key")
+        || rest.ends_with("keys")
+        || rest.contains("backup")
+        || rest.contains("retention")
+}
+
+/// Whether `Stop-EC2Instance` terminates: its `-Terminate` switch, by any
+/// prefix of its name in any case (`-Term`; none of the cmdlet's other
+/// parameters starts with a `t`), is written, or may be. A value bound with
+/// a colon says which: `$false` or `0` is off, `$true` or `1` on, and one
+/// only known when it runs may be either. A splat (`@p`) may hold the switch.
+/// A variable given as an argument (`-InstanceId $id`) cannot: PowerShell
+/// binds a cmdlet's parameters by what the line writes, so its value is a
+/// value whatever it holds.
+fn terminates(args: &[Arg]) -> Flagged {
+    let mut unread = super::files::splatted(args);
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        let Some(name) = text
+            .strip_prefix('-')
+            .filter(|name| name.starts_with(|c: char| c.is_ascii_alphabetic()))
+        else {
+            continue;
+        };
+        let colon = name.ends_with(':');
+        let name = name.trim_end_matches(':').to_ascii_lowercase();
+        let value = if colon { iter.next() } else { None };
+        if !"terminate".starts_with(name.as_str()) {
+            continue;
+        }
+        let Some(value) = value else {
+            return Flagged::Written;
+        };
+        let value = value.text().to_ascii_lowercase();
+        match value.as_str() {
+            "$true" | "1" => return Flagged::Written,
+            "$false" | "0" => {}
+            _ => unread = true,
+        }
+    }
+    Flagged::of(false, unread)
+}
+
+/// The nouns of the AWS `Stop-` cmdlets that terminate what they name (AWS's
+/// terminate verbs): an Elastic Beanstalk environment, an EMR cluster, and
+/// an instance of an Auto Scaling group.
+const AWS_TERMINATES: &[&str] = &[
+    "ebenvironment",
+    "emrjobflow",
+    "asinstanceinautoscalinggroup",
+];
+
+/// The nouns the Azure modules' cmdlets take after their prefix when they
+/// change only what this machine is signed in to or set up with, not the
+/// cloud: the sign-in cmdlets (`Remove-AzContext`, `Clear-AzContext`,
+/// `Remove-AzureRmAccount`, an alias of `Disconnect-AzureRmAccount`), and
+/// the module's defaults and configuration (`Clear-AzDefault`,
+/// `Clear-AzConfig`).
+const AZURE_LOCAL: &[&str] = &["context", "account", "environment", "default", "config"];
 
 /// The noun prefixes of the AWS Tools for PowerShell, one to a service, in
 /// lower case and sorted: the `ServiceNounPrefix` of every service in the
@@ -994,7 +1128,11 @@ const AWS_PREFIXES: &[&str] = &[
 /// Directory computers, claims, access policies and service accounts,
 /// certificate enrollment, ODBC data sources, storage masking sets, the
 /// secrets of a local vault, provisioned Appx packages, `VMware`'s CD drives,
-/// customization specs and ESX depots, and Reporting Services' catalog.
+/// customization specs and ESX depots, Reporting Services' catalog, a file's
+/// content (`Clear-Content`), scheduled tasks and jobs
+/// (`Unregister-ScheduledTask`), a smart card's device log
+/// (`Clear-PcsvDeviceLog`) and Exchange's wipe of a phone
+/// (`Clear-ActiveSyncDevice`), none of them AWS's.
 const NOT_CLOUD_NOUNS: &[&str] = &[
     "smb",
     "dscconfiguration",
@@ -1024,6 +1162,10 @@ const NOT_CLOUD_NOUNS: &[&str] = &[
     "esx",
     "rscatalogitem",
     "rsrestcatalogitem",
+    "content",
+    "scheduled",
+    "pcsvdevice",
+    "activesyncdevice",
 ];
 
 /// Whether the unit is PowerShell's `sls`, written bare (any case, no

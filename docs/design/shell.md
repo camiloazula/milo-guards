@@ -5420,6 +5420,37 @@ as do listing and creating (`Get-AzVM`, `Get-S3Bucket`, `New-AzResourceGroup`).
 `-WhatIf` does not make one safe: a quoted `'-WhatIf'` is a value, and the
 guard reads the two as the same word.
 
+Other verbs of those modules destroy too, and are `destroy_resources` the
+same way. A `Clear-` or `Reset-` cmdlet of any of the clouds wipes what a
+resource holds or sets it back (`Clear-SQSQueue` purges a queue,
+`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
+`Reset-RDSDBParameterGroup` sets a database's parameters back). An
+`Unregister-` cmdlet of AWS is one of its deregister or disassociate verbs
+(`Unregister-EC2Image`, `Unregister-ECSTaskDefinition`,
+`Unregister-ELB2Target`), and one of Azure takes a provider or a server off a
+subscription (`Unregister-AzResourceProvider`). A `Disable-` cmdlet is one
+when its noun names a key or a backup: it ends in `Key` or `Keys`, or holds
+`Backup` or `Retention` (`Disable-KMSKey`,
+`Disable-AzRecoveryServicesBackupProtection`,
+`Disable-AzStorageDeleteRetentionPolicy`); `Disable-KMSKeyRotation` is not.
+The AWS cmdlets its terminate verbs are named are: `Stop-EC2Instance` with
+`-Terminate` (by any prefix of the name, in any case; `-Terminate:$false` or
+`:0` is off, a value only known when it runs and a splat may turn it on, and
+the finding then says it may), `Stop-EBEnvironment`, `Stop-EMRJobFlow` and
+`Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion` schedules a
+key's deletion. `Stop-EC2Instance` without `-Terminate` stops instances and
+stays safe, also with a variable as an argument (`-InstanceId $id`), since
+PowerShell binds a cmdlet's parameters by what the line writes; so do
+`Stop-AzVM` and `Get-EC2Image`. The cmdlets that only change the module's
+settings on this machine stay safe (`Clear-AzContext`, `Clear-AzDefault`,
+`Clear-AzConfig`, `Disable-AzContextAutosave`, and AWS's own `AWS` noun:
+`Clear-AWSCredential`, `Clear-AWSHistory`), and so do other modules' cmdlets
+of these verbs whose noun starts like a prefix (`Clear-Content`, which is
+judged as a write, `Clear-PcsvDeviceLog`, `Clear-ActiveSyncDevice`,
+`Reset-ComputerMachinePassword`, `Reset-ADServiceAccountPassword`,
+`Unregister-ScheduledTask`, `Unregister-ScheduledJob`,
+`Unregister-SecretVault`, `Disable-ScheduledTask`, `Disable-MMAgent`).
+
 A family of delete verbs read by its prefix (`delete-*` for `gcloud`, `az`
 and `doctl`, `purge-*` for `az`) is a verb only where a verb can be: after a
 verb that takes operands (`deploy`, `create`) such a word is the name of what

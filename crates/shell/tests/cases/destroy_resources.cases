@@ -1034,6 +1034,77 @@ powershell finds=destroy_resources | Remove-MgUser -UserId u
 powershell finds=destroy_resources | Remove-EntraUser -UserId u
 powershell finds=destroy_resources | Remove-MsolUser -UserPrincipalName u
 powershell finds=destroy_resources | Invoke-Command -ScriptBlock { Remove-AzVM -Name vm -Force }
+# Other verbs destroy too: an AWS `Unregister-` cmdlet (AWS's deregister and
+# disassociate) and an Azure one, a `Clear-` or `Reset-` cmdlet of any cloud
+# module, a `Disable-` of a key or a backup, a stop that terminates
+# (`Stop-EC2Instance -Terminate`, and the `Stop-` cmdlets AWS's terminate
+# verbs are named), and a key's deletion requested. A stop without
+# `-Terminate` stays safe, as do listing and the cmdlets that only change the
+# module's own settings on this machine, and other modules' cmdlets of those
+# verbs whose noun only looks like a prefix.
+powershell finds=destroy_resources | Unregister-EC2Image -ImageId ami-1
+powershell finds=destroy_resources | Unregister-ECSTaskDefinition -TaskDefinition t:1
+powershell finds=destroy_resources | Unregister-ELB2Target -TargetGroupArn a -Target @{Id='i-1'}
+powershell finds=destroy_resources | Unregister-AzResourceProvider -ProviderNamespace Microsoft.Sql
+powershell finds=destroy_resources | Stop-EC2Instance -InstanceId i-1 -Terminate
+powershell finds=destroy_resources | Stop-EC2Instance i-1 -Term -Force
+powershell finds=destroy_resources | stop-ec2instance -InstanceId i-1 -TERMINATE
+powershell finds=destroy_resources | Stop-EC2Instance -InstanceId i-1 -Terminate:$true
+powershell finds=destroy_resources reason="may terminate EC2 instances with an option only known when it runs" | Stop-EC2Instance -InstanceId i-1 -Terminate:$t
+powershell finds=destroy_resources reason="may terminate EC2 instances with an option only known when it runs" | Stop-EC2Instance @p
+powershell finds=destroy_resources | AWS.Tools.EC2\\Stop-EC2Instance -InstanceId i-1 -Terminate
+powershell finds=destroy_resources | Get-EC2Instance | Stop-EC2Instance -Terminate -Force
+powershell finds=destroy_resources | Stop-EBEnvironment -EnvironmentName prod -Force
+powershell finds=destroy_resources | Stop-EMRJobFlow -JobFlowId j-1
+powershell finds=destroy_resources | Stop-ASInstanceInAutoScalingGroup -InstanceId i-1 -ShouldDecrementDesiredCapacity $true
+powershell finds=destroy_resources | Request-KMSKeyDeletion -KeyId k -PendingWindowInDay 7
+powershell finds=destroy_resources | Disable-KMSKey -KeyId k
+powershell finds=destroy_resources | Disable-AzRecoveryServicesBackupProtection -Item $i -RemoveRecoveryPoints -Force
+powershell finds=destroy_resources | Disable-AzStorageDeleteRetentionPolicy -ResourceGroupName rg -StorageAccountName s
+powershell finds=destroy_resources | Clear-SQSQueue -QueueUrl https://sqs.us-east-1.amazonaws.com/1/q
+powershell finds=destroy_resources | Clear-AzRedisCache -ResourceGroupName rg -Name c -Force
+powershell finds=destroy_resources | Reset-AzRedisCache -ResourceGroupName rg -Name c -RebootType AllNodes -Force
+powershell finds=destroy_resources | Reset-RDSDBParameterGroup -DBParameterGroupName p -ResetAllParameter $true
+powershell finds=destroy_resources | Reset-MsolStrongAuthenticationMethodByUpn -UserPrincipalName u
+powershell finds=destroy_resources | Unregister-SCDelegatedAdministrator -AccountId 1
+powershell finds=destroy_resources | Clear-CSDomain -DomainName d
+powershell finds=destroy_resources | Invoke-Command -ScriptBlock { Unregister-EC2Image -ImageId ami-1 }
+posix finds=destroy_resources | pwsh -c 'Stop-EC2Instance -InstanceId i-1 -Terminate'
+powershell safe | Get-EC2Image
+powershell safe | Get-EC2Image -Owner self
+powershell safe | Stop-EC2Instance -InstanceId i-1
+powershell safe | Stop-EC2Instance -InstanceId i-1 -Force -Hibernate
+powershell safe | Stop-EC2Instance -InstanceId $id
+powershell safe | Stop-EC2Instance -InstanceId i-1 -Terminate:$false
+powershell safe | Stop-AzVM -Name vm -ResourceGroupName rg -Force
+powershell safe | Disable-KMSKeyRotation -KeyId k
+powershell safe | Disable-AzContextAutosave
+powershell safe | Disable-AzDataCollection
+powershell safe | Clear-AzContext -Force
+powershell safe | Clear-AzureRmContext -Force
+powershell safe | Clear-AzDefault -Force
+powershell safe | Clear-AzConfig -Force
+powershell safe | Clear-AWSCredential -ProfileName dev
+powershell safe | Clear-AWSHistory
+powershell safe | Clear-DefaultAWSRegion
+powershell rules=delete | Clear-RecycleBin -Force
+powershell safe | Clear-History
+powershell safe | Clear-EventLog -LogName Application
+powershell safe | Clear-DnsClientCache
+powershell safe | Clear-PcsvDeviceLog -TargetAddress x
+powershell safe | Clear-ActiveSyncDevice -Identity d
+powershell safe | Reset-ComputerMachinePassword
+powershell safe | Reset-ADServiceAccountPassword -Identity sa
+powershell safe | Unregister-ScheduledTask -TaskName t -Confirm:$false
+powershell safe | Unregister-ScheduledJob -Name j
+powershell safe | Unregister-SecretVault -Name v
+powershell safe | Unregister-PSRepository -Name r
+powershell safe | Unregister-Event -SourceIdentifier s
+powershell safe | Unregister-PackageSource -Name s
+powershell safe | Disable-ScheduledTask -TaskName t
+powershell safe | Disable-MMAgent -MemoryCompression
+powershell safe | Disable-PSRemoting -Force
+powershell safe | Clear-Content x.txt
 posix finds=destroy_resources | pwsh -c 'Remove-AzResourceGroup -Name rg -Force'
 cmd finds=destroy_resources | powershell -Command Remove-AzResourceGroup -Name rg -Force
 cmd safe | docker ps
