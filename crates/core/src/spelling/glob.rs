@@ -932,8 +932,13 @@ impl Named {
 }
 
 /// `c` in the cases a Windows name compares by: its first lower and upper
-/// case character.
+/// case character. An ASCII character's are its ASCII ones, found without
+/// the tables of every character, which a pattern matched against many names
+/// asks for at each character.
 fn cases(c: char) -> (char, char) {
+    if c.is_ascii() {
+        return (c.to_ascii_lowercase(), c.to_ascii_uppercase());
+    }
     (
         c.to_lowercase().next().unwrap_or(c),
         c.to_uppercase().next().unwrap_or(c),

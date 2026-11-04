@@ -157,14 +157,14 @@ impl Walker<'_> {
             }
             // An assignment in `for (( ))` whose value is the next one
             // (`x=y=0`) holds what that one gives, read here as only known
-            // when it runs, and written as the name the next one sets: kept
-            // as the rest of the chain at each, a chain at the length limit
-            // copied the square of its length.
+            // when it runs, and written as the start of the next one (`y=…`):
+            // kept as the rest of the chain at each, a chain at the length
+            // limit copied the square of its length.
             Some(inner) if inner.kind() == "variable_assignment" => {
                 let next = inner
                     .child_by_field_name("name")
                     .map_or("", |name| unit::text(&name, self.source));
-                vec![Value::Unknown(next.to_string())]
+                vec![Value::Unknown(format!("{next}=…"))]
             }
             // The grammar may end a word early, before a backslash it reads
             // apart (`x=a[\$\(rm\ x\)]`): what the shell reads is more.

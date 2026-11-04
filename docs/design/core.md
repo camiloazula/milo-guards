@@ -442,6 +442,20 @@ itself.
   `hidden` flag says whether a wildcard may match a leading dot; the resolver
   sets it on `Windows`, and on `Posix` when the caller passes it to
   `place_hidden`.
+
+  The resolver matches a pattern part against every protected path, startup
+  file and secret below the folder it starts in, and a line can hold
+  thousands of patterns, each its own, so two cheaper steps come first, each
+  giving what matching every reading gives (a test holds them to it for
+  every short part of the characters that matter). A name is not matched
+  when it lacks, in any case, a letter or digit of the part before its first
+  `[` or backtick: each is a literal of every reading, an ASCII name holds no
+  other character such a literal takes without case, and its short name
+  holds only the name's own, `~`, `1` and `.`; a name that is not ASCII is
+  always matched (the Kelvin sign is a `k`). And a part that is ASCII with
+  no class and no backtick, against an ASCII name, is matched without case
+  as bytes, which both readings of it come to, without building its tokens
+  or a name in lower case for each name.
   On `Windows`, `*.*` as a last part is a catch-all like `*`. That is cmd's
   meaning; in PowerShell it needs a dot in the name, so taking it as every
   entry is the wider reading.

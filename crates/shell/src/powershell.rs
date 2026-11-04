@@ -3926,9 +3926,10 @@ impl Walker<'_> {
     /// written as.
     ///
     /// What each link of the chain gives is kept for the line: every call
-    /// in a chain asks it of the chain before it, so read again at each, `$PSDefaultParameterValues.Add(1, $b)` followed
-    /// by `.Add(1, $b)` repeated took time that grows with the square of the
-    /// chain, up to the depth a tree may have.
+    /// in a chain asks it of the chain before it, so read again at each,
+    /// `$PSDefaultParameterValues.Add(1, $b)` followed by `.Add(1, $b)`
+    /// repeated took time that grows with the square of the chain, up to
+    /// the depth a tree may have.
     fn names_hook(&mut self, node: Node<'_>) -> bool {
         let mut passed = Vec::new();
         let mut at = blocks::unwrap(node);

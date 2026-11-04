@@ -483,3 +483,9 @@ powershell finds=delete | cmd /c del /s /q \\\\?\\C:\\Users\\me\\dev\\repo\\HEAD
 powershell safe | sc *a x;.\\b;sc *a x;.\\b;
 powershell finds=overwrite reason="writes to your SSH keys" | Set-Content ~\\.ssh\\* x; .\\b; Set-Content ~\\.ssh\\* x
 powershell finds=overwrite | sc .g* x; .\\b; sc .g* x
+# A pattern's letters and digits are looked for in a name before it is
+# matched, the name's short name among them (`TASKS~1.JSO`).
+powershell finds=overwrite | sc .vscode\\*~1.JS? x
+powershell finds=overwrite | sc .vscode\\t*1* x
+powershell finds=overwrite | sc .vscode\\TA*.json x
+powershell safe | sc .vscode\\*2* x

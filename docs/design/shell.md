@@ -845,8 +845,12 @@ line, by node id, so a chain is walked once. Whether the left side of an `||`
 that ends the shell holds a negated `cd` (`! cd a || exit`) is kept for each
 list down the left side of a chain, which is the whole chain before each `||`
 (`cd a || exit || ` repeated to the length limit took a quarter of a second,
-now 30 ms); whether an operand of `(( ))` is in arithmetic is kept for each
-expression passed on the way up (`((x=x=…=0))` 400 deep took 0.15 s, the
+now 30 ms); whether a command read so far renames a builtin (`alias`,
+`enable`, `disable`), which each such `||` asks of its `exit`, is noted as
+each command is added, not read from every command so far (`cd a || exit; `
+repeated took half a second, now 60 ms); whether an operand of `(( ))` is
+in arithmetic is kept for each expression passed on the way up
+(`((x=x=…=0))` 400 deep took 0.15 s, the
 walk up asked again from each operand, each step of it a walk down from the
 root, as tree-sitter finds a parent; now 5 ms). In PowerShell, whether a
 chain of members, items and calls names a hook as text, reaches a member of
@@ -865,9 +869,17 @@ copied at each assignment, 8 KB of it took 1.4 s and 16 KB 5 s; now 60 ms at
 the length limit. And the place a spelling lands at is kept for the line
 (the drives the line makes are known before any path is placed, so a
 spelling lands at one place for the whole line), up to 4,096 spellings of
-1,024 bytes at most: a pattern is matched against every protected and secret
-path, a tenth of a millisecond, so PowerShell's `sc *a x;.\b;` repeated to
-the length limit placed `*a` thousands of times, half a second, now 0.15 s.
+1,024 bytes at most: a pattern is matched against every protected path,
+startup file and secret below its folder, a tenth of a millisecond, so
+PowerShell's `sc *a x;.\b;` repeated to the length limit placed `*a`
+thousands of times, half a second. Patterns each their own are not repeats,
+so matching one is cheaper too (see [core.md](core.md)): a name without a
+letter or digit the pattern holds is not matched at all, and a plain ASCII
+pattern is matched without building its tokens. At the length limit, in a
+release build, `sc *a0 x;.\b;sc *a1 x;.\b;…` took 0.5 s and now takes
+0.13 s, the same with patterns of `?` and `-` alone 0.43 s and now 0.12 s,
+and `sc *a x;.\b;` repeated 0.16 s, about what PowerShell's `$a = 1; `
+repeated takes (0.19 s).
 
 The grammars themselves take time that grows with the square of the line on
 some noise. Measured in a release build at 65,000 bytes (the longest line),
@@ -916,8 +928,10 @@ none), a PowerShell `Get-ChildItem … | Where-Object { … } | Select-Object
 Name` in 62 µs (84, 65), ten `cargo test -p foo --release 2>&1 | tail -20;`
 in 179 µs (270, 185), and twenty `Get-Item a; Set-Location b;` in 474 µs
 (596, 477). A line longer than a few kilobytes still pays for the log, as
-before: `echo a b c | sort; ` repeated to the length limit takes 51 ms (35 ms
-with no log), PowerShell's `$a = 1; ` 184 ms (156 ms). These are examples of what was
+before, since nothing cheaper sees a recovery and the quiet steps cannot
+grow without letting noise cost more before it is counted: `echo a b c |
+sort; ` repeated to the length limit takes 51 ms (35 ms with no log),
+PowerShell's `$a = 1; ` 184 ms (156 ms). These are examples of what was
 measured, not every slow shape: a new measurement can find another, and the
 list is not a promise that anything else is fast.
 

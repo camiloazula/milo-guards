@@ -1335,6 +1335,9 @@ pub(crate) struct Split {
     /// The functions the line defines, for a `GLOBIGNORE=x f` in front of a
     /// call.
     functions: Vec<String>,
+    /// Whether a unit added so far may change what a builtin's name stands
+    /// for (see [`Split::renames_builtins`]), noted as each is added.
+    renaming: bool,
     /// The units of each function body and alias the line defines, by name:
     /// what a call of the name runs (see [`Split::bodies_of`]).
     called_bodies: HashMap<String, Vec<Range<usize>>>,
@@ -1941,6 +1944,9 @@ impl Split {
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
         self.note_call(&unit);
+        self.renaming |= unit
+            .key()
+            .is_some_and(|key| matches!(key.as_str(), "alias" | "enable" | "disable"));
         if let Some(change) = unit
             .key()
             .filter(|_| unit.shell == Shell::Posix)
@@ -3570,11 +3576,14 @@ impl Split {
     /// stands for: an alias (`alias true=false`), or `enable` and `disable`
     /// (`enable -n true` turns the builtin off, so a program of that name
     /// from `PATH` runs).
+    ///
+    /// It is noted as each unit is added, not read from the units: asked at
+    /// every `||` whose right side is `exit`, a read of every unit so far
+    /// made `cd a || exit; ` repeated to the length limit take half a second.
+    /// A unit's program only turns unknown after it is added, never known,
+    /// so what was noted still holds or says more than the units do.
     pub(crate) fn renames_builtins(&self) -> bool {
-        self.units.iter().any(|unit| {
-            unit.key()
-                .is_some_and(|key| matches!(key.as_str(), "alias" | "enable" | "disable"))
-        })
+        self.renaming
     }
 
     /// Say a function the line defines runs with the option on, as a
