@@ -169,11 +169,11 @@ answer is not. There are three kinds of test, and each has its place:
   `crates/<crate>/tests/<what-it-checks>.rs`, one thing to a file, with the
   helpers the files share in `tests/common`.
 - A test of the front door from end to end is in `crates/guards/tests`:
-  `agree.rs` (the shell and the file guard give one answer), `contract.rs`
-  (the contract and the direction of the dependencies), `everyday.rs` (the
-  everyday commands stay safe, its lines in `tests/cases/everyday.cases`) and
-  `toolchain.rs` (the places that name the
-  Rust version agree).
+  `agree.rs` (the shell and the file guard give one answer), `ci_jobs.rs`
+  (CI's jobs run the recipes of `just verify`), `contract.rs` (the contract
+  and the direction of the dependencies), `everyday.rs` (the everyday
+  commands stay safe, its lines in `tests/cases/everyday.cases`) and
+  `toolchain.rs` (the places that name the Rust version agree).
 
 Some names are read by other files: `just no-inline` runs
 `crates/shell/tests/inline_off.rs` by name, `agree.rs` reads every case file

@@ -17,7 +17,7 @@ use common::lines::{
 };
 use common::{check, disagreements, posix, windows};
 use milo_guards_shell::{classify, effect, explain, Effect, Paths, Rule, Shell};
-use noise::Lcg;
+use noise::{paths_for, wide_lines, Lcg, SHELLS};
 
 /// Whether `explain` finds `line` unreadable, its tree drawn and saying so.
 fn explained_unreadable(line: &str, shell: Shell, paths: &Paths) -> bool {
@@ -106,6 +106,51 @@ fn random_lines_never_panic() {
             assert!(wrong.is_empty(), "{shell:?}: {wrong:?}");
         }
     }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard starts no thread; this test reads each shell on one, to be done sooner"
+)]
+fn wide_random_lines_never_panic() {
+    // Wider noise than `random_lines_never_panic`, a third of it cut or with
+    // stray bytes joined on: `classify` and `effect` agree on every line, and
+    // the set really is noise, as most of it cannot be read. Each shell reads
+    // the set on a thread of its own, as a debug build takes a while over
+    // it. Its time is in `tests/timing.rs`.
+    let lines = wide_lines();
+    let unreadable: usize = std::thread::scope(|scope| {
+        let each = SHELLS.map(|shell| {
+            let lines = &lines;
+            scope.spawn(move || {
+                let paths = paths_for(shell);
+                let mut unreadable = 0;
+                for line in lines {
+                    let assessment = classify(line, shell, &paths);
+                    let _ = effect(line, shell, &paths);
+                    let wrong = disagreements(shell, &paths, [line.as_str()]);
+                    assert!(wrong.is_empty(), "{shell:?}: {wrong:?}");
+                    unreadable += usize::from(
+                        assessment
+                            .findings()
+                            .iter()
+                            .any(|finding| finding.rule == Rule::Unreadable),
+                    );
+                }
+                unreadable
+            })
+        });
+        each.into_iter()
+            .map(|shell| {
+                shell
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .sum()
+    });
+    let read = lines.len() * SHELLS.len();
+    assert!(unreadable * 3 > read, "only {unreadable} of {read}");
 }
 
 #[test]

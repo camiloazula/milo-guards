@@ -60,20 +60,21 @@ reads the clock in an optimized build only, with
 slow build or a busy machine does not fail it. A test that checks both what
 the guard answers for a line and how long it takes is two tests: the answer
 beside the rules it checks, run in every build, and the time in `timing.rs`,
-with the line made once in the crate's `tests/common` so both read the same
-one. Where it checks that a shape
-is read in time that grows with its length, it compares a line of 16 KB with
-one of 64 KB (`assert_linear` in the shell guard's `tests/timing.rs`, over
-`assert_linear_by` in its `tests/common`), not one line with a fixed limit. A shape the guard reads only to a count, and stops
-past it, can make the longer line the quicker one, so two lengths do not show
-how it grows: `assert_linear` fails when the longer takes less than half the
-time of the shorter, and such a shape holds each of several lengths, up to
-and past the count, to a fixed limit instead (`assert_within`). Where it
-holds a line to a fixed limit, the limit
-leaves room for a machine several times slower and busy with another gate:
-about ten times what an optimized build takes here, and never less than four
-times what it takes with another gate running beside it. A row that comes
-nearer its bound is not given a wider one: it is held to how its time grows
+with the line made once in the crate's `tests/common` (the shell guard's
+random noise in its `tests/noise`) so both read the same one. Where it
+checks that a shape is read in time that grows with its length, it compares
+a line of 16 KB with one of 64 KB (`assert_linear` in the shell guard's
+`tests/timing.rs`, over `assert_linear_by` in its `tests/common`), not one
+line with a fixed limit. A shape the guard reads only to a count, and stops
+past it, can make the longer line the quicker one, so two lengths do not
+show how it grows: `assert_linear` fails when the longer takes less than
+half the time of the shorter, and such a shape holds each of several
+lengths, up to and past the count, to a fixed limit instead
+(`assert_within`). Where it holds a line to a fixed limit, the limit leaves
+room for a machine several times slower and busy with another gate: about
+ten times what an optimized build takes here, and never less than four times
+what it takes with another gate running beside it. A row that comes nearer
+its bound is not given a wider one: it is held to how its time grows
 instead, or made quicker.
 
 `just advisories` is not part of `just verify`. It checks the RustSec database

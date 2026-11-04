@@ -14,18 +14,18 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use common::lines::{
-    clients_after_a_big_group, dash_c_chain, deep_traps, dotglob_loops, doubled_names,
+    after, clients_after_a_big_group, cmd_commands_read_again, dash_c_chain, deep_traps,
+    distinct_folders, dotglob_loops, doubled_names, finds_in_finds_of_heavy_arguments,
     input_redirects_over_many_units, listing_chain, long_alias, long_code, long_hidden_listings,
     long_item_cmdlet_lines, many_definitions_that_may_not_run, many_functions_that_move_the_line,
-    names, nested_do_strings, nested_outputs, numbered, one_function_defined_and_called_many_times,
-    open_bracket_shapes, open_brackets, redirects_and_substitutions, too_much_said, variable_chain,
-    wide_traps, wrapper_shapes, EXTENDED_GLOB, OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES,
+    names, names_set_many_times, nested_do_strings, nested_outputs, numbered,
+    one_function_defined_and_called_many_times, open_bracket_shapes, open_brackets,
+    redirects_and_substitutions, too_much_said, variable_chain, wide_traps, wrapper_shapes, Shape,
+    EXTENDED_GLOB, FIND_EXPRESSIONS, OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES,
 };
-use common::{
-    assert_linear_by, assert_within, at, disagreements, filled, posix, windows, Maker, STAGE_SIZES,
-};
-use milo_guards_shell::{classify, effect, explain, Paths, Protected, Rule, Shell};
-use noise::{lossy, paths_for, Lcg, SHELLS, WIDE_PIECES};
+use common::{assert_linear_by, assert_within, at, filled, posix, windows, Maker, STAGE_SIZES};
+use milo_guards_shell::{classify, effect, explain, Paths, Protected, Shell};
+use noise::{paths_for, wide_lines, SHELLS};
 
 /// Held for the whole of a timed test, so no two are timed at once.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -108,51 +108,24 @@ impl Time {
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
-fn wide_random_lines_never_panic_and_stay_quick() {
+fn wide_random_lines_stay_quick() {
     let _serial = serial();
     // The time a turn can wait for one line, with room for a machine several
     // times slower and busy: lines this short take microseconds.
     const WORST: Duration = Duration::from_millis(500);
-    let mut random = Lcg(0x5eed);
     let mut worst = (Duration::ZERO, String::new());
-    let (mut unreadable, mut lines) = (0, 0);
-    for number in 0..4_500 {
-        let length = random.next() % 32;
-        let pieces: Vec<&str> = (0..length)
-            .map(|_| WIDE_PIECES[random.next() % WIDE_PIECES.len()])
-            .collect();
-        let mut line = pieces.join(if random.next().is_multiple_of(3) {
-            ""
-        } else {
-            " "
-        });
-        // A third of the lines are cut, or have stray bytes joined on.
-        if number % 3 == 0 {
-            line = lossy(&line, &mut random);
-        }
+    for line in wide_lines() {
         for shell in SHELLS {
             let paths = paths_for(shell);
             let started = Instant::now();
-            let assessment = classify(&line, shell, &paths);
+            let _ = classify(&line, shell, &paths);
             let took = started.elapsed();
             if took > worst.0 {
                 worst = (took, line.clone());
             }
-            let _ = effect(&line, shell, &paths);
-            let wrong = disagreements(shell, &paths, [line.as_str()]);
-            assert!(wrong.is_empty(), "{shell:?}: {wrong:?}");
-            lines += 1;
-            unreadable += usize::from(
-                assessment
-                    .findings()
-                    .iter()
-                    .any(|finding| finding.rule == Rule::Unreadable),
-            );
         }
     }
     assert!(worst.0 < WORST, "{:?} for {:?}", worst.0, worst.1);
-    // The set really is noise: most of it cannot be read.
-    assert!(unreadable * 3 > lines, "only {unreadable} of {lines}");
 }
 
 #[test]
@@ -166,72 +139,15 @@ fn wide_random_lines_never_panic_and_stay_quick() {
 )]
 fn finds_in_finds_are_read_in_time_whatever_their_arguments_weigh() {
     let _serial = serial();
-    // The work of `find -exec` is the bytes it builds, not the arguments it
-    // hands on: a few arguments of many `{}` each, or one big one, made the
-    // same blow-up through a budget counted in arguments. An optimized build
+    // The lines of `finds_in_finds_of_heavy_arguments`: an optimized build
     // reads each in tens of milliseconds; the bound leaves room for a
     // machine several times slower and busy.
     const LIMIT: Duration = Duration::from_secs(2);
-    let levels = |places: &str, each: usize, last: &str| {
-        let mut line = format!("find {places}");
-        for _ in 0..each {
-            line += "-exec find . . . . . . . . ";
-        }
-        line + last
-    };
-    let lines = [
-        // One place of a thousand bytes, four levels of eight places, and an
-        // argument of a thousand `{}`: a megabyte for each of 4,096 runs.
-        (
-            "levels of long arguments",
-            levels(
-                &format!("{} ", "a".repeat(1_000)),
-                4,
-                &format!("-exec echo {} \\;", "{}".repeat(1_000)),
-            ),
-        ),
-        // One place of 25,000 bytes and one argument of 17,000 `{}`: 425 MB.
-        (
-            "one huge argument",
-            format!(
-                "find {} -exec echo {} \\;",
-                "a".repeat(25_000),
-                "{}".repeat(17_000)
-            ),
-        ),
-        // The same, with twelve levels in front.
-        (
-            "one huge argument, deeper",
-            format!(
-                "find {} {}-exec echo {} \\;",
-                "a".repeat(25_000),
-                "-exec find . ".repeat(12),
-                "{}".repeat(17_000)
-            ),
-        ),
-        // Eight places and seven levels, then a script of 55 KB.
-        (
-            "a script at the bottom",
-            format!(
-                "find . . . . . . . . {}-exec sh -c 'echo {}' \\;",
-                "-exec find . . . . . . . . ".repeat(6),
-                "a".repeat(55_000)
-            ),
-        ),
-    ];
-    for (what, line) in &lines {
-        assert!(line.len() <= 64 * 1024, "{what}: {}", line.len());
+    for (what, line) in &finds_in_finds_of_heavy_arguments() {
         let started = Instant::now();
-        let assessment = classify(line, Shell::Posix, &posix());
+        let _ = classify(line, Shell::Posix, &posix());
         let took = started.elapsed();
         assert!(took < LIMIT, "{what}: {took:?}");
-        assert!(
-            assessment
-                .findings()
-                .iter()
-                .any(|finding| finding.rule == Rule::Unreadable),
-            "{what}"
-        );
     }
 }
 
@@ -569,52 +485,19 @@ fn wrappers_that_build_their_command_are_read_in_time() {
 )]
 fn cmd_commands_read_again_are_read_in_time() {
     let _serial = serial();
-    // cmd's `ver && if …`, `i^f`, `f^or`, `ca^ll` and `call call` are each
-    // read again as a statement of their own, and each holds the rest of the
-    // line: repeated, the line would be read once for each. An optimized
-    // build reads each in a tenth of the bound or less.
+    // Each command of `cmd_commands_read_again` is read again as a statement
+    // of its own, and holds the rest of the line: repeated, the line would
+    // be read once for each. An optimized build reads each in a tenth of the
+    // bound or less.
     const LIMIT: Duration = Duration::from_secs(2);
-    let fit = |unit: &str| {
-        let tail = "rd /s /q C:\\";
-        let count = (64 * 1024 - tail.len()) / unit.len();
-        format!("{}{tail}", unit.repeat(count))
-    };
-    let nested = |open: &str| {
-        let count = 390;
-        format!("{}rd /s /q C:\\{}", open.repeat(count), ")".repeat(count))
-    };
-    let lines = [
-        fit("ver && if a "),
-        fit("i^f a "),
-        fit("f^or %%i in (a) do "),
-        fit("ca^ll "),
-        fit("call "),
-        fit("call.bat & "),
-        fit("call.rd x & "),
-        nested("ver && if a ("),
-        nested("i^f a ("),
-    ];
     let paths = paths_for(Shell::Cmd);
-    for line in &lines {
+    for line in &cmd_commands_read_again() {
         let started = Instant::now();
-        let assessment = classify(line, Shell::Cmd, &paths);
+        let _ = classify(line, Shell::Cmd, &paths);
         let took = started.elapsed();
         assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
-        assert!(!assessment.is_safe(), "{:?}", &line[..40]);
     }
 }
-
-/// `count` folders, each the folder searched spelled its own way and ending
-/// in `//`, each followed by a space.
-fn distinct_folders(count: usize) -> String {
-    (0..count)
-        .map(|at| format!("s{at}/..// "))
-        .collect::<Vec<_>>()
-        .concat()
-}
-
-/// A line of a shape, and how it is made for a size.
-type Shape = (&'static str, fn(usize) -> String);
 
 #[test]
 #[cfg_attr(
@@ -627,78 +510,8 @@ fn find_expressions_are_read_in_linear_time() {
     // folder searched: its name and path patterns are asked of every name
     // `.git` holds, and a path pattern again for each folder.
     let paths = posix();
-    let shapes: [Shape; 11] = [
-        ("names joined by -o", |size| {
-            format!("find . {}-delete", filled("-name HEAD -o ", size, 20))
-        }),
-        ("negations", |size| {
-            format!("find . {}-name HEAD -delete", filled("! ", size, 30))
-        }),
-        ("brackets", |size| {
-            let open = filled("( ", size / 2, 20);
-            format!(
-                "find . {open}-name HEAD{} -delete",
-                " )".repeat(open.len() / 2)
-            )
-        }),
-        ("folders and a path test", |size| {
-            format!("find {}-path '*/HEAD' -delete", filled(". ", size, 30))
-        }),
-        ("folders and path tests", |size| {
-            let half = size / 2;
-            format!(
-                "find {}{}-delete",
-                filled(". ", half, 20),
-                filled("-path '*/x' -o ", half, 20)
-            )
-        }),
-        ("a long name pattern", |size| {
-            format!("find . -name '{}' -delete", filled("*a", size, 30))
-        }),
-        ("a long path pattern", |size| {
-            format!("find . -path '{}' -delete", filled("*a", size, 30))
-        }),
-        ("prunes", |size| {
-            format!(
-                "find . {}-name HEAD -exec rm {{}} +",
-                filled("-name .git -prune -o ", size, 40)
-            )
-        }),
-        ("tests and actions", |size| {
-            format!(
-                "find . {}-delete",
-                filled("-type f -print -mtime 1 , ", size, 20)
-            )
-        }),
-        // A folder ending in `//` spells `.git` three ways, a bracket reads
-        // the pattern twice, and `*?` keeps every position of it live.
-        (
-            "folders spelled three ways and a live path pattern",
-            |size| {
-                let half = size / 2;
-                format!(
-                    "find {}-ipath '{}[Z]' -delete",
-                    filled(".// ", half, 20),
-                    filled("*?", half, 20)
-                )
-            },
-        ),
-        ("distinct folders and a live path pattern", |size| {
-            let half = size / 2;
-            // Each is the folder searched, spelled its own way.
-            let folders = distinct_folders(half / 12);
-            format!(
-                "find {folders}-ipath '{}[Z]' -delete",
-                filled("*?", half, 20)
-            )
-        }),
-    ];
-    for (what, line) in shapes {
+    for (what, line) in FIND_EXPRESSIONS {
         assert_linear(what, Shell::Posix, &paths, line);
-        assert!(
-            !classify(&line(64 * 1024), Shell::Posix, &paths).is_safe(),
-            "{what}"
-        );
     }
 }
 
@@ -1401,44 +1214,17 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
 fn commands_of_a_name_the_line_sets_many_times_are_read_in_linear_time() {
     let _serial = serial();
     // Every command may run any of the targets the line sets its name to, so
-    // the readings are bounded, and past the bound the line is unreadable.
-    // Each line, at the length limit and a quarter as long, takes about four
+    // the readings are bounded; targets of the name's own key must still
+    // cost one lookup for each command, not a walk of every target. Each
+    // line, at the length limit and a quarter as long, takes about four
     // times as long as the other, `classify` and `effect` together.
     let paths = paths_for(Shell::PowerShell);
-    let mut many = String::new();
-    for at in 0..100 {
-        let at = at.to_string();
-        many.push_str(&["Set-Alias x t", &at, "; Set-Alias t", &at, " y; "].concat());
-    }
-    // Targets of the name's own key add no reading, so they never run the
-    // bound out: each command must still cost one lookup, not a walk of
-    // every target.
-    let mut same = String::new();
-    for at in 0..64 {
-        same.push_str(&["Set-Alias x C:\\a", &at.to_string(), "\\x.exe; "].concat());
-    }
-    for (head, unit, risky) in [
-        (many.as_str(), "x ~; ", true),
-        ("Set-Alias x Remove-Item; ", "x b; ", true),
-        (same.as_str(), "x; ", false),
-        (same.as_str(), "x | x | x | x; ", false),
-    ] {
-        let line = |size| fit(unit, head, "", size);
+    for (head, unit, _) in &names_set_many_times() {
         assert_linear_by(
             &format!("{}… {unit}…", &head[..20]),
             |line| took_with_effect(line, Shell::PowerShell, &paths),
-            line,
+            |size| after(head, unit, size),
         );
-        if risky {
-            let assessment = classify(&line(64 * 1024), Shell::PowerShell, &paths);
-            assert!(
-                assessment
-                    .findings()
-                    .iter()
-                    .any(|finding| matches!(finding.rule, Rule::Unreadable | Rule::Unknown)),
-                "{assessment:?}"
-            );
-        }
     }
 }
 

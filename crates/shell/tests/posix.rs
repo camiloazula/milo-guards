@@ -12,6 +12,7 @@
 
 mod common;
 
+use common::lines::FIND_EXPRESSIONS;
 use common::{classify, posix, rules};
 use milo_guards_shell::{Rule, Shell};
 
@@ -107,4 +108,16 @@ fn a_shell_is_known_by_its_program() {
         Some(Shell::Cmd)
     );
     assert_eq!(Shell::for_program("/usr/local/bin/fish"), None);
+}
+
+#[test]
+fn find_expressions_that_reach_git_are_not_safe() {
+    // Each deletes `.git/HEAD` below the folder searched, however long its
+    // expression. Their time is in `tests/timing.rs`.
+    for (what, line) in FIND_EXPRESSIONS {
+        assert!(
+            !milo_guards_shell::classify(&line(64 * 1024), Shell::Posix, &posix()).is_safe(),
+            "{what}"
+        );
+    }
 }

@@ -584,3 +584,197 @@ pub fn input_redirects_over_many_units() -> [String; 5] {
         ),
     ]
 }
+
+/// `find -exec find …` lines whose arguments weigh a lot: the work of
+/// `find -exec` is the bytes it builds, not the arguments it hands on, so a
+/// few arguments of many `{}` each, or one big one, made the same blow-up
+/// through a budget counted in arguments. Each is named, and each is at most
+/// 64 KB.
+pub fn finds_in_finds_of_heavy_arguments() -> [(&'static str, String); 4] {
+    let levels = |places: &str, each: usize, last: &str| {
+        let mut line = format!("find {places}");
+        for _ in 0..each {
+            line += "-exec find . . . . . . . . ";
+        }
+        line + last
+    };
+    [
+        // One place of a thousand bytes, four levels of eight places, and an
+        // argument of a thousand `{}`: a megabyte for each of 4,096 runs.
+        (
+            "levels of long arguments",
+            levels(
+                &format!("{} ", "a".repeat(1_000)),
+                4,
+                &format!("-exec echo {} \\;", "{}".repeat(1_000)),
+            ),
+        ),
+        // One place of 25,000 bytes and one argument of 17,000 `{}`: 425 MB.
+        (
+            "one huge argument",
+            format!(
+                "find {} -exec echo {} \\;",
+                "a".repeat(25_000),
+                "{}".repeat(17_000)
+            ),
+        ),
+        // The same, with twelve levels in front.
+        (
+            "one huge argument, deeper",
+            format!(
+                "find {} {}-exec echo {} \\;",
+                "a".repeat(25_000),
+                "-exec find . ".repeat(12),
+                "{}".repeat(17_000)
+            ),
+        ),
+        // Eight places and seven levels, then a script of 55 KB.
+        (
+            "a script at the bottom",
+            format!(
+                "find . . . . . . . . {}-exec sh -c 'echo {}' \\;",
+                "-exec find . . . . . . . . ".repeat(6),
+                "a".repeat(55_000)
+            ),
+        ),
+    ]
+}
+
+/// cmd lines of 64 KB, or nested 390 deep, that delete `C:\` after commands
+/// cmd reads again as statements of their own (`ver && if …`, `i^f`, `f^or`,
+/// `ca^ll`, `call call`), each holding the rest of the line.
+pub fn cmd_commands_read_again() -> [String; 9] {
+    let fit = |unit: &str| {
+        let tail = "rd /s /q C:\\";
+        let count = (64 * 1024 - tail.len()) / unit.len();
+        format!("{}{tail}", unit.repeat(count))
+    };
+    let nested = |open: &str| {
+        let count = 390;
+        format!("{}rd /s /q C:\\{}", open.repeat(count), ")".repeat(count))
+    };
+    [
+        fit("ver && if a "),
+        fit("i^f a "),
+        fit("f^or %%i in (a) do "),
+        fit("ca^ll "),
+        fit("call "),
+        fit("call.bat & "),
+        fit("call.rd x & "),
+        nested("ver && if a ("),
+        nested("i^f a ("),
+    ]
+}
+
+/// `count` folders, each the folder searched spelled its own way and ending
+/// in `//`, each followed by a space.
+pub fn distinct_folders(count: usize) -> String {
+    (0..count)
+        .map(|at| format!("s{at}/..// "))
+        .collect::<Vec<_>>()
+        .concat()
+}
+
+/// A line of a shape, and how it is made for a size.
+pub type Shape = (&'static str, fn(usize) -> String);
+
+/// `find` expressions that delete `.git/HEAD` below the folder searched, of
+/// about a size: their name and path patterns are asked of every name
+/// `.git` holds, and a path pattern again for each folder.
+pub const FIND_EXPRESSIONS: [Shape; 11] = [
+    ("names joined by -o", |size| {
+        format!("find . {}-delete", filled("-name HEAD -o ", size, 20))
+    }),
+    ("negations", |size| {
+        format!("find . {}-name HEAD -delete", filled("! ", size, 30))
+    }),
+    ("brackets", |size| {
+        let open = filled("( ", size / 2, 20);
+        format!(
+            "find . {open}-name HEAD{} -delete",
+            " )".repeat(open.len() / 2)
+        )
+    }),
+    ("folders and a path test", |size| {
+        format!("find {}-path '*/HEAD' -delete", filled(". ", size, 30))
+    }),
+    ("folders and path tests", |size| {
+        let half = size / 2;
+        format!(
+            "find {}{}-delete",
+            filled(". ", half, 20),
+            filled("-path '*/x' -o ", half, 20)
+        )
+    }),
+    ("a long name pattern", |size| {
+        format!("find . -name '{}' -delete", filled("*a", size, 30))
+    }),
+    ("a long path pattern", |size| {
+        format!("find . -path '{}' -delete", filled("*a", size, 30))
+    }),
+    ("prunes", |size| {
+        format!(
+            "find . {}-name HEAD -exec rm {{}} +",
+            filled("-name .git -prune -o ", size, 40)
+        )
+    }),
+    ("tests and actions", |size| {
+        format!(
+            "find . {}-delete",
+            filled("-type f -print -mtime 1 , ", size, 20)
+        )
+    }),
+    // A folder ending in `//` spells `.git` three ways, a bracket reads the
+    // pattern twice, and `*?` keeps every position of it live.
+    (
+        "folders spelled three ways and a live path pattern",
+        |size| {
+            let half = size / 2;
+            format!(
+                "find {}-ipath '{}[Z]' -delete",
+                filled(".// ", half, 20),
+                filled("*?", half, 20)
+            )
+        },
+    ),
+    ("distinct folders and a live path pattern", |size| {
+        let half = size / 2;
+        // Each is the folder searched, spelled its own way.
+        let folders = distinct_folders(half / 12);
+        format!(
+            "find {folders}-ipath '{}[Z]' -delete",
+            filled("*?", half, 20)
+        )
+    }),
+];
+
+/// `unit` repeated after `head` to fill `size` bytes, or no `unit` when
+/// `head` fills it already.
+pub fn after(head: &str, unit: &str, size: usize) -> String {
+    let count = size.saturating_sub(head.len()) / unit.len();
+    format!("{head}{}", unit.repeat(count))
+}
+
+/// PowerShell lines that set a command's name many times, then use it: the
+/// head that sets it, the use repeated after it ([`after`]), and whether the
+/// line is risky. Every command may run any of the targets the line sets its
+/// name to, so the readings are bounded, and past the bound the line is
+/// unreadable; targets of the name's own key add no reading, so they never
+/// run the bound out, and a line of them is not held risky.
+pub fn names_set_many_times() -> [(String, &'static str, bool); 4] {
+    let mut many = String::new();
+    for at in 0..100 {
+        let at = at.to_string();
+        many.push_str(&["Set-Alias x t", &at, "; Set-Alias t", &at, " y; "].concat());
+    }
+    let mut same = String::new();
+    for at in 0..64 {
+        same.push_str(&["Set-Alias x C:\\a", &at.to_string(), "\\x.exe; "].concat());
+    }
+    [
+        (many, "x ~; ", true),
+        ("Set-Alias x Remove-Item; ".to_string(), "x b; ", true),
+        (same.clone(), "x; ", false),
+        (same, "x | x | x | x; ", false),
+    ]
+}
