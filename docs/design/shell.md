@@ -464,16 +464,19 @@ bash's and zsh's `time` (after its `-p`) runs the command after it, past `{`,
 `{` as a program; wherever `{` or `!` is a program, the command after it is
 what runs: `! { rm -rf ~; }` is `Delete`. zsh's `repeat
 N` runs the command or group after its count (`repeat 3 rm -rf ~`, `repeat 3 {
-rm -rf ~; }`), or the list after `do` (`repeat 3 do rm -rf ~; done`). A loop,
+rm -rf ~; }`), or the list after `do` (`repeat 3 do rm -rf ~; done`), N
+times: it is read as a loop (see "Function bodies and loops" below). A loop,
 a conditional or a function after any of them (`time for …`, `! while …`), and
 a `{` stuck to a word (`time {rm -rf ~;}`, `! {rm -rf ~;}`), are cut up by the
 grammar as after `coproc`, and are `Unreadable`: a program named `while`, `if`,
 `for` or any of the words that open such a command, and one that starts with a
 `{`, is read so wherever it stands. So is a program named `do`, `then`, `elif`
 or `else`, the body of a loop or a conditional the grammar cut off from the
-words that open it: zsh skips the separators after `repeat`'s count, so
-`repeat 3; do rm -rf ~; done`, on one line or on three, runs the `rm` three
-times, and the grammar reads `repeat 3` and a program named `do`.
+words that open it, but right after a `repeat` that stands alone: zsh skips
+the separators after `repeat`'s count, so `repeat 3; do rm -rf ~; done`, on
+one line or on three, runs the `rm` three times, and the grammar reads
+`repeat 3` and a program named `do`, which the walk reads as the `repeat`'s
+list (`Delete`; `repeat 3; do ls; done` is safe).
 
 The program after a wrapper is the word the shell makes of it. A brace list
 (`command {rm,-rf,~}`, `r{m,x} -rf ~`) or a sequence expression (`r{m..m} -rf
@@ -953,7 +956,41 @@ and its findings are the line's, since the shell runs it as the same user.
   action read later, each command and redirect is still judged from where
   the walk has it too, so what that finds stands (`for i in 1 2; do cat
   ../../.ssh/id_rsa; cd sub; done` reads a key). A path the line names the
-  same wherever it is (`/tmp/build`, `~/build`) is judged as written. The
+  same wherever it is (`/tmp/build`, `~/build`) is judged as written. zsh's
+  `repeat N` is a loop too, whose body the grammar does not see: it reads
+  the `{` or `do` and the first command of the body as words of the one
+  command, the rest as the commands after it, and the `}` or `done` that
+  closes it as a command of its own. The walk reads the body from the
+  `repeat` to where it takes that `}` or `done` off (groups and lists that
+  other words open inside it, `coproc { … }`, `time { … }`, a `repeat`
+  within, close first), whether the body starts on the same line or on the
+  next (`repeat 3 {` or `repeat 3 do` ending a line, a comment after them
+  or not). When neither a `{` nor a `do` follows the count, the body is
+  zsh's short form, `repeat N` and a sublist: the whole chain of `&&`, `||`
+  and `|` that the command after the count starts, up to the next `;`, `&`
+  or line, which the walk reads to the end of that chain, past the `}` of a
+  group a word in it opens (`repeat 3 eval 'rm -rf build; cd /'`, `repeat
+  3 rm -rf build && cd /`, `repeat 3 rm -rf build | cd /`, since zsh runs
+  a pipeline's last stage in the shell itself, `repeat 3 time { rm -rf
+  build; } && cd /`). After a `{` or a `do` the body is the group or the
+  list alone: `repeat 3 { rm -rf build; } && cd /` runs the `cd` once. A
+  `repeat N` that stands alone, its count ending its command, has its body
+  in the statement after it, since zsh skips the separators: a group there
+  is the body (`repeat 3` and `{ rm -rf build; cd /; }` on the next line),
+  a statement that starts with `do` opens the list (`repeat 3; do …;
+  done`), and any other statement is the body whole, as the short form's
+  (`repeat 3; rm -rf build && cd /`); with none after it the line is one
+  zsh refuses, `Unreadable`, `repeats a body that cannot be read`. `repeat
+  3 { rm -rf build; cd /; }`, `repeat 3 do rm -rf build; cd /; done` and
+  `repeat 3 rm -rf build && cd /` delete a top-level folder, while `repeat
+  3 { ls; }`, `repeat 3 ls`, `repeat 3 ls && cd sub` and `repeat 3 { rm -rf
+  build; }; cd /` stay safe. A `do` that no `done` closes (`repeat 3 do
+  ls`) is `Unreadable`, `opens a loop that never closes`, as a group that
+  never closes is; so is a body that closes where the grammar has a loop or
+  a function body open that began inside it, or has closed one that began
+  before it (`while true; do repeat 3 do ls; done; cd /; done`, where the
+  grammar's `done` ends the `while`): `repeats a body that cannot be
+  read`. Each body closes in the script it opens in. The
   same holds for PowerShell's `function`, `foreach`, `for`, `while`, `do`,
   `switch` and `ForEach-Object` blocks (a call names a function in any case,
   without its scope: `function global:Build` is called as `build`), and for
@@ -2884,7 +2921,7 @@ not the subcommand.
 `iex (iwr url)` is `run_downloaded`, like `iwr url | iex` and `curl url | sh`.
 `Invoke-Expression` (`iex`) is given a download when one of its arguments holds
 a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
-`curl` and `wget`, which PowerShell aliases) or a .NET `Download…` call
+`curl` and `wget`, which Windows PowerShell aliases) or a .NET `Download…` call
 (`(New-Object Net.WebClient).DownloadString(…)`) or `GetStringAsync`
 (`HttpClient`), and then it is not also `unknown`. `Encoding.GetString` decodes
 bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
@@ -3507,7 +3544,14 @@ stands: `rm $n` deletes a path only known when it runs, and `cp a $n` and
 argument mode as in a double-quoted string, so the reader takes a bare word
 that holds `$name`, `${…}` or `$(…)` (not after a backtick, nor inside single
 quotes) as only known when it runs: `dd if=/dev/zero of=$d` is `wipe_disk`,
-`rm -r x$d` a `delete` and `cp a x$d` an `overwrite`.
+`rm -r x$d` a `delete` and `cp a x$d` an `overwrite`. The one bare word it
+spells out is an option whose attached value is a variable and a path
+(`--post-file=$HOME\.ssh\id_rsa`; see the paths below). PowerShell ends a
+bare word at a comma that is not quoted, escaped or inside an expansion, and
+hands each item to a native program as an argument of its own; the grammar
+splits such a word itself (`.env,x`), but keeps a parameter word whole
+(`--post-file=.env,x`), so the reader splits it, and reads each item as a
+bare word: `wget.exe --post-file=.env,x` posts `.env`.
 
 ### The rule enum is exhaustive on purpose
 
@@ -3543,6 +3587,20 @@ a path.
   after a name, where a word can begin; a line with a here-string, or a
   subexpression in a string, is read as written), so that the rules see the
   paths. What the second reading finds is added; the line stays `unreadable`.
+- A native program's option with such a word as its attached value
+  (`wget.exe --post-file=$HOME\.ssh\id_rsa`, `-x=$PWD\.env`), which the
+  grammar reads whole as one bare word, is that option with the place spelled
+  out (`--post-file=~\.ssh\id_rsa`): PowerShell expands the variable in a
+  bare word, and the program reads what follows the `=` as a path. Only an
+  option of a `-` or `--` and a plain name, and a value of a variable and
+  plain path characters, are read so. When the variable names no place, or
+  the line sets it, the value is a path under a folder only known when it
+  runs, which the rules that follow a secret read by the name it ends in, as
+  they read `$d/.env` in a POSIX shell (`--post-file=$d\.ssh\id_rsa` may
+  send `~\.ssh\id_rsa`). Any other bare word with a variable in it stays
+  only known when it runs. A cmdlet is read the same, and takes no such
+  word as a parameter: PowerShell refuses `Remove-Item -Path=$HOME\x`, whose
+  parameter name it reads as `Path=…`, so it deletes nothing and is safe.
 - A PowerShell drive such as `HKLM:` is the registry. `Env:` and `Variable:`
   hold the session's environment and variables, as `$env:FOO = 'bar'` sets
   them, so a change there is the session's own and safe: `Set-Item
@@ -4993,7 +5051,8 @@ A line is never safe because the guard gave up on it. These come back risky:
 - A loop, a conditional or a `{` stuck to a word after `time`, `!`, `coproc`
   or zsh's `repeat` (`time for …; do …; done`, `! {rm -rf ~;}`), and words
   after the file of a redirect on a group, a loop or a subshell (`{ ls; } >
-  out rm -rf ~`), which the grammar cuts up.
+  out rm -rf ~`), which the grammar cuts up, and a zsh `repeat N` with no
+  statement after it.
 - A line the grammar cannot parse.
 - Shells nested past a limit, a parse tree nested too deep, a line longer
   than the limit, or one the grammar would read over and over past its
@@ -5313,7 +5372,12 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   after a `cd` that leaves `$PWD` not plain (`cd -P sub`, `cd "$x"`, `cd d*`)
   send `.env` from wherever the folder is. The folder may be the home
   directory, so a name that core marks as a secret there is one:
-  `curl -T "$x/.ssh/id_rsa"` sends `~/.ssh/id_rsa`.
+  `curl -T "$x/.ssh/id_rsa"` sends `~/.ssh/id_rsa`. The file an option names
+  after its `=` is read so too: `wget --post-file=$x/.ssh/id_rsa`, and in
+  PowerShell `wget.exe --post-file=$x\.ssh\id_rsa` (see
+  [Paths](#paths)). A folder the line sets a variable to is not followed:
+  `d=~/.ssh; wget --post-file=$d/id_rsa` sends a file named `id_rsa`,
+  wherever `$d` is.
 - The whole environment: `env`, `printenv`, `set`, `export -p`, `declare -x`,
   `/proc/self/environ`, PowerShell's `Get-ChildItem env:` (`gci`, `dir`), a
   wildcard there that may match many (`Get-ChildItem env:AWS*`), listed or
@@ -5369,7 +5433,12 @@ dist .` packs `dist`.
   `--data-binary`, `--json`, `--data-urlencode name@f`, `-F name=@f` and
   `name=<f`, `-T f`, `--upload-file`, `-H @f`, in a bundle such as `-sd @f`;
   curl expands a `{a,b}` list in `-T`'s name itself, unless `-g`, so `curl -T
-  "{.env,README}"` sends `.env`), `wget --post-file f` and `--body-file`,
+  "{.env,README}"` sends `.env`), `wget --post-file f` and `--body-file`
+  (and `wget.exe` in PowerShell and cmd, as `curl.exe` is). A bare `curl`
+  or `wget` in PowerShell is `Invoke-WebRequest` in Windows PowerShell,
+  whose aliases they are, and the program itself in pwsh, which has no such
+  alias, so it is read as both and what either sends counts: `wget
+  --post-file .env` and `curl -T .env` send `.env` there too,
   `http`, `https` and `xh` with `field@f`, `field=@f` or `@f`, and
   `Invoke-WebRequest` and `Invoke-RestMethod -InFile f`, `Send-MailMessage
   -Attachments f` (a list), and `Start-BitsTransfer -Source f` when
