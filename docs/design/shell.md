@@ -4249,10 +4249,26 @@ Some risks only show when units are read together.
 - **Links.** A link judges its target too. `ln ~/.zshrc z` is risky, since a
   later write to `z` lands on the startup file.
 - **A script a line writes and then runs.** It is risky however it was
-  written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy or
-  `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `unknown` ("runs a script the
-  same line writes"; `run_downloaded` is a download piped into a shell). The
-  guard matches the two by the file they name (core's `key`).
+  written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy,
+  `tee`, or a database client on this machine (`.output`, `.once`, `\o`,
+  `psql -o`, `mysql --tee` and every other file "A file it writes" under the
+  database clients lists). `curl -fsSLo i.sh URL && sh i.sh` is `unknown`
+  ("runs a script the same line writes"; `run_downloaded` is a download piped
+  into a shell), and so is `sqlite3 x.db '.output run.sh' 'select 1'; sh
+  run.sh`. The guard matches the two by the file they name (core's `key`).
+  A client reads the same statements for this as its rule judges (its
+  options, operands, a here-document, a stage before it). A folder it writes
+  into (`EXPORT DATABASE 'DIR'`) holds files by names the line does not show,
+  so any script in it may be one. One that moved (`\cd`, `.cd`) wrote its
+  files in a folder the line does not say, so a script of the same name, run
+  from any folder, may be one of them. A program a client runs (`.shell`,
+  `\!`, a pager) and reads as a line of its own writes files the line
+  writes, so `sqlite3 x.db '.shell echo x > run.sh'; sh run.sh` is `unknown`;
+  each is read for this once more, on a budget as large as the one it is
+  judged on, and one past it may write any file. Such a program runs after
+  the files the line writes, the client's own and those its other programs
+  write too: `sqlite3 x.db '.output run.sh' '.shell sh run.sh'` and `psql -c
+  '\! echo x > run.sh' -c '\! sh run.sh'` are `unknown`.
   When the line writes a file (a device such as `/dev/null` does not count),
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
@@ -5241,6 +5257,9 @@ by matching the text:
   "Each client's words" below). A file written by a client in a container or
   on another machine is not on this machine and is not judged, but a database
   `.backup` or `.save` replaces there is not the agent's own: `drop_data`.
+  A file a client here writes is one the line writes: a later run of it is
+  "runs a script the same line writes" (see "A script a line writes and then
+  runs").
 - **A program it runs with a command line the text shows** is that line, split
   by the POSIX grammar and judged by every rule as a line of its own, as `sh
   -c` is: `psql`'s and `mysql`'s `\!`, `mysql`'s `system` and `pager` (`\P`),
