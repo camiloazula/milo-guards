@@ -378,13 +378,14 @@ pub(super) fn nix_shell(args: &[Arg]) -> Launch {
 /// in shebang mode: not an option, and not what names a Nix expression
 /// instead, which nix-shell reads as one: a `.nix` file, a folder (`.`,
 /// `..`, a path that ends in `/`), a path Nix looks up (`<nixpkgs>`), or a
-/// URL.
+/// URL, `channel:` name or `flake:` reference, which Nix fetches as it
+/// fetches a URL.
 fn may_be_script(word: &str) -> bool {
     // Nix reads the name as it is written: `x.NIX` is a file of its own.
     let expression = word.rsplit_once('.').is_some_and(|(_, ext)| ext == "nix");
     let folder = word.ends_with('/') || matches!(word, "." | "..");
     let looked_up = word.starts_with('<') && word.ends_with('>');
-    let url = word.contains("://");
+    let url = word.contains("://") || word.starts_with("channel:") || word.starts_with("flake:");
     !(word.is_empty() || word.starts_with('-') || expression || folder || looked_up || url)
 }
 

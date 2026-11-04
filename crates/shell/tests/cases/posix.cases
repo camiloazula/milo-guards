@@ -398,6 +398,24 @@ posix finds=unknown | echo 'rm -rf ~' | xonsh
 posix finds=unknown | xonsh - < cmds.xsh
 posix safe | xonsh build.xsh
 posix safe | xonsh --version
+posix safe | xonsh -V
+# `python3 -m xonsh` is the same shell.
+posix finds=unknown | python3 -m xonsh -c 'rm -rf ~'
+posix finds=unknown | echo 'rm -rf ~' | python3 -m xonsh
+posix finds=unknown | python3 -m xonsh
+posix finds=unknown | python3 -m xonsh <<'X'\nrm\nX
+# `--rc` takes every word after it that is not an option, `--rc=FILE` one;
+# `-st` (and `-s`) takes a value as `--shell-type` does.
+posix finds=unknown | echo 'rm -rf ~' | xonsh --rc a.xsh build.xsh
+posix finds=unknown | xonsh --rc a.xsh build.xsh
+posix finds=unknown | xonsh --r a.xsh b.xsh build.xsh
+posix safe | xonsh --rc=a.xsh build.xsh
+posix safe | xonsh --rc a.xsh -- build.xsh
+posix finds=unknown | echo 'rm -rf ~' | xonsh -st readline
+posix finds=unknown | xonsh -st readline
+posix finds=unknown | xonsh -s readline
+posix safe | xonsh -st readline build.xsh
+posix safe | xonsh --shell readline build.xsh
 posix finds=delete | chronic -ev rm -rf ~
 posix finds=destroy_resources | chronic terraform destroy
 posix finds=delete | parallel rm -rf ::: ~
@@ -425,7 +443,14 @@ posix finds=run_input | echo 'rm -rf ~' | parallel /bin/sh :::: list.txt
 posix finds=run_input | parallel sh ::: a < cmds.txt
 posix finds=run_input | echo 'rm -rf ~' | parallel -j1 'sh -x' ::: a
 posix finds=run_input | echo 'rm -rf ~' | parallel {} ::: sh
-posix finds=run_input | echo 'rm -rf ~' | parallel {} a ::: sh
+posix finds=run_input | echo 'rm -rf ~' | parallel {} -s a ::: sh
+posix finds=run_input | echo 'rm -rf ~' | parallel sh {} ::: -s
+posix finds=unknown | echo 'import os' | parallel python3 -m {} ::: code
+posix safe | echo x | parallel {} a ::: sh
+posix safe | echo x | parallel python3 x.py ::: a
+posix safe | echo x | parallel node build.js ::: a
+posix safe | echo x | parallel sh build.sh ::: a b
+posix safe | echo x | parallel sh --version ::: a
 posix finds=unknown | echo 'import os' | parallel python3 ::: a
 posix finds=delete | echo x | parallel sh -c 'rm -rf {}' ::: ~
 posix safe | echo x | parallel sh -c 'echo {}' ::: a
@@ -589,6 +614,8 @@ posix safe | nix-shell
 posix safe | nix-shell shell.nix
 posix safe | nix-shell ./default.nix -A dev
 posix safe | nix-shell '<nixpkgs>' -A hello
+posix safe | nix-shell channel:nixos-unstable -A hello
+posix safe | nix-shell flake:nixpkgs -A hello
 posix safe | nix-shell .
 posix safe | nix-shell ./project/
 posix safe | nix-shell -p hello x.sh
