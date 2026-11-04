@@ -1213,9 +1213,27 @@ and its findings are the line's, since the shell runs it as the same user.
   a bash, not only a shell: `make` (its recipes run with the makefile's
   `SHELL`), `./build.sh` (a `#!/bin/bash` line), `npm test`, `git commit`
   (hooks), a program only known when it runs, and a shell reached through
-  `find -exec`, `npx` and the other wrappers; the guard does not know which
-  programs never start one, so `export BASH_ENV=x.sh; ls` is `unknown` too,
-  an accepted false alarm on a rare line. An empty value and the null device
+  `find -exec`, `npx` and the other wrappers. A short list of programs that
+  start no shell whatever they are given (`STARTS_NO_SHELL`: `ls`, `cat`,
+  `grep`, `head`, `wc`, `diff`, `cp`, `mv`, `rm`, `mkdir`, `stat`, `jq` and
+  the like) does not run it, so `export BASH_ENV=x.sh; ls` and `BASH_ENV=x.sh
+  cat a | grep b | wc -l` stay safe. Only in a POSIX shell, named by a bare
+  name (`./ls` and `/home/me/bin/ls` may be a script, `LS` is not on the
+  list), started directly or through `command`, `exec`, `nohup`, `nice`,
+  `timeout`, `time` or `stdbuf`, and only when the line does not change what
+  a bare name runs: it sets no `PATH` (nor zsh's `path`, `PATH=./bin ls`,
+  `export "PATH=./bin"`, a declared name only known when it runs) and runs no
+  `hash`. `env` may set `PATH`, so `env LC_ALL=C ls` is `unknown`; so is a
+  wrapper that runs its command through a shell (`watch ls`, `script -c
+  ls`), `sudo ls`, `find -exec ls`, `xargs ls`, and a function or an alias
+  named `ls` (its body is judged as the shell it starts). Not on the list: a
+  program that runs another it is given (`sort --compress-program`, `rg
+  --pre`, `split --filter`), one that runs code a project holds (`make`,
+  `cargo build`, whose build scripts may start a bash, `git status`, whose
+  `core.fsmonitor` is a command), a pager, and a program some systems ship
+  as a script (`egrep`, `zcat`, `ldd`, `which`). PowerShell and cmd find a
+  program by `PATHEXT`, a `.cmd` or `.bat` shim among them, so there `grep`
+  stays `unknown`. An empty value and the null device
   (`BASH_ENV=/dev/null`) name no script and stay safe.
 
   A POSIX `sh` (also `dash`, `ash`, `ksh`, `mksh`, `yash`, `posh` and the
@@ -4184,6 +4202,7 @@ and so does a read. With `Protected::folder("/home/me/work/repo/.agent", ..)`:
 | `cd src && git am`, `git stash pop`, `git cherry-pick abc`, `cd src && git checkout HEAD -- :/` | `overwrite`, "may change the agent's settings": git applies them at the top of the work tree |
 | `git pull`, `git merge feature`, `git switch other`, `git rebase main`, `cd src && git checkout feature`, `git reset --keep HEAD~1`, `git bisect good`, `git checkout 'HEAD^{/fix*}'` | `overwrite`, "may change the agent's settings": a branch move rewrites the work tree from its top |
 | `patch -d src -r ../.agent/x -p1 < p.diff`, `patch -d src -B ../.agent/ -p1 < p.diff` | `overwrite`, "writes to the agent's settings": the reject file and the backups |
+| `find . -name '*.log' -delete`, `find . -name rules -delete` with `Protected::file("/home/me/work/repo/.agent/rules.md", ..)` | safe: `-delete` removes a file or an empty folder, and the name tests never match `rules.md` (`find . -name 'rules*' -delete`, `-name RULES.MD`, `! -name '*.log'`, `-lname '*.log'` and `-name "$p"` are `delete`) |
 | `find src -name '*.o' -delete`, `find . -name '*.yaml' -exec cat {} +`, `patch -d src -p1 < p.diff`, `git apply --check p.diff`, `cp -r tmpl/. dist`, `tar -xf x.tar -C build`, `git checkout -b feature`, `git switch -c feature`, `git pull --dry-run`, `git rebase --quit`, `git pull --help`, `git bisect log`, `git stash list` | safe: the folder holds no protected path, or nothing is written |
 
 What a search or a filtered listing hands on from inside a folder (`find .
@@ -4203,6 +4222,23 @@ name written on a line is read the same way (`rm ./…`), which fails closed.
 A search's finding says "deletes" or "edits" the protected path, not "may":
 the search may not pick it, but the line does not say it will not, and the
 words are the ones the same program would get naming it.
+
+`find -delete` removes each file or empty folder its expression is true for,
+never what a folder holds, so a protected file below the folder searched,
+not the folder itself, is not among what it deletes when no name test of
+the expression can match the file's name (core's `holds_protected_picked`).
+The expression is walked for a file known by its name alone: a `-name` or
+`-iname` is matched without case (a file system that ignores case finds
+`RULES.md` by `-name 'RULES*'`), a name that is not ASCII is taken to match
+(it may be stored in another form), a `-lname` may match (a link points
+anywhere), a `-path`, a `-type`, a `-regex` and any other test may be true,
+and any action reached counts. An expression that cannot be read, or holds a
+word that may split, reaches every name. A protected folder may hold any
+name, so `find . -name '*.log' -delete` still deletes in a protected
+`.agent/`, and a protected file on a Windows root may be picked by its short
+name. What `-exec`, `-execdir` and a program fed by `xargs` are handed is
+judged as before: they may act on a folder that holds the file (`find .
+-name .agent -exec rm -rf {} +`).
 
 A `git checkout` or `git restore` path with a wildcard is read by the folder
 it starts in, since git's `*` matches `/` too, and a pathspec with magic

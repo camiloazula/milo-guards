@@ -12,7 +12,10 @@
 //! depth first (`-depth`, `-d`, or `-delete`, which turns it on: GNU find
 //! then refuses the line, and BSD and macOS find descend into the pruned
 //! folder all the same). An expression that cannot be read, or that holds a
-//! word that may split into more when it runs, is taken to reach everything.
+//! word that may split into more when it runs, is taken to reach everything. The same
+//! expression is also walked for a file known by its name alone, to tell
+//! whether the search may act on a protected file of that name (see
+//! [`Search::may_act_on_named`]).
 
 use std::collections::BTreeMap;
 
@@ -107,12 +110,31 @@ impl Place {
     }
 }
 
+/// What a walk of the expression asks about: one of the places below the
+/// folder searched, or a file at any depth below it by its name alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Subject<'a> {
+    At(Place),
+    /// A file with this name, its path and kind not known.
+    Named(&'a str),
+}
+
 /// One part of the expression.
 #[derive(Debug)]
 enum Node {
     /// A test whose answer does not depend on the folder searched, for each
-    /// place in the order of [`Place::index`].
+    /// place in the order of [`Place::index`]; a file by its name gets the
+    /// answer of an ordinary entry.
     Fixed([Tri; PLACES]),
+    /// `-name` and its kin: the answer for each place (as [`Node::Fixed`]),
+    /// the pattern as written and as `find`'s matching reads it, and whether
+    /// it tests what a link points to (`-lname`).
+    Name {
+        answers: [Tri; PLACES],
+        raw: String,
+        read: String,
+        link: bool,
+    },
     /// `-path` and its kin: the pattern as written, the pattern as `find`'s
     /// matching reads it (`None` when it is not read), and whether it
     /// compares without case.
@@ -256,26 +278,38 @@ impl Search {
             .collect()
     }
 
+    /// Whether the search may act on a file named `name` at any depth below
+    /// a folder it searches, whatever its path and kind: only its name tests
+    /// can say it does not. Names are compared without case, as a file
+    /// system that ignores case finds them, and a name that is not ASCII may
+    /// be stored in another form, so only an ASCII one is read.
+    pub(super) fn may_act_on_named(&self, name: &str) -> bool {
+        if self.whole || !name.is_ascii() {
+            return true;
+        }
+        self.walk(Subject::Named(name), None).hands_on
+    }
+
     /// What the search does below a folder whose `.git` is spelled in each
     /// of `git` (`None` when the folder is only known when it runs, or no
     /// test asks).
     fn reach(&self, git: Option<&[String]>) -> Reach {
-        let folder = self.walk(Place::GitFolder, git);
-        if folder.hands_on || self.walk(Place::Other, git).hands_on {
+        let folder = self.walk(Subject::At(Place::GitFolder), git);
+        if folder.hands_on || self.walk(Subject::At(Place::Other), git).hands_on {
             return Reach::Whole;
         }
-        let file = self.walk(Place::GitFile, git).hands_on;
+        let file = self.walk(Subject::At(Place::GitFile), git).hands_on;
         if folder.prunes && !self.depth_first {
             return Reach::Inside { git: file };
         }
         Reach::Inside {
-            git: file || self.walk(Place::Entry, git).hands_on,
+            git: file || self.walk(Subject::At(Place::Entry), git).hands_on,
         }
     }
 
     /// Walks the expression for `place`, below a folder whose `.git` is
     /// spelled in each of `git`.
-    fn walk(&self, place: Place, git: Option<&[String]>) -> Walk {
+    fn walk(&self, place: Subject<'_>, git: Option<&[String]>) -> Walk {
         let mut walk = Walk::default();
         let Some(root) = self.root else {
             walk.hands_on = true;
@@ -293,15 +327,31 @@ impl Search {
     fn eval(
         &self,
         at: usize,
-        place: Place,
+        place: Subject<'_>,
         git: Option<&[String]>,
         sure: bool,
         walk: &mut Walk,
     ) -> Tri {
         match &self.nodes[at] {
-            Node::Fixed(answers) => answers[place.index()],
-            Node::Path { raw, read, fold } => match (git, raw, read) {
-                (Some(git), Some(raw), Some(read)) => path_answer(place, raw, read, *fold, git),
+            Node::Fixed(answers) => match place {
+                Subject::At(place) => answers[place.index()],
+                Subject::Named(_) => answers[Place::Other.index()],
+            },
+            Node::Name {
+                answers,
+                raw,
+                read,
+                link,
+            } => match place {
+                Subject::At(place) => answers[place.index()],
+                // A link may point anywhere.
+                Subject::Named(_) if *link => Tri::Maybe,
+                Subject::Named(name) => matching(raw, read, name, true),
+            },
+            Node::Path { raw, read, fold } => match (place, git, raw, read) {
+                (Subject::At(place), Some(git), Some(raw), Some(read)) => {
+                    path_answer(place, raw, read, *fold, git)
+                }
                 _ => Tri::Maybe,
             },
             Node::HandOn(answer) => {
@@ -309,7 +359,7 @@ impl Search {
                 *answer
             }
             Node::Prune => {
-                walk.prunes |= sure && place == Place::GitFolder;
+                walk.prunes |= sure && place == Subject::At(Place::GitFolder);
                 Tri::True
             }
             Node::Not(inner) => self.eval(*inner, place, git, sure, walk).not(),
@@ -691,7 +741,7 @@ impl Parser<'_> {
                         if self.name_bytes > MAX_PATTERN_BYTES {
                             return Err(Unread);
                         }
-                        name_test(&raw, fold)
+                        name_test(&raw, fold, text.ends_with("lname"))
                     }
                     None => Node::Fixed([Tri::Maybe; PLACES]),
                 }
@@ -773,8 +823,9 @@ impl Parser<'_> {
 /// A test of a name (`-name`, `-iname`, and `-lname`, `-ilname`, read alike,
 /// since a link may be named anything): for `.git`, whether the pattern
 /// matches its name; for an entry inside it, whether it can match one of the
-/// names `.git` holds.
-fn name_test(raw: &str, fold: bool) -> Node {
+/// names `.git` holds. `link` says it tests what a link points to, which a
+/// file asked about by its name alone may be.
+fn name_test(raw: &str, fold: bool, link: bool) -> Node {
     let Some(read) = fnmatch(raw) else {
         return Node::Fixed([Tri::Maybe; PLACES]);
     };
@@ -790,7 +841,12 @@ fn name_test(raw: &str, fold: bool) -> Node {
     } else {
         Tri::False
     };
-    Node::Fixed([on_git, on_git, on_entry, on_other])
+    Node::Name {
+        answers: [on_git, on_git, on_entry, on_other],
+        raw: raw.to_string(),
+        read,
+        link,
+    }
 }
 
 /// A `-type` test of the kinds in `kinds` (GNU find takes a list, `-type

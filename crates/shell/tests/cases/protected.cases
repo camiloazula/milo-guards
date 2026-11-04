@@ -16,6 +16,8 @@ paths workspace_folder_and_file base=posix folder=/home/me/work/repo/.agent word
 paths workspace_folder_and_settings base=posix folder=/home/me/work/repo/.agent words="the agent's settings" file=/home/me/work/repo/settings.yaml words="the agent's settings"
 # A folder in the workspace.
 paths workspace_folder base=posix folder=/home/me/work/repo/.agent words="the agent's settings"
+# A file in a folder at the top of the workspace.
+paths workspace_rules base=posix file=/home/me/work/repo/.agent/rules.md words="the agent's settings"
 # A file two folders down in the workspace.
 paths workspace_file base=posix file=/home/me/work/repo/conf/app/x.yaml words="the agent's settings"
 # A folder at the top of the workspace.
@@ -649,6 +651,35 @@ posix@workspace_folder safe | find . -name '*.yaml' -exec cat {} +
 posix@workspace_folder safe | find . -name '*.rs' | xargs grep -n main
 posix@workspace_folder safe | find . -name '*.rs' -exec cp {} dist/ \\;
 posix@workspace_file safe | find conf/other -name x.yaml -delete
+# `find -delete` removes a file or an empty folder, never what a folder
+# holds, so a protected file whose name its name tests can never match is
+# not among what it deletes; names compare without case. A protected
+# folder may hold any name, so a search below it may still delete in it.
+posix@workspace_rules safe | find . -name '*.log' -delete
+posix@workspace_rules safe | find . -type f -name '*.log' -delete
+posix@workspace_rules safe | find . -name '*.log' -o -name '*.tmp' -delete
+posix@workspace_rules safe | find . -name 'rules' -delete
+posix@workspace_rules safe | find . -name '.agent' -delete
+posix@workspace_file safe | find . -name '*.log' -delete
+posix@workspace_file safe | find conf -name '*.yml' -delete
+posix@workspace_rules finds=delete reason="deletes the agent's settings" | find . -name 'rules*' -delete
+posix@workspace_rules finds=delete | find . -name 'RULES.MD' -delete
+posix@workspace_rules finds=delete | find . -iname 'RULES.md' -delete
+posix@workspace_rules finds=delete | find . -name '[r]ules.md' -delete
+posix@workspace_rules finds=delete | find . -name '*.md' -delete
+posix@workspace_rules finds=delete | find . -name '*.log' -o -name '*.md' -delete
+posix@workspace_rules finds=delete | find . ! -name '*.log' -delete
+posix@workspace_rules finds=delete | find . -not -name '*.log' -delete
+posix@workspace_rules finds=delete | find . -delete -name '*.log'
+posix@workspace_rules finds=delete | find . -lname '*.log' -delete
+posix@workspace_rules finds=delete | find . -name "$p" -delete
+posix@workspace_rules finds=delete | find . -regex '.*\\.log' -delete
+posix@workspace_rules finds=delete | find . -type f -delete
+posix@workspace_rules finds=delete | find .agent/rules.md -name '*.log' -delete
+posix@workspace_rules finds=delete | cd .agent && find . -name 'rules.md' -delete
+posix@workspace_rules safe | cd .agent && find . -name '*.log' -delete
+posix@workspace_rules finds=delete | find . -name '*.log' -exec rm {} +
+posix@workspace_folder finds=delete | find . -name '*.log' -delete
 powershell@windows_folder_and_file finds=delete | Get-ChildItem . -Filter *.yaml -Recurse | Remove-Item
 powershell@windows_folder_and_file safe | Get-ChildItem src -Filter *.o -Recurse | Remove-Item
 # A patch changes the files it names, in the folder it works in.

@@ -4,7 +4,7 @@ use super::{
     certutil_writes, dd_outputs, downloads_to, hidden_matches, or_here, sources_and_destination,
     Checker, Pattern, CONTENTS, COPY_VALUED,
 };
-use crate::launch::{find_targets, find_unread_primary, perl_edits};
+use crate::launch::{find_may_act_on, find_targets, find_unread_primary, perl_edits};
 use crate::path::{self, Access, Place};
 use crate::powershell::{
     Param, Params, CLEAR_CONTENT, EXPORT_CLIXML, EXPORT_CSV, FOREACH_OBJECT, NEW_ITEM, OUT_FILE,
@@ -53,9 +53,18 @@ impl Checker<'_> {
                     args.iter().any(|arg| arg.known() == Some("-delete")),
                     unread_option(args, shell) || find_unread_primary(args),
                 );
+                // `-delete` removes a file or an empty folder, never what a
+                // folder holds: a protected file whose name the search never
+                // acts on is not among what it deletes.
                 self.flagged(flagged, |checker| {
                     let found = find_targets(args);
-                    checker.delete(unit, &found.iter().collect::<Vec<_>>(), "deletes");
+                    let picks = find_may_act_on(args);
+                    checker.delete_found(
+                        unit,
+                        &found.iter().collect::<Vec<_>>(),
+                        "deletes",
+                        &picks,
+                    );
                 });
             }
             "del" | "erase" if shell == Shell::Cmd => {

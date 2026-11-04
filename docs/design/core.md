@@ -594,6 +594,15 @@ path made absolute, with the working directory and `~` applied.
   `place`. It is `None` for a device and a path known only when it runs. It
   does not change `place`: a guard asks it of a folder whose files it cannot
   name, and what to say where the folder is already risky is the guard's.
+- `holds_protected_picked(path, flavour, hidden, acts_on)` is
+  `holds_protected` for the files a search picks by name below `path`
+  (`find -delete`, which removes a file or an empty folder and never what a
+  folder holds): a protected file below `path`, not `path` itself, whose
+  last name `acts_on` says the search never acts on is not counted. A
+  protected folder is counted whatever its name, since what it holds may
+  have any name, and so is a file with a Windows root, which a pattern may
+  also pick by its short name. What the search acts on is the guard's to
+  read.
 - `any_protected()` is the words of the first protected path, for a folder
   only known when it runs, which may hold any of them; `None` when nothing
   is protected.

@@ -1297,12 +1297,39 @@ impl Resolver {
         flavour: Flavour,
         hidden: bool,
     ) -> Option<&'static str> {
+        self.holds_where(path, flavour, hidden, None)
+    }
+
+    /// As [`holds_protected`](Self::holds_protected), for the files a search
+    /// picks by name below `path`: a protected file below `path` (not `path`
+    /// itself) whose name `acts_on` says the search never acts on is not
+    /// counted. A protected folder is, whatever its name, since what it
+    /// holds may have any name; and so is a file on Windows, which a
+    /// pattern may also pick by its short name.
+    #[must_use]
+    pub fn holds_protected_picked(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        acts_on: &dyn Fn(&str) -> bool,
+    ) -> Option<&'static str> {
+        self.holds_where(path, flavour, hidden, Some(acts_on))
+    }
+
+    fn holds_where(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        acts_on: Option<&dyn Fn(&str) -> bool>,
+    ) -> Option<&'static str> {
         // A part that can match `..` is read as `.` and `..` too (see
         // `place_hidden`).
-        self.holds_one(path, flavour, hidden).or_else(|| {
-            climbing(path.text(), flavour)
-                .iter()
-                .find_map(|variant| self.holds_one(respell(path, variant), flavour, hidden))
+        self.holds_one(path, flavour, hidden, acts_on).or_else(|| {
+            climbing(path.text(), flavour).iter().find_map(|variant| {
+                self.holds_one(respell(path, variant), flavour, hidden, acts_on)
+            })
         })
     }
 
@@ -1311,6 +1338,7 @@ impl Resolver {
         path: Spelling<'_>,
         flavour: Flavour,
         hidden: bool,
+        acts_on: Option<&dyn Fn(&str) -> bool>,
     ) -> Option<&'static str> {
         if self.protected.is_empty()
             || matches!(path, Spelling::Plain(text) if device(text, flavour).is_some())
@@ -1337,6 +1365,17 @@ impl Resolver {
                     return Some(*words);
                 }
                 if !above(folder, protected) {
+                    return None;
+                }
+                // A search that never acts on the file's name does not
+                // reach it.
+                let unpicked = acts_on.is_some_and(|acts_on| {
+                    !*is_folder
+                        && !protected.windows()
+                        && protected.parts.len() > folder.parts.len()
+                        && protected.parts.last().is_some_and(|name| !acts_on(name))
+                });
+                if unpicked {
                     return None;
                 }
                 let Some(tail) = tail.as_deref() else {
