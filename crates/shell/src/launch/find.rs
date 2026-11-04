@@ -1,6 +1,8 @@
 //! `find`: the places it searches, what its filters can match, and the
 //! programs its `-exec` runs for each file found.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 mod search;
@@ -213,6 +215,22 @@ pub(crate) fn find_targets(args: &[Arg]) -> Vec<Arg> {
         }
     }
     targets
+}
+
+/// Whether `find` with `args` may act on a file named `name` at any depth
+/// below a folder it searches, by the name tests of its expression alone: an
+/// expression that cannot be read may act on any. Each name is walked once.
+pub(crate) fn find_may_act_on(args: &[Arg]) -> impl Fn(&str) -> bool {
+    let search = Search::read(expression(args));
+    let asked: RefCell<HashMap<String, bool>> = RefCell::new(HashMap::new());
+    move |name| {
+        if let Some(&answer) = asked.borrow().get(name) {
+            return answer;
+        }
+        let answer = search.may_act_on_named(name);
+        asked.borrow_mut().insert(name.to_string(), answer);
+        answer
+    }
 }
 
 /// The places `find` searches: its arguments before the first test or

@@ -1203,6 +1203,12 @@ pub(crate) struct Split {
     /// Variables the line sets, unsets or reads into (lower case): a path
     /// built from one of them is no longer the place its name says.
     reassigned: Vec<String>,
+    /// Whether a POSIX declaration (`export`, `declare` and the like) has a
+    /// word, as written, whose name the guard does not read: the part before
+    /// its `=` is not a plain name (`export "PATH=./bin"`, `export
+    /// PA''TH=./bin`, `export {PATH,X}=./bin`, `export "$v=./bin"`), so it may
+    /// set any variable.
+    pub(crate) declares_unread: bool,
     /// Variables a `for` loop or a `read` sets (lower case): each holds one
     /// item of what the loop walks, so a rule that counts what a command
     /// reaches reads `"$c"` as every item, not one.
@@ -4541,6 +4547,12 @@ impl Split {
         self.reassigned
             .iter()
             .any(|known| known.eq_ignore_ascii_case(name))
+    }
+
+    /// Whether the line sets, anywhere, a variable (in lower case) that
+    /// `pick` says yes to.
+    pub(crate) fn reassigned_any(&self, pick: impl Fn(&str) -> bool) -> bool {
+        self.reassigned.iter().any(|name| pick(name))
     }
 
     /// Note the characters a backtick `u{…}` made in a PowerShell string that

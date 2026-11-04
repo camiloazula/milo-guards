@@ -63,8 +63,9 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     };
     // One walk of the tree finds the variables the line sets and the values
     // it gives them.
-    let (names, looped) = assigned(tree.root_node(), text, |node| walker.note_value(node));
+    let (names, looped, unread) = assigned(tree.root_node(), text, |node| walker.note_value(node));
     walker.noted();
+    walker.split.declares_unread |= unread;
     for name in names {
         walker.split.reassign(&name);
     }
@@ -868,9 +869,10 @@ fn assigned<'t>(
     root: Node<'t>,
     source: &str,
     mut also: impl FnMut(Node<'t>),
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<String>, Vec<String>, bool) {
     let mut names = Vec::new();
     let mut looped = Vec::new();
+    let mut unread = false;
     unit::for_each_node(root, |node| {
         also(node);
         match node.kind() {
@@ -883,7 +885,10 @@ fn assigned<'t>(
             "expansion" => names.extend(default_set(unit::text(&node, source))),
             // `declare -n r=CDPATH` makes `r` a name for another variable,
             // which an assignment to `r` sets.
-            "declaration_command" => names.extend(named_by_reference(node, source)),
+            "declaration_command" => {
+                names.extend(named_by_reference(node, source));
+                unread |= declared(node, source, &mut names);
+            }
             "unset_command" => {
                 let mut cursor = node.walk();
                 names.extend(
@@ -899,7 +904,37 @@ fn assigned<'t>(
             }
         }
     });
-    (names, looped)
+    (names, looped, unread)
+}
+
+/// Read the words of a declaration (`export`, `declare` and the like) that
+/// the grammar does not take for an assignment, as written: a plain name
+/// before an `=` is one more variable it sets (into `names`), and a word whose
+/// part before its `=` (all of it, without one) is not a plain name may set
+/// any (`export "PATH=./bin"`, `export PA''TH=./bin`, `export {PATH,X}=./bin`,
+/// `export "$v=./bin"`), which the result says. An option and a plain name
+/// alone (`export PATH`) set nothing.
+fn declared(node: Node<'_>, source: &str, names: &mut Vec<String>) -> bool {
+    let plain = |name: &str| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let mut unread = false;
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        let text = unit::text(&child, source);
+        if child.kind() == "variable_assignment" || text.starts_with(['-', '+']) {
+            continue;
+        }
+        match text.split_once('=') {
+            Some((name, _)) if plain(name.strip_suffix('+').unwrap_or(name)) => {
+                names.push(name.strip_suffix('+').unwrap_or(name).to_string());
+            }
+            Some(_) => unread = true,
+            None => unread |= !plain(text),
+        }
+    }
+    unread
 }
 
 /// The variable `${NAME:=…}` or `${NAME=…}` sets, from the expansion's text.

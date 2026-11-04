@@ -178,6 +178,17 @@ pub(crate) struct Resolver {
     placed: std::cell::RefCell<HashMap<(String, Shell, bool, bool), Place>>,
 }
 
+/// How [`Resolver::locate`] reads a path: as one written into (a folder that
+/// only holds a protected path is not a write of it), as a path it holds,
+/// or as that with the names of file a search there may act on (see
+/// [`Resolver::place_picked`]).
+#[derive(Clone, Copy)]
+enum Reading<'a> {
+    Into,
+    Holding,
+    Picked(&'a dyn Fn(&str) -> bool),
+}
+
 /// The most places [`Resolver::place_spelled`] keeps for a line, and the
 /// longest spelling it keeps one for: past either a path is placed again
 /// each time, as before.
@@ -644,7 +655,29 @@ impl Resolver {
         hidden: bool,
         access: Access,
     ) -> Place {
-        self.locate(dir, arg, shell, hidden, access, true)
+        self.locate(dir, arg, shell, hidden, access, Reading::Holding)
+    }
+
+    /// As [`place`](Self::place), for what a search finds (see [`FOUND`])
+    /// when `picks` says which names of file it may act on: a protected file
+    /// whose name it never acts on is not among what it finds (see
+    /// [`milo_guards_core::Resolver::holds_protected_picked`]).
+    pub(crate) fn place_picked(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+        picks: &dyn Fn(&str) -> bool,
+    ) -> Place {
+        self.locate(
+            dir,
+            arg,
+            shell,
+            hidden,
+            Access::Item,
+            Reading::Picked(picks),
+        )
     }
 
     /// As [`place`](Self::place), for a path something is written into: a
@@ -657,16 +690,16 @@ impl Resolver {
         hidden: bool,
         access: Access,
     ) -> Place {
-        self.locate(dir, arg, shell, hidden, access, false)
+        self.locate(dir, arg, shell, hidden, access, Reading::Into)
     }
 
     /// Where `arg` lands, a path already joined to where the line runs: a
     /// bare device name is read as written, as it is with no `cd` before it.
     pub(crate) fn place_joined(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
-        self.locate(None, arg, shell, hidden, Access::Item, true)
+        self.locate(None, arg, shell, hidden, Access::Item, Reading::Holding)
     }
 
-    /// Where `arg` lands, as a path it holds (`holding`) or is written into.
+    /// Where `arg` lands, read as `reading` says.
     fn locate(
         &self,
         dir: Option<&Arg>,
@@ -674,7 +707,7 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
         access: Access,
-        holding: bool,
+        reading: Reading<'_>,
     ) -> Place {
         if matches!(arg, Arg::Null) {
             return Place::Null;
@@ -692,7 +725,14 @@ impl Resolver {
         }
         let arg = &within(dir, arg, shell);
         match arg.known() {
-            Some(text) => self.place_of(text, shell, hidden, holding),
+            Some(text) => {
+                let (holding, picks) = match reading {
+                    Reading::Into => (false, None),
+                    Reading::Holding => (true, None),
+                    Reading::Picked(picks) => (true, Some(picks)),
+                };
+                self.place_found(text, shell, hidden, holding, picks)
+            }
             None => Place::Unknown,
         }
     }
@@ -791,6 +831,18 @@ impl Resolver {
     }
 
     fn holds_protected_of(&self, text: &str, shell: Shell, hidden: bool) -> Option<&'static str> {
+        self.holds_protected_picked(text, shell, hidden, None)
+    }
+
+    /// As [`Self::holds_protected_of`], with `picks` as for
+    /// [`place_picked`](Self::place_picked).
+    fn holds_protected_picked(
+        &self,
+        text: &str,
+        shell: Shell,
+        hidden: bool,
+        picks: Option<&dyn Fn(&str) -> bool>,
+    ) -> Option<&'static str> {
         if brace_list(text)
             || device(text, shell).is_some()
             || self.made_drive(text, shell).is_some()
@@ -802,12 +854,17 @@ impl Resolver {
                 let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
                 return provider
                     .eq_ignore_ascii_case("filesystem")
-                    .then(|| self.holds_protected_of(rest, shell, hidden))
+                    .then(|| self.holds_protected_picked(rest, shell, hidden, picks))
                     .flatten();
             }
         }
         let flavour = flavour(shell);
-        let ask = |spelling| self.core.holds_protected(spelling, flavour, hidden);
+        let ask = |spelling| match picks {
+            Some(picks) => self
+                .core
+                .holds_protected_picked(spelling, flavour, hidden, picks),
+            None => self.core.holds_protected(spelling, flavour, hidden),
+        };
         match start(text, shell) {
             Start::Plain => ask(Spelling::Plain(text)),
             Start::Home(rest) => ask(Spelling::Home(rest)),
@@ -820,6 +877,19 @@ impl Resolver {
     }
 
     fn place_of(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
+        self.place_found(text, shell, hidden, holding, None)
+    }
+
+    /// As [`Self::place_of`], with `picks` as for
+    /// [`place_picked`](Self::place_picked).
+    fn place_found(
+        &self,
+        text: &str,
+        shell: Shell,
+        hidden: bool,
+        holding: bool,
+        picks: Option<&dyn Fn(&str) -> bool>,
+    ) -> Place {
         // A folder a search or a listing hands on whole is the folder, and
         // everything it holds, a protected path among them.
         if let Some(folder) = marked_folder(text, WHOLE) {
@@ -842,7 +912,7 @@ impl Resolver {
         // entry below it, a protected one among them.
         match marked_folder(text, FOUND) {
             Some(folder) if place.harmless() => self
-                .holds_protected_of(folder, shell, hidden)
+                .holds_protected_picked(folder, shell, hidden, picks)
                 .map_or(place, Place::Protected),
             _ => place,
         }

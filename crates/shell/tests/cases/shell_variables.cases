@@ -381,7 +381,7 @@ cmd safe | set X=%Y% & bash -c true
 # builtin). An `env` command reads the file from the folder the line is in.
 # A file the line does not write is still one it does not show.
 posix safe | echo x > e.sh; export BASH_ENV=e.sh; echo hi; pwd; true
-posix finds=unknown | echo x > e.sh; export BASH_ENV=e.sh; cd sub && echo hi && ls
+posix finds=unknown | echo x > e.sh; export BASH_ENV=e.sh; cd sub && echo hi && make
 posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > other.sh; BASH_ENV=e.sh make
 posix finds=unknown reason="starts a shell that first runs a file the line does not show" | echo x > other.sh; export BASH_ENV=e.sh; find . -exec bash -c true \\;
 posix finds=unknown | trap 'make' EXIT; export BASH_ENV=e.sh
@@ -431,6 +431,63 @@ posix finds=unknown | echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; find . -exec
 posix finds=unknown | echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; find . -ok bash -c true \\;
 posix finds=unknown | echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; npx bash -c true
 posix finds=unknown | echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; xargs make
+# A program that starts no shell, named by a bare name in a POSIX shell and
+# started directly or through a wrapper that starts it directly, runs no
+# BASH_ENV or ENV file. A path names another program, which may be a script;
+# a program that runs another one, or code a project holds, may start one;
+# and so may a wrapper that runs its command through a shell.
+posix safe | export BASH_ENV=x; ls
+posix safe | export BASH_ENV=x.sh; cat a.txt | grep foo | wc -l
+posix safe | BASH_ENV=x.sh ls -la
+posix safe | export BASH_ENV=x.sh; nohup ls
+posix safe | export BASH_ENV=x.sh; timeout 5 grep -r foo src
+posix safe | export BASH_ENV=x.sh; LC_ALL=C ls
+posix safe | export BASH_ENV=x.sh; command ls
+posix safe | export ENV=x.sh; ls
+posix safe | echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; mkdir -p out && cp a.txt out/ && diff a.txt out/a.txt
+posix finds=unknown | export BASH_ENV=x; bash -c true
+posix finds=unknown | export BASH_ENV=x; ls; bash -c true
+posix finds=unknown | export BASH_ENV=x; ./ls
+posix finds=unknown | export BASH_ENV=x; /home/me/bin/ls
+posix finds=unknown | export BASH_ENV=x; LS
+posix finds=unknown | export BASH_ENV=x; "$ls"
+posix finds=unknown | export BASH_ENV=x; cargo build
+posix finds=unknown | export BASH_ENV=x; git status
+posix finds=unknown | export BASH_ENV=x; sort --compress-program=./z a.txt
+posix finds=unknown | export BASH_ENV=x; rg --pre ./p foo
+posix finds=unknown | export BASH_ENV=x; egrep foo a.txt
+posix finds=unknown | export BASH_ENV=x; watch ls
+posix finds=unknown | export BASH_ENV=x; script -c ls
+posix finds=unknown | export BASH_ENV=x; sudo ls
+posix finds=unknown | export BASH_ENV=x; find . -exec ls {} \\;
+posix finds=unknown | export BASH_ENV=x; xargs ls
+posix finds=unknown | export BASH_ENV=x; env LC_ALL=C ls
+posix finds=unknown | export BASH_ENV=x; env PATH=./bin ls
+posix finds=unknown | export BASH_ENV=x; PATH=./bin ls
+posix finds=unknown | export BASH_ENV=x PATH=./bin:$PATH; ls
+posix finds=unknown | export BASH_ENV=x; export "PATH=./bin"; ls
+posix finds=unknown | export BASH_ENV=x; path=(./bin $path); ls
+posix finds=unknown | export BASH_ENV=x; hash -p ./x ls; ls
+posix finds=unknown | export BASH_ENV=x; export "$v=./bin"; ls
+posix finds=unknown | export BASH_ENV=x; declare -x PATH=./bin; ls
+posix finds=unknown | export BASH_ENV=x; export PA''TH=./bin; ls
+posix finds=unknown | export BASH_ENV=x; export {PATH,X}=./bin; ls
+posix finds=unknown | export BASH_ENV=x; command export PATH=./bin; ls
+posix finds=unknown | export BASH_ENV=x; PATH=./bin; ls
+posix safe | export BASH_ENV=x; export PATH; ls
+# A library the dynamic loader runs may start a bash itself.
+posix finds=unknown | export BASH_ENV=x; LD_PRELOAD=./x.so ls
+posix finds=unknown | export BASH_ENV=x; export LD_PRELOAD=./x.so; ls
+posix finds=unknown | export BASH_ENV=x; LD_PRELOAD=./x.so; ls
+posix finds=unknown | export BASH_ENV=x; LD_LIBRARY_PATH=./lib ls
+posix finds=unknown | export BASH_ENV=x; DYLD_INSERT_LIBRARIES=./x.dylib ls
+posix finds=unknown | LD_PRELOAD=./x.so BASH_ENV=x ls
+posix safe | export BASH_ENV=x; LC_ALL=C TZ=UTC ls
+posix finds=unknown | export BASH_ENV=x; ls() { bash -c true; }; ls
+posix finds=unknown | export BASH_ENV=x; alias ls='bash -c true'; ls
+posix finds=unknown reason="runs a script the same line writes" | echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; ls; make
+powershell finds=unknown | $env:BASH_ENV = 'x.sh'; grep foo a.txt
+cmd finds=unknown | set BASH_ENV=x.sh && grep foo a.txt
 # A shell that inline code starts.
 posix finds=unknown | echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh python3 -c 'import os; os.system("bash -c true")'
 posix finds=unknown | echo 'rm -rf ~' > e.sh; BASH_ENV=e.sh node -e 'require("child_process").execSync("bash -c true")'
@@ -464,7 +521,7 @@ posix finds=unknown | echo x > sub/e.sh; cd sub; env BASH_ENV=e.sh bash -c true
 # A plain `cd` after the write may fail and leave the line where the file is
 # (see write_then_run.cases); after `&&` it ran.
 posix finds=unknown | echo x > e.sh; cd sub; env BASH_ENV=e.sh bash -c true
-posix finds=unknown | echo x > e.sh; export BASH_ENV=e.sh; cd sub; echo hi; ls
+posix finds=unknown | echo x > e.sh; export BASH_ENV=e.sh; cd sub; echo hi; make
 posix finds=unknown | echo x > e.sh; export BASH_ENV=e.sh; cd sub; bash -c true
 posix finds=unknown | echo x > e.sh; cd sub; export BASH_ENV=e.sh; bash -c true
 posix finds=unknown | echo x > e.sh; cd sub; export BASH_ENV=$PWD/e.sh; bash -c true

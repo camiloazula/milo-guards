@@ -319,7 +319,7 @@ const HARMLESS_VARIABLES: [&str; 12] = [
 
 /// Whether setting the variable `name` (as written; PowerShell's `env:X`
 /// too) leaves what programs run and do alone.
-fn harmless(name: &str) -> bool {
+pub(crate) fn harmless(name: &str) -> bool {
     let name = name
         .get(..4)
         .filter(|prefix| prefix.eq_ignore_ascii_case("env:"))

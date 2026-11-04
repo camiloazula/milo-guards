@@ -92,6 +92,71 @@ pub(crate) const STARTS_NOTHING: [&str; 21] = [
     "read", "declare", "typeset", "local", "readonly", "shift", "exit", "return", "wait",
 ];
 
+/// Programs that start no shell, whatever they are given: they read, list,
+/// compare, copy or remove files and print what they find, so a `BASH_ENV`
+/// or `ENV` file is not run for them either. Only these, named by a bare
+/// name in a POSIX shell, and started directly or through a wrapper of
+/// [`EXEC_WRAPPERS`] (not `env`, which may set `PATH`): a path names another
+/// program, which may be a script.
+/// Not here: a program that runs another one it is given (`sort
+/// --compress-program`, `rg --pre`, `split --filter`, `find`, `xargs`),
+/// one that runs code it is pointed at or that a project holds (`make`,
+/// `cargo`, `git` and its hooks), a pager or editor (`less`), and a
+/// program some systems ship as a script (`egrep`, `zcat`, `ldd`,
+/// `which`).
+const STARTS_NO_SHELL: [&str; 44] = [
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "cut",
+    "paste",
+    "tr",
+    "uniq",
+    "nl",
+    "rev",
+    "tac",
+    "comm",
+    "cmp",
+    "diff",
+    "grep",
+    "mkdir",
+    "rmdir",
+    "touch",
+    "cp",
+    "mv",
+    "rm",
+    "ln",
+    "chmod",
+    "stat",
+    "du",
+    "df",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "date",
+    "whoami",
+    "id",
+    "uname",
+    "sleep",
+    "tee",
+    "seq",
+    "md5sum",
+    "sha1sum",
+    "sha256sum",
+    "od",
+    "jq",
+    "mktemp",
+];
+
+/// Wrappers that start the program they wrap directly, never through a
+/// shell, whatever their options.
+const EXEC_WRAPPERS: [&str; 7] = [
+    "command", "exec", "nohup", "nice", "timeout", "time", "stdbuf",
+];
+
 /// The extensions Windows runs a program by when its name has none.
 const WINDOWS_EXTENSIONS: [&str; 4] = [".bat", ".cmd", ".com", ".exe"];
 
@@ -109,6 +174,66 @@ pub(crate) const DOWNLOADERS: [&str; 10] = [
     "invoke-restmethod",
     "start-bitstransfer",
 ];
+
+/// Whether setting the variable `name` leaves a program that starts no shell
+/// as it is: `BASH_ENV` and `ENV`, which only a shell reads, and a variable
+/// that sets a language or a display ([`crate::effect::harmless`]). Any
+/// other may change which program a bare name runs (`PATH`) or load code
+/// into the one it runs (`LD_PRELOAD`, `LD_LIBRARY_PATH`,
+/// `DYLD_INSERT_LIBRARIES`), which may start a bash.
+fn leaves_programs(name: &str) -> bool {
+    ["BASH_ENV", startup::SH_ENV]
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(name))
+        || crate::effect::harmless(name)
+}
+
+/// Whether `unit` may change which program a bare name runs, or what that
+/// program loads: `hash`, and a declaration with a word that may set a
+/// variable [`leaves_programs`] does not take: one whose name is not plain
+/// as the word reads (`export "$v=./bin"`), or another variable (`command
+/// export PATH=./bin`). A plain name alone (`export PATH`) sets nothing.
+fn respells(unit: &Unit) -> bool {
+    let plain = |name: &str| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    match unit.key().as_deref() {
+        Some("hash") => true,
+        Some("export" | "declare" | "typeset" | "local" | "readonly") => {
+            unit.args.iter().any(|arg| {
+                let text = arg.text();
+                if text.starts_with(['-', '+']) {
+                    return false;
+                }
+                match text.split_once('=') {
+                    Some((name, _)) => {
+                        let name = name.strip_suffix('+').unwrap_or(name);
+                        !plain(name) || !leaves_programs(name)
+                    }
+                    None => !plain(text),
+                }
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Whether `unit` runs a program that starts no shell ([`STARTS_NO_SHELL`]):
+/// in a POSIX shell, named by a bare name, directly or through wrappers that
+/// start it directly ([`EXEC_WRAPPERS`]). The line must not change which
+/// program the name runs (see [`Checker::respelled`]).
+fn starts_no_shell(unit: &Unit) -> bool {
+    unit.shell == Shell::Posix
+        && unit
+            .wrappers
+            .iter()
+            .all(|wrapper| EXEC_WRAPPERS.contains(&wrapper.as_str()))
+        && unit
+            .program
+            .known()
+            .is_some_and(|program| STARTS_NO_SHELL.contains(&program))
+}
 
 /// What the reason of a finding judged from another folder a `cd` before it
 /// may have left the line in ends with (see [`Unit::others`]).
@@ -417,6 +542,13 @@ struct Checker<'a> {
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,
+    /// Whether the line may change which program a bare name runs, or what
+    /// that program loads: it sets a variable other than those
+    /// [`leaves_programs`] takes (`PATH`, zsh's `path`, `LD_PRELOAD`), by a
+    /// prefix assignment, a declaration or a plain assignment, declares a
+    /// name it does not show, or runs `hash`, which ties a name to a file
+    /// (see [`respells`]).
+    respelled: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -442,6 +574,9 @@ impl<'a> Checker<'a> {
             lengths: HashMap::new(),
             pipelines: HashMap::new(),
             flow: send::Flow::default(),
+            respelled: split.declares_unread
+                || split.reassigned_any(|name| !leaves_programs(name))
+                || split.units.iter().any(respells),
         };
         for (at, unit) in split.units.iter().enumerate() {
             let Some(stage) = unit.stage else {
@@ -819,6 +954,29 @@ impl Checker<'_> {
     /// [`Checker::delete`], where `hidden` says the program matches the
     /// wildcards itself, with names that start with a dot among them.
     fn delete_matching(&mut self, unit: &Unit, targets: &[&Arg], verb: &str, hidden: bool) {
+        self.delete_picked(unit, targets, verb, hidden, None);
+    }
+
+    /// [`Checker::delete`] of what a search finds, where `picks` says which
+    /// names of file it may act on (see [`Resolver::place_picked`]).
+    fn delete_found(
+        &mut self,
+        unit: &Unit,
+        targets: &[&Arg],
+        verb: &str,
+        picks: &dyn Fn(&str) -> bool,
+    ) {
+        self.delete_picked(unit, targets, verb, false, Some(picks));
+    }
+
+    fn delete_picked(
+        &mut self,
+        unit: &Unit,
+        targets: &[&Arg],
+        verb: &str,
+        hidden: bool,
+        picks: Option<&dyn Fn(&str) -> bool>,
+    ) {
         for target in targets {
             let (found, listed_hidden) = self.expand(unit, target);
             let scope = Scope {
@@ -831,7 +989,14 @@ impl Checker<'_> {
                     Some(folder) => Arg::Known(folder.to_string()),
                     None => arg,
                 };
-                match self.place(unit.shell, scope, &arg, Access::Item) {
+                let place = match picks {
+                    Some(picks) => {
+                        self.resolver
+                            .place_picked(scope.dir, &arg, unit.shell, scope.hidden, picks)
+                    }
+                    None => self.place(unit.shell, scope, &arg, Access::Item),
+                };
+                match place {
                     place if place.harmless() => {}
                     Place::Registry => {
                         self.add(Rule::SystemSettings, "changes the registry", Some(&arg));
@@ -1388,13 +1553,15 @@ impl Checker<'_> {
     /// its hooks). A POSIX `sh` runs the file `ENV` names the same way
     /// ([`startup::SH_SHELLS`]), when it may be interactive (see
     /// [`interactive`]). What starts nothing is a builtin that only prints,
-    /// tests or sets a variable ([`STARTS_NOTHING`]), and in
+    /// tests or sets a variable ([`STARTS_NOTHING`]), a program that starts
+    /// no shell ([`STARTS_NO_SHELL`], see [`starts_no_shell`]), and in
     /// PowerShell and cmd a cmdlet or a built-in command (but `start` and
     /// `call`, which run a program); `key` is `None` for a program only
     /// known when it runs. A file that is the null device runs nothing.
     fn startup_then_run(&mut self, unit: &Unit, key: Option<&str>) {
         if (unit.startup.is_empty() && self.split.startup.is_empty())
             || key.is_some_and(|key| STARTS_NOTHING.contains(&key))
+            || (!self.respelled && starts_no_shell(unit))
         {
             return;
         }

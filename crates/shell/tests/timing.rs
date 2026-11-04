@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use common::{
     assert_linear, assert_linear_by, assert_within, at, disagreements, filled, posix, took,
 };
-use milo_guards_shell::{classify, effect, Paths, Rule, Shell};
+use milo_guards_shell::{classify, effect, Paths, Protected, Rule, Shell};
 use noise::{lossy, paths_for, Lcg, SHELLS, WIDE_PIECES};
 
 /// Held for the whole of a timed test, so no two are timed at once.
@@ -663,6 +663,38 @@ fn find_expressions_are_read_in_linear_time() {
             !classify(&line(64 * 1024), Shell::Posix, &paths).is_safe(),
             "{what}"
         );
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn find_name_tests_over_protected_files_are_read_in_linear_time() {
+    let _serial = serial();
+    // A `find -delete` walks its expression again for the name of each
+    // protected file below the folder it searches: once for each unit, and
+    // each name test of a long chain for each name.
+    let paths = posix().with_protected((0..51).map(|at| {
+        Protected::file(
+            format!("/home/me/work/repo/.agent/rules{at}.md"),
+            "the agent's rules",
+        )
+    }));
+    let shapes: [Shape; 3] = [
+        ("repeated searches", |size| {
+            filled("find . -name '*.log' -delete; ", size, 20)
+        }),
+        ("names joined by -o", |size| {
+            format!("find . {}-delete", filled("-name '*.log' -o ", size, 20))
+        }),
+        ("negated brackets joined by -o", |size| {
+            format!("find . {}-delete", filled("-name '[!R]x' -o ", size, 20))
+        }),
+    ];
+    for (what, line) in shapes {
+        assert_linear(what, Shell::Posix, &paths, line);
     }
 }
 
