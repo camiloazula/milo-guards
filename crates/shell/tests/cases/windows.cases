@@ -167,6 +167,21 @@ powershell finds=delete | wsl --cd C:\\Windows 'rm -rf System32'
 powershell safe | wsl --cd build rm -rf obj
 cmd safe | wsl --cd build rm -rf obj
 
+# The runners that load secrets run the command after their options in cmd
+# as in PowerShell; `--command` runs a cmd line.
+cmd finds=delete | doppler run -- rd /s /q C:\\Users\\me
+cmd finds=delete | doppler run -p app -c dev -- rd /s /q C:\\Users\\me
+cmd finds=delete | doppler run --command "rd /s /q C:\\Users\\me"
+cmd finds=delete | op run -- rd /s /q C:\\Users\\me
+cmd finds=delete | infisical run --env prod -- rd /s /q C:\\Users\\me
+cmd finds=unreadable | doppler run --frobnicate x rd /s /q C:\\Users\\me
+cmd safe | doppler run -- npm test
+cmd safe | doppler run -- dir
+powershell finds=delete | doppler run -- Remove-Item -Recurse -Force ~
+powershell safe | doppler run -- npm test
+powershell finds=delete | nix-shell --run 'rm -rf ~'
+powershell finds=delete | sem rm -rf ~
+
 # A PowerShell trap and event action run later.
 powershell safe | trap { Remove-Item build }
 powershell safe | trap { Write-Error $_; continue }

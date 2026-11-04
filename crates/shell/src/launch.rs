@@ -19,6 +19,7 @@ use crate::{Rule, Shell};
 mod find;
 mod git;
 mod interpreters;
+mod nix;
 mod npm;
 mod packages;
 mod parallel;
@@ -1244,10 +1245,14 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         "chronic" if posix => tools::chronic(args),
         "launchctl" if posix => tools::launchctl(unit),
         "lima" if posix => tools::lima(args),
-        "nix" if posix => tools::nix(unit),
+        "limactl" if posix => tools::limactl(args),
+        "nix" if posix => nix::nix(unit),
+        "nix-shell" if posix => nix::nix_shell(args),
+        // GNU parallel's `sem` is `parallel --semaphore`.
+        "sem" if posix => parallel::sem(args),
         // Runners that load secrets into the command's environment first.
         "aws-vault" if posix => tools::aws_vault(args),
-        "doppler" | "infisical" | "op" if posix => tools::secrets_run(key, unit),
+        "doppler" | "infisical" | "op" => tools::secrets_run(key, unit),
         "direnv" if posix => tools::direnv(args),
         "dotenv" if posix => tools::dotenv(args),
         // `wsl` runs its words in a Linux shell, from any shell of Windows.
