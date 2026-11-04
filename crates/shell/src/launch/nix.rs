@@ -7,7 +7,7 @@
 //! after it: where the command starts is then not known, and the line is
 //! not read.
 
-use super::tools::{unknown_before, UNKNOWN_OPTION};
+use super::tools::{unknown_before, unknown_subcommand, UNKNOWN_OPTION, UNKNOWN_WORD};
 use super::wrappers::running;
 use super::{runs, Launch};
 use crate::unit::{Arg, Unit};
@@ -99,14 +99,27 @@ const NIX_FLAGS: &[&str] = &[
     "--install",
     "--installcheck",
     "--unpack",
+    "--allow-dirty",
+    "--warn-dirty",
+    "--keep-outputs",
+    "--keep-derivations",
+    "--allow-import-from-derivation",
+    "--eval-cache",
+    "--builders-use-substitutes",
+    "--trace-verbose",
 ];
 
 /// The short options of `nix` that take a value, and those that take none.
 const NIX_SHORT_VALUES: &str = "fIjkuo";
 const NIX_SHORT_FLAGS: &str = "LviK";
 
-/// The subcommands of `nix` that run a command.
-const NIX_RUNS: &[&str] = &["run", "shell", "develop"];
+/// The subcommands of `nix` that run a command: `dev-shell` is the old name
+/// of `develop`, and `shell` also stands after `env` (`nix env shell`, of
+/// which `nix shell` is the short form).
+const NIX_RUNS: &[&str] = &["run", "shell", "develop", "dev-shell"];
+
+/// The words after `nix`'s subcommand that start the command it runs.
+const NIX_STARTS: &[&str] = &["-c", "--command", "--"];
 
 /// The options of `nix-shell` that take one value.
 const NIX_SHELL_VALUES: &[&str] = &[
@@ -252,9 +265,15 @@ fn is_option(text: &str) -> bool {
 /// `nix shell INSTALLABLES… -c CMD…` and `nix develop [INSTALLABLE] -c
 /// CMD…` (`--command`) run the command, every word after `-c`, with the
 /// packages on its path; without `-c` they start a shell.
+///
+/// A word only known when it runs may be an option, `-c` or the
+/// subcommand: among the options and installables, with a word after it,
+/// the command is not read, and where the subcommand stands, it is not
+/// read when a word that starts a command follows.
 pub(super) fn nix(unit: &Unit) -> Launch {
     let args = &unit.args;
     let mut at = 0;
+    // The subcommand, `env` until the `shell` after it.
     let mut sub = None;
     // The options stand before and after the subcommand; the installable of
     // `run` is the first other word after it.
@@ -262,6 +281,7 @@ pub(super) fn nix(unit: &Unit) -> Launch {
         let Some(arg) = args.get(at) else {
             return Launch::Itself;
         };
+        let last = at + 1 == args.len();
         match (sub, arg.known()) {
             (Some("shell" | "develop"), Some("-c" | "--command")) => {
                 return runs(args, Some(at + 1));
@@ -269,23 +289,34 @@ pub(super) fn nix(unit: &Unit) -> Launch {
             // `nix run -- ARGS` runs the flake of the folder it is in, its
             // default app, with the words after `--`.
             (Some("run"), Some("--")) => return runs(args, Some(at + 1)),
-            (None, Some("--")) => return Launch::Itself,
+            (None | Some("env"), Some("--")) => return Launch::Itself,
             // The words after it are installables to Nix; a `-c` among them
             // is still read as one.
             (Some(_), Some("--")) => at += 1,
             (_, Some(text)) if is_option(text) => match option(text, &NIX) {
                 Some(taken) => at += taken,
-                None if sub.is_some() => return Launch::Opaque(UNKNOWN_OPTION),
-                None => return unknown_before(args, at + 1, NIX_RUNS),
-            },
-            (None, word) => {
-                match word {
-                    Some(word) if NIX_RUNS.contains(&word) => sub = Some(word),
-                    _ => return Launch::Itself,
+                None if matches!(sub, None | Some("env")) => {
+                    return unknown_before(args, at + 1, NIX_RUNS);
                 }
+                None => return Launch::Opaque(UNKNOWN_OPTION),
+            },
+            (None | Some("env"), word) => {
+                sub = match (sub, word) {
+                    (None, Some("env")) => Some("env"),
+                    (None, Some("dev-shell")) => Some("develop"),
+                    (None, Some(word)) if NIX_RUNS.contains(&word) => Some(word),
+                    (Some(_), Some("shell")) => Some("shell"),
+                    (_, Some(_)) => return Launch::Itself,
+                    (_, None) => return unknown_subcommand(args, at + 1, NIX_STARTS),
+                };
                 at += 1;
             }
+            // `nix run "$x" rm -rf ~`: the word may be an option, or `--`.
+            (Some("run"), None) if !last && args[at + 1].known() != Some("--") => {
+                return Launch::Opaque(UNKNOWN_WORD);
+            }
             (Some("run"), _) => break at,
+            (Some(_), None) if !last => return Launch::Opaque(UNKNOWN_WORD),
             // An installable of `nix shell` or `nix develop`.
             (Some(_), _) => at += 1,
         }
@@ -320,7 +351,9 @@ fn attribute(installable: &str) -> Option<&str> {
 /// `nix-shell [OPTIONS] [PATH | -p PACKAGES…]` runs the shell line `--run`
 /// or `--command` gives in bash, the last one when there are several, as
 /// Nix keeps the last; without one it starts a shell. Its other words are
-/// files, expressions or packages, and the options stand among them.
+/// files, expressions or packages, and the options stand among them. A word
+/// only known when it runs, with a word after it, may be `--run` or an
+/// option, so the line is not read.
 pub(super) fn nix_shell(args: &[Arg]) -> Launch {
     let mut script = None;
     let mut at = 0;
@@ -334,6 +367,8 @@ pub(super) fn nix_shell(args: &[Arg]) -> Launch {
                 Some(taken) => at += taken,
                 None => return Launch::Opaque(UNKNOWN_OPTION),
             },
+            // It may be `--run`, or an option that takes the word after it.
+            None if at + 1 < args.len() => return Launch::Opaque(UNKNOWN_WORD),
             _ => at += 1,
         }
     }

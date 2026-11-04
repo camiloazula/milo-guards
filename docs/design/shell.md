@@ -491,12 +491,21 @@ each with the options it reads and those of them that take a value, as
 - `launchctl asuser UID` and `launchctl bsexec PID` run the words after them;
   `launchctl submit … -- cmd` starts the command as a job (with `-p`, the
   program `-p` names, given the words after `--`).
-- `lima` runs its words in the default Lima machine. `limactl shell
-  [OPTIONS] INSTANCE CMD…` runs the words after the instance in the
-  machine `INSTANCE` (`limactl shell default rm -rf ~` is `delete`), each
-  as it is; its options and `limactl`'s own end at the instance, and
-  `--workdir DIR` (or `--workdir=DIR`) starts the command in `DIR`, read as
-  a POSIX path. With no command it opens a shell.
+- `limactl shell [OPTIONS] INSTANCE [--] CMD…` runs the words after the
+  instance in the machine `INSTANCE` (`limactl shell default rm -rf ~` is
+  `delete`); its options and `limactl`'s own end at the instance, and one
+  `--` right after it is taken off. `lima` is `limactl shell --instance
+  default`: `limactl shell`'s options may stand first, and a `--` ends
+  them. Lima quotes each word into a line for the machine's shell, but
+  leaves the leading words with a `=` as assignments, their names unquoted:
+  `NAME=value` words are taken off, as `sudo` takes them, and a leading word
+  whose name is not one (`'x;rm -rf ~;y=1'`) makes the line read as the
+  shell reads it. `--workdir DIR` (or `--workdir=DIR`) starts the command in
+  `DIR`, read as a POSIX path. Without it Lima runs `cd` to the folder the
+  line is in, and to the home directory when that folder is not shared with
+  the machine, so the command is read from both (`limactl shell default rm
+  -rf build` is `delete`, as it deletes `~/build` then). With no command it
+  opens a shell.
 - `nix run INSTALLABLE -- ARGS` runs the package's program, named by the
   attribute after `#` (`nixpkgs#hello` runs `hello`, `nixpkgs#bash -- -c
   '…'` reads the script); a package sets which of its programs runs, which
@@ -506,7 +515,8 @@ each with the options it reads and those of them that take a value, as
   they are read as one. `nix shell INSTALLABLES… -c CMD…` and `nix develop
   [INSTALLABLE] -c CMD…` (`--command`) run every word after `-c` as the
   command, with the options anywhere before it; without `-c` they open a
-  shell. `nix-shell` runs the shell line `--run` or `--command` gives, the
+  shell. `nix env shell` is `nix shell`'s newer name and `nix dev-shell`
+  `nix develop`'s old one, read the same. `nix-shell` runs the shell line `--run` or `--command` gives, the
   last of them as Nix keeps the last, in bash (`nix-shell -p hello --run 'rm
   -rf ~'` is `delete`, `nix-shell --run "$CMD"` is `unknown`); without one
   it opens a shell. Nix takes any of its settings as an option, so a known
@@ -524,6 +534,9 @@ each with the options it reads and those of them that take a value, as
   as `parallel` reads a job (below) with no value: its options are
   `parallel`'s, and a command it is given as one word is a shell line (`sem
   'rm -rf ~'`). It reads no input for values; `sem --wait` runs nothing.
+  `parallel` is `sem` too with `--semaphore`, or an option that starts
+  semaphore mode as it does (`--id`, `--semaphorename`, `--st`,
+  `--semaphoretimeout`, `--bg`, `--wait`, and `--fg` without `--tmux`).
 
 An option one of `nix run`, `nix shell`, `nix develop`, `nix-shell`,
 `limactl shell`, `doppler run` or `sem` does not know may take the word
@@ -534,7 +547,16 @@ ls`, `doppler run --frobnicate x rm -rf ~`). One before the subcommand
 (`nix --frobnicate x develop -c ls`, `limactl --frobnicate shell …`, `doppler
 --frobnicate x run …`) is read the same when a subcommand that runs a command
 follows it, since the option may be what takes the word; otherwise the
-program is judged itself (`nix --frobnicate build`).
+program is judged itself (`nix --frobnicate build`). A word only known when
+it runs may be such an option, `-c`, `--run` or the subcommand itself, so it
+is `Unreadable` too, `runs a command after a word only known when it runs`:
+among the options and installables of `nix shell`, `nix develop`, `nix run`
+(unless `--` follows it) or `nix-shell`, with a word after it (`nix develop
+"$c" rm ~/.bashrc`, `nix-shell "$o" 'rm ~/.bashrc'`), and where the
+subcommand of `nix`, `limactl` or `doppler` stands, when `-c`, `--command`
+or `--` (`nix "$sub" nixpkgs#hello -c rm …`), `shell` (`limactl "$x" shell
+…`), or `run` or `--` (`doppler "$x" run -- rm …`) follows it. A lone one at
+the end, or one before none of those, leaves the program judged itself.
 - `wsl` runs its words as a line in the Linux shell of a distribution, from
   any shell of Windows: after its options (`-d`, `-u`, `--cd`,
   `--shell-type`, `--distribution-id` take a value; a `~` among them starts
@@ -6405,10 +6427,9 @@ are each held to the bound;
   ones of several levels, are timed the same, as are `parallel` lines that
   would build megabytes of jobs and the other wrappers that read their words
   as a command (`wsl`, `env -S`, `nix run`, `nix shell`, `nix-shell`,
-  `limactl shell`, `sem`, the secret runners), at the
-  length limit, and PowerShell lines at the length limit that use a name the
-  line sets as an alias, to a hundred commands or to one, in every command
-  after it. Loops with a `cd`, and function bodies a `cd` comes after, are
+  `limactl shell`, `sem`, the secret runners), at the length limit, and
+  PowerShell lines at the length limit that use a name the line sets as an
+  alias, to a hundred commands or to one, in every command after it. Loops with a `cd`, and function bodies a `cd` comes after, are
   held to linear time: one after another, a hundred deep around a long body,
   a function called after `cd`s to many folders, and a `TRAPEXIT` function
   after many `cd`s that may fail.

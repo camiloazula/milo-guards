@@ -156,6 +156,7 @@ const LONG_FLAGS: &[&str] = &[
     "round",
     "round-robin",
     "rrs",
+    "semaphore",
     "show-limits",
     "shuf",
     "silent",
@@ -166,7 +167,6 @@ const LONG_FLAGS: &[&str] = &[
     "tmux",
     "transfer",
     "tty",
-    "semaphore",
     "ungroup",
     "unsafe",
     "use-cores-instead-of-cpus",
@@ -179,6 +179,17 @@ const LONG_FLAGS: &[&str] = &[
     "will-cite",
     "xapply",
     "xargs",
+];
+
+/// The long options that start semaphore mode, as `--semaphore` does.
+const SEMAPHORE: &[&str] = &[
+    "bg",
+    "id",
+    "semaphore",
+    "semaphorename",
+    "semaphoretimeout",
+    "st",
+    "wait",
 ];
 
 /// The options that change how a value is split, named or put in the
@@ -659,15 +670,16 @@ fn read_options(args: &[Arg]) -> Option<Options> {
         trim: String::new(),
         semaphore: false,
     };
+    let (mut fg, mut tmux) = (false, false);
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         let Some(text) = arg.known() else {
             options.start = at;
-            return Some(options);
+            break;
         };
         if text == "--" {
             options.start = at + 1;
-            return Some(options);
+            break;
         }
         if let Some(long) = text.strip_prefix("--") {
             let (name, value) = long
@@ -679,7 +691,11 @@ fn read_options(args: &[Arg]) -> Option<Options> {
             }
             options.grouping |= LONG_GROUPING.contains(&name);
             options.quote |= name == "quote";
-            options.semaphore |= name == "semaphore";
+            // As `--semaphore` does, these start semaphore mode, and so does
+            // `--fg` without `--tmux`.
+            options.semaphore |= SEMAPHORE.contains(&name);
+            fg |= name == "fg";
+            tmux |= name == "tmux";
             options.files += usize::from(name == "arg-file");
             // `--replace` alone is `{}`; its own string only follows `=`.
             if name == "replace" {
@@ -743,8 +759,9 @@ fn read_options(args: &[Arg]) -> Option<Options> {
             continue;
         }
         options.start = at;
-        return Some(options);
+        break;
     }
+    options.semaphore |= fg && !tmux;
     Some(options)
 }
 

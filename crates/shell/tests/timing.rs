@@ -241,7 +241,8 @@ fn wrappers_that_build_their_command_are_read_in_time() {
     let _serial = serial();
     // `parallel` builds a line for each job from its command and its values,
     // and `wsl`, `env -S`, `nix run`, `nix shell`, `nix-shell`, `limactl
-    // shell`, `sem` and the other runners read their words as a command. The bound is for the debug build `just test` runs.
+    // shell`, `sem` and the other runners read their words as a command.
+    // The bound is for the debug build `just test` runs.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let values = |count: usize, each: usize| {
         (0..count)

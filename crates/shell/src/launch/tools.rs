@@ -3,15 +3,15 @@
 //! asuser`, `bsexec` and `submit`, `wsl`, `lima` and `limactl shell`,
 //! `nsenter`, and the runners that load secrets into the command's
 //! environment first (`aws-vault exec`, `doppler run`, `op run`, `infisical
-//! run`, `direnv exec`, `dotenv`). And the files the tracers, `script` and `time` write
-//! their own output to.
+//! run`, `direnv exec`, `dotenv`). And the files the tracers, `script` and
+//! `time` write their own output to.
 
 use std::collections::HashSet;
 
 use super::wrappers::{folder_option, getopt, running, Getopt};
 use super::{
-    after_getopt, after_options, after_options_by, getopt_value, getopt_word, join, runs,
-    shell_words, subcommand, Launch, Word,
+    after_assignments, after_getopt, after_options, after_options_by, getopt_value, getopt_word,
+    join, runs, shell_word, shell_words, subcommand, Launch, Word,
 };
 use crate::unit::{Arg, Unit};
 use crate::Shell;
@@ -733,18 +733,38 @@ pub(super) fn after_known(
     Ok(at)
 }
 
+/// Why a wrapper's command is not read when a word only known when it runs
+/// stands where its options or its subcommand do: the word may be the
+/// option, or the subcommand, that runs a command.
+pub(super) const UNKNOWN_WORD: &str = "runs a command after a word only known when it runs";
+
+/// Whether one of `words` is among `args` from `at`.
+pub(super) fn follows(args: &[Arg], at: usize, words: &[&str]) -> bool {
+    args.get(at..)
+        .unwrap_or_default()
+        .iter()
+        .any(|arg| arg.known().is_some_and(|text| words.contains(&text)))
+}
+
 /// What a program does when it is given an option the guard does not know
 /// before its subcommand, which the option may take as its value: when one
 /// of the `subcommands` that run a command follows, from `at`, that command
 /// is not read; otherwise the program is judged itself.
 pub(super) fn unknown_before(args: &[Arg], at: usize, subcommands: &[&str]) -> Launch {
-    let runs_one = args
-        .get(at..)
-        .unwrap_or_default()
-        .iter()
-        .any(|arg| arg.known().is_some_and(|text| subcommands.contains(&text)));
-    if runs_one {
+    if follows(args, at, subcommands) {
         Launch::Opaque(UNKNOWN_OPTION)
+    } else {
+        Launch::Itself
+    }
+}
+
+/// What a program does when a word only known when it runs stands where its
+/// subcommand does: when one of `words`, which follow the subcommand that
+/// runs a command, follows from `at`, the word may be that subcommand, and
+/// the command is not read; otherwise the program is judged itself.
+pub(super) fn unknown_subcommand(args: &[Arg], at: usize, words: &[&str]) -> Launch {
+    if follows(args, at, words) {
+        Launch::Opaque(UNKNOWN_WORD)
     } else {
         Launch::Itself
     }
@@ -792,10 +812,14 @@ pub(super) fn cobra_option(
 }
 
 /// `lima` runs its words in the default Lima virtual machine: it is a
-/// script that hands them all to `limactl shell default`, after the
-/// instance, where they are the command.
+/// script that hands them all to `limactl shell --instance default`, so
+/// `limactl shell`'s options may stand first, a `--` ends them, and the
+/// words after them are the command.
 pub(super) fn lima(args: &[Arg]) -> Launch {
-    runs(args, Some(0))
+    let Ok(start) = after_known(args, 0, limactl_option) else {
+        return Launch::Opaque(UNKNOWN_OPTION);
+    };
+    guest_command(args, &args[..start], start)
 }
 
 /// The long options of `limactl` and `limactl shell` that take a value.
@@ -817,25 +841,50 @@ fn limactl_option(text: &str) -> Option<usize> {
     cobra_option(text, "", "hv", LIMACTL_VALUES, LIMACTL_FLAGS)
 }
 
-/// `limactl shell [OPTIONS] INSTANCE [CMD…]` runs the command in the Lima
-/// virtual machine `INSTANCE`, each word as it is, in its shell; without
-/// one it starts the shell. `--workdir DIR` starts it in `DIR`, a path of
-/// the machine; otherwise it starts in the folder the line is in, which
-/// Lima shares with the machine. The options end at the instance: the words
-/// after it are the command's.
+/// `limactl shell [OPTIONS] INSTANCE [--] [CMD…]` runs the command in the
+/// Lima virtual machine `INSTANCE`; without one it starts the shell. The
+/// options end at the instance, and one `--` right after it is taken off:
+/// the words after them are the command's.
 pub(super) fn limactl(args: &[Arg]) -> Launch {
     let sub = match after_known(args, 0, limactl_option) {
         Ok(sub) => sub,
         Err(at) => return unknown_before(args, at + 1, &["shell"]),
     };
-    if args.get(sub).and_then(Arg::known) != Some("shell") {
-        return Launch::Itself;
+    match args.get(sub) {
+        Some(arg) if arg.known() == Some("shell") => {}
+        Some(arg) if arg.known().is_none() => return unknown_subcommand(args, sub + 1, &["shell"]),
+        _ => return Launch::Itself,
     }
     let Ok(instance) = after_known(args, sub + 1, limactl_option) else {
         return Launch::Opaque(UNKNOWN_OPTION);
     };
-    let launch = runs(args, Some(instance + 1));
-    let own = args.get(sub + 1..instance).unwrap_or_default();
+    let mut start = instance + 1;
+    if args.get(start).and_then(Arg::known) == Some("--") {
+        start += 1;
+    }
+    guest_command(args, args.get(sub + 1..instance).unwrap_or_default(), start)
+}
+
+/// The command `limactl shell` runs from `start`, with its options `own`.
+/// Lima quotes each word and hands the line to the machine's shell, but
+/// leaves the leading words with a `=` as assignments, their names
+/// unquoted: a `NAME=value` sets a variable for the command, and a word
+/// whose name is not one is shell text, so the line is read as the shell
+/// reads it. `--workdir DIR` starts the command in `DIR`, a path of the
+/// machine; without it Lima runs `cd` to the folder the line is in, and to
+/// the home directory when that folder is not shared with the machine, so
+/// the command is read from both.
+fn guest_command(args: &[Arg], own: &[Arg], start: usize) -> Launch {
+    let program = after_assignments(args, start);
+    let launch = match args.get(program).and_then(Arg::known) {
+        Some(text) if text.contains('=') => {
+            Launch::Script(Shell::Posix, guest_line(&args[start..]))
+        }
+        _ => runs(args, Some(program)),
+    };
+    if !matches!(launch, Launch::Runs(_) | Launch::Script(..)) {
+        return launch;
+    }
     let folder = folder_option(own, &["--workdir"], false, |text, _| {
         if limactl_option(text) == Some(2) {
             Word::Value
@@ -844,10 +893,40 @@ pub(super) fn limactl(args: &[Arg]) -> Launch {
         }
     });
     match folder {
-        Some(folder) if matches!(launch, Launch::Runs(_)) => {
-            Launch::In(folder, Some(Shell::Posix), Box::new(launch))
-        }
-        _ => launch,
+        Some(folder) => Launch::In(folder, Some(Shell::Posix), Box::new(launch)),
+        None => Launch::Either(
+            Box::new(launch.clone()),
+            Box::new(Launch::In(
+                Arg::Known("~".to_string()),
+                Some(Shell::Posix),
+                Box::new(launch),
+            )),
+        ),
+    }
+}
+
+/// The line Lima builds from the words of a command: each leading word with
+/// a `=` its name as it is and its value quoted, every other word quoted.
+fn guest_line(words: &[Arg]) -> Arg {
+    let mut assigning = true;
+    let line = words
+        .iter()
+        .map(|arg| {
+            let text = arg.text();
+            match text.split_once('=') {
+                Some((name, value)) if assigning => format!("{name}={}", shell_word(value)),
+                _ => {
+                    assigning = false;
+                    shell_word(text)
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if words.iter().all(|arg| arg.known().is_some()) {
+        Arg::Known(line)
+    } else {
+        Arg::Unknown(line)
     }
 }
 
@@ -907,6 +986,8 @@ const DOPPLER_LONG: &[&str] = &[
     "command",
     "timeout",
     "attempts",
+    "dns-resolver-address",
+    "dns-resolver-proto",
 ];
 
 /// The options of `doppler` and `doppler run` that take none.
@@ -927,6 +1008,7 @@ const DOPPLER_FLAGS: &[&str] = &[
     "preserve-env",
     "watch",
     "no-exit-on-write-failure",
+    "enable-dns-resolver",
     "help",
     "version",
 ];
@@ -979,8 +1061,12 @@ pub(super) fn secrets_run(key: &str, unit: &Unit) -> Launch {
             Ok(sub) => sub,
             Err(at) => return unknown_before(args, at + 1, &["run"]),
         };
-        if args.get(sub).and_then(Arg::known) != Some("run") {
-            return Launch::Itself;
+        match args.get(sub) {
+            Some(arg) if arg.known() == Some("run") => {}
+            Some(arg) if arg.known().is_none() => {
+                return unknown_subcommand(args, sub + 1, &["run", "--"])
+            }
+            _ => return Launch::Itself,
         }
         let Ok(start) = after_known(args, sub + 1, doppler_option) else {
             return Launch::Opaque(UNKNOWN_OPTION);
