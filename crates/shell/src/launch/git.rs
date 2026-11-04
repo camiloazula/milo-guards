@@ -13,6 +13,20 @@ pub(crate) struct Global<'a> {
     pub(crate) repository: Option<&'a Arg>,
     /// The `-c key=value` settings it is given.
     pub(crate) configs: Vec<&'a str>,
+    /// The settings whose value is only known when it runs: a `-c` value
+    /// not known in full, and every `--config-env`, whose value git takes
+    /// from the environment.
+    pub(crate) unread: Vec<Unread<'a>>,
+}
+
+/// A setting of git's own options whose value is only known when it runs.
+pub(crate) struct Unread<'a> {
+    /// The word that holds `key=value` (`-c`'s) or `key=VARIABLE`
+    /// (`--config-env`'s).
+    pub(crate) arg: &'a Arg,
+    /// What is written before the setting in that word: `--config-env=`
+    /// when it is joined to its option, or nothing.
+    pub(crate) prefix: &'static str,
 }
 
 /// Read git's own options, up to its subcommand. They take no abbreviation.
@@ -23,9 +37,16 @@ pub(crate) fn global(args: &[Arg]) -> Global<'_> {
     let mut at = 0;
     let mut repository = None;
     let mut configs = Vec::new();
+    let mut unread = Vec::new();
     while let Some(arg) = args.get(at) {
         let Some(text) = arg.known() else {
             if joined_option(arg.text()) {
+                if arg.text().starts_with(CONFIG_ENV) {
+                    unread.push(Unread {
+                        arg,
+                        prefix: CONFIG_ENV,
+                    });
+                }
                 at += 1;
                 continue;
             }
@@ -37,11 +58,29 @@ pub(crate) fn global(args: &[Arg]) -> Global<'_> {
                 at += 2;
             }
             "-c" => {
-                configs.extend(args.get(at + 1).and_then(Arg::known));
+                if let Some(value) = args.get(at + 1) {
+                    match value.known() {
+                        Some(config) => configs.push(config),
+                        None => unread.push(Unread {
+                            arg: value,
+                            prefix: "",
+                        }),
+                    }
+                }
                 at += 2;
             }
-            "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env"
-            | "--attr-source" => {
+            "--config-env" => {
+                unread.extend(args.get(at + 1).map(|arg| Unread { arg, prefix: "" }));
+                at += 2;
+            }
+            text if text.starts_with(CONFIG_ENV) => {
+                unread.push(Unread {
+                    arg,
+                    prefix: CONFIG_ENV,
+                });
+                at += 1;
+            }
+            "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--attr-source" => {
                 at += 2;
             }
             text if text.starts_with('-') => at += 1,
@@ -52,8 +91,12 @@ pub(crate) fn global(args: &[Arg]) -> Global<'_> {
         at,
         repository,
         configs,
+        unread,
     }
 }
+
+/// git's `--config-env` joined to its value.
+const CONFIG_ENV: &str = "--config-env=";
 
 /// Whether `text`, a word as written, is a long option whose name is
 /// written out and whose value is joined to it with `=`: `--git-dir="$D"`.
