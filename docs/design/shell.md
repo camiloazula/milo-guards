@@ -6985,17 +6985,18 @@ are each held to the bound;
   through a character or with bytes no text holds read back lossily, and
   PowerShell and cmd metacharacters. The same noise goes through `effect` and
   `explain`, which must agree with `classify`.
-- **A line left open is risky, and a delete is never safe.** (In `tests/limits.rs`.) Safe is a verdict
-  the guard has to earn, so the tests say what a safe line may be, apart from
-  the guard. A line of plain words, separators and one delete (written for the
-  shell) is never safe: nothing in it can make the delete inert. A line of
-  plain words that ends in a quote, substitution, bracket or here-document left
-  open, or an operator with nothing after it, is never safe either, unless its
-  shell reads that ending as a plain word: the test keeps a list of those per
-  shell (cmd has no single quotes or backticks; PowerShell's grammar reads `<<`
-  as a word, but PowerShell refuses a `<`, so the guard calls the line
-  unreadable and it is not on the list), and a table pins both sides. That a line is read at all is not the
-  claim: a program the guard does not know is safe.
+- **A line left open is risky, and a delete is never safe.** (In
+  `tests/limits.rs`.) Safe is a verdict the guard has to earn, so the tests say
+  what a safe line may be, apart from the guard. A line of plain words,
+  separators and one delete (written for the shell) is never safe: nothing in it
+  can make the delete inert. A line of plain words that ends in a quote,
+  substitution, bracket or here-document left open, or an operator with nothing
+  after it, is never safe either, unless its shell reads that ending as a plain
+  word: the test keeps a list of those per shell (cmd has no single quotes or
+  backticks; PowerShell's grammar reads `<<` as a word, but PowerShell refuses a
+  `<`, so the guard calls the line unreadable and it is not on the list), and a
+  table pins both sides. That a line is read at all is not the claim: a program
+  the guard does not know is safe.
 - **A line too long or too nested comes back unreadable** (and `Unknown` for
   `effect`). (In `tests/robust.rs`; `tests/limits.rs` measures where the edges
   are.)

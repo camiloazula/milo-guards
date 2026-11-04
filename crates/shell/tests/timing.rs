@@ -1138,6 +1138,32 @@ fn values_only_known_when_they_run_are_read_in_linear_time() {
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
+fn powershell_lines_scanned_for_a_refused_less_than_are_read_in_linear_time() {
+    let _serial = serial();
+    // Each node's own text is scanned once for a `<` PowerShell refuses
+    // (`refused_input` in `powershell.rs`): a quote that runs on past a
+    // child, a `<` inside a substitution in a string, and a `<` the grammar
+    // reads as a redirect over and over.
+    let (shell, paths) = (Shell::PowerShell, paths_for(Shell::PowerShell));
+    for (head, part, tail) in [
+        ("echo ", "a\"$a<\" ", ""),
+        ("echo \"", "$(1)<", "\""),
+        ("echo ", "< ", ""),
+    ] {
+        assert_linear(&format!("{head}{part}…"), shell, &paths, |size| {
+            format!(
+                "{head}{}{tail}",
+                filled(part, size, head.len() + tail.len())
+            )
+        });
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
 fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() {
     let _serial = serial();
     // Each unit and redirect of a loop with a `cd`, or of a function body a
