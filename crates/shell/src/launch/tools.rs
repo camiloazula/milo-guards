@@ -1,9 +1,10 @@
 //! The tools that run their arguments as a command: tracers and runners
 //! (`strace`, `ltrace`, `script`, `ssh-agent`, `chronic`), `launchctl
-//! asuser`, `bsexec` and `submit`, `wsl`, `lima`, `nix run`, and the runners
-//! that load secrets into the command's environment first (`aws-vault exec`,
-//! `doppler run`, `op run`, `infisical run`, `direnv exec`, `dotenv`). And
-//! the files the tracers, `script` and `time` write their own output to.
+//! asuser`, `bsexec` and `submit`, `wsl`, `lima`, `nix run`, `nsenter`, and
+//! the runners that load secrets into the command's environment first
+//! (`aws-vault exec`, `doppler run`, `op run`, `infisical run`, `direnv
+//! exec`, `dotenv`). And the files the tracers, `script` and `time` write
+//! their own output to.
 
 use std::collections::HashSet;
 
@@ -48,6 +49,132 @@ const STRACE_LONG: &[&str] = &[
 /// `strace` runs the program after its options, tracing it.
 pub(super) fn strace(args: &[Arg]) -> Launch {
     runs(args, after_getopt(args, STRACE_SHORT, STRACE_LONG))
+}
+
+/// The short options of `nsenter` that take a value, the rest of the bundle
+/// or the next word: the target process (`-t`), the socket (`-N`) and the
+/// user and group ids (`-S`, `-G`).
+const NSENTER_VALUED: &str = "tNSG";
+
+/// The short options of `nsenter` whose value, a namespace's file or a
+/// folder, is only ever the rest of the bundle (`-m/proc/1/ns/mnt`,
+/// `-W/srv`): with nothing after them they take the target's.
+const NSENTER_ATTACHED: &str = "muinpCUTrwW";
+
+/// The long options of `nsenter` that take the next word as their value.
+const NSENTER_LONG: &[&str] = &["target", "net-socket", "setuid", "setgid"];
+
+/// The long options of `nsenter` that take no value, or one only after `=`.
+const NSENTER_FLAGS: &[&str] = &[
+    "all",
+    "mount",
+    "uts",
+    "ipc",
+    "net",
+    "pid",
+    "cgroup",
+    "user",
+    "time",
+    "user-parent",
+    "root",
+    "wd",
+    "wdns",
+    "env",
+    "no-fork",
+    "preserve-credentials",
+    "keep-caps",
+    "join-cgroup",
+    "follow-context",
+    "help",
+    "version",
+];
+
+/// The short options of `nsenter` that start the program in another working
+/// folder: `-w` and `-W` move it to one, `-r` to the target's root, and
+/// entering a mount namespace (`-m`, or `-a`, every namespace) moves it to
+/// that namespace's root, as the kernel does on `setns`.
+const NSENTER_MOVES: &str = "wWrma";
+
+/// The long options of [`NSENTER_MOVES`].
+const NSENTER_MOVES_LONG: &[&str] = &["wd", "wdns", "root", "mount", "all"];
+
+/// Whether `name`, a long option of `nsenter` as written without its
+/// `=value`, is one of `options`: by its full name, or, as `getopt_long`
+/// reads one, by a prefix of it that is no option's full name.
+fn nsenter_long(name: &str, options: &[&str]) -> bool {
+    let exact = |option: &&str| *option == name;
+    if NSENTER_LONG.iter().chain(NSENTER_FLAGS).any(exact) {
+        return options.iter().any(exact);
+    }
+    !name.is_empty() && options.iter().any(|option| option.starts_with(name))
+}
+
+/// What an option of `nsenter` is, as its `getopt_long` reads it.
+fn nsenter_word(text: &str) -> Word {
+    if let Some(name) = text.strip_prefix("--") {
+        return if !name.contains('=') && nsenter_long(name, NSENTER_LONG) {
+            Word::Value
+        } else {
+            Word::Flag
+        };
+    }
+    let bundle = text.strip_prefix('-').unwrap_or(text);
+    for (at, letter) in bundle.char_indices() {
+        if NSENTER_ATTACHED.contains(letter) {
+            return Word::Flag;
+        }
+        if NSENTER_VALUED.contains(letter) {
+            return if at + letter.len_utf8() == bundle.len() {
+                Word::Value
+            } else {
+                Word::Flag
+            };
+        }
+    }
+    Word::Flag
+}
+
+/// Whether an option of `nsenter` starts the program in another working
+/// folder ([`NSENTER_MOVES`]).
+fn nsenter_moves(text: &str) -> bool {
+    if let Some(name) = text.strip_prefix("--") {
+        let name = name.split('=').next().unwrap_or(name);
+        return nsenter_long(name, NSENTER_MOVES_LONG);
+    }
+    let bundle = text.strip_prefix('-').unwrap_or(text);
+    for letter in bundle.chars() {
+        if NSENTER_MOVES.contains(letter) {
+            return true;
+        }
+        if NSENTER_ATTACHED.contains(letter) || NSENTER_VALUED.contains(letter) {
+            return false;
+        }
+    }
+    false
+}
+
+/// `nsenter` runs the program after its options in the namespaces of
+/// another process, the init process's among them (`nsenter -t 1 -a`).
+/// The options of [`NSENTER_MOVES`] start it in a folder of that process's,
+/// or in one they are given inside its namespace, which the line does not
+/// show: where it runs is then only known when it does.
+pub(super) fn nsenter(args: &[Arg]) -> Launch {
+    let start = after_options_by(args, |text, _| nsenter_word(text));
+    let launch = runs(args, start);
+    let own = start
+        .and_then(|start| args.get(..start))
+        .unwrap_or_default();
+    let moved = own
+        .iter()
+        .filter_map(Arg::known)
+        .take_while(|text| *text != "--")
+        .find(|text| text.starts_with('-') && nsenter_moves(text));
+    match (moved, &launch) {
+        (Some(option), Launch::Runs(_)) => {
+            Launch::In(Arg::Unknown(option.to_string()), None, Box::new(launch))
+        }
+        _ => launch,
+    }
 }
 
 /// The options of `script` that take a value: util-linux's and the BSDs'
