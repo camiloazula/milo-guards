@@ -812,6 +812,161 @@ posix finds=system_settings | service iptables flush
 posix finds=system_settings | service pf onestop
 posix finds=system_settings reason="stops a service that protects the system" | service ufw stop
 
+# The other service managers read the same way: OpenBSD's `rcctl`, FreeBSD's
+# `sysrc`, s6's `s6-svc` and `s6-rc`, `dinitctl`, `insserv`, the legacy
+# `update-rc.d name stop …`, a script run from a runlevel folder
+# (`/etc/rc2.d/K01ssh stop`) and Homebrew's `brew services`. A stop of a
+# service that protects the machine is `system_settings`, of one the system
+# needs `stop_system`, of any other one safe; taking any service out of what
+# starts at boot is `system_settings`.
+posix safe | rcctl stop nginx
+posix safe | rcctl start sshd
+posix safe | rcctl restart sshd
+posix safe | rcctl reload sshd
+posix safe | rcctl check sshd
+posix safe | rcctl ls started
+posix safe | rcctl get sshd flags
+posix safe | rcctl enable nginx
+posix safe | rcctl set nginx status on
+posix safe | rcctl set nginx flags -v
+posix safe | rcctl
+posix finds=stop_system | rcctl stop sshd
+posix finds=stop_system | rcctl -f stop sshd
+posix finds=stop_system | rcctl stop nginx sshd
+posix finds=system_settings | rcctl stop pf
+posix finds=system_settings | rcctl stop $daemon
+posix finds=system_settings | rcctl $verb nginx
+posix finds=system_settings | rcctl disable nginx
+posix finds=system_settings | rcctl disable sshd
+posix finds=system_settings | rcctl set sshd status off
+posix finds=system_settings | rcctl set sshd status $state
+posix finds=system_settings | rcctl set sshd flags NO
+posix finds=system_settings | rcctl set sshd $what off
+posix safe | sysrc sshd_enable=YES
+posix safe | sysrc sshd_enable="yes"
+posix safe | sysrc sshd_enable
+posix safe | sysrc -a
+posix safe | sysrc -c sshd_enable=NO
+posix safe | sysrc -n sshd_enable
+posix safe | sysrc -f ./rc.conf sshd_enable=NO
+posix safe | sysrc sshd_flags=-4
+posix safe | sysrc
+posix finds=system_settings | sysrc sshd_enable=NO
+posix finds=system_settings | sysrc sshd_enable="NO"
+posix finds=system_settings | sysrc pf_enable=NO
+posix finds=system_settings | sysrc nginx_enable=NO
+posix finds=system_settings | sysrc -v sshd_enable=no
+posix finds=system_settings | sysrc sshd_enable=$x
+posix finds=system_settings | sysrc $name=NO
+posix finds=system_settings | sysrc $assignment
+posix finds=system_settings | sysrc -x sshd_enable
+posix finds=system_settings | sysrc -j web sshd_enable=NO
+posix finds=system_settings | sysrc -f /etc/rc.conf sshd_enable=NO
+posix finds=system_settings | sysrc -f $file sshd_enable=NO
+posix finds=system_settings | sysrc sshd_enable-=YES
+posix safe | s6-svc -u /run/service/sshd
+posix safe | s6-svc -r /run/service/sshd
+posix safe | s6-svc -d /run/service/nginx
+posix safe | s6-svc -T 5000 -wd -d /run/service/nginx
+posix safe | s6-rc -u change sshd
+posix safe | s6-rc -d change nginx
+posix safe | s6-rc -a list
+posix finds=stop_system | s6-svc -d /run/service/sshd
+posix finds=stop_system | s6-svc -wD -d /run/service/sshd
+posix finds=stop_system | s6-svc -D /run/service/sshd
+posix finds=stop_system | s6-svc -xd /run/service/sshd
+posix finds=stop_system | s6-svc -T 5000 -d /run/service/sshd/
+posix finds=stop_system | s6-rc -d change sshd
+posix finds=stop_system | s6-rc stop sshd
+posix finds=system_settings | s6-svc -d /run/service/ufw
+posix finds=system_settings | s6-svc -d /run/service/*
+posix finds=system_settings | s6-svc -d $dir
+posix finds=system_settings | s6-svc $flag /run/service/ufw
+posix finds=system_settings | s6-rc -d change fail2ban
+posix finds=system_settings | s6-rc -da change
+posix finds=system_settings | s6-rc -pu change default
+posix finds=system_settings | s6-rc $flag change ufw
+posix safe | dinitctl start sshd
+posix safe | dinitctl status sshd
+posix safe | dinitctl restart sshd
+posix safe | dinitctl stop nginx
+posix safe | dinitctl enable nginx
+posix safe | dinitctl list
+posix safe | dinitctl --user stop sshd
+posix safe | dinitctl -u disable web
+posix finds=stop_system | dinitctl stop sshd
+posix finds=stop_system | dinitctl --system stop sshd
+posix finds=stop_system | dinitctl -s --force stop sshd
+posix finds=stop_system | dinitctl release sshd
+posix finds=stop_system | dinitctl signal TERM sshd
+posix finds=stop_system | dinitctl shutdown
+posix finds=system_settings | dinitctl stop ufw
+posix finds=system_settings | dinitctl stop $svc
+posix finds=system_settings | dinitctl disable nginx
+posix finds=system_settings | dinitctl --from boot disable nginx
+posix finds=system_settings | dinitctl $verb nginx
+posix finds=system_settings | dinitctl --user $x disable web
+posix safe | insserv ssh
+posix safe | insserv nginx,start=2,3,4,5
+posix safe | insserv -n -r ssh
+posix finds=system_settings | insserv -r ssh
+posix finds=system_settings | insserv -r nginx
+posix finds=system_settings | insserv --remove ssh
+posix finds=system_settings | insserv -rf /etc/init.d/ssh
+posix finds=system_settings | insserv -p /etc/init.d -r ssh
+posix finds=system_settings | insserv $flag ssh
+posix safe | update-rc.d ssh start 20 2 3 4 5 . stop 20 0 1 6 .
+posix safe | update-rc.d ssh stop 20 0 1 6 .
+posix finds=system_settings | update-rc.d ssh stop
+posix finds=system_settings | update-rc.d ssh stop 20 2 3 4 5 .
+posix finds=system_settings | update-rc.d -f ssh stop 20 2 .
+posix finds=system_settings | update-rc.d ssh start 20 3 . stop 20 2 .
+posix finds=system_settings | update-rc.d ssh stop 20 $level .
+posix finds=system_settings | update-rc.d ssh stop 20 S .
+posix safe | /etc/rc2.d/S01nginx stop
+posix safe | /etc/rc2.d/S01ssh start
+posix finds=stop_system | /etc/rc2.d/K01ssh stop
+posix finds=stop_system | /etc/rc2.d/S01ssh stop
+posix finds=stop_system | /etc/rc.d/rc3.d/K20sshd stop
+posix finds=system_settings | /etc/rcS.d/S03ufw stop
+posix finds=system_settings | cd /etc/rc2.d && ./K01ufw stop
+# Renaming or linking a runlevel folder's script is a write to a system
+# folder already.
+posix finds=delete,overwrite | mv /etc/rc2.d/S01ssh /etc/rc2.d/K01ssh
+posix finds=overwrite | ln -s ../init.d/ssh /etc/rc2.d/K01ssh
+posix finds=delete | rm /etc/rc2.d/S01ssh
+posix safe | brew services list
+posix safe | brew services info postgresql
+posix safe | brew services start postgresql
+posix safe | brew services restart postgresql
+posix safe | brew services stop postgresql
+posix safe | brew services kill redis
+posix safe | brew services stop --keep postgresql
+posix safe | brew services cleanup
+posix safe | brew install postgresql
+posix finds=system_settings | brew services stop fail2ban
+posix finds=system_settings | brew services kill fail2ban
+posix finds=system_settings | brew services stop $svc
+posix finds=system_settings | brew services stop --all
+posix finds=system_settings | brew services $verb fail2ban
+posix finds=system_settings | sudo brew services stop fail2ban
+
+# nsenter runs its command in another process's namespaces, the init
+# process's among them: what it runs is judged.
+posix safe | nsenter -t 1 -m systemctl status sshd
+posix safe | nsenter -t 1 -a systemctl stop docker
+posix safe | nsenter
+posix finds=stop_system | nsenter -t 1 -m -u -i -n -p systemctl stop sshd
+posix finds=stop_system | nsenter --target 1 --all -- systemctl stop sshd
+posix finds=stop_system | nsenter --target=1 --mount --pid service sshd stop
+posix finds=stop_system | nsenter -t1 -a rcctl stop sshd
+posix finds=stop_system | nsenter -m/proc/1/ns/mnt systemctl stop sshd
+posix finds=stop_system | nsenter -S 0 -G 0 -t 1 -a systemctl stop sshd
+posix finds=stop_system | sudo nsenter -t 1 -a systemctl stop sshd
+posix finds=system_settings | nsenter -t 1 -a systemctl stop ufw
+posix finds=system_settings | nsenter -t 1 -m -- systemctl disable nginx
+posix finds=delete | nsenter -t 1 -m rm -rf /etc
+
 # An init script a shell runs or the line sources is the script run as the
 # program; a shell reads a script named without a folder from the working
 # folder. A shell given `-c` runs a line, read as its own.
