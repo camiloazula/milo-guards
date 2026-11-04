@@ -526,135 +526,18 @@ impl Walker<'_> {
             // `a && b`, `a || b`: the right side may not run, and the right
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
-            "pipeline" => {
-                self.split.statement();
-                let list = self.split.list_start();
-                let mut cursor = node.walk();
-                let mut at = 0;
-                for child in node.named_children(&mut cursor) {
-                    if child.kind() == "pipeline_chain_tail" {
-                        if unit::text(&child, self.source) == "||" {
-                            self.split.list_or(&list);
-                        }
-                        continue;
-                    }
-                    // A `cd` on the right side runs only when the left let
-                    // it: when it did not, the line may still be where that
-                    // side began, or where the chain did.
-                    if at > 0 {
-                        let link = self.split.link_start();
-                        self.walk(child, stage, level + 1);
-                        self.split.link_end(&list, link);
-                    } else {
-                        self.walk(child, stage, level + 1);
-                    }
-                    at += 1;
-                }
-                self.split.list_end(list);
-            }
-            "pipeline_chain" => {
-                self.split.statement();
-                let pipeline = self.split.pipeline(stage.or(self.item));
-                let mut cursor = node.walk();
-                let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-                // The right side of an `&&` after a chain that is not one
-                // command runs when the chain succeeded, not when a `cd` in
-                // it did (`-not (Set-Location s) && …`).
-                let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
-                for (index, child) in stages.iter().enumerate() {
-                    // A value that is piped on (`'DROP TABLE t' | psql`) is
-                    // a stage that says it, as `Write-Output` would.
-                    if child.kind() == "logical_expression" && index + 1 < stages.len() {
-                        self.value_stage(*child, Stage { pipeline, index });
-                    }
-                    // The first command in a `ForEach-Object` block reads
-                    // `$_` from the stage the block is.
-                    let stage = match (index, self.item) {
-                        (0, Some(item)) => item,
-                        _ => Stage { pipeline, index },
-                    };
-                    self.walk(*child, Some(stage), level + 1);
-                }
-                if !command {
-                    self.split.statement();
-                }
-            }
-            "command" => {
-                let first = self.split.units.len();
-                let keys = self.command(node, stage);
-                let own = first..self.split.units.len();
-                let outer = self.item;
-                // The block of `ForEach-Object` and `Where-Object` runs once
-                // for each item of its input.
-                let each = keys
-                    .iter()
-                    .any(|key| matches!(key.as_str(), "foreach-object" | "where-object"));
-                if each {
-                    self.item = stage;
-                    self.split.repeats += 1;
-                    self.split.begin_body();
-                }
-                // The block of an event, and a breakpoint's action, runs
-                // later, in this session.
-                let later = keys
-                    .iter()
-                    .any(|key| EVENTS.contains(&key.as_str()) || key == "set-psbreakpoint")
-                    .then(|| self.split.begin_later());
-                // A job, a thread job and a `-Parallel` block run apart
-                // from the session, whose location stacks they do not share;
-                // so only when every command the name may run is one, as an
-                // alias the line sets may make it run another.
-                let job = !keys.is_empty() && keys.iter().all(|key| key == "start-job");
-                let stacks = (!keys.is_empty()
-                    && keys
-                        .iter()
-                        .all(|key| self.own_runspace(Some(key), own.clone())))
-                .then(|| self.split.take_locations());
-                self.command_children(node, own.clone(), level, job);
-                if let Some(stacks) = stacks {
-                    self.split.restore_locations(stacks);
-                }
-                if let Some(began) = later {
-                    self.split.end_later(began, false);
-                }
-                self.item = outer;
-                if each {
-                    self.split.end_body(None);
-                    self.split.repeats -= 1;
-                }
-                // What a sub-expression in its arguments runs is handed to it.
-                self.split
-                    .nest(own.clone(), own.end..self.split.units.len());
-                // What each reading sets: the name's own, and each
-                // command an alias may make it run.
-                for at in own.clone() {
-                    let key = self.split.units.get(at).and_then(Unit::key);
-                    if at == own.start || key.as_ref().is_some_and(|key| keys.contains(key)) {
-                        self.sets_variables(key.as_deref(), at);
-                    }
-                }
-            }
+            "pipeline" => self.chain_node(node, stage, level),
+            "pipeline_chain" => self.pipeline_node(node, stage, level),
+            "command" => self.command_node(node, stage, level),
             // `trap { … }`: its block runs on a terminating error, later.
-            "trap_statement" => {
-                let began = self.split.begin_later();
-                self.children(node, stage, level);
-                self.split.end_later(began, false);
-            }
+            "trap_statement" => self.trap_node(node, stage, level),
             // `foreach ($l in …) { … }`: the variable holds each item of what
             // the collection runs prints, and the body runs once for each.
             "foreach_statement" => self.foreach(node, stage, level),
             // A loop, or a function that is called more than once, runs
             // what it holds again with other values.
             "for_statement" | "while_statement" | "do_statement" | "function_statement" => {
-                // A function named as a location cmdlet stands in for it.
-                if node.kind() == "function_statement" && self.names_location(node) {
-                    self.split.lose_locations();
-                }
-                self.split.repeats += 1;
-                self.split.begin_body();
-                self.children(node, stage, level);
-                self.end_body(node);
-                self.split.repeats -= 1;
+                self.repeated_node(node, stage, level);
             }
             // What a condition guards, or a `try` may stop short of, may not
             // run.
@@ -662,74 +545,232 @@ impl Walker<'_> {
             // condition runs prints, or of the lines of the file `-File`
             // names, which a clause reads as `$_` (or `$PSItem`).
             "switch_statement" => self.switch(node, stage, level),
-            "if_statement" | "try_statement" => {
-                self.split.branches += 1;
-                self.children(node, stage, level);
-                self.split.branches -= 1;
-            }
-            "redirection" => {
-                self.redirect(node);
-                self.children(node, None, level);
-            }
+            "if_statement" | "try_statement" => self.branch_node(node, stage, level),
+            "redirection" => self.redirection_node(node, level),
             "comparison_expression" | "comparison_argument_expression" => {
-                self.replace(node);
-                self.children(node, stage, level);
+                self.comparison_node(node, stage, level);
             }
-            "invokation_expression" => {
-                // A method call is no unit, and the rules know only some of
-                // them: `effect` cannot say what it does.
-                self.split.opaque();
-                let first = self.split.units.len();
-                let sends = self.dotnet(node, stage);
-                let own = first..self.split.units.len();
-                // A hook's block, set by its method, runs later, and so does
-                // a default parameter value.
-                let defaults = self.adds_default(node);
-                let later = (blocks::sets_hook(node, self.source) || defaults)
-                    .then(|| self.split.begin_later());
-                self.children(node, stage, level);
-                if let Some(began) = later {
-                    self.split.end_later(began, false);
-                }
-                // What the call's object and arguments run is handed to the
-                // sender it stands for.
-                if sends {
-                    self.split
-                        .nest(own.clone(), own.end..self.split.units.len());
-                }
-            }
-            "assignment_expression" => {
-                blocks::hook(self.split, node, self.source);
-                let named_hook = self.session_member(node);
-                self.env_assignment(node);
-                // `[Environment]::CurrentDirectory = …` moves the process,
-                // whose folder a .NET call and a program the session starts
-                // may take: where the line is, is only known when it runs.
-                if blocks::assigned_member(node, self.source).as_deref() == Some("currentdirectory")
-                {
-                    self.moves_unknown(node);
-                }
-                // A hook's block runs later, when a command is looked up; a
-                // default parameter value when its command runs; and a block
-                // held in a variable where the line uses the variable.
-                let defaults = self.sets_defaults(node);
-                let later = (blocks::assigned_member(node, self.source)
-                    .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
-                    || named_hook
-                    || defaults
-                    || self.variables.runs_later(node))
-                .then(|| self.split.begin_later());
-                let first = self.split.units.len();
-                self.children(node, stage, level);
-                if let Some(began) = later {
-                    self.split.end_later(began, false);
-                }
-                // `$k = Get-Content .env`: what the variables the left side
-                // names hold.
-                self.assigned(node, first);
-            }
+            "invokation_expression" => self.invokation_node(node, stage, level),
+            "assignment_expression" => self.assignment_node(node, stage, level),
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// A chain of pipelines joined by `&&` and `||`. An arm of [`Self::walk`],
+    /// kept out of its frame.
+    fn chain_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.statement();
+        let list = self.split.list_start();
+        let mut cursor = node.walk();
+        let mut at = 0;
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "pipeline_chain_tail" {
+                if unit::text(&child, self.source) == "||" {
+                    self.split.list_or(&list);
+                }
+                continue;
+            }
+            // A `cd` on the right side runs only when the left let
+            // it: when it did not, the line may still be where that
+            // side began, or where the chain did.
+            if at > 0 {
+                let link = self.split.link_start();
+                self.walk(child, stage, level + 1);
+                self.split.link_end(&list, link);
+            } else {
+                self.walk(child, stage, level + 1);
+            }
+            at += 1;
+        }
+        self.split.list_end(list);
+    }
+
+    /// A pipeline, its stages in order. An arm of [`Self::walk`], kept out of
+    /// its frame.
+    fn pipeline_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.statement();
+        let pipeline = self.split.pipeline(stage.or(self.item));
+        let mut cursor = node.walk();
+        let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        // The right side of an `&&` after a chain that is not one
+        // command runs when the chain succeeded, not when a `cd` in
+        // it did (`-not (Set-Location s) && …`).
+        let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
+        for (index, child) in stages.iter().enumerate() {
+            // A value that is piped on (`'DROP TABLE t' | psql`) is
+            // a stage that says it, as `Write-Output` would.
+            if child.kind() == "logical_expression" && index + 1 < stages.len() {
+                self.value_stage(*child, Stage { pipeline, index });
+            }
+            // The first command in a `ForEach-Object` block reads
+            // `$_` from the stage the block is.
+            let stage = match (index, self.item) {
+                (0, Some(item)) => item,
+                _ => Stage { pipeline, index },
+            };
+            self.walk(*child, Some(stage), level + 1);
+        }
+        if !command {
+            self.split.statement();
+        }
+    }
+
+    /// A command, with the blocks and the sub-expressions its arguments hold.
+    /// An arm of [`Self::walk`], kept out of its frame.
+    fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let first = self.split.units.len();
+        let keys = self.command(node, stage);
+        let own = first..self.split.units.len();
+        let outer = self.item;
+        // The block of `ForEach-Object` and `Where-Object` runs once
+        // for each item of its input.
+        let each = keys
+            .iter()
+            .any(|key| matches!(key.as_str(), "foreach-object" | "where-object"));
+        if each {
+            self.item = stage;
+            self.split.repeats += 1;
+            self.split.begin_body();
+        }
+        // The block of an event, and a breakpoint's action, runs
+        // later, in this session.
+        let later = keys
+            .iter()
+            .any(|key| EVENTS.contains(&key.as_str()) || key == "set-psbreakpoint")
+            .then(|| self.split.begin_later());
+        // A job, a thread job and a `-Parallel` block run apart
+        // from the session, whose location stacks they do not share;
+        // so only when every command the name may run is one, as an
+        // alias the line sets may make it run another.
+        let job = !keys.is_empty() && keys.iter().all(|key| key == "start-job");
+        let stacks = (!keys.is_empty()
+            && keys
+                .iter()
+                .all(|key| self.own_runspace(Some(key), own.clone())))
+        .then(|| self.split.take_locations());
+        self.command_children(node, own.clone(), level, job);
+        if let Some(stacks) = stacks {
+            self.split.restore_locations(stacks);
+        }
+        if let Some(began) = later {
+            self.split.end_later(began, false);
+        }
+        self.item = outer;
+        if each {
+            self.split.end_body(None);
+            self.split.repeats -= 1;
+        }
+        // What a sub-expression in its arguments runs is handed to it.
+        self.split
+            .nest(own.clone(), own.end..self.split.units.len());
+        // What each reading sets: the name's own, and each
+        // command an alias may make it run.
+        for at in own.clone() {
+            let key = self.split.units.get(at).and_then(Unit::key);
+            if at == own.start || key.as_ref().is_some_and(|key| keys.contains(key)) {
+                self.sets_variables(key.as_deref(), at);
+            }
+        }
+    }
+
+    /// `trap { … }`, whose block runs later. An arm of [`Self::walk`], kept out
+    /// of its frame.
+    fn trap_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let began = self.split.begin_later();
+        self.children(node, stage, level);
+        self.split.end_later(began, false);
+    }
+
+    /// A loop, or a function, which runs what it holds again. An arm of
+    /// [`Self::walk`], kept out of its frame.
+    fn repeated_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        // A function named as a location cmdlet stands in for it.
+        if node.kind() == "function_statement" && self.names_location(node) {
+            self.split.lose_locations();
+        }
+        self.split.repeats += 1;
+        self.split.begin_body();
+        self.children(node, stage, level);
+        self.end_body(node);
+        self.split.repeats -= 1;
+    }
+
+    /// What a condition guards, or a `try` may stop short of. An arm of
+    /// [`Self::walk`], kept out of its frame.
+    fn branch_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.branches += 1;
+        self.children(node, stage, level);
+        self.split.branches -= 1;
+    }
+
+    /// A redirect. An arm of [`Self::walk`], kept out of its frame.
+    fn redirection_node(&mut self, node: Node<'_>, level: usize) {
+        self.redirect(node);
+        self.children(node, None, level);
+    }
+
+    /// A comparison, which may replace text with a block. An arm of
+    /// [`Self::walk`], kept out of its frame.
+    fn comparison_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.replace(node);
+        self.children(node, stage, level);
+    }
+
+    /// A method call. An arm of [`Self::walk`], kept out of its frame.
+    fn invokation_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        // A method call is no unit, and the rules know only some of
+        // them: `effect` cannot say what it does.
+        self.split.opaque();
+        let first = self.split.units.len();
+        let sends = self.dotnet(node, stage);
+        let own = first..self.split.units.len();
+        // A hook's block, set by its method, runs later, and so does
+        // a default parameter value.
+        let defaults = self.adds_default(node);
+        let later =
+            (blocks::sets_hook(node, self.source) || defaults).then(|| self.split.begin_later());
+        self.children(node, stage, level);
+        if let Some(began) = later {
+            self.split.end_later(began, false);
+        }
+        // What the call's object and arguments run is handed to the
+        // sender it stands for.
+        if sends {
+            self.split
+                .nest(own.clone(), own.end..self.split.units.len());
+        }
+    }
+
+    /// An assignment, which may set a hook, a default or a block held in a
+    /// variable. An arm of [`Self::walk`], kept out of its frame.
+    fn assignment_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        blocks::hook(self.split, node, self.source);
+        let named_hook = self.session_member(node);
+        self.env_assignment(node);
+        // `[Environment]::CurrentDirectory = …` moves the process,
+        // whose folder a .NET call and a program the session starts
+        // may take: where the line is, is only known when it runs.
+        if blocks::assigned_member(node, self.source).as_deref() == Some("currentdirectory") {
+            self.moves_unknown(node);
+        }
+        // A hook's block runs later, when a command is looked up; a
+        // default parameter value when its command runs; and a block
+        // held in a variable where the line uses the variable.
+        let defaults = self.sets_defaults(node);
+        let later = (blocks::assigned_member(node, self.source)
+            .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
+            || named_hook
+            || defaults
+            || self.variables.runs_later(node))
+        .then(|| self.split.begin_later());
+        let first = self.split.units.len();
+        self.children(node, stage, level);
+        if let Some(began) = later {
+            self.split.end_later(began, false);
+        }
+        // `$k = Get-Content .env`: what the variables the left side
+        // names hold.
+        self.assigned(node, first);
     }
 
     /// `foreach ($l in …) { … }`: the variable holds each item of what the
