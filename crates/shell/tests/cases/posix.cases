@@ -449,8 +449,10 @@ posix safe | strace -p 1234
 posix safe | parallel echo ::: a b
 posix safe | parallel gzip {} ::: a.log b.log
 posix safe | parallel mv {} {.}.bak ::: a.txt
-posix safe | ls | parallel gzip
-posix safe | ls | parallel -j4 'gzip {}'
+# A compressor deletes each file it is handed, as `ls | xargs rm` does.
+posix finds=delete | ls | parallel gzip
+posix finds=delete | ls | parallel -j4 'gzip {}'
+posix safe | ls | parallel -j4 'gzip -c {}'
 posix safe | parallel ::: ls 'echo hi'
 posix safe | wsl ls
 posix safe | wsl --list

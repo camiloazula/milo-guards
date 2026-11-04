@@ -777,8 +777,25 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
     // each; a chain of members or calls is walked down only as deep as a
     // tree is; a value is read for blocks only as deep as a limit; and the
     // letters of numbers are made lower case in one pass, subexpressions in
-    // strings only as deep as a limit. Each row is the part repeated, the
-    // head and the tail.
+    // strings only as deep as a limit; a cmdlet is given at most 16 default
+    // parameter values, and the cmdlets of a line at most 1024 arguments by
+    // them. Each row is the part repeated, the head and the tail.
+    // A table of 16 entries, each `entry`.
+    let defaults = |entry: &str| {
+        format!(
+            "$PSDefaultParameterValues = @{{ {} }}; ",
+            vec![entry; 16].join("; ")
+        )
+    };
+    let sixteen = format!(
+        "$PSDefaultParameterValues = @{{ {} }}; ",
+        (0..16)
+            .map(|at| format!("'*:P{at}' = '~'"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+    let any_p = defaults("'Remove-*:P*' = '~'");
+    let path = defaults("'Remove-*:Path' = '~'");
     let rows = [
         ("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
         ("$v = 1; ", "", "Invoke-Command $v"),
@@ -788,6 +805,18 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
         (".a", "$ExecutionContext", " = $b"),
         ("[0]", "$ExecutionContext.InvokeCommand", ".Value = $b"),
         (".Add(1, $b)", "$PSDefaultParameterValues", ""),
+        ("Remove-Item -Recurse; ", sixteen.as_str(), ""),
+        (
+            "$PSDefaultParameterValues['*:Path'] = '~'; ",
+            "",
+            "Remove-Item",
+        ),
+        ("ri;", any_p.as_str(), ""),
+        ("ri;", path.as_str(), ""),
+        ("gci|ri;", any_p.as_str(), ""),
+        ("iex 'ri';", any_p.as_str(), ""),
+        ("Update-TypeData -Force -TypeName X ", "", "x.ps1xml"),
+        ("$env:BASH_ENV = 'x.sh'; bash; ", "", ""),
         ("@{e=", "Get-ChildItem | Sort-Object ", ""),
         ("@{e=@{e=1}}, ", "Get-ChildItem | Sort-Object ", "x"),
         (" -replace 'a', $b", "'a'", ""),

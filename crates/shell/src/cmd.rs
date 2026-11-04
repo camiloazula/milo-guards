@@ -8,6 +8,7 @@ use tree_sitter::Node;
 use crate::launch;
 use crate::path;
 use crate::powershell::native;
+use crate::startup;
 use crate::unit::{self, Arg, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 
@@ -996,6 +997,28 @@ impl Walker<'_> {
             let mut cursor = prompt.walk();
             children.extend(prompt.named_children(&mut cursor));
         }
+        let source = unit::text(&node, self.source);
+        // `set /a BASH_ENV=1`: a number, which still names a file a bash the
+        // line starts runs first.
+        if let Some(sum) = children
+            .iter()
+            .find(|child| child.kind() == "arithmetic_assignment")
+        {
+            let text = unit::text(sum, self.source);
+            for name in arithmetic_names(text) {
+                if startup::named_file(name) {
+                    startup::environment(self.split, Some(name), Arg::Unknown(source.to_string()));
+                }
+            }
+            return;
+        }
+        // `set %n%=x.sh`: a name only known when it runs may be `BASH_ENV`.
+        if children
+            .iter()
+            .any(|child| child.kind() == "variable_reference")
+        {
+            startup::environment(self.split, None, Arg::Unknown(source.to_string()));
+        }
         let Some(written_name) = children
             .iter()
             .find(|child| child.kind() == "variable_name")
@@ -1007,10 +1030,10 @@ impl Walker<'_> {
             written_name.eq_ignore_ascii_case("ZIPOPT") || written_name.eq_ignore_ascii_case("ZIP");
         let node_options = written_name.eq_ignore_ascii_case("NODE_OPTIONS");
         let terraform = unit::argument_variable(written_name);
-        if !zip && !node_options && terraform.is_none() {
+        let startup = startup::named_file(written_name);
+        if !zip && !node_options && terraform.is_none() && !startup {
             return;
         }
-        let source = unit::text(&node, self.source);
         let plain = children.iter().all(|child| {
             matches!(
                 child.kind(),
@@ -1034,6 +1057,11 @@ impl Walker<'_> {
             None
         };
         let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
+        // `set BASH_ENV=x.sh`: a bash the line starts runs the file first.
+        if startup {
+            startup::environment(self.split, Some(written_name), value);
+            return;
+        }
         match terraform {
             Some(name) => self.split.note_argument_variable(name, value),
             // `set NODE_OPTIONS=--require ./x.js`: every node a later
@@ -1044,6 +1072,32 @@ impl Walker<'_> {
             }
         }
     }
+}
+
+/// The names `set /a` gives a value to (`set /a a=1, BASH_ENV+=2`): before
+/// each `=` of an assignment, or of an operator and `=`, in each part
+/// between commas, without the quotes and the switch it is written with. A
+/// name with `%` or `!` in it is only known when it runs, and may be any.
+fn arithmetic_names(text: &str) -> Vec<&str> {
+    let text = text.trim_start();
+    let text = text
+        .get(..2)
+        .filter(|head| head.eq_ignore_ascii_case("/a"))
+        .map_or(text, |_| &text[2..]);
+    text.split(',')
+        .filter_map(|part| {
+            let (name, _) = part.split_once('=')?;
+            let name = name
+                .trim_end_matches(['+', '-', '*', '/', '%', '&', '|', '^', '<', '>'])
+                .trim()
+                .trim_matches(['"', '(', ' ']);
+            Some(if name.contains(['%', '!']) {
+                "BASH_ENV"
+            } else {
+                name
+            })
+        })
+        .collect()
 }
 
 /// The characters that end a command's name as a space does.
@@ -1150,7 +1204,7 @@ const BUILT_INS: &[&str] = &[
     "rmdir", "set", "setlocal", "shift", "start", "time", "title", "type", "ver", "verify", "vol",
 ];
 
-fn is_built_in(name: &str) -> bool {
+pub(crate) fn is_built_in(name: &str) -> bool {
     BUILT_INS
         .iter()
         .any(|built_in| built_in.eq_ignore_ascii_case(name))
