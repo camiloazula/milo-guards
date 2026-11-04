@@ -402,69 +402,10 @@ fn add_launched(
                 return;
             }
             Launch::Runs(start) => {
-                note_wrapper(split, &key, &unit, start);
-                let own = unit.args.get(..start).unwrap_or_default();
-                if key == "coproc" && unit.shell == Shell::Posix {
-                    split.coproc_groups += coproc_groups(own);
-                }
-                split.environment += usize::from(sets_environment(&key, own));
-                split
-                    .node_options
-                    .extend(wrappers::node_options(&unit.args, start));
-                split
-                    .python_path
-                    .extend(wrappers::python_path(&unit.args, start));
-                for (name, value) in wrappers::zip_env(&unit.args, start) {
-                    split.zip_env.set(name, &value, false);
-                }
-                for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
-                    split.note_argument_variable(name, value);
-                }
-                // `env BASH_ENV=f bash`: the shell it starts runs `f`.
-                let files = if key == "env" && unit.shell == Shell::Posix {
-                    startup::env(split, &unit.args[..start], depth)
-                } else {
-                    Vec::new()
-                };
-                let multi_call = MULTI_CALL.contains(&key.as_str());
-                unit = inner(unit, key, start, &Hands::Nothing);
-                if multi_call {
-                    applet(&mut unit);
-                }
-                for file in files {
-                    if !startup::push(&mut unit.startup, file) {
-                        split.startup_overflow();
-                    }
-                }
+                unit = runs_after(split, unit, key, start, depth);
             }
             Launch::Input { start, replace } => {
-                note_wrapper(split, &key, &unit, start);
-                // `xargs -a FILE cmd`: the program's arguments are what the
-                // file holds, as if it were redirected onto its input.
-                if key == "xargs" {
-                    if let Some(file) =
-                        wrappers::arg_file(unit.args.get(..start).unwrap_or_default())
-                    {
-                        let at = split.units.len();
-                        split.redirect(at..at + 1, file, true);
-                    }
-                }
-                let own = unit.args.get(..start).unwrap_or_default();
-                split.environment += usize::from(sets_environment(&key, own));
-                split
-                    .node_options
-                    .extend(wrappers::node_options(&unit.args, start));
-                split
-                    .python_path
-                    .extend(wrappers::python_path(&unit.args, start));
-                for (name, value) in wrappers::zip_env(&unit.args, start) {
-                    split.zip_env.set(name, &value, false);
-                }
-                for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
-                    split.note_argument_variable(name, value);
-                }
-                let hands = replace.map_or(Hands::After, Hands::Where);
-                unit = inner(unit, key, start, &hands);
+                unit = runs_from_input(split, unit, key, start, replace);
             }
             Launch::Replace(replacement) => {
                 // A package runner puts a venv or `node_modules/.bin` on
@@ -483,135 +424,7 @@ fn add_launched(
                 unit = *replacement;
             }
             Launch::Script(shell, script) | Launch::Elsewhere(shell, script) => {
-                // A shell started with the option on (`bash -O dotglob -c`,
-                // `zsh -o globdots -c`) runs its script with it on.
-                let starts_hidden = SHELLS.contains(&key.as_str())
-                    && shell == Shell::Posix
-                    && dotglob::starts_with(&unit.args);
-                // And `zsh -o extendedglob -c` with zsh's extended patterns.
-                let starts_extended = SHELLS.contains(&key.as_str())
-                    && shell == Shell::Posix
-                    && extended::starts_with(extended::EXTENDED_GLOB, &unit.args);
-                // And `zsh -o autocd -c` with a command of one word run as a
-                // `cd` to it.
-                let starts_autocd = SHELLS.contains(&key.as_str())
-                    && shell == Shell::Posix
-                    && extended::starts_with(extended::AUTO_CD, &unit.args);
-                let stage = unit.stage;
-                // A shell handed a file or a pipe on its input hands it on
-                // to what its script runs (`cmd /c python < x.py`).
-                let hands_input = key != "trap" && fed(&unit);
-                let inherited = key == "trap" && trap_inherited(&unit.args);
-                // A script `xargs` or `parallel` hands to a shell runs once
-                // for each item it reads, as a loop body runs: its `$1` and
-                // `$@` are a different value each time, only known when it
-                // runs.
-                let per_item = key == "parallel"
-                    || unit
-                        .wrappers
-                        .iter()
-                        .any(|wrapper| matches!(wrapper.as_str(), "xargs" | "parallel"));
-                let shell_at = split.units.len();
-                split.push(unit);
-                // A `trap` action in double quotes is expanded when the trap
-                // is set and its result read as code when it runs, as
-                // `eval "…"` does: whatever an expansion holds becomes code.
-                // The text around the expansions is still read.
-                let mut source = None;
-                let script = match script {
-                    Arg::Template {
-                        text,
-                        source: written,
-                        ..
-                    } if key == "trap" => {
-                        split.problem(
-                            Rule::Unknown,
-                            "runs a script only known when it runs",
-                            Some(&written),
-                        );
-                        source = Some(written);
-                        Arg::Known(text)
-                    }
-                    other => other,
-                };
-                match script {
-                    Arg::Known(text) => {
-                        // A script in a process of its own sets its options
-                        // for itself; `eval` and `trap` run in this shell,
-                        // or in a subshell when they are a stage of a
-                        // pipeline, which can turn the option on but not
-                        // off. A `GLOBIGNORE` in front of any is in its
-                        // environment.
-                        let outer = split.hidden_snapshot();
-                        if starts_hidden || split.scoped_hidden() {
-                            split.hide_for_script();
-                        }
-                        if starts_extended {
-                            split.extend_glob();
-                        }
-                        // `autocd` too, which an `eval`, a `trap` or an
-                        // alias turns on for the line, as each runs in
-                        // this shell.
-                        let outer_autocd = split.autocd;
-                        if starts_autocd {
-                            split.turn_autocd_on();
-                        }
-                        // A `trap`'s script runs later: when the line ends,
-                        // or between its commands. It is a body, judged with
-                        // the option on if the line ever turns it on, and
-                        // nothing in it is certain to run before the line's
-                        // next unit.
-                        let later = (key == "trap").then(|| {
-                            split.branches += 1;
-                            split.bodies += 1;
-                            split.begin_later()
-                        });
-                        // `eval` runs in this shell: a `cd` in it moves the rest
-                        // of the line. In a pipeline only zsh's last stage
-                        // does, but as for a `cd` the guard counts any stage.
-                        // PowerShell's `Invoke-Expression` runs its string in
-                        // the session, which has one location.
-                        let here = key == "eval" || key == "invoke-expression";
-                        split.inherits_input += usize::from(hands_input);
-                        split.repeats += usize::from(per_item);
-                        // `git submodule foreach` runs its command in a folder
-                        // the line does not name; the rest of the line is
-                        // where it was.
-                        let outer_dir = elsewhere.then(|| split.dir_snapshot());
-                        if elsewhere {
-                            split.move_unknown("the folder it runs in");
-                        }
-                        if key == "alias" {
-                            define_aliases(split, shell_at, shell, depth);
-                        } else {
-                            unit::script_in(split, &text, shell, depth + 1, here);
-                        }
-                        if let Some(place) = outer_dir {
-                            split.restore_dir(place);
-                        }
-                        split.repeats -= usize::from(per_item);
-                        split.inherits_input -= usize::from(hands_input);
-                        // What the script runs, it runs for the shell that started it.
-                        split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
-                        if let Some(began) = later {
-                            split.branches -= 1;
-                            split.bodies -= 1;
-                            if let Some(source) = &source {
-                                split.show_source(began, source);
-                            }
-                            split.end_later(began, inherited);
-                        }
-                        if !matches!(key.as_str(), "eval" | "trap" | "alias") {
-                            split.autocd = outer_autocd;
-                        }
-                        if !matches!(key.as_str(), "eval" | "trap") {
-                            split.restore_hidden(outer);
-                        } else if stage.is_some() {
-                            split.restore_hidden(outer.or(split.hidden_snapshot()));
-                        }
-                    }
-                    other => unread_script(split, &other),
-                }
+                add_script(split, unit, &key, shell, script, elsewhere, depth);
                 return;
             }
             Launch::Commands {
@@ -705,6 +518,235 @@ fn add_launched(
         None,
     );
     split.push(unit);
+}
+
+/// What `unit`, a wrapper `key` that runs the program at `start` with the
+/// arguments after it (`sudo rm -rf x`, `env X=1 cmd`), runs, after noting
+/// what it hands that program. A function of its own, so that what it holds
+/// is not on the stack of [`add_launched`] in the deepest walk of a nested
+/// line.
+#[inline(never)]
+fn runs_after(split: &mut Split, mut unit: Unit, key: String, start: usize, depth: usize) -> Unit {
+    note_wrapper(split, &key, &unit, start);
+    let own = unit.args.get(..start).unwrap_or_default();
+    if key == "coproc" && unit.shell == Shell::Posix {
+        split.coproc_groups += coproc_groups(own);
+    }
+    split.environment += usize::from(sets_environment(&key, own));
+    split
+        .node_options
+        .extend(wrappers::node_options(&unit.args, start));
+    split
+        .python_path
+        .extend(wrappers::python_path(&unit.args, start));
+    for (name, value) in wrappers::zip_env(&unit.args, start) {
+        split.zip_env.set(name, &value, false);
+    }
+    for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
+        split.note_argument_variable(name, value);
+    }
+    // `env BASH_ENV=f bash`: the shell it starts runs `f`.
+    let files = if key == "env" && unit.shell == Shell::Posix {
+        startup::env(split, &unit.args[..start], depth)
+    } else {
+        Vec::new()
+    };
+    let multi_call = MULTI_CALL.contains(&key.as_str());
+    unit = inner(unit, key, start, &Hands::Nothing);
+    if multi_call {
+        applet(&mut unit);
+    }
+    for file in files {
+        if !startup::push(&mut unit.startup, file) {
+            split.startup_overflow();
+        }
+    }
+    unit
+}
+
+/// What `unit`, a wrapper `key` that runs the program at `start` with what
+/// it reads on its input (`xargs rm`), runs, after noting what it hands
+/// that program; `replace` is the word it puts each item in place of. A
+/// function of its own, as [`runs_after`] is.
+#[inline(never)]
+fn runs_from_input(
+    split: &mut Split,
+    mut unit: Unit,
+    key: String,
+    start: usize,
+    replace: Option<String>,
+) -> Unit {
+    note_wrapper(split, &key, &unit, start);
+    // `xargs -a FILE cmd`: the program's arguments are what the
+    // file holds, as if it were redirected onto its input.
+    if key == "xargs" {
+        if let Some(file) = wrappers::arg_file(unit.args.get(..start).unwrap_or_default()) {
+            let at = split.units.len();
+            split.redirect(at..at + 1, file, true);
+        }
+    }
+    let own = unit.args.get(..start).unwrap_or_default();
+    split.environment += usize::from(sets_environment(&key, own));
+    split
+        .node_options
+        .extend(wrappers::node_options(&unit.args, start));
+    split
+        .python_path
+        .extend(wrappers::python_path(&unit.args, start));
+    for (name, value) in wrappers::zip_env(&unit.args, start) {
+        split.zip_env.set(name, &value, false);
+    }
+    for (name, value) in wrappers::tf_cli_args(&unit.args, start) {
+        split.note_argument_variable(name, value);
+    }
+    let hands = replace.map_or(Hands::After, Hands::Where);
+    unit = inner(unit, key, start, &hands);
+    unit
+}
+
+/// Add `unit`, a program that runs `script` in `shell` (`bash -c '…'`,
+/// `eval '…'`, `trap '…' EXIT`, `alias x='…'`), and what the script runs.
+/// `elsewhere` says it runs it in a folder the line does not name (`git
+/// submodule foreach`). A function of its own, so that what it holds is not
+/// on the stack of [`add_launched`] in the deepest walk of a nested line.
+#[inline(never)]
+fn add_script(
+    split: &mut Split,
+    unit: Unit,
+    key: &str,
+    shell: Shell,
+    script: Arg,
+    elsewhere: bool,
+    depth: usize,
+) {
+    // A shell started with the option on (`bash -O dotglob -c`,
+    // `zsh -o globdots -c`) runs its script with it on.
+    let starts_hidden =
+        SHELLS.contains(&key) && shell == Shell::Posix && dotglob::starts_with(&unit.args);
+    // And `zsh -o extendedglob -c` with zsh's extended patterns.
+    let starts_extended = SHELLS.contains(&key)
+        && shell == Shell::Posix
+        && extended::starts_with(extended::EXTENDED_GLOB, &unit.args);
+    // And `zsh -o autocd -c` with a command of one word run as a
+    // `cd` to it.
+    let starts_autocd = SHELLS.contains(&key)
+        && shell == Shell::Posix
+        && extended::starts_with(extended::AUTO_CD, &unit.args);
+    let stage = unit.stage;
+    // A shell handed a file or a pipe on its input hands it on
+    // to what its script runs (`cmd /c python < x.py`).
+    let hands_input = key != "trap" && fed(&unit);
+    let inherited = key == "trap" && trap_inherited(&unit.args);
+    // A script `xargs` or `parallel` hands to a shell runs once
+    // for each item it reads, as a loop body runs: its `$1` and
+    // `$@` are a different value each time, only known when it
+    // runs.
+    let per_item = key == "parallel"
+        || unit
+            .wrappers
+            .iter()
+            .any(|wrapper| matches!(wrapper.as_str(), "xargs" | "parallel"));
+    let shell_at = split.units.len();
+    split.push(unit);
+    // A `trap` action in double quotes is expanded when the trap
+    // is set and its result read as code when it runs, as
+    // `eval "…"` does: whatever an expansion holds becomes code.
+    // The text around the expansions is still read.
+    let mut source = None;
+    let script = match script {
+        Arg::Template {
+            text,
+            source: written,
+            ..
+        } if key == "trap" => {
+            split.problem(
+                Rule::Unknown,
+                "runs a script only known when it runs",
+                Some(&written),
+            );
+            source = Some(written);
+            Arg::Known(text)
+        }
+        other => other,
+    };
+    match script {
+        Arg::Known(text) => {
+            // A script in a process of its own sets its options
+            // for itself; `eval` and `trap` run in this shell,
+            // or in a subshell when they are a stage of a
+            // pipeline, which can turn the option on but not
+            // off. A `GLOBIGNORE` in front of any is in its
+            // environment.
+            let outer = split.hidden_snapshot();
+            if starts_hidden || split.scoped_hidden() {
+                split.hide_for_script();
+            }
+            if starts_extended {
+                split.extend_glob();
+            }
+            // `autocd` too, which an `eval`, a `trap` or an
+            // alias turns on for the line, as each runs in
+            // this shell.
+            let outer_autocd = split.autocd;
+            if starts_autocd {
+                split.turn_autocd_on();
+            }
+            // A `trap`'s script runs later: when the line ends,
+            // or between its commands. It is a body, judged with
+            // the option on if the line ever turns it on, and
+            // nothing in it is certain to run before the line's
+            // next unit.
+            let later = (key == "trap").then(|| {
+                split.branches += 1;
+                split.bodies += 1;
+                split.begin_later()
+            });
+            // `eval` runs in this shell: a `cd` in it moves the rest
+            // of the line. In a pipeline only zsh's last stage
+            // does, but as for a `cd` the guard counts any stage.
+            // PowerShell's `Invoke-Expression` runs its string in
+            // the session, which has one location.
+            let here = key == "eval" || key == "invoke-expression";
+            split.inherits_input += usize::from(hands_input);
+            split.repeats += usize::from(per_item);
+            // `git submodule foreach` runs its command in a folder
+            // the line does not name; the rest of the line is
+            // where it was.
+            let outer_dir = elsewhere.then(|| split.dir_snapshot());
+            if elsewhere {
+                split.move_unknown("the folder it runs in");
+            }
+            if key == "alias" {
+                define_aliases(split, shell_at, shell, depth);
+            } else {
+                unit::script_in(split, &text, shell, depth + 1, here);
+            }
+            if let Some(place) = outer_dir {
+                split.restore_dir(place);
+            }
+            split.repeats -= usize::from(per_item);
+            split.inherits_input -= usize::from(hands_input);
+            // What the script runs, it runs for the shell that started it.
+            split.nest(shell_at..shell_at + 1, shell_at + 1..split.units.len());
+            if let Some(began) = later {
+                split.branches -= 1;
+                split.bodies -= 1;
+                if let Some(source) = &source {
+                    split.show_source(began, source);
+                }
+                split.end_later(began, inherited);
+            }
+            if !matches!(key, "eval" | "trap" | "alias") {
+                split.autocd = outer_autocd;
+            }
+            if !matches!(key, "eval" | "trap") {
+                split.restore_hidden(outer);
+            } else if stage.is_some() {
+                split.restore_hidden(outer.or(split.hidden_snapshot()));
+            }
+        }
+        other => unread_script(split, &other),
+    }
 }
 
 /// Read each `NAME=VALUE` of the `alias` at `shell_at` as a body of its
