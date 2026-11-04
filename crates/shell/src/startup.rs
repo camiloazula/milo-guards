@@ -4,7 +4,8 @@
 //! non-interactive bash). An assignment is read where it is written: a value
 //! with code in it is a script that runs later, a value only known when it
 //! runs is a script nobody can read, and a `BASH_ENV` file is a script the
-//! shell it is handed to runs.
+//! shell it is handed to runs. `ENV` names a file an interactive POSIX `sh`
+//! runs the same way, so it is read only as the file it names.
 
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -31,10 +32,24 @@ pub(crate) const SPECIAL: [&str; 15] = [
     "shift", "times", "trap", "unset",
 ];
 
-/// A file `BASH_ENV` names, and where it was named.
+/// The variable that names a file a POSIX `sh` runs before it reads its
+/// commands, when it is interactive (dash, ksh and the like; bash only when
+/// it is `sh`): every other program leaves it be, and it is a name many
+/// programs give their own setting (`ENV=production`).
+pub(crate) const SH_ENV: &str = "ENV";
+
+/// The shells that run the file [`SH_ENV`] names.
+pub(crate) const SH_SHELLS: [&str; 10] = [
+    "sh", "dash", "ash", "ksh", "ksh93", "mksh", "pdksh", "oksh", "yash", "posh",
+];
+
+/// A file `BASH_ENV` or `ENV` names, and where it was named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Startup {
+    /// The file, or a value only known when it runs that names it.
     pub(crate) file: Arg,
+    /// Whether `ENV` names it, which only the shells of [`SH_SHELLS`] run.
+    pub(crate) sh_only: bool,
     /// Whether the name went through an expansion (`$PWD/e.sh`): the shell
     /// that assigned it resolved it where the assignment ran, not where the
     /// shell that runs the file is. A name written out is the child's to
@@ -199,8 +214,53 @@ pub(crate) struct Written {
     pub(crate) pwd: bool,
 }
 
+/// Whether an assignment to `name` is read here: one of [`VARIABLES`], or
+/// [`SH_ENV`].
+pub(crate) fn read_here(name: &str) -> bool {
+    VARIABLES.contains(&name) || name == SH_ENV
+}
+
+/// Whether `name`, in any case, names a file a shell runs first: `BASH_ENV`
+/// or [`SH_ENV`].
+pub(crate) fn named_file(name: &str) -> bool {
+    name.eq_ignore_ascii_case("BASH_ENV") || name.eq_ignore_ascii_case(SH_ENV)
+}
+
+/// Note `value`, given to the variable `name` by PowerShell (`$env:BASH_ENV
+/// = …`, `Set-Item Env:BASH_ENV …`, .NET) or cmd (`set BASH_ENV=…`), when the
+/// variable names a file a shell the line starts runs (see [`entry`]).
+pub(crate) fn environment(split: &mut Split, name: Option<&str>, value: Arg) {
+    if let Some(entry) = entry(split, name, value) {
+        split.add_startup(entry);
+    }
+}
+
+/// The file `value` names for a shell, given to the variable `name` in
+/// PowerShell or cmd, when the variable names a file a shell the line starts
+/// runs: the name in any case, as on Windows. Its code is not read: the
+/// shell it is handed to runs the file, which the line does not show. `None`
+/// for a name that may be any variable, which is taken for `BASH_ENV`. An
+/// empty value and `$null` remove the variable, and name no file.
+pub(crate) fn entry(split: &Split, name: Option<&str>, value: Arg) -> Option<Startup> {
+    let sh_only = match name {
+        None => false,
+        Some(name) if name.eq_ignore_ascii_case("BASH_ENV") => false,
+        Some(name) if name.eq_ignore_ascii_case(SH_ENV) => true,
+        Some(_) => return None,
+    };
+    if matches!(value, Arg::Null) || value.known().is_some_and(str::is_empty) {
+        return None;
+    }
+    Some(Startup {
+        file: value,
+        sh_only,
+        expanded: false,
+        assigned: split.directory(),
+    })
+}
+
 /// Read the assignment `name=value`: the findings it carries, and the file
-/// `BASH_ENV` names when it names one the guard can read.
+/// `BASH_ENV` or `ENV` names when it names one.
 pub(crate) fn read(
     split: &mut Split,
     name: &str,
@@ -211,6 +271,16 @@ pub(crate) fn read(
     // `CDPATH=x cd sub` moves to a folder the line made: `PWD` is its name.
     if name == "CDPATH" {
         split.reassign(name);
+    }
+    // `ENV=x.sh sh -c true`: the file, whatever its value, as only a shell
+    // that reads it is judged by it.
+    if name == SH_ENV {
+        return (!value.known().is_some_and(str::is_empty)).then(|| Startup {
+            file: value.clone(),
+            sh_only: true,
+            expanded: written.expanded,
+            assigned: split.directory(),
+        });
     }
     if !VARIABLES.contains(&name) {
         return None;
@@ -256,6 +326,7 @@ pub(crate) fn read(
     match value {
         Arg::Known(file) if bash_env && !code && !file.is_empty() => Some(Startup {
             file: value.clone(),
+            sh_only: false,
             expanded,
             assigned: split.directory(),
         }),

@@ -240,8 +240,9 @@ fn a_line_at_the_length_limit_is_read_in_time() {
 fn wrappers_that_build_their_command_are_read_in_time() {
     let _serial = serial();
     // `parallel` builds a line for each job from its command and its values,
-    // and `wsl`, `env -S`, `nix run` and the other runners read their words
-    // as a command. The bound is for the debug build `just test` runs.
+    // and `wsl`, `env -S`, `nix run`, `nix shell`, `nix-shell`, `limactl
+    // shell`, `sem` and the other runners read their words as a command.
+    // The bound is for the debug build `just test` runs.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let values = |count: usize, each: usize| {
         (0..count)
@@ -300,6 +301,16 @@ fn wrappers_that_build_their_command_are_read_in_time() {
         format!("{}rm -rf ~", "env -S".repeat(10_000)),
         format!("env -S'{}'", "a ".repeat(32_000)),
         format!("nix run{} nixpkgs#hello -- rm", " --arg a b".repeat(6_000)),
+        format!("nix shell{} -c rm", " nixpkgs#a".repeat(6_000)),
+        format!("nix develop{} -c rm", " -vvL".repeat(12_000)),
+        format!("{}rm -rf ~", "nix shell x -c ".repeat(4_000)),
+        format!("nix --frobnicate{} shell -c rm", " a".repeat(30_000)),
+        format!("nix-shell{} ls", " --run".repeat(10_000)),
+        format!("nix-shell -p{} --run ls", " a".repeat(30_000)),
+        format!("limactl shell{} default rm", " --shell a".repeat(6_000)),
+        format!("{}rm -rf ~", "limactl shell default ".repeat(2_500)),
+        format!("{}rm -rf ~", "sem ".repeat(16_000)),
+        format!("sem{} rm", " -j 1".repeat(12_000)),
         format!("launchctl submit{} -- rm -rf ~", " -l x".repeat(12_000)),
         format!("script{} /dev/null rm", " -t 1".repeat(12_000)),
         format!("script{} -c ls /dev/null", " -t 1".repeat(12_000)),
@@ -770,7 +781,9 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
     // each; a chain of members or calls is walked down only as deep as a
     // tree is; a value is read for blocks only as deep as a limit; and the
     // letters of numbers are made lower case in one pass, subexpressions in
-    // strings only as deep as a limit.
+    // strings only as deep as a limit; a cmdlet is given at most 16 default
+    // parameter values, and the cmdlets of a line at most 1024 arguments by
+    // them.
     let limit = if cfg!(debug_assertions) {
         std::time::Duration::from_secs(2)
     } else {
@@ -779,6 +792,13 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
     let fit = |unit: &str, head: &str, tail: &str| {
         let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
         format!("{head}{}{tail}", unit.repeat(count))
+    };
+    // A table of 16 entries, each `entry`.
+    let defaults = |entry: &str| {
+        format!(
+            "$PSDefaultParameterValues = @{{ {} }}; ",
+            vec![entry; 16].join("; ")
+        )
     };
     let rows = [
         fit("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
@@ -789,6 +809,28 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
         fit(".a", "$ExecutionContext", " = $b"),
         fit("[0]", "$ExecutionContext.InvokeCommand", ".Value = $b"),
         fit(".Add(1, $b)", "$PSDefaultParameterValues", ""),
+        fit(
+            "Remove-Item -Recurse; ",
+            &format!(
+                "$PSDefaultParameterValues = @{{ {} }}; ",
+                (0..16)
+                    .map(|at| format!("'*:P{at}' = '~'"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            "",
+        ),
+        fit(
+            "$PSDefaultParameterValues['*:Path'] = '~'; ",
+            "",
+            "Remove-Item",
+        ),
+        fit("ri;", &defaults("'Remove-*:P*' = '~'"), ""),
+        fit("ri;", &defaults("'Remove-*:Path' = '~'"), ""),
+        fit("gci|ri;", &defaults("'Remove-*:P*' = '~'"), ""),
+        fit("iex 'ri';", &defaults("'Remove-*:P*' = '~'"), ""),
+        fit("Update-TypeData -Force -TypeName X ", "", "x.ps1xml"),
+        fit("$env:BASH_ENV = 'x.sh'; bash; ", "", ""),
         fit("@{e=", "Get-ChildItem | Sort-Object ", ""),
         fit("@{e=@{e=1}}, ", "Get-ChildItem | Sort-Object ", "x"),
         fit(" -replace 'a', $b", "'a'", ""),
@@ -997,6 +1039,12 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
             "TRAPEXIT() { rm -rf b > o; }; ",
             "cd /a || cd b; ",
         ),
+        // A use of an alias with words runs its last command with them.
+        (
+            "alias x='…' y=x; cd …; y ……",
+            "alias x='rm -rf b' y=x; ",
+            "cd d; y c > o; ",
+        ),
     ] {
         assert_linear(what, shell, &paths, |size| {
             let tail = if head.contains(" do ") { "done" } else { "" };
@@ -1016,6 +1064,26 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
         (
             "f() { … cd …; }; f…",
             "f() { rm -rf b > o; cd x; }; f; ",
+            "",
+        ),
+        // An alias's value is a body too, read from where it is used.
+        ("alias x='…'…; cd /", "alias x='rm -rf b > o'; x; ", "cd /"),
+        (
+            "alias x='… cd …'; x…",
+            "alias x='rm -rf b > o; cd x' y=ls; x; ",
+            "",
+        ),
+        // With `autocd` on, a command of one word is a `cd`.
+        ("setopt autocd; a; b…", "setopt autocd; a; rm -rf b; ", ""),
+        (
+            "alias x='…' y=x; y ……",
+            "alias x='rm -rf b' y=x; y c > o; ",
+            "",
+        ),
+        // A body may run after the line turns it on.
+        (
+            "f() { a; … }; setopt autocd; f…",
+            "f() { a; rm -rf b; }; setopt autocd; f; ",
             "",
         ),
     ] {

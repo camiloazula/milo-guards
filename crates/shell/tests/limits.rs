@@ -204,6 +204,26 @@ fn the_deepest_nesting_that_reads_is_the_limit() {
     }
 }
 
+#[test]
+fn the_longest_chain_of_lists_that_reads_is_the_limit() {
+    // The POSIX grammar makes the left side of each `&&` and `||` a list of
+    // its own, a level of the tree deeper, so a chain of them is as deep as
+    // it is long, and past the depth limit is unreadable. The walk reads the
+    // lists on the left in a loop, not by recursing, but counts each as a
+    // level all the same.
+    // Two lists to a unit of two operators.
+    for (unit, expected) in [
+        ("echo x && ", 397),
+        ("echo x || ", 397),
+        ("cd a && echo x || ", 198),
+    ] {
+        let found = edge(1_000, |n| {
+            !unreadable(&(unit.repeat(n) + "echo"), Shell::Posix)
+        });
+        assert_eq!(found, expected, "{unit}");
+    }
+}
+
 /// `text` as the script of `sh -c "…"`, with its backslashes and double
 /// quotes escaped.
 fn shell_around(text: &str) -> String {

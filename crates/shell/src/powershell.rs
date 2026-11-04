@@ -9,6 +9,7 @@ use tree_sitter::Node;
 
 mod aliases;
 mod blocks;
+mod defaults;
 pub(crate) mod native;
 mod numbers;
 mod spelling;
@@ -16,11 +17,13 @@ mod variables;
 
 pub(crate) use aliases::Aliases;
 use aliases::{Set, Stands};
+pub(crate) use defaults::Defaults;
 
 use crate::detect::DOWNLOADERS;
 use crate::launch;
 use crate::path::Made;
 use crate::said::Said;
+use crate::startup;
 use crate::unit::{self, Arg, Between, Listing, OpensFrom, Split, Stage, Unit};
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::glob;
@@ -103,10 +106,12 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         variables: variables::Variables::read(tree.root_node(), text),
         streams: HashSet::new(),
         env_location: false,
+        variable_location: false,
     };
     walker.mark_listings(tree.root_node());
     walker.define(tree.root_node());
     walker.session_changes(tree.root_node());
+    walker.read_defaults(tree.root_node());
     walker.walk(tree.root_node(), None, 0);
 }
 
@@ -514,6 +519,9 @@ struct Walker<'a> {
     /// Whether a word names the `Env:` drive itself (`cd Env:`), so an item
     /// cmdlet's plain name may be a variable of the environment.
     env_location: bool,
+    /// The same for the `Variable:` drive (`cd Variable:`), so a plain name
+    /// may be a variable of the session.
+    variable_location: bool,
 }
 
 impl Walker<'_> {
@@ -527,135 +535,18 @@ impl Walker<'_> {
             // `a && b`, `a || b`: the right side may not run, and the right
             // side of `||` runs only when the left failed, so a `cd` on the
             // left may not have moved the line.
-            "pipeline" => {
-                self.split.statement();
-                let list = self.split.list_start();
-                let mut cursor = node.walk();
-                let mut at = 0;
-                for child in node.named_children(&mut cursor) {
-                    if child.kind() == "pipeline_chain_tail" {
-                        if unit::text(&child, self.source) == "||" {
-                            self.split.list_or(&list);
-                        }
-                        continue;
-                    }
-                    // A `cd` on the right side runs only when the left let
-                    // it: when it did not, the line may still be where that
-                    // side began, or where the chain did.
-                    if at > 0 {
-                        let link = self.split.link_start();
-                        self.walk(child, stage, level + 1);
-                        self.split.link_end(&list, link);
-                    } else {
-                        self.walk(child, stage, level + 1);
-                    }
-                    at += 1;
-                }
-                self.split.list_end(list);
-            }
-            "pipeline_chain" => {
-                self.split.statement();
-                let pipeline = self.split.pipeline(stage.or(self.item));
-                let mut cursor = node.walk();
-                let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-                // The right side of an `&&` after a chain that is not one
-                // command runs when the chain succeeded, not when a `cd` in
-                // it did (`-not (Set-Location s) && …`).
-                let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
-                for (index, child) in stages.iter().enumerate() {
-                    // A value that is piped on (`'DROP TABLE t' | psql`) is
-                    // a stage that says it, as `Write-Output` would.
-                    if child.kind() == "logical_expression" && index + 1 < stages.len() {
-                        self.value_stage(*child, Stage { pipeline, index });
-                    }
-                    // The first command in a `ForEach-Object` block reads
-                    // `$_` from the stage the block is.
-                    let stage = match (index, self.item) {
-                        (0, Some(item)) => item,
-                        _ => Stage { pipeline, index },
-                    };
-                    self.walk(*child, Some(stage), level + 1);
-                }
-                if !command {
-                    self.split.statement();
-                }
-            }
-            "command" => {
-                let first = self.split.units.len();
-                let keys = self.command(node, stage);
-                let own = first..self.split.units.len();
-                let outer = self.item;
-                // The block of `ForEach-Object` and `Where-Object` runs once
-                // for each item of its input.
-                let each = keys
-                    .iter()
-                    .any(|key| matches!(key.as_str(), "foreach-object" | "where-object"));
-                if each {
-                    self.item = stage;
-                    self.split.repeats += 1;
-                    self.split.begin_body();
-                }
-                // The block of an event, and a breakpoint's action, runs
-                // later, in this session.
-                let later = keys
-                    .iter()
-                    .any(|key| EVENTS.contains(&key.as_str()) || key == "set-psbreakpoint")
-                    .then(|| self.split.begin_later());
-                // A job, a thread job and a `-Parallel` block run apart
-                // from the session, whose location stacks they do not share;
-                // so only when every command the name may run is one, as an
-                // alias the line sets may make it run another.
-                let job = !keys.is_empty() && keys.iter().all(|key| key == "start-job");
-                let stacks = (!keys.is_empty()
-                    && keys
-                        .iter()
-                        .all(|key| self.own_runspace(Some(key), own.clone())))
-                .then(|| self.split.take_locations());
-                self.command_children(node, own.clone(), level, job);
-                if let Some(stacks) = stacks {
-                    self.split.restore_locations(stacks);
-                }
-                if let Some(began) = later {
-                    self.split.end_later(began, false);
-                }
-                self.item = outer;
-                if each {
-                    self.split.end_body(None);
-                    self.split.repeats -= 1;
-                }
-                // What a sub-expression in its arguments runs is handed to it.
-                self.split
-                    .nest(own.clone(), own.end..self.split.units.len());
-                // What each reading sets: the name's own, and each
-                // command an alias may make it run.
-                for at in own.clone() {
-                    let key = self.split.units.get(at).and_then(Unit::key);
-                    if at == own.start || key.as_ref().is_some_and(|key| keys.contains(key)) {
-                        self.sets_variables(key.as_deref(), at);
-                    }
-                }
-            }
+            "pipeline" => self.chain_node(node, stage, level),
+            "pipeline_chain" => self.pipeline_node(node, stage, level),
+            "command" => self.command_node(node, stage, level),
             // `trap { … }`: its block runs on a terminating error, later.
-            "trap_statement" => {
-                let began = self.split.begin_later();
-                self.children(node, stage, level);
-                self.split.end_later(began, false);
-            }
+            "trap_statement" => self.trap_node(node, stage, level),
             // `foreach ($l in …) { … }`: the variable holds each item of what
             // the collection runs prints, and the body runs once for each.
             "foreach_statement" => self.foreach(node, stage, level),
             // A loop, or a function that is called more than once, runs
             // what it holds again with other values.
             "for_statement" | "while_statement" | "do_statement" | "function_statement" => {
-                // A function named as a location cmdlet stands in for it.
-                if node.kind() == "function_statement" && self.names_location(node) {
-                    self.split.lose_locations();
-                }
-                self.split.repeats += 1;
-                self.split.begin_body();
-                self.children(node, stage, level);
-                self.end_body(node);
-                self.split.repeats -= 1;
+                self.repeated_node(node, stage, level);
             }
             // What a condition guards, or a `try` may stop short of, may not
             // run.
@@ -663,74 +554,242 @@ impl Walker<'_> {
             // condition runs prints, or of the lines of the file `-File`
             // names, which a clause reads as `$_` (or `$PSItem`).
             "switch_statement" => self.switch(node, stage, level),
-            "if_statement" | "try_statement" => {
-                self.split.branches += 1;
-                self.children(node, stage, level);
-                self.split.branches -= 1;
-            }
-            "redirection" => {
-                self.redirect(node);
-                self.children(node, None, level);
-            }
+            "if_statement" | "try_statement" => self.branch_node(node, stage, level),
+            "redirection" => self.redirection_node(node, level),
             "comparison_expression" | "comparison_argument_expression" => {
-                self.replace(node);
-                self.children(node, stage, level);
+                self.comparison_node(node, stage, level);
             }
-            "invokation_expression" => {
-                // A method call is no unit, and the rules know only some of
-                // them: `effect` cannot say what it does.
-                self.split.opaque();
-                let first = self.split.units.len();
-                let sends = self.dotnet(node, stage);
-                let own = first..self.split.units.len();
-                // A hook's block, set by its method, runs later, and so does
-                // a default parameter value.
-                let defaults = self.adds_default(node);
-                let later = (blocks::sets_hook(node, self.source) || defaults)
-                    .then(|| self.split.begin_later());
-                self.children(node, stage, level);
-                if let Some(began) = later {
-                    self.split.end_later(began, false);
-                }
-                // What the call's object and arguments run is handed to the
-                // sender it stands for.
-                if sends {
-                    self.split
-                        .nest(own.clone(), own.end..self.split.units.len());
-                }
-            }
-            "assignment_expression" => {
-                blocks::hook(self.split, node, self.source);
-                let named_hook = self.session_member(node);
-                self.env_assignment(node);
-                // `[Environment]::CurrentDirectory = …` moves the process,
-                // whose folder a .NET call and a program the session starts
-                // may take: where the line is, is only known when it runs.
-                if blocks::assigned_member(node, self.source).as_deref() == Some("currentdirectory")
-                {
-                    self.moves_unknown(node);
-                }
-                // A hook's block runs later, when a command is looked up; a
-                // default parameter value when its command runs; and a block
-                // held in a variable where the line uses the variable.
-                let defaults = self.sets_defaults(node);
-                let later = (blocks::assigned_member(node, self.source)
-                    .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
-                    || named_hook
-                    || defaults
-                    || self.variables.runs_later(node))
-                .then(|| self.split.begin_later());
-                let first = self.split.units.len();
-                self.children(node, stage, level);
-                if let Some(began) = later {
-                    self.split.end_later(began, false);
-                }
-                // `$k = Get-Content .env`: what the variables the left side
-                // names hold.
-                self.assigned(node, first);
-            }
+            "invokation_expression" => self.invokation_node(node, stage, level),
+            "assignment_expression" => self.assignment_node(node, stage, level),
             _ => self.children(node, stage, level),
         }
+    }
+
+    /// A chain of pipelines joined by `&&` and `||`. An arm of [`Self::walk`],
+    /// kept out of its frame.
+    #[inline(never)]
+    fn chain_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.statement();
+        let list = self.split.list_start();
+        let mut cursor = node.walk();
+        let mut at = 0;
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "pipeline_chain_tail" {
+                if unit::text(&child, self.source) == "||" {
+                    self.split.list_or(&list);
+                }
+                continue;
+            }
+            // A `cd` on the right side runs only when the left let
+            // it: when it did not, the line may still be where that
+            // side began, or where the chain did.
+            if at > 0 {
+                let link = self.split.link_start();
+                self.walk(child, stage, level + 1);
+                self.split.link_end(&list, link);
+            } else {
+                self.walk(child, stage, level + 1);
+            }
+            at += 1;
+        }
+        self.split.list_end(list);
+    }
+
+    /// A pipeline, its stages in order. An arm of [`Self::walk`], kept out of
+    /// its frame.
+    #[inline(never)]
+    fn pipeline_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.statement();
+        let pipeline = self.split.pipeline(stage.or(self.item));
+        let mut cursor = node.walk();
+        let stages: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        // The right side of an `&&` after a chain that is not one
+        // command runs when the chain succeeded, not when a `cd` in
+        // it did (`-not (Set-Location s) && …`).
+        let command = matches!(stages.as_slice(), [only] if only.kind() == "command");
+        for (index, child) in stages.iter().enumerate() {
+            // A value that is piped on (`'DROP TABLE t' | psql`) is
+            // a stage that says it, as `Write-Output` would.
+            if child.kind() == "logical_expression" && index + 1 < stages.len() {
+                self.value_stage(*child, Stage { pipeline, index });
+            }
+            // The first command in a `ForEach-Object` block reads
+            // `$_` from the stage the block is.
+            let stage = match (index, self.item) {
+                (0, Some(item)) => item,
+                _ => Stage { pipeline, index },
+            };
+            self.walk(*child, Some(stage), level + 1);
+        }
+        if !command {
+            self.split.statement();
+        }
+    }
+
+    /// A command, with the blocks and the sub-expressions its arguments hold.
+    /// An arm of [`Self::walk`], kept out of its frame.
+    #[inline(never)]
+    fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let first = self.split.units.len();
+        let keys = self.command(node, stage);
+        let own = first..self.split.units.len();
+        let outer = self.item;
+        // The block of `ForEach-Object` and `Where-Object` runs once
+        // for each item of its input.
+        let each = keys
+            .iter()
+            .any(|key| matches!(key.as_str(), "foreach-object" | "where-object"));
+        if each {
+            self.item = stage;
+            self.split.repeats += 1;
+            self.split.begin_body();
+        }
+        // The block of an event, and a breakpoint's action, runs
+        // later, in this session.
+        let later = keys
+            .iter()
+            .any(|key| EVENTS.contains(&key.as_str()) || key == "set-psbreakpoint")
+            .then(|| self.split.begin_later());
+        // A job, a thread job and a `-Parallel` block run apart
+        // from the session, whose location stacks they do not share;
+        // so only when every command the name may run is one, as an
+        // alias the line sets may make it run another.
+        let job = !keys.is_empty() && keys.iter().all(|key| key == "start-job");
+        let stacks = (!keys.is_empty()
+            && keys
+                .iter()
+                .all(|key| self.own_runspace(Some(key), own.clone())))
+        .then(|| self.split.take_locations());
+        self.command_children(node, own.clone(), level, job);
+        if let Some(stacks) = stacks {
+            self.split.restore_locations(stacks);
+        }
+        if let Some(began) = later {
+            self.split.end_later(began, false);
+        }
+        self.item = outer;
+        if each {
+            self.split.end_body(None);
+            self.split.repeats -= 1;
+        }
+        // What a sub-expression in its arguments runs is handed to it.
+        self.split
+            .nest(own.clone(), own.end..self.split.units.len());
+        // What each reading sets: the name's own, and each
+        // command an alias may make it run.
+        for at in own.clone() {
+            let key = self.split.units.get(at).and_then(Unit::key);
+            if at == own.start || key.as_ref().is_some_and(|key| keys.contains(key)) {
+                self.sets_variables(key.as_deref(), at);
+            }
+        }
+    }
+
+    /// `trap { … }`, whose block runs later. An arm of [`Self::walk`], kept out
+    /// of its frame.
+    #[inline(never)]
+    fn trap_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let began = self.split.begin_later();
+        self.children(node, stage, level);
+        self.split.end_later(began, false);
+    }
+
+    /// A loop, or a function, which runs what it holds again. An arm of
+    /// [`Self::walk`], kept out of its frame.
+    #[inline(never)]
+    fn repeated_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        // A function named as a location cmdlet stands in for it.
+        if node.kind() == "function_statement" && self.names_location(node) {
+            self.split.lose_locations();
+        }
+        self.split.repeats += 1;
+        self.split.begin_body();
+        self.children(node, stage, level);
+        self.end_body(node);
+        self.split.repeats -= 1;
+    }
+
+    /// What a condition guards, or a `try` may stop short of. An arm of
+    /// [`Self::walk`], kept out of its frame.
+    #[inline(never)]
+    fn branch_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.split.branches += 1;
+        self.children(node, stage, level);
+        self.split.branches -= 1;
+    }
+
+    /// A redirect. An arm of [`Self::walk`], kept out of its frame.
+    #[inline(never)]
+    fn redirection_node(&mut self, node: Node<'_>, level: usize) {
+        self.redirect(node);
+        self.children(node, None, level);
+    }
+
+    /// A comparison, which may replace text with a block. An arm of
+    /// [`Self::walk`], kept out of its frame.
+    #[inline(never)]
+    fn comparison_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        self.replace(node);
+        self.children(node, stage, level);
+    }
+
+    /// A method call. An arm of [`Self::walk`], kept out of its frame.
+    #[inline(never)]
+    fn invokation_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        // A method call is no unit, and the rules know only some of
+        // them: `effect` cannot say what it does.
+        self.split.opaque();
+        let first = self.split.units.len();
+        let sends = self.dotnet(node, stage);
+        let own = first..self.split.units.len();
+        // A hook's block, set by its method, runs later, and so does
+        // a default parameter value.
+        let defaults = self.adds_default(node);
+        let later =
+            (blocks::sets_hook(node, self.source) || defaults).then(|| self.split.begin_later());
+        self.children(node, stage, level);
+        if let Some(began) = later {
+            self.split.end_later(began, false);
+        }
+        // What the call's object and arguments run is handed to the
+        // sender it stands for.
+        if sends {
+            self.split
+                .nest(own.clone(), own.end..self.split.units.len());
+        }
+    }
+
+    /// An assignment, which may set a hook, a default or a block held in a
+    /// variable. An arm of [`Self::walk`], kept out of its frame.
+    #[inline(never)]
+    fn assignment_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        blocks::hook(self.split, node, self.source);
+        let named_hook = self.session_member(node);
+        self.env_assignment(node);
+        // `[Environment]::CurrentDirectory = …` moves the process,
+        // whose folder a .NET call and a program the session starts
+        // may take: where the line is, is only known when it runs.
+        if blocks::assigned_member(node, self.source).as_deref() == Some("currentdirectory") {
+            self.moves_unknown(node);
+        }
+        // A hook's block runs later, when a command is looked up; a
+        // default parameter value when its command runs; and a block
+        // held in a variable where the line uses the variable.
+        let defaults = self.sets_defaults(node);
+        let later = (blocks::assigned_member(node, self.source)
+            .is_some_and(|name| blocks::HOOKS.contains(&name.as_str()))
+            || named_hook
+            || defaults
+            || self.variables.runs_later(node))
+        .then(|| self.split.begin_later());
+        let first = self.split.units.len();
+        self.children(node, stage, level);
+        if let Some(began) = later {
+            self.split.end_later(began, false);
+        }
+        // `$k = Get-Content .env`: what the variables the left side
+        // names hold.
+        self.assigned(node, first);
     }
 
     /// `foreach ($l in …) { … }`: the variable holds each item of what the
@@ -837,7 +896,8 @@ impl Walker<'_> {
         let zip = name.eq_ignore_ascii_case("ZIPOPT") || name.eq_ignore_ascii_case("ZIP");
         let node_options = name.eq_ignore_ascii_case("NODE_OPTIONS");
         let terraform = unit::argument_variable(name);
-        if !zip && !node_options && terraform.is_none() {
+        let startup = startup::named_file(name);
+        if !zip && !node_options && terraform.is_none() && !startup {
             return;
         }
         let name = name.to_string();
@@ -857,11 +917,19 @@ impl Walker<'_> {
                 }
                 match self.expr(right) {
                     known @ Arg::Known(_) if right.kind() == "string_literal" => known,
+                    // `$env:BASH_ENV = $null` removes the variable.
+                    Arg::Null if startup => Arg::Null,
                     _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
                 }
             }
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
+        // `$env:BASH_ENV = 'x.sh'`: a bash the line starts runs the file
+        // first.
+        if startup {
+            startup::environment(self.split, Some(&name), value);
+            return;
+        }
         match terraform {
             Some(name) => self.split.note_argument_variable(name, value),
             // `$env:NODE_OPTIONS='--require ./x.js'`: every node a later
@@ -883,7 +951,8 @@ impl Walker<'_> {
     /// item takes from a rename, a copy or a move of an `Env:` item
     /// (`Rename-Item Env:FOO npm_config_call`), or a plain name after the
     /// line may have gone to the `Env:` drive (`cd Env:; Set-Item
-    /// npm_config_call …`).
+    /// npm_config_call …`). On the drive itself, `New-Item` makes the item
+    /// `-Name` names (`New-Item -Path Env: -Name BASH_ENV`).
     fn env_item(&mut self, key: &str, args: &[Arg]) {
         let names = matches!(key, "set-item" | "new-item" | "set-content" | "add-content");
         let moves = matches!(key, "rename-item" | "copy-item" | "move-item");
@@ -897,18 +966,34 @@ impl Walker<'_> {
         // A plain word is a name on `Env:` when the cmdlet moves an item of
         // it (the new name) or the line may be there.
         let plain = (moves && on_env) || self.env_location;
-        for arg in args {
-            let text = arg.text();
-            let lower = text.trim_matches(['"', '\'']).to_ascii_lowercase();
-            let rest = lower
+        let rest = |lower: &str| {
+            lower
                 .strip_prefix("env:")
                 .or_else(|| lower.split_once(":env:").map(|(_, rest)| rest))
-                .map(|rest| rest.trim_start_matches(['\\', '/']));
-            let name = match rest {
+                .map(|rest| rest.trim_start_matches(['\\', '/']).to_string())
+        };
+        // `New-Item -Path Env: -Name BASH_ENV`: on the drive itself, the
+        // item `-Name` names.
+        let mut named = Vec::new();
+        if key == "new-item"
+            && args.iter().any(|arg| {
+                let lower = arg.text().trim_matches(['"', '\'']).to_ascii_lowercase();
+                rest(&lower).is_some_and(|rest| rest.is_empty())
+            })
+        {
+            let params = Params::cmdlet(args, &NEW_ITEM);
+            named.extend(params.values(&["name"]));
+        }
+        let words = args.iter().map(|arg| (arg, false));
+        for (arg, given) in words.chain(named.into_iter().map(|arg| (arg, true))) {
+            let text = arg.text();
+            let lower = text.trim_matches(['"', '\'']).to_ascii_lowercase();
+            let name = match rest(&lower) {
                 Some(rest) => rest,
-                None if plain && !text.starts_with('-') => lower.as_str(),
+                None if (plain || given) && !text.starts_with('-') => lower.clone(),
                 None => continue,
             };
+            let name = name.as_str();
             let value = Arg::Unknown(text.to_string());
             // A name only known when it runs may be any of them.
             let unknown = arg.known().is_none();
@@ -932,9 +1017,89 @@ impl Walker<'_> {
             if is("NODE_OPTIONS") {
                 self.split.node_options.push(value.clone());
             }
+            // `Set-Item Env:BASH_ENV x.sh`: a bash the line starts runs the
+            // file first.
+            for variable in ["BASH_ENV", startup::SH_ENV] {
+                if is(variable) {
+                    startup::environment(self.split, Some(variable), value.clone());
+                }
+            }
             for zip in ["ZIPOPT", "ZIP"] {
                 if is(zip) {
                     self.split.zip_env.set(zip, &value, true);
+                }
+            }
+        }
+    }
+
+    /// `Start-Process bash -Environment @{ BASH_ENV = 'x.sh' }` (PowerShell
+    /// 7.4): the program it starts runs with the variables of the table set,
+    /// so a `BASH_ENV` or `ENV` among them names a file the shell it starts
+    /// runs first, for that program alone (see [`startup::entry`]). A table
+    /// not written out, and a key only known when it runs, may set
+    /// `BASH_ENV`.
+    fn start_environment(&mut self, node: Node<'_>, unit: &mut Unit) {
+        let Some(elements) = node.child_by_field_name("command_elements") else {
+            return;
+        };
+        let mut cursor = elements.walk();
+        let words: Vec<Node<'_>> = elements
+            .named_children(&mut cursor)
+            .filter(|word| !matches!(word.kind(), "command_argument_sep" | "comment"))
+            .collect();
+        let mut set = Vec::new();
+        for (at, word) in words.iter().enumerate() {
+            if word.kind() != "command_parameter" {
+                continue;
+            }
+            let typed = unit::text(word, self.source)
+                .trim_start_matches('-')
+                .trim_end_matches(':')
+                .to_ascii_lowercase();
+            if Param::resolve(&typed, &START_PROCESS)
+                .is_none_or(|param| param.name != "environment")
+            {
+                continue;
+            }
+            let Some(&value) = words.get(at + 1) else {
+                continue;
+            };
+            let table = blocks::unwrap(value);
+            let body = (table.kind() == "hash_literal_expression")
+                .then(|| table.named_child(0))
+                .flatten();
+            let Some(body) = body else {
+                if table.kind() != "hash_literal_expression" {
+                    set.push((
+                        None,
+                        Arg::Unknown(unit::text(&value, self.source).to_string()),
+                    ));
+                }
+                continue;
+            };
+            let mut cursor = body.walk();
+            for entry in body.named_children(&mut cursor) {
+                let mut cursor = entry.walk();
+                let parts: Vec<Node<'_>> = entry.named_children(&mut cursor).collect();
+                let key = parts.first().and_then(|key| key.named_child(0));
+                let name = key.and_then(|key| match key.kind() {
+                    "simple_name" => Some(unit::text(&key, self.source).to_string()),
+                    _ => blocks::plain_text(blocks::unwrap(key), self.source),
+                });
+                let value = parts.last().filter(|value| {
+                    entry.kind() == "hash_entry" && value.kind() != "key_expression"
+                });
+                let value = match value {
+                    Some(value) => self.environment_value(*value),
+                    None => Arg::Unknown(unit::text(&entry, self.source).to_string()),
+                };
+                set.push((name, value));
+            }
+        }
+        for (name, value) in set {
+            if let Some(entry) = startup::entry(self.split, name.as_deref(), value) {
+                if !startup::push(&mut unit.startup, entry.clone()) {
+                    self.split.add_startup(entry);
                 }
             }
         }
@@ -1058,6 +1223,7 @@ impl Walker<'_> {
             }
         }
         self.env_location = location[Session::Environment as usize];
+        self.variable_location = location[Session::Variables as usize];
     }
 
     /// The keys of the command `node` may run: its own, and each the line
@@ -1710,6 +1876,12 @@ impl Walker<'_> {
                 last_end = (element.kind() != "command_argument_sep").then(|| element.end_byte());
             }
         }
+        // `$PSDefaultParameterValues['Remove-Item:Path'] = '~'`: a parameter
+        // the command does not name may come from a default value, a block
+        // or a type file among them.
+        if let Some(key) = program_key.as_deref() {
+            self.give_defaults(key, &mut args, &mut shapes);
+        }
         // Whether a `ForEach-Object` calls a method that stops a process on
         // each item (`% Kill`).
         let mut stops = false;
@@ -1763,6 +1935,9 @@ impl Walker<'_> {
                     Some(unit::text(&node, self.source)),
                 );
             }
+        }
+        if key.as_deref() == Some("start-process") {
+            self.start_environment(node, &mut unit);
         }
         // `Start-Process -RedirectStandardOutput f` writes the program's
         // output to `f`, as a redirect does.
@@ -3475,7 +3650,15 @@ impl Walker<'_> {
                 if name.eq_ignore_ascii_case("NODE_OPTIONS") {
                     self.split.node_options.push(value.clone());
                 }
+                startup::environment(self.split, Some(name), value.clone());
                 self.split.zip_env.set(name, &value, true);
+            } else {
+                // A name only known when it runs may be `BASH_ENV`.
+                startup::environment(
+                    self.split,
+                    None,
+                    Arg::Unknown(unit::text(&node, self.source).to_string()),
+                );
             }
             let name = match named {
                 Some(Arg::Known(name)) => unit::argument_variable(&name),
@@ -3839,7 +4022,7 @@ fn dotnet_rule(method: &str, object: &str, file_like: bool) -> Option<(Rule, &'s
 /// cmdlet) is a cmdlet: a name of an approved verb, a dash and a noun, or a
 /// built-in `-Object` cmdlet (`ForEach-Object`, `Tee-Object`). Any other is
 /// taken for a native program.
-fn is_cmdlet(key: &str) -> bool {
+pub(crate) fn is_cmdlet(key: &str) -> bool {
     key.split_once('-')
         .is_some_and(|(verb, noun)| !noun.is_empty() && (VERBS.contains(&verb) || noun == "object"))
 }

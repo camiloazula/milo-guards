@@ -250,6 +250,7 @@ impl Walker<'_> {
             unstaged: None,
             sets: HashMap::new(),
             functions: HashSet::new(),
+            chained: HashMap::new(),
         };
         walker.calls_in(root, scope, from, index, &varies, calls);
     }
