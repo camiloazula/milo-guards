@@ -200,7 +200,7 @@ pub(crate) fn find_targets(args: &[Arg]) -> Vec<Arg> {
         match (start, reach) {
             (start, Reach::Whole) => targets.push(start),
             (Arg::Known(text), Reach::Inside { git }) => {
-                targets.push(Arg::Known(format!("{text}/x")));
+                targets.push(Arg::Known(crate::path::found_in(&text)));
                 if git {
                     targets.push(Arg::Known(git_inside(&text)));
                 }

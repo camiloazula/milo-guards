@@ -744,7 +744,65 @@ impl Resolver {
         }
     }
 
+    /// The caller's words for a protected path that a program which picks
+    /// the files it changes in the folder `arg` itself (a search, a patch,
+    /// an archive, a recursive copy) can reach there, run from `dir`: one
+    /// the folder is, is under or holds, whatever else the folder is (see
+    /// `Resolver::holds_protected`). `None` for a folder only known when it
+    /// runs and for one the shell reads another way (a brace list, a device,
+    /// a registry or other provider path), whose own place says what it is.
+    pub(crate) fn holds_protected(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        self.holds_protected_of(within(dir, arg, shell).known()?, shell, hidden)
+    }
+
+    fn holds_protected_of(&self, text: &str, shell: Shell, hidden: bool) -> Option<&'static str> {
+        if brace_list(text)
+            || device(text, shell).is_some()
+            || self.made_drive(text, shell).is_some()
+        {
+            return None;
+        }
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider
+                    .eq_ignore_ascii_case("filesystem")
+                    .then(|| self.holds_protected_of(rest, shell, hidden))
+                    .flatten();
+            }
+        }
+        let flavour = flavour(shell);
+        let ask = |spelling| self.core.holds_protected(spelling, flavour, hidden);
+        match start(text, shell) {
+            Start::Plain => ask(Spelling::Plain(text)),
+            Start::Home(rest) => ask(Spelling::Home(rest)),
+            Start::Temp(rest) => ask(Spelling::Home(&in_temp(rest))),
+            Start::DriveRelative(letter, rest) => {
+                ask(Spelling::Plain(self.on_cwd_drive(letter, rest)?))
+            }
+            Start::Provider(..) | Start::Unknown => None,
+        }
+    }
+
     fn place_of(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
+        let place = self.place_spelled(text, shell, hidden, holding);
+        // What a search or a filtered listing finds in a folder may be any
+        // entry below it, a protected one among them.
+        match found_folder(text) {
+            Some(folder) if place.harmless() => self
+                .holds_protected_of(folder, shell, hidden)
+                .map_or(place, Place::Protected),
+            _ => place,
+        }
+    }
+
+    fn place_spelled(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
         let place_core = |spelling, flavour| {
             if holding {
                 self.core.place_hidden(spelling, flavour, hidden)
@@ -1175,10 +1233,34 @@ fn share_root(dir: &str) -> Option<Root> {
 /// hands everything in it, which is as much as the folder itself.
 pub(crate) fn listed(text: &str, filtered: bool) -> String {
     if filtered && !glob::has_wildcard(text) {
-        format!("{text}/x")
+        found_in(text)
     } else {
         text.to_string()
     }
+}
+
+/// The name an entry stands as that a search or a filtered listing finds
+/// inside a folder (`find . -name '*.yaml'`, `Get-ChildItem -Filter`): which
+/// one, the line does not show, so it may be any entry at any depth below
+/// the folder. A name that is not a wildcard, a device or anything else a
+/// path is read as, so the entry is judged as a plain file in the folder,
+/// and then as what the folder holds (see [`found_folder`]). A path a line
+/// spells with it is read the same way, which costs only a finding where
+/// the folder holds a protected path.
+pub(crate) const FOUND: &str = "\u{2026}";
+
+/// An entry a search finds inside `folder` (see [`FOUND`]).
+pub(crate) fn found_in(folder: &str) -> String {
+    format!("{folder}/{FOUND}")
+}
+
+/// The folder a search found the entry `text` in, when `text` is one or
+/// is made from one (`-exec cp {} {}.bak`): what comes before the first
+/// [`FOUND`] part.
+fn found_folder(text: &str) -> Option<&str> {
+    let at = text.find(FOUND)?;
+    let folder = text[..at].strip_suffix(['/', '\\'])?;
+    Some(if folder.is_empty() { "/" } else { folder })
 }
 
 /// The parent folder a wildcard part can also pick, written as a path to

@@ -620,6 +620,109 @@ cmd@windows_file finds=overwrite | copy /b y.yaml + x.yaml conf\\app
 powershell@share_folder finds=delete | Remove-Item \\\\SRV\\Share\\.agent\\x
 powershell@share_folder finds=delete | Remove-Item //srv/share/.agent/x
 
+# A program that picks the files it changes itself, from data the line does
+# not show, can reach a protected path below the folder it works in: a
+# search that deletes or writes what it finds (`find -delete`, `find -exec
+# rm`, `xargs rm` after a lister), a patch (`git apply`, `patch`, `git am`),
+# a recursive copy or mirror, an archive unpacked, and a checkout of paths.
+# The folder holds it when it is the protected path, is under it, or holds
+# it, the workspace itself and a temporary folder included. A folder that
+# holds none stays the agent's own, and so does a read.
+posix@workspace_folder finds=delete reason="deletes the agent's settings" | find . -name config.yaml -delete
+posix@workspace_folder finds=delete | find . -type f -name '*.yaml' -exec rm {} +
+posix@workspace_folder finds=delete | find . -name '*.yaml' -exec rm -f {} \\;
+posix@workspace_folder finds=delete | find -name '*.yaml' -execdir rm {} +
+posix@workspace_folder finds=delete | find . -name '*.yaml' | xargs rm
+posix@workspace_folder finds=delete | find . -name '*.yaml' -print0 | xargs -0 rm -f
+posix@workspace_folder finds=delete | find .agent -name '*.bak' -delete
+posix@workspace_folder finds=delete | cd src && find .. -name '*.yaml' -delete
+posix@workspace_folder finds=overwrite reason="edits the agent's settings" | find . -name '*.yaml' -exec sed -i s/a/b/ {} +
+posix@workspace_folder finds=overwrite | find . -name '*.yaml' | xargs sed -i s/a/b/
+posix@workspace_folder finds=overwrite | find . -name '*.yaml' -exec cp x.yaml {} \\;
+posix@workspace_file finds=delete | find conf -name x.yaml -delete
+posix@workspace_file finds=delete | find conf -type f -exec rm {} +
+posix@temporary_file finds=delete | find /tmp -name x -delete
+posix@workspace_folder safe | find src -name '*.o' -delete
+posix@workspace_folder safe | find src -name x -exec rm {} +
+posix@workspace_folder safe | find src -name '*.o' | xargs rm -f
+posix@workspace_folder safe | find . -name '*.yaml' -exec cat {} +
+posix@workspace_folder safe | find . -name '*.rs' | xargs grep -n main
+posix@workspace_folder safe | find . -name '*.rs' -exec cp {} dist/ \\;
+posix@workspace_file safe | find conf/other -name x.yaml -delete
+powershell@windows_folder_and_file finds=delete | Get-ChildItem . -Filter *.yaml -Recurse | Remove-Item
+powershell@windows_folder_and_file safe | Get-ChildItem src -Filter *.o -Recurse | Remove-Item
+# A patch changes the files it names, in the folder it works in.
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | git apply p.diff
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | patch -p1 < p.diff
+posix@workspace_folder finds=overwrite | patch -p1 -i p.diff
+posix@workspace_folder finds=overwrite | patch -Np1 --input=p.diff
+posix@workspace_folder finds=overwrite | git am
+posix@workspace_folder finds=overwrite | git am 0001-fix.patch
+posix@workspace_folder finds=overwrite | git am --continue
+posix@workspace_folder finds=overwrite | git apply --index p.diff
+posix@workspace_folder finds=overwrite | git apply --stat --apply p.diff
+posix@workspace_folder finds=overwrite | cd src && patch -d .. -p1 < p.diff
+posix@workspace_file finds=overwrite | patch -d conf -p1 < p.diff
+posix@workspace_file finds=overwrite | patch --dir=conf/app -p0 < p.diff
+posix@workspace_file finds=overwrite | git -C conf apply p.diff
+posix@workspace_file finds=overwrite | patch conf/app/x.yaml p.diff
+posix@workspace_folder safe | patch -d src -p1 < p.diff
+posix@workspace_folder safe | git -C src apply p.diff
+posix@workspace_folder safe | git apply --check p.diff
+posix@workspace_folder safe | git apply --stat p.diff
+posix@workspace_folder safe | git apply --numstat p.diff
+posix@workspace_folder safe | git apply --cached p.diff
+posix@workspace_folder safe | patch --dry-run -p1 < p.diff
+posix@workspace_folder safe | patch -C -p1 < p.diff
+posix@workspace_folder safe | patch src/main.rs fix.diff
+posix@workspace_folder safe | patch -o out.rs src/main.rs fix.diff
+posix@workspace_folder safe | git am --show-current-patch
+posix@workspace_folder safe | git diff > p.diff
+powershell@windows_folder_and_file finds=overwrite | git apply p.diff
+# A recursive copy or mirror onto the folder that holds it, the workspace
+# itself included.
+posix@workspace_folder finds=overwrite reason="writes to the agent's settings" | cp -r tmpl/. .
+posix@workspace_folder finds=overwrite | rsync -a tmpl/ .
+posix@workspace_folder finds=overwrite | rsync -a tmpl/ ./
+posix@workspace_folder finds=overwrite | cp -a tmpl/. ./
+posix@workspace_folder finds=overwrite | cp -R tmpl/* .
+posix@workspace_folder finds=overwrite | cd src && cp -r ../tmpl/. ..
+posix@workspace_folder safe | cp tmpl/a.txt .
+posix@workspace_folder safe | cp -r tmpl/. dist
+posix@workspace_folder safe | rsync -a tmpl/ dist/
+powershell@windows_folder_and_file finds=overwrite | Copy-Item -Recurse tmpl\\* .
+powershell@windows_folder_and_file finds=overwrite | Copy-Item tmpl\\* -Destination . -Recurse
+powershell@windows_folder_and_file finds=overwrite | robocopy tmpl . /E
+cmd@windows_folder_and_file finds=overwrite | xcopy tmpl . /s /e
+cmd@windows_folder_and_file finds=overwrite | robocopy tmpl . /MIR
+powershell@windows_folder_and_file safe | Copy-Item -Recurse tmpl\\* dist
+cmd@windows_folder_and_file safe | robocopy tmpl dist /E
+cmd@windows_folder_and_file finds=overwrite | tar -xf x.tar
+cmd@windows_folder_and_file finds=overwrite | git apply p.diff
+# An archive unpacked into the folder that holds it.
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | tar -xf x.tar
+posix@workspace_folder finds=overwrite | tar -xzf x.tgz -C .
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | unzip x.zip
+posix@workspace_folder finds=overwrite | unzip -o x.zip -d .
+posix@workspace_folder finds=overwrite | 7z x x.7z
+posix@workspace_file finds=overwrite | tar -xf x.tar -C conf
+posix@temporary_file finds=overwrite | tar -xf x.tar -C /tmp
+posix@workspace_folder safe | tar -xf x.tar -C build
+posix@workspace_folder safe | unzip x.zip -d out
+posix@workspace_folder safe | tar -tf x.tar
+posix@workspace_folder safe | tar -cf x.tar src
+powershell@windows_folder_and_file finds=overwrite | Expand-Archive x.zip -DestinationPath .
+# A checkout or restore of paths brings what a revision holds below them.
+posix@workspace_folder rules=git_discard,overwrite | git checkout HEAD~1 -- .
+posix@workspace_folder finds=overwrite reason="may change the agent's settings" | git restore --source=HEAD~1 .
+posix@workspace_folder finds=overwrite | git checkout main -- '*.yaml'
+posix@workspace_folder finds=overwrite | git checkout HEAD -- .agent
+posix@workspace_file finds=overwrite | git checkout main -- conf
+posix@workspace_file finds=overwrite | git -C conf checkout main -- .
+posix@workspace_folder rules=git_discard | git checkout HEAD~1 -- src/main.rs
+posix@workspace_folder safe | git restore --staged .
+posix@workspace_folder safe | git checkout -b feature
+
 # Nothing changes without protected paths: the same lines are as they were,
 # with the guard's own words.
 posix safe | rm *.rs
@@ -627,3 +730,13 @@ posix safe | rm -rf conf
 posix safe | cp x.yaml conf/app/
 posix safe | cp -r src conf
 posix first=delete reason="deletes a path outside the workspace" | rm ~/.agent/config.yaml
+posix safe | find . -name config.yaml -delete
+posix safe | find . -name '*.yaml' -exec rm {} +
+posix safe | find . -name '*.yaml' | xargs rm
+posix safe | git apply p.diff
+posix safe | patch -p1 < p.diff
+posix safe | git am
+posix safe | cp -r tmpl/. .
+posix safe | rsync -a tmpl/ .
+posix rules=git_discard | git restore --source=HEAD~1 .
+posix rules=git_discard | git checkout HEAD~1 -- .

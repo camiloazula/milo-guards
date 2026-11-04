@@ -31,6 +31,7 @@ mod compressors;
 mod data;
 mod editors;
 mod files;
+mod patches;
 mod processes;
 mod regex;
 mod resources;
@@ -982,6 +983,38 @@ impl Checker<'_> {
             .place(scope.dir, arg, shell, scope.hidden, access)
     }
 
+    /// The caller's words for a protected path that a program which picks
+    /// the files it changes in `folder` itself (the files a patch names, an
+    /// archive holds, a recursive copy brings) can reach: one the folder is,
+    /// is under or holds. Only where the folder's own place is the agent's,
+    /// the workspace or a temporary folder itself included: a place that is
+    /// already risky keeps its own words.
+    fn protected_in(&self, shell: Shell, scope: Scope<'_>, folder: &Arg) -> Option<&'static str> {
+        match self.place(shell, scope, folder, Access::Item) {
+            Place::Protected(words) => Some(words),
+            place
+                if place.harmless()
+                    || matches!(
+                        place,
+                        Place::Workspace { exact: true } | Place::Temp { exact: true }
+                    ) =>
+            {
+                self.resolver
+                    .holds_protected(scope.dir, folder, shell, scope.hidden)
+            }
+            _ => None,
+        }
+    }
+
+    /// A program that changes files in `folder` the line does not name
+    /// (a patch, an archive): when the folder can hold a protected path, it
+    /// may change it.
+    fn changes_in(&mut self, shell: Shell, scope: Scope<'_>, folder: &Arg) {
+        if let Some(words) = self.protected_in(shell, scope, folder) {
+            self.add_once(Rule::Overwrite, format!("may change {words}"), folder);
+        }
+    }
+
     /// As [`place`](Self::place), for a path something is written into.
     fn place_into(&self, shell: Shell, scope: Scope<'_>, arg: &Arg, access: Access) -> Place {
         self.resolver
@@ -1019,9 +1052,15 @@ impl Checker<'_> {
         self.write_as(shell, scope, target, verb, Access::Content);
     }
 
-    /// A write into a folder, as an archive unpacked into it makes.
+    /// A write into a folder, as an archive unpacked into it makes: what it
+    /// writes there is what the archive holds, which may be a protected
+    /// path the folder holds.
     fn write_folder(&mut self, shell: Shell, scope: Scope<'_>, target: &Arg, verb: &str) {
+        let before = self.found.len();
         self.write_to(shell, scope, target, verb, "a folder", Access::Content);
+        if self.found.len() == before {
+            self.changes_in(shell, scope, target);
+        }
     }
 
     /// A write of `target`, by how it reaches it (see [`Access`]).
@@ -1115,8 +1154,10 @@ impl Checker<'_> {
             Place::Protected(words) => Some(words),
             _ => None,
         };
+        // The workspace or a temporary folder itself holds what is below it
+        // too (`cp -r tmpl/. .`).
         let words = recursive
-            .then(|| protected(self.place(shell, scope, destination, Access::Item)))
+            .then(|| self.protected_in(shell, scope, destination))
             .flatten();
         match words {
             Some(words) => {

@@ -84,6 +84,7 @@ impl Checker<'_> {
                     self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
                 }
             }
+            "patch" => self.patch(unit),
             "clear-recyclebin" => self.add(Rule::Delete, "empties the recycle bin", None),
 
             // Moving and copying: what is moved away, and where it lands.

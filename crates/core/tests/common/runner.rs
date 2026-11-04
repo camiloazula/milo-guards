@@ -15,8 +15,8 @@
 //!   `Resolver` and the answer it must give: `place=`, `into=` (a write
 //!   into it, `place_into`) and `place_hidden=` give a place (below);
 //!   `startup=`, `below=` (`startup_below`), `picks=` (`picks_secret`),
-//!   `kernel=` and `git=` give their words, or `none`; `absolute=` and
-//!   `opened=` give the path, or `none`; `reaches=` (`reaches_secret`) and
+//!   `holds=` (`holds_protected`), `kernel=` and `git=` give their words, or
+//!   `none`; `absolute=` and `opened=` give the path, or `none`; `reaches=` (`reaches_secret`) and
 //!   `network=` (`spelling::network`) give `yes` or `no`.
 //!
 //! A place is `inside`, `outside`, `unknown`, `disk`, `null`, `registry`,
@@ -68,13 +68,14 @@ pub fn windows() -> Paths {
 }
 
 /// The questions a case can ask, by the field that asks each.
-pub const ASKS: [&str; 12] = [
+pub const ASKS: [&str; 13] = [
     "place",
     "into",
     "place_hidden",
     "startup",
     "below",
     "picks",
+    "holds",
     "kernel",
     "git",
     "absolute",
@@ -84,12 +85,13 @@ pub const ASKS: [&str; 12] = [
 ];
 
 /// The questions `hidden` changes the answer of.
-const HIDDEN: [&str; 6] = [
+const HIDDEN: [&str; 7] = [
     "into",
     "place_hidden",
     "startup",
     "below",
     "picks",
+    "holds",
     "reaches",
 ];
 
@@ -204,6 +206,7 @@ pub fn answer(case: &Case, ask: &str) -> String {
         "startup" => words(resolver.startup(spelled, flavour, hidden)),
         "below" => words(resolver.startup_below(spelled, flavour, hidden)),
         "picks" => words(resolver.picks_secret(spelled, flavour, hidden)),
+        "holds" => words(resolver.holds_protected(spelled, flavour, hidden)),
         "kernel" => words(resolver.kernel(spelled, flavour)),
         "git" => words(resolver.git(spelled, flavour)),
         "absolute" => path(resolver.absolute(spelled, flavour)),

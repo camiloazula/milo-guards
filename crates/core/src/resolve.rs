@@ -1249,6 +1249,78 @@ impl Resolver {
         self.place_as(path, flavour, hidden, true, Writes::Below).1
     }
 
+    /// The caller's words for a protected path that a program can reach when
+    /// it changes files below `path` that the line does not name: the files
+    /// a search finds there, the ones a patch or an archive names, what a
+    /// recursive copy brings. That is a protected path `path` is, is under,
+    /// or holds, whatever else `path` is: the workspace itself, a temporary
+    /// folder and the home directory included, where [`place`](Self::place)
+    /// says only that (a verdict that is already risky keeps its own words
+    /// there, and what to say is the guard's). A pattern is read as for
+    /// `place`: it holds one when it can pick the path or a folder that holds
+    /// it, or go below a protected folder. `None` when no protected path is
+    /// there, and for a path known only when it runs (`place` says so).
+    #[must_use]
+    pub fn holds_protected(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        // A part that can match `..` is read as `.` and `..` too (see
+        // `place_hidden`).
+        self.holds_one(path, flavour, hidden).or_else(|| {
+            climbing(path.text(), flavour)
+                .iter()
+                .find_map(|variant| self.holds_one(respell(path, variant), flavour, hidden))
+        })
+    }
+
+    fn holds_one(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        if self.protected.is_empty()
+            || matches!(path, Spelling::Plain(text) if device(text, flavour).is_some())
+        {
+            return None;
+        }
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        let text = path.text();
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return None;
+        }
+        let (loc, tail) = self.cut(path, text, flavour);
+        let stripped = loc.stripped();
+        let folder = stripped.as_ref().unwrap_or(&loc);
+        let hidden = hidden || flavour == Flavour::Windows;
+        let tail: Option<Vec<&str>> = tail
+            .as_ref()
+            .map(|tail| tail.iter().map(String::as_str).collect());
+        self.protected
+            .iter()
+            .find_map(|(protected, words, is_folder)| {
+                if below(folder, protected) {
+                    return Some(*words);
+                }
+                if !above(folder, protected) {
+                    return None;
+                }
+                let Some(tail) = tail.as_deref() else {
+                    return Some(*words);
+                };
+                let names = &protected.parts[folder.parts.len()..];
+                let windows = protected.windows();
+                picks(tail, names, false, *is_folder, &|part, name| {
+                    pattern_matches(part, name, flavour, hidden, windows)
+                })
+                .then_some(*words)
+            })
+    }
+
     /// `holding` says whether a harmless folder that holds a protected path
     /// is judged as that path. `writes` says whether the path is written,
     /// and then the words of a file a tool runs on its own come with the

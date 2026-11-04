@@ -1,7 +1,7 @@
 # Programs that write a file the line names, beyond the redirects, copies and
 # cmdlets the other files hold: `curl.exe` and `wget.exe` in PowerShell,
 # `certutil`, `Export-Csv` and `Export-Clixml`, `sponge`, `awk -i inplace`,
-# and `ex` and `vim`. Each destination is judged where it lands, as any write
+# `ex` and `vim`, and `patch`. Each destination is judged where it lands, as any write
 # is: beyond the workspace, a startup or protected place is `overwrite`, and
 # inside the workspace it stays safe. The format is in CONTRIBUTING.md.
 
@@ -269,3 +269,34 @@ posix safe | ex -s src/a.txt <<EOF\n%s/a/b/g\nwq\nEOF
 posix safe | ex -s src/a.txt <<'EOF'\n" swap the words\ng/^#/d\nwq\nEOF
 posix safe | cat a | vim -
 posix safe | cat a | vim -R -
+
+# `patch` writes the file it is given (with `-o`, that one alone), or else
+# the files its patch names, which the line does not show, in the folder
+# `-d` moves it to or the one the line is in: a folder beyond the workspace
+# or only known when it runs is a write there. A dry run writes nothing.
+posix safe | patch -p1 < fix.diff
+posix safe | patch src/main.rs fix.diff
+posix safe | patch -d vendor/lib -p1 < fix.diff
+posix finds=overwrite reason="patches files in a folder outside the workspace" | patch -d ../other -p1 < fix.diff
+posix finds=overwrite | patch --directory=/etc -p1 < fix.diff
+posix finds=overwrite | patch -d/etc -p1 < fix.diff
+posix finds=overwrite | patch -Nd /etc -p1 < fix.diff
+posix finds=overwrite | patch --dir /etc -p1 < fix.diff
+posix finds=overwrite reason="patches a file outside the workspace" | patch ../other/x.c fix.diff
+posix finds=overwrite | patch -d /etc hosts fix.diff
+posix finds=overwrite reason="writes to a file outside the workspace" | patch -o ../other/a.c src/a.c fix.diff
+posix finds=overwrite | patch .envrc fix.diff
+posix finds=overwrite | patch -p1 $OPTS < fix.diff
+posix finds=overwrite | cd /etc && patch -p1 < fix.diff
+posix@protected finds=overwrite | patch conf/app.yaml fix.diff
+posix@protected finds=overwrite | patch -d conf -p1 < fix.diff
+posix safe | patch -o - src/a.c fix.diff
+posix safe | patch --dry-run -d /etc -p1 < fix.diff
+posix safe | patch --dry -d /etc -p1 < fix.diff
+posix safe | patch -C -d /etc -p1 < fix.diff
+posix safe | patch -p1 -i fix.diff
+# git applies a patch in the folder it works in.
+posix finds=overwrite reason="patches files in a folder outside the workspace" | git -C ../other apply fix.diff
+posix finds=overwrite | git -C /etc am
+posix finds=overwrite | git --work-tree=$W apply fix.diff
+posix safe | git apply fix.diff

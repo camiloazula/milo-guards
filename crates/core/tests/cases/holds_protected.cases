@@ -1,0 +1,61 @@
+# `Resolver::holds_protected`: the protected path a program can reach when it
+# changes files below a folder that the line does not name (a search, a
+# patch, an archive, a recursive copy): one the folder is, is under or
+# holds, whatever else the folder is, the workspace itself, a temporary
+# folder and the home directory included. A pattern holds one when it can
+# pick it or a folder that holds it, or go below a protected folder.
+# `hidden` says a wildcard matches a leading dot (`dotglob`).
+
+paths agent base=posix folder=/home/me/work/repo/.agent words="the agent's settings"
+paths conf base=posix file=/home/me/work/repo/conf/app/x.yaml words="the agent's rules"
+paths home base=posix folder=/home/me/.agent words="the agent's settings"
+paths temporary base=posix file=/tmp/state/x words="the agent's state"
+paths windows_agent base=windows folder=C:\\Users\\me\\dev\\repo\\.agent words="the agent's settings"
+
+# The workspace itself, and the folders that hold it, hold it.
+posix@agent holds="the agent's settings" place=workspace | .
+posix@agent holds="the agent's settings" | /home/me/work/repo
+posix@agent holds="the agent's settings" | src/..
+posix@agent holds="the agent's settings" | ..
+posix@agent holds="the agent's settings" | /
+posix@agent home holds="the agent's settings" | work
+# The protected folder, and what is under it.
+posix@agent holds="the agent's settings" | .agent
+posix@agent holds="the agent's settings" | .AGENT
+posix@agent holds="the agent's settings" | .agent/rules
+# A folder beside it holds none.
+posix@agent holds=none | src
+posix@agent holds=none | .agentx
+posix@agent holds=none | /home/me/other
+posix holds=none | .
+# A file's folders hold it; a folder beside them does not.
+posix@conf holds="the agent's rules" | conf
+posix@conf holds="the agent's rules" | conf/app
+posix@conf holds="the agent's rules" | conf/app/x.yaml
+posix@conf holds=none | conf/other
+posix@conf holds="the agent's rules" place="protected:the agent's rules" | conf/app/x.yaml/y
+# The home directory, and a temporary folder.
+posix@home holds="the agent's settings" place=home | /home/me
+posix@home home holds="the agent's settings" | .agent/rules
+posix@temporary holds="the agent's state" place=temp | /tmp
+posix@temporary holds="the agent's state" | /tmp/state
+posix@temporary holds=none | /tmp/other
+# A pattern holds it when it can pick it, a folder that holds it, or go
+# below a protected folder.
+posix@agent hidden holds="the agent's settings" | .a*
+posix@agent hidden holds="the agent's settings" | *
+posix@agent holds=none | *
+posix@agent holds="the agent's settings" | .a*/rules
+posix@agent holds="the agent's settings" | **
+posix@agent holds=none | src/*
+posix@conf holds="the agent's rules" | c*
+posix@conf holds="the agent's rules" | conf/*
+posix@conf holds=none | conf/other/*
+# A device holds nothing.
+posix@agent holds=none | /dev/null
+# Windows spellings.
+windows@windows_agent holds="the agent's settings" | .
+windows@windows_agent holds="the agent's settings" | C:\\Users\\me\\dev\\repo
+windows@windows_agent holds="the agent's settings" | AGENT~1
+windows@windows_agent holds="the agent's settings" | \\\\?\\C:\\Users\\me\\dev\\repo
+windows@windows_agent holds=none | src

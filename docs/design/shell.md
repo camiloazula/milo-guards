@@ -1978,9 +1978,9 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 
 | Wire name | What it finds |
 | --- | --- |
-| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs; archives such files with an option that deletes what it archives, or compresses them in place (`gzip ~/.bashrc`). |
+| `delete` | Deletes files beyond the workspace, the workspace itself, a sensitive or protected file, or a path known only when it runs, also what a search finds in a folder that holds a protected path (`find . -name x -delete`); archives such files with an option that deletes what it archives, or compresses them in place (`gzip ~/.bashrc`). |
 | `wipe_disk` | Formats, repartitions or writes over a disk; `dd` writes to a file only known when it runs ([below](#values-only-known-when-they-run)). |
-| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`, and by default GNU `cpio -i`, `pax -r` and `python -m tarfile -e` without `--filter`) or renamed as it runs (`pax -s`); writes an archive or a compressed file to such a file (`tar -cf ~/.bashrc src`, `gzip -d ~/.bashrc.gz`). |
+| `overwrite` | Writes into a file beyond the workspace, or a sensitive or protected one, or one a tool runs on its own, also through a database client (`\o`, `.output`, `COPY … TO`); unpacks an archive into such a folder (or copies files into one, `cpio -p`, `pax -rw`, `ditto`), or to the absolute paths stored in it (`tar -xP`, `cpio --absolute-filenames`, `jar xP`, `unrar -ep3`, and by default GNU `cpio -i`, `pax -r` and `python -m tarfile -e` without `--filter`) or renamed as it runs (`pax -s`); writes an archive or a compressed file to such a file (`tar -cf ~/.bashrc src`, `gzip -d ~/.bashrc.gz`); applies a patch, checks out paths, copies recursively or unpacks in a folder that holds a protected path, the workspace itself included (`git apply p.diff`, `cp -r tmpl/. .`). |
 | `git_discard` | Throws away work git cannot give back: uncommitted changes, untracked files, stashes, unmerged branches, tags deleted or moved, a submodule's changes. |
 | `git_remote` | Rewrites or deletes branches on a remote. |
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
@@ -2384,7 +2384,11 @@ A caller that used to stop on `killall node` stops seeing it: it was
 An archive unpacked into a folder writes into that folder, and the folder is
 judged as the destination of `cp` is, by where it resolves (see Paths). With
 no folder given, it is the working directory, as moved by a `cd`. The paths
-stored inside the archive are not in the line and are not read. `tar -P`
+stored inside the archive are not in the line and are not read, so a folder
+that holds a protected path, the workspace itself included, is an
+`overwrite` ("may change the agent's settings", see
+[Protected paths](#protected-paths)): `tar -xf x.tar` in a workspace with a
+protected `.agent`. `tar -P`
 (`--absolute-names`, bsdtar's `--absolute-paths`, any prefix of three letters
 or more) with a mode that extracts keeps them as stored, a leading `/` and
 `..` included, so they land anywhere: `overwrite` ("unpacks to absolute
@@ -3783,7 +3787,9 @@ any line is read so; `rename.ul` is util-linux's. `rename 's/\.htm$/.html/' *.ht
 is an accepted false alarm.
 
 What it does not read: unpacking an archive, `git checkout`, `git apply`,
-`git restore`, `git stash pop` and `patch` can write one without naming it;
+`git restore`, `git stash pop` and `patch` can write one without naming it
+(they are read for a protected path, which the caller names, see
+[Protected paths](#protected-paths));
 a recursive copy into the workspace folder itself, or into a folder that is not
 named like the first names of a place on the list, can replace one below it;
 `mv dir .github` renames a folder onto a name that holds one.
@@ -3828,6 +3834,37 @@ cannot be deleted or moved. With `Protected::file("/home/me/work/repo/conf/app/x
 | `cp -r other/. conf`, `cp -a app conf`, `rsync -a src/ conf/`, `Copy-Item -Recurse src conf`, `robocopy src conf /E`, `xcopy /s /y src conf` | `overwrite`: a recursive copy can replace anything below the folder |
 | `rm -rf **/y.yaml`, `rm -rf **/*.rs` | safe: a protected file has nothing below its name (with a protected folder `cfg` they are `delete`) |
 | `rm -rf .`, `rm -rf ~` | the workspace, the home directory: a risky place keeps its own words |
+
+A program that picks the files it changes itself, from data the line does
+not show, can reach a protected path below the folder it works in, so there
+the folder holds it when it is the protected path, is under it or holds it,
+whatever else it is, the workspace itself and a temporary folder included
+(core's `holds_protected`). A folder that holds none stays the agent's own,
+and so does a read. With `Protected::folder("/home/me/work/repo/.agent", ..)`:
+
+| Line | Verdict |
+| --- | --- |
+| `find . -name config.yaml -delete`, `find . -name '*.yaml' -exec rm {} +`, `find . -name '*.yaml' \| xargs rm`, `Get-ChildItem . -Filter *.yaml -Recurse \| Remove-Item` | `delete`, "deletes the agent's settings": what the search finds may be any entry below the folder |
+| `find . -name '*.yaml' -exec sed -i s/a/b/ {} +`, `find . -name '*.yaml' \| xargs sed -i s/a/b/` | `overwrite`, "edits the agent's settings" |
+| `git apply p.diff`, `patch -p1 < p.diff`, `git am`, `git checkout HEAD~1 -- .`, `git restore --source=HEAD~1 .` | `overwrite`, "may change the agent's settings": the targets are inside the patch or the revision |
+| `cp -r tmpl/. .`, `rsync -a tmpl/ .`, `Copy-Item -Recurse tmpl\* .`, `robocopy tmpl . /E` | `overwrite`, "writes to the agent's settings" |
+| `tar -xf x.tar`, `unzip x.zip`, `7z x x.7z`, `Expand-Archive x.zip -DestinationPath .` | `overwrite`, "may change the agent's settings" |
+| `find src -name '*.o' -delete`, `find . -name '*.yaml' -exec cat {} +`, `patch -d src -p1 < p.diff`, `git apply --check p.diff`, `cp -r tmpl/. dist`, `tar -xf x.tar -C build`, `git checkout -b feature` | safe: the folder holds no protected path, or nothing is written |
+
+What a search or a filtered listing hands on from inside a folder (`find .
+-name x`, `Get-ChildItem -Filter`) stands as an entry named `…` in it, a name
+that is not a wildcard or a device: it is judged as a plain file in the
+folder, and then, where that is harmless, as what the folder holds, so the
+same reading serves `find -delete`, the `{}` of `find -exec` (also inside a
+longer word, `{}.bak`) and what `xargs` is handed. A `git checkout` or `git
+restore` path with a wildcard is read by the folder it starts in, since git's
+`*` matches `/` too, and a pathspec with magic (`:/x`) as the whole folder.
+`patch` works in the folder `-d` moves it to; given an original file or `-o`
+it writes that one file, and a dry run (`--dry-run`, BSD's `-C`) writes
+nothing. `git apply` writes nothing with `--check`, `--cached`, or `--stat`,
+`--numstat` or `--summary` without `--apply`. What git writes from history
+in any other way (`git pull`, `git merge`, `git switch`, `git stash pop`,
+`git rebase`, a `git checkout` of a branch) is not read for a protected path.
 
 How the copy reads its operands: `Copy-Item` and `Move-Item` bind `-Path` at
 position 0 and `-Destination` at position 1, and a comma list of sources is
