@@ -206,7 +206,17 @@ multi-call firewall programs `xtables-nft-multi`, `xtables-legacy-multi` and
 `xtables-multi` run the program they name (`xtables-nft-multi iptables -F`
 is `iptables -F`), and their own names for it too: `main4` is `iptables`,
 `main6` is `ip6tables`, `restore4` and `restore6` are `iptables-restore`
-and `ip6tables-restore`, `save4` and `save6` their `-save`.
+and `ip6tables-restore`, `save4` and `save6` their `-save`. `nsenter` runs
+the program after its options in another process's namespaces (`nsenter -t
+1 -a systemctl stop sshd` is `systemctl stop sshd`): `-t`, `-N`, `-S` and
+`-G` (and `--target`, `--net-socket`, `--setuid`, `--setgid`, or a prefix
+that names one alone) take a value, the namespace options, `-r`, `-w` and
+`-W` take theirs only in the same word (`-m/proc/1/ns/mnt`, `-W/srv`), and
+`-w`, `-W` and `-r` (`--wd`, `--wdns`, `--root`) start the program in a
+folder of that process's, as entering its mount namespace does (`-m`,
+`--mount`, `-a`, `--all`), since the kernel then moves it to that
+namespace's root: where it runs is then only known when it does
+(`nsenter -t 1 -m rm -rf etc` deletes a path only known when it runs).
 
 `Start-Process` joins its argument list (`-ArgumentList`, `-Args`, or the
 words after the program) with spaces into one command line, which the program
@@ -470,7 +480,9 @@ each with the options it reads and those of them that take a value, as
 `getopt` reads them (in a bundle, `strace -fo log rm`, or attached):
 
 - Tracers and runners: `strace` (`-o`, `-e`, `-p`, `-s`, `--detach-on` and
-  its other options that take one), `ssh-agent`, `chronic` and `script`.
+  its other options that take one), `ltrace` (`-o`, `-e`, `-l`, `-p` and the
+  rest, as `getopt_long` reads them, a long one also by a shorter start of
+  it), `ssh-agent`, `chronic` and `script`.
   `script -c` (`--command`, wherever it stands, as util-linux reads it) runs
   a shell line; otherwise the words after the file it records to are the
   command (the BSDs and macOS), and `-p` plays a recording back and runs
@@ -506,6 +518,42 @@ each with the options it reads and those of them that take a value, as
   `--cd` names, read as a Linux path: `~` is the home directory, and an
   absolute Windows path is where WSL mounts it (`C:\Windows` is
   `/mnt/c/Windows`), so `wsl --cd C:\Windows rm -rf System32` is `delete`.
+
+**The files a wrapper writes its own output to**, beside the command it
+runs, are written as a redirect writes them: judged by where they land,
+from the folder the wrapper runs in, a file only known when it runs is not
+known, and a file the line writes and then runs is a script nobody read
+(see "A script a line writes and then runs" under [What cannot be read is
+risky](#what-cannot-be-read-is-risky)). So
+`strace -o /etc/passwd ls` is `overwrite` and `time -o ~/.bashrc ls` is
+`overwrite`, `writes to a shell startup file`, while `strace -o trace.log
+ls` is Safe. Only the wrapper's own options are read, before the command it
+runs (`strace ls -o /etc/passwd` gives `ls` its `-o`); every one is judged,
+not only the last, which is the one the program keeps.
+
+- `strace -o FILE` (in a bundle, `-fo FILE`, or attached, `-oFILE`) and
+  `--output FILE` (or `--output=FILE`). With `-ff` strace writes `FILE.PID`
+  beside `FILE`, and the guard judges `FILE`, in the same folder. A
+  `FILE` that starts with `|` or `!` is a command strace pipes its output to,
+  which a shell runs: it is read as a POSIX line of its own (`strace -o '|rm
+  -rf ~' ls` is `delete`), and one only known when it runs is `unknown`.
+- `ltrace -o FILE` and `--output FILE`, which may be shortened (`--out=`).
+- `time -o FILE` and `--output FILE` (GNU's, which may be shortened:
+  `--out`; `-a` and `--append` add to the file, which is a write too), the
+  BSDs' and macOS's `-o`. bash's and zsh's own `time` takes no `-o`, but a
+  POSIX shell without one runs the program, so the option is read whichever
+  runs. The options are read as GNU `time` reads them for what it runs too:
+  `time -ao log rm -rf ~` and `time --out log rm -rf ~` judge the `rm`.
+- `script FILE`, the file it records to: the first word after its options,
+  after `-c` too, or `typescript` in the folder it runs in when there is
+  none (`cd /etc && script` is `overwrite`), unless `-p` plays it back,
+  which reads it (a flag letter `-p`, as in `-dp`; not a `p` in an option's
+  value, as in `-cpwd` or `-Bperf.log`, nor the value `-c -p`); and the files of util-linux's `-B`, `-I`, `-O` and `-T`
+  (`--log-io`, `--log-in`, `--log-out`, `--log-timing`, any of them also
+  shortened), `-t` (its file attached on util-linux, a time on the BSDs,
+  read as a file either way) and `--timing=FILE`, wherever they stand, as
+  util-linux reads its options, and FreeBSD's `-F pipe`. Both readings of
+  `-F` are taken, so the file of either is judged.
 
 GNU **`parallel`** runs a command once for each value: its options, the
 command, then the values after `:::` (or the files after `::::`, or `-a`),
@@ -561,8 +609,18 @@ shell handed an input of its own, a file redirected onto it or something
 piped into it, hands it on to what its script runs: `cmd /c python < x.py`
 and `type x.py | cmd /c python` run `x.py`, which is `Unknown` as `python <
 x.py` is (an interpreter in cmd reads its input when it is handed one, see
-[Inline code](#inline-code)). The null device holds nothing to read, so
-`python < NUL` is handed no input.
+[Inline code](#inline-code)). A handle copied onto the input hands it one
+the line does not show, as a file does: cmd reads `N<&M` and `N>&M` alike as
+a copy of handle `M` into handle `N` (0 for `<&` and 1 for `>&` when it is
+not written), so `python 0<&3`, `python <&3` and `python 0>&3` are `Unknown`
+and `cmd 0<&3` is `RunInput`, while `python 0<&0`, `python 2>&1` and
+`python >&3` are handed no new input. Every input redirect of a command
+counts, whatever its order. cmd applies redirects left to right and the last
+one for handle 0 wins, so in `python < x.py < NUL` python reads nothing, but
+the guard still reads `x.py` as an input given on purpose: it errs on the
+risky side rather than track which redirect wins. The null device holds
+nothing to read, so `python < NUL` is handed no input, but
+`python < NUL < x.py` and `python < x.py < NUL` are.
 
 cmd does not split a program's arguments: it hands every program it starts,
 all but its own built-in commands, the text after its name as written, with
@@ -2821,6 +2879,58 @@ of their strictest, so each family below was added on that test.
   system/com.apple.alf`, `launchctl stop com.apple.XProtect.daemon.scan`).
   A `kill` whose ids come from a substitution (`kill $(pidof auditd)`) is
   `stop_unknown`, as every such `kill` is.
+- **Other service managers.** The rest are read through the same two
+  verbs: a stop is a stop of each service it names, judged by the names
+  above (one that protects the machine is `system_settings`, one the system
+  needs `stop_system`, one only known when it runs `system_settings`, any
+  other safe), and taking a service out of what starts at boot is
+  `system_settings` whatever the service, as `systemctl disable` is.
+  OpenBSD's `rcctl stop` stops each daemon, and `rcctl disable`, `rcctl set
+  daemon status off` disables it; a command, a variable or a value of `set
+  status` only known when it runs may be either, and `start`, `restart`,
+  `check`, `ls`, `get` and `enable` are safe, as is `rcctl set daemon flags
+  NO`, which `rcctl` refuses. FreeBSD's
+  `sysrc` disables a service when it sets a `NAME_enable` to anything
+  `rc.subr` does not read as on (`YES`, `TRUE`, `ON`, `1`, without case),
+  changes one with `+=` or `-=`, or removes one (`-x`, `-X`); a word only
+  known when it runs may be such an assignment unless what is known of it
+  names another variable, and an option only known when it runs may be `-x`.
+  `sysrc -c` only checks, and `sysrc -f FILE` of a file in the workspace is
+  the workspace's own (a file elsewhere, or only known when it runs, is not,
+  nor is any under `-R` or `-j`, where `sysrc` runs again in that root or
+  jail and reads the file there).
+  s6's `s6-svc` stops each service folder under `-d` or `-D`, and under
+  `-p`, `-P` or `-s STOP` (a pause freezes it, as runit's `sv pause` does),
+  or an option only known when it runs; `-u`, `-r`, `-l` and the signals
+  that end the process, which s6 starts again, are safe, unless `-O`, `-o`
+  or `-Q` says not to start it again: then a signal that ends it (any but
+  `CONT` and `WINCH`) or a restart stops it (`s6-svc -Ot`). `s6-rc -d change` (or `-D`, or
+  `stop`) stops each service, `-a` adds every service that is up (`stops
+  every system service`), `-p` takes down every service it is not given,
+  as `isolate` does, and `-n` is a dry run. `dinitctl stop` and `release`
+  stop each service, `signal SIG service` is read as `systemctl kill`,
+  `disable` disables it, and `shutdown` is `stop_system`; `-u` (`--user`)
+  is the user's own instance unless a later `-s` (`--system`), a socket
+  (`-p`, `--socket-path`), which `dinitctl` uses whatever `-u` says, or an
+  argument only known when it runs may name the system's. `insserv -r`
+  (`--remove` or a prefix of it, or an option only known when it runs)
+  takes a script out of the boot sequence, unless `-n` makes it a dry run.
+  The legacy `update-rc.d name stop NN runlevel... .` disables the service
+  when a stop group names a runlevel the system runs in (`2` to `5`, or
+  `S`), one only known when it runs, or none (`update-rc.d ssh stop`); stopping it in `0`, `1` and `6`,
+  as the old default did, is safe. A script run from a runlevel folder
+  (`/etc/rc0.d` to `/etc/rc6.d`, `/etc/rcS.d`, and the same under
+  `/etc/rc.d`) is the init script its link names, without the `S` or `K`
+  and the number that order it: `/etc/rc2.d/K01ssh stop` is `stop_system`
+  as `/etc/init.d/ssh stop` is. Renaming or linking one (`mv
+  /etc/rc2.d/S01ssh /etc/rc2.d/K01ssh`) is already a write to a system
+  folder. Homebrew's `brew services stop` and `kill` (or a command only
+  known when it runs) stop each formula's service, and `--all` every one
+  it runs, any of which may protect the machine: `brew services stop
+  postgresql` is safe, `brew services stop fail2ban` and `brew services stop
+  --all` are not. `nsenter` is a wrapper: what it runs in the init
+  process's namespaces is judged (`nsenter -t 1 -a systemctl stop sshd` is
+  `stop_system`; see [Wrappers and scripts](#wrappers-and-scripts)).
 - **Backups.** `tmutil delete`, `deletelocalsnapshots`, `deleteinprogress`,
   `thinlocalsnapshots`, `disable`, `disablelocal` and `removedestination`;
   `listbackups`, `status`, `startbackup` and `enable` are safe.
@@ -3311,6 +3421,90 @@ own: the home directory, a system folder, the root of a disk, the workspace
 itself, its `.git`, keys and shell startup files, and the paths the caller
 protects.
 
+### Programs that write the file they name
+
+Beyond a redirect, a copy and the write cmdlets, a few programs write a file
+their line names, and each file is judged as a write, where it lands: beyond
+the workspace, a startup file, a file a tool runs on its own or a protected
+path is `overwrite`, and a file in the workspace stays safe. A program the
+guard does not know is not judged as a writer; these are the ones it knows.
+
+- **`curl.exe` and `wget.exe` in PowerShell** are read as `curl` and `wget`
+  are in the other shells (`-o`, `-O`, `--output`, `-P`): a bare `curl` or
+  `wget` there is `Invoke-WebRequest`, judged by its `-OutFile`.
+- **`certutil`**: `-urlcache` downloads its URL to each operand after it, and
+  with `-split` and no file to the URL's name in the folder the line is in
+  (`cd /d C:\Windows & certutil -urlcache -split -f URL/a.dll`);
+  `-urlcache *` works on the cache and writes no file. `-decode`,
+  `-encode`, `-decodehex` and `-encodehex` write each operand after the
+  first. A verb or an option is `-`, `/` or a Unicode dash certutil reads as
+  `-` (U+2010 to U+2015, U+2212: `–urlcache`) and a name, in any case
+  (`/URLCache`); every other word is an operand, so the value of an option
+  only adds a file judged where it lands. A file it writes is also one a
+  later run of a script on the line is judged for, as `curl -o`'s is.
+- **`Export-Csv`** (`epcsv`) **and `Export-Clixml`** write the file `-Path`,
+  `-LiteralPath` or the first position names, read by the cmdlet's own
+  parameters as the write cmdlets are (`Export-Csv out.csv ';'` takes `;` as
+  the delimiter). `ConvertTo-Json | Set-Content` and `Out-File` are the write
+  cmdlets' already.
+- **`sponge FILE`** (`-a` too) writes what it read to each operand.
+- **`awk -i inplace`**: gawk's `inplace` library (`-i inplace`, `-iinplace`,
+  `--include[=]inplace`, `inplace.awk`, or `@include "inplace"` in the
+  program) edits each file awk reads, every operand after the program but
+  `-` and an assignment (`x=1`). Any other library is code the guard does
+  not read, `unknown` as `-f script` is; one only known when it runs
+  (`-i "$L"`) is both, the edit said as one that may happen. The options are
+  read as gawk's `getopt_long` reads them: a bundle a letter at a time
+  (`-bi inplace`, `-Oiinplace`), `f E i l v F e Z` taking the rest of the
+  bundle or else the next word and `d D L o p` only the rest; a long option
+  by any prefix only one name starts with (`--in inplace`, `--fil s.awk`),
+  and one more than one name starts with (`--p`) an option the guard cannot
+  tell, `unknown`; `-W name` as `--name`; `-E` the last option. The file
+  `-o`, `-p` or `-d` is given (`-o/etc/x`, `--profile=FILE`) is a write.
+- **`ex`, `vi`, `vim`, `nvim`, `view`, `vimdiff` and `gvim`**, and vim under
+  its other names (`vim.tiny`, `vim.basic`, `vimx`, `rvim`, `rview`,
+  `gview`, `evim`, ...), edit each file they are given: the keys typed may
+  hold `:wq` as well as a `-c` may, so every file operand is a write,
+  whatever the commands (`vim /etc/hosts` is `overwrite` with the reason
+  `edits a system folder`); but a file opened read-only (`-R`, `-M`, `-m`,
+  `view`, `rview`, `gview`) is written only by a command that writes it
+  (`-c 'wq!'`). The options are read as vim reads them: a bundle a letter at
+  a time (`-es`, `-sc wq`), a letter that takes a value taking the rest of
+  the bundle or the next argument, `-s` silent in ex mode (`ex`, after `-e`
+  or `-E`) and otherwise a script of keys, `-V[N][file]` only the rest of its
+  bundle, a level and a file it writes. `-w`, `-W`, `-V`, `--startuptime`,
+  `--log` and `-i` (not `NONE`) write the file they name. An editor handed an
+  input (a pipe, `< file`, a here-document) reads its ex commands from there
+  in ex mode, and the keys it types otherwise: `unknown`, "runs code the guard
+  does not read", or `run_downloaded` for a download (`curl … | vim -es a`),
+  as an interpreter's input is; not when the input is the text it edits
+  (`vim -` out of ex mode) or `-s` gives the keys. A here-document of plain
+  text in ex mode is read as more ex commands (`ex -s a <<EOF`, a line to a
+  command). The ex commands of `-c`, `--cmd` and `+cmd` are read: a write
+  (`w`, `wq`, `x`, `update`, `saveas`, their forms that take all buffers,
+  after a range, with `!` or `>>`) writes the file it names, which is only
+  known when it runs when vim expands it (`#`, `$X`, a wildcard, a backtick,
+  `%` but where it stands for the one file edited: `w %.bak`); quitting, `:s` (without a `\=` expression), `:d`, `:j`, `:m`,
+  `:t`, `:co`, `:p`, `:sort`, a `:set` of options that only change how the
+  text is read or written (`set ff=unix`, `se noet ts=4`), a comment (`"`),
+  a range alone and a `:g` or `:v` running these write nothing else. A bar or
+  a new line ends each command but `:g`, which a new line ends, as in vim, so
+  `%s/a|b/c/` runs `b/c/`. Any other command (`!`, `w !sh`, `r`, `call`,
+  `source`, `normal`, `edit`, another `set`), a command only known when it
+  runs, a script `-S` or `-s` reads, nvim's Lua script `-l` (`-ll`, every
+  word after it the script's), a vimrc `-u` names (not `NONE`, `NORC` or
+  `DEFAULTS`), `--remote-send`, `--remote-expr` and an argument only known
+  when it runs that may be an option are code the guard does not read:
+  `unknown`, "runs editor commands the guard does not read".
+
+| Line | Verdict |
+| --- | --- |
+| `curl.exe -o C:\Windows\x URL`, `certutil -urlcache -f URL C:\Windows\x`, `Get-Process \| Export-Csv C:\Windows\x.csv`, `sort a \| sponge /etc/x`, `awk -i inplace 1 /etc/x`, `ex -sc wq /etc/x`, `vim -es /etc/x` | `overwrite`: a system folder |
+| `curl.exe -o .envrc URL`, `certutil -decode a.b64 .vscode\tasks.json`, `sponge ~/.bashrc`, `ex -sc wq .envrc`, `ex -sc 'w ~/.bashrc' a` | `overwrite`: a startup file, or one a tool runs on its own |
+| `curl.exe -o out.txt URL`, `certutil -urlcache -f URL out.txt`, `Export-Csv out.csv`, `sponge a`, `awk -i inplace 1 src/a.txt`, `vim -es -c '%s/a/b/g' -c wq src/a.txt` | safe |
+| `awk -i lib 1 a`, `awk --fil s.awk a`, `ex -sc '!rm -rf ~' a`, `vim -S s.vim a`, `nvim -l s.lua`, `vim -es -c 'e /etc/x' -c wq a`, `echo 'w /etc/x' \| vim -es a` | `unknown` |
+| `view /etc/hosts`, `vim -R /etc/hosts`, `ex -sc 'w %.bak' -c q src/a.txt`, `ex -s a <<EOF` with `%s/a/b/g` and `wq` | safe |
+
 ### Files a tool runs on its own
 
 A workspace holds files that something runs without anyone typing a command:
@@ -3323,8 +3517,9 @@ writes one is `overwrite` with the reason `writes to a file a tool runs on its
 own` (the verb of the line: `edits` for `sed -i`, `creates` for `touch`). The
 rule is the same as for every sensitive place: core's `place_into` answers it,
 so every writer the guard knows (a redirect, `tee`, `cp`, `mv`, `ln`,
-`install`, `rsync`, `sed -i`, `perl -i`, `dd`, `curl -o`, `Set-Content`,
-`Out-File`, `Copy-Item`, `copy`, `xcopy`, ...) finds it without a rule of its
+`install`, `rsync`, `sed -i`, `perl -i`, `dd`, `curl -o`, `certutil`, `sponge`,
+`awk -i inplace`, `ex`, `vim`, `Set-Content`, `Out-File`, `Export-Csv`,
+`Copy-Item`, `copy`, `xcopy`, ...) finds it without a rule of its
 own.
 
 | Line | Verdict |
@@ -4186,10 +4381,26 @@ Some risks only show when units are read together.
 - **Links.** A link judges its target too. `ln ~/.zshrc z` is risky, since a
   later write to `z` lands on the startup file.
 - **A script a line writes and then runs.** It is risky however it was
-  written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy or
-  `tee`. `curl -fsSLo i.sh URL && sh i.sh` is `unknown` ("runs a script the
-  same line writes"; `run_downloaded` is a download piped into a shell). The
-  guard matches the two by the file they name (core's `key`).
+  written: a redirect, a download (`curl -o`, `curl -O`, `wget`), a copy,
+  `tee`, or a database client on this machine (`.output`, `.once`, `\o`,
+  `psql -o`, `mysql --tee` and every other file "A file it writes" under the
+  database clients lists). `curl -fsSLo i.sh URL && sh i.sh` is `unknown`
+  ("runs a script the same line writes"; `run_downloaded` is a download piped
+  into a shell), and so is `sqlite3 x.db '.output run.sh' 'select 1'; sh
+  run.sh`. The guard matches the two by the file they name (core's `key`).
+  A client reads the same statements for this as its rule judges (its
+  options, operands, a here-document, a stage before it). A folder it writes
+  into (`EXPORT DATABASE 'DIR'`) holds files by names the line does not show,
+  so any script in it may be one. One that moved (`\cd`, `.cd`) wrote its
+  files in a folder the line does not say, so a script of the same name, run
+  from any folder, may be one of them. A program a client runs (`.shell`,
+  `\!`, a pager) and reads as a line of its own writes files the line
+  writes, so `sqlite3 x.db '.shell echo x > run.sh'; sh run.sh` is `unknown`;
+  each is read for this once more, on a budget as large as the one it is
+  judged on, and one past it may write any file. Such a program runs after
+  the files the line writes, the client's own and those its other programs
+  write too: `sqlite3 x.db '.output run.sh' '.shell sh run.sh'` and `psql -c
+  '\! echo x > run.sh' -c '\! sh run.sh'` are `unknown`.
   When the line writes a file (a device such as `/dev/null` does not count),
   a script whose path cannot be placed (after a `cd` to somewhere unknown, or
   `bash C:x` after a `cd`) is `unknown`, since it may be the one the line wrote.
@@ -5180,6 +5391,9 @@ by matching the text:
   "Each client's words" below). A file written by a client in a container or
   on another machine is not on this machine and is not judged, but a database
   `.backup` or `.save` replaces there is not the agent's own: `drop_data`.
+  A file a client here writes is one the line writes: a later run of it is
+  "runs a script the same line writes" (see "A script a line writes and then
+  runs").
 - **A program it runs with a command line the text shows** is that line, split
   by the POSIX grammar and judged by every rule as a line of its own, as `sh
   -c` is: `psql`'s and `mysql`'s `\!`, `mysql`'s `system` and `pager` (`\P`),
@@ -5500,6 +5714,53 @@ cmdlets that only change what this machine is signed in to
 as do listing and creating (`Get-AzVM`, `Get-S3Bucket`, `New-AzResourceGroup`).
 `-WhatIf` does not make one safe: a quoted `'-WhatIf'` is a value, and the
 guard reads the two as the same word.
+
+Other verbs of those modules destroy too, and are `destroy_resources` the
+same way. A `Clear-` or `Reset-` cmdlet of any of the clouds wipes what a
+resource holds or sets it back (`Clear-SQSQueue` purges a queue,
+`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
+`Reset-RDSDBParameterGroup` sets a database's parameters back). An
+`Unregister-` cmdlet of AWS is one of its deregister or disassociate verbs
+(`Unregister-EC2Image`, `Unregister-ECSTaskDefinition`,
+`Unregister-ELB2Target`), and one of Azure takes a provider or a server off a
+subscription (`Unregister-AzResourceProvider`). A `Disable-` cmdlet is one
+when its noun names a key or a backup: it ends in `Key` or `Keys`, or holds
+`Backup` or `Retention` (`Disable-KMSKey`,
+`Disable-AzRecoveryServicesBackupProtection`,
+`Disable-AzStorageDeleteRetentionPolicy`); `Disable-KMSKeyRotation` is not.
+The AWS cmdlets its terminate verbs are named are: `Stop-EC2Instance` with
+`-Terminate` (by any prefix of the name, in any case; `-Terminate:$false` or
+`:0` is off, a value only known when it runs and a splat may turn it on, and
+the finding then says it may), `Stop-EBEnvironment`, `Stop-EMRJobFlow` and
+`Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion` schedules a
+key's deletion. `Stop-EC2Instance` without `-Terminate` stops instances and
+stays safe, also with a variable as an argument (`-InstanceId $id`), whose
+value is a value whatever it holds; so do `Stop-AzVM` and `Get-EC2Image`.
+PowerShell also binds a parameter the line does not write from
+`$PSDefaultParameterValues`: on a line that sets it (an entry, the whole
+table, `.Add`, or `Set-Variable` by the variable's name), any key may reach
+`Stop-EC2Instance:Terminate` (`'*:Terminate'`, `'Stop-EC2Instance:T*'`), so a
+`Stop-EC2Instance` that does not name the switch may terminate, and the
+finding says so. A default set before the line (in a profile) is not the
+line's. Nor does the guard read the properties of objects piped to the
+cmdlet, which the AWS Tools bind by property name: the current AWS Tools
+(v4 and v5) have no `-Terminate` on `Stop-EC2Instance` at all, and reading
+every piped one as a terminate would flag `Get-EC2Instance |
+Stop-EC2Instance`. Exchange's cmdlets for mobile devices (`ActiveSyncDevice`,
+which starts like the AWS prefix `act`, and its newer name `MobileDevice`)
+destroy off the machine too: `Clear-ActiveSyncDevice` and
+`Clear-MobileDevice` wipe the phone, and a `Remove-` one takes a device or a
+rule for devices off the organization; listing them stays safe. A program
+whose name has an extension (`clear-cache.cmd`) is found on the path, and is
+no module's cmdlet. The cmdlets that only change the module's
+settings on this machine stay safe (`Clear-AzContext`, `Clear-AzDefault`,
+`Clear-AzConfig`, `Disable-AzContextAutosave`, and AWS's own `AWS` noun:
+`Clear-AWSCredential`, `Clear-AWSHistory`), and so do other modules' cmdlets
+of these verbs whose noun starts like a prefix (`Clear-Content`, which is
+judged as a write, `Clear-PcsvDeviceLog`,
+`Reset-ComputerMachinePassword`, `Reset-ADServiceAccountPassword`,
+`Unregister-ScheduledTask`, `Unregister-ScheduledJob`,
+`Unregister-SecretVault`, `Disable-ScheduledTask`, `Disable-MMAgent`).
 
 A family of delete verbs read by its prefix (`delete-*` for `gcloud`, `az`
 and `doctl`, `purge-*` for `az`) is a verb only where a verb can be: after a

@@ -1112,6 +1112,13 @@ pub(crate) struct Split {
     /// and has a function body, a loop, an alias or a trap, which may run
     /// after that: what they hold is read with it on (see [`split`]).
     autocd_bodies: bool,
+    /// Whether the line sets `$PSDefaultParameterValues`, or may: by an
+    /// assignment to it or to one of its entries, an entry added by its
+    /// method (`.Add(key, value)`), or a cmdlet that sets a variable by its
+    /// name (`Set-Variable PSDefaultParameterValues @{…}`). A cmdlet it runs
+    /// may then take a parameter the line does not write for it
+    /// (`'Stop-EC2Instance:Terminate'`).
+    pub(crate) defaults: bool,
     /// The folders the last unit added to [`Self::stayed`], when it is a
     /// plain `cd`: the right side of `&&` after it runs only when it ran.
     last_stayed: Vec<Option<Arg>>,
@@ -1906,6 +1913,7 @@ impl Split {
             moved = moved.and_then(|target| self.cmd_target(&unit, target));
         }
         self.cdable |= unit.shell == Shell::Posix && cdable(&unit);
+        self.defaults |= unit.shell == Shell::PowerShell && names_defaults(&unit);
         if unit.shell == Shell::Posix && (self.cdable || self.reassigned("CDPATH")) {
             moved = moved.map(|target| by_cdpath(&unit, target));
         }
@@ -4374,6 +4382,36 @@ fn cdable(unit: &Unit) -> bool {
             matches!(name, "cdablevars" | "nocdablevars")
         }
         None => key != "set",
+    })
+}
+
+/// Whether `unit` is a PowerShell cmdlet that sets a variable, or an item
+/// of the `Variable:` drive, by its name, and names
+/// `$PSDefaultParameterValues` (`Set-Variable PSDefaultParameterValues
+/// @{…}`, `Set-Item Variable:PSDefaultParameterValues $d`): see
+/// [`Split::defaults`].
+fn names_defaults(unit: &Unit) -> bool {
+    let Some(key) = unit.key() else {
+        return false;
+    };
+    if !matches!(
+        key.as_str(),
+        "set-variable"
+            | "sv"
+            | "set"
+            | "new-variable"
+            | "nv"
+            | "set-item"
+            | "si"
+            | "new-item"
+            | "ni"
+    ) {
+        return false;
+    }
+    unit.args.iter().any(|arg| {
+        arg.text()
+            .to_ascii_lowercase()
+            .contains("psdefaultparametervalues")
     })
 }
 

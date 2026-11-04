@@ -1,13 +1,14 @@
 //! The rules about files: what a line deletes, moves, copies and writes.
 
 use super::{
-    dd_outputs, downloads_to, hidden_matches, or_here, sources_and_destination, Checker, Pattern,
-    CONTENTS, COPY_VALUED,
+    certutil_writes, dd_outputs, downloads_to, hidden_matches, or_here, sources_and_destination,
+    Checker, Pattern, CONTENTS, COPY_VALUED,
 };
 use crate::launch::{find_targets, find_unread_primary, perl_edits};
 use crate::path::{Access, Place};
 use crate::powershell::{
-    Param, Params, CLEAR_CONTENT, FOREACH_OBJECT, NEW_ITEM, OUT_FILE, SET_CONTENT, TEE_OBJECT,
+    Param, Params, CLEAR_CONTENT, EXPORT_CLIXML, EXPORT_CSV, FOREACH_OBJECT, NEW_ITEM, OUT_FILE,
+    SET_CONTENT, TEE_OBJECT,
 };
 use crate::unit::{
     could_be, flagged, has_flag, has_switch, may_be_option, operands, operands_split, plain,
@@ -612,11 +613,36 @@ impl Checker<'_> {
                     }
                 }
             }
-            "curl" | "wget" if shell != Shell::PowerShell => {
+            // In PowerShell the key is `curl` only for the program itself
+            // (`curl.exe`): a bare `curl` is `Invoke-WebRequest`.
+            "curl" | "wget" => {
                 for file in downloads_to(key, args) {
                     self.write(shell, unit.scope(), &file, "writes to");
                 }
             }
+            "certutil" => {
+                for file in certutil_writes(args) {
+                    self.write(shell, unit.scope(), &file, "writes to");
+                }
+            }
+            "export-csv" | "export-clixml" if shell == Shell::PowerShell => {
+                let own: &[Param] = if key == "export-csv" {
+                    &EXPORT_CSV
+                } else {
+                    &EXPORT_CLIXML
+                };
+                let params = Params::cmdlet(args, own);
+                for file in item_paths(unit, &params, &["path", "literalpath"]) {
+                    self.write(shell, unit.scope(), file, "writes to");
+                }
+            }
+            // `sponge FILE` writes what it read to the file.
+            "sponge" => {
+                for file in operands(args, &[]) {
+                    self.write(shell, unit.scope(), file, "writes to");
+                }
+            }
+            key if super::EDITORS.contains(&key) => self.editor(unit, key),
             "invoke-webrequest" | "invoke-restmethod" => {
                 if let Some(file) = Params::read(args).values(&["outfile"]).first() {
                     self.write(shell, unit.scope(), file, "writes to");
@@ -675,7 +701,7 @@ fn is_splat(arg: &Arg) -> bool {
 }
 
 /// Whether any argument is a splat.
-fn splatted(args: &[Arg]) -> bool {
+pub(super) fn splatted(args: &[Arg]) -> bool {
     args.iter().any(is_splat)
 }
 

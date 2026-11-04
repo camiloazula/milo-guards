@@ -1106,6 +1106,15 @@ fn machine_settings_given_many_patterns_names_or_options_are_read_in_time() {
         (Shell::Posix, fit("x ", "semanage fcontext ", "")),
         (Shell::Posix, fit("--info ALL ", "grubby ", "")),
         (Shell::PowerShell, fit("x ", "service ", " stop")),
+        (Shell::Posix, fit("'d*@x*' ", "rcctl stop ", "")),
+        (Shell::Posix, fit("x_enable=YES ", "sysrc ", "")),
+        (Shell::Posix, fit("-wd ", "s6-svc ", " /run/service/x")),
+        (Shell::Posix, fit("d*@x* ", "s6-rc -d change ", "")),
+        (Shell::Posix, fit("--force ", "dinitctl ", " stop x")),
+        (Shell::Posix, fit("-v ", "insserv ", " x")),
+        (Shell::Posix, fit("start 20 2 . ", "update-rc.d x ", "")),
+        (Shell::Posix, fit("'d*@x*' ", "brew services stop ", "")),
+        (Shell::Posix, fit("-a ", "nsenter ", " true")),
     ];
     for (shell, line) in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -1114,5 +1123,36 @@ fn machine_settings_given_many_patterns_names_or_options_are_read_in_time() {
         let _ = classify(line, *shell, &paths);
         let took = started.elapsed();
         assert!(took < limit, "{took:?} for {:?} in {shell:?}", &line[..20]);
+    }
+}
+
+#[test]
+#[cfg_attr(
+    coverage,
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn writers_given_many_files_commands_or_libraries_are_read_in_linear_time() {
+    let _serial = serial();
+    // Each file, ex command, option and library is read once: ex commands
+    // joined by bars, a `:g` that runs many, a long pattern, many `-c`
+    // options, awk's `@include`s and operands, and certutil's operands.
+    let (shell, paths) = (Shell::Posix, posix());
+    for (head, part, tail) in [
+        ("ex -sc '", "s/a/b/|", "wq' a"),
+        ("ex -sc 'g/x/", "d|", "' a"),
+        ("ex -sc '%s/", "\\/a", "/b/|wq' a"),
+        ("vim -es ", "-c wq ", "a"),
+        ("vim -es ", "a b ", ""),
+        ("awk '", "@include \"inplace\" ", "1' a"),
+        ("awk -i inplace 1 ", "a x=1 ", ""),
+        ("sort a | sponge ", "a ", ""),
+        ("certutil -decode a ", "b ", ""),
+    ] {
+        assert_linear(&format!("{head}{part}…"), shell, &paths, |size| {
+            format!(
+                "{head}{}{tail}",
+                filled(part, size, head.len() + tail.len())
+            )
+        });
     }
 }
