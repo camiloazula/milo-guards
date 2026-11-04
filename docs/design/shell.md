@@ -840,8 +840,11 @@ build at the length limit, the slowest of them went from 143 ms to 187 ms
 (PowerShell `;>` repeated), from 126 ms to 185 ms (PowerShell `< `), from
 94 ms to 158 ms (POSIX `>a`) and from about 105 ms to about 170 ms (`bun
 exec` repeated, which starts a script at each): three quarters of the
-250 ms the timing test allows. A cheaper count, one that does not log every
-character, is left to do. These are examples of what was
+250 ms the timing test then allowed, which left a busy machine no room. The
+timing test now holds each of these shapes to how its time grows (the line
+at the length limit against one a quarter as long), and only the shapes the
+guard reads to a count to a fixed bound. A cheaper count, one that does not
+log every character, is left to do. These are examples of what was
 measured, not every slow shape: a new measurement can find another, and the
 list is not a promise that anything else is fast.
 
@@ -6997,19 +7000,28 @@ are each held to the bound;
   such as `pwsh -wd:x …` or a stage that feeds many clients, comes back early
   past the count, so its longer line may be the quicker; `assert_linear`
   fails on that, and the shape holds each of several lengths up to and past
-  the count to a fixed bound instead (`assert_within`). The worst of the random
-  lines, and a line at the length limit
-  in each of fourteen shapes in each shell (a chain, a pipeline and a
-  conjunction with each shell's own separator: `;` is no separator in cmd, `&`
-  is), classify and give `effect` within a bound (500 ms and 2 s). In an
-  optimized build the longest takes under 200 ms, and most are far quicker. Lines that made `find -exec` build
+  the count to a fixed bound instead (`assert_within`). A fixed bound keeps
+  at least four times room over what an optimized build takes here with
+  another gate running beside it; a row that comes nearer its bound is held
+  to how its time grows instead, never given a wider bound. The worst of the
+  random lines classifies within 500 ms. A line at the length limit in each
+  of twenty shapes in each shell (a chain, a pipeline and a conjunction with
+  each shell's own separator: `;` is no separator in cmd, `&` is), and the
+  shapes that once stalled a grammar or a rule, are each held to the time of
+  the same shape a quarter as long (with `classify` and `effect` together
+  for the first); the ones PowerShell or a grammar's log reads only to a
+  count (brackets left open, the noise it recovers from at every token) are
+  held to 250 ms at each of seven lengths from 1 KB to the limit. At the
+  length limit the slowest, `Set-Content @p` after a table it binds, takes
+  most of a second in an optimized build on a busy machine, and most are far
+  quicker. Lines that made `find -exec` build
   gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
   ones of several levels, are timed the same, as are `parallel` lines that
   would build megabytes of jobs and the other wrappers that read their words
   as a command (`wsl`, `env -S`, `nix run`, `nix shell`, `nix-shell`,
-  `limactl shell`, `sem`, the secret runners), at the length limit, and
-  PowerShell lines at the length limit that use a name the line sets as an
-  alias, to a hundred commands or to one, in every command after it. Loops with a `cd`, and function bodies a `cd` comes after, are
+  `limactl shell`, `sem`, the secret runners), at the length limit.
+  PowerShell lines that use a name the line sets as an alias, to a hundred
+  commands or to one, in every command after it, are held to linear time. Loops with a `cd`, and function bodies a `cd` comes after, are
   held to linear time: one after another, a hundred deep around a long body,
   a function called after `cd`s to many folders, and a `TRAPEXIT` function
   after many `cd`s that may fail.

@@ -59,7 +59,10 @@ time of the shorter, and such a shape holds each of several lengths, up to
 and past the count, to a fixed limit instead (`assert_within`). Where it
 holds a line to a fixed limit, the limit
 leaves room for a machine several times slower and busy with another gate:
-about ten times what an optimized build takes here.
+about ten times what an optimized build takes here, and never less than four
+times what it takes with another gate running beside it. A row that comes
+nearer its bound is not given a wider one: it is held to how its time grows
+instead, or made quicker.
 
 `just advisories` is not part of `just verify`. It checks the RustSec database
 (`cargo deny check advisories`), which needs the network and changes without a

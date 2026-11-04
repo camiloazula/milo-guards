@@ -409,3 +409,10 @@ pub type Maker<'a> = &'a dyn Fn(usize) -> String;
 pub fn filled(part: &str, size: usize, slack: usize) -> String {
     part.repeat((size - slack) / part.len())
 }
+
+/// `count`, the count a line of 64 KB has, scaled to a line of `size`, for
+/// [`assert_linear`]: a row written at the length limit, and the same row a
+/// quarter as long.
+pub fn at(count: usize, size: usize) -> usize {
+    count * size / (64 * 1024)
+}

@@ -15,7 +15,7 @@
 
 mod common;
 
-use common::{assert_linear, check, posix, Maker};
+use common::{assert_linear, at, check, posix, Maker};
 use milo_guards_shell::{Rule, Shell};
 
 #[test]
@@ -30,11 +30,6 @@ fn names(before: &str, after: &str, count: usize) -> String {
         let _ = write!(line, "{before}{at}{after}");
         line
     })
-}
-
-/// `count` scaled to a line of `size`: the count a line of 64 KB has.
-fn at(count: usize, size: usize) -> usize {
-    count * size / (64 * 1024)
 }
 
 #[test]
