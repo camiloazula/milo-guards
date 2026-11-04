@@ -1221,6 +1221,24 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
             "f() { rm -rf b > o; cd x; }; f; ",
             "",
         ),
+        // zsh's `repeat` runs its body again, as a loop does.
+        (
+            "repeat 2 { … cd …; }…",
+            "repeat 2 { rm -rf b > o; cd x; }; ",
+            "",
+        ),
+        (
+            "repeat 2 do … cd …; done…",
+            "repeat 2 do rm -rf b > o; cd x; done; ",
+            "",
+        ),
+        // A short `repeat` repeats the chain its command starts: each one
+        // in the chain is a body to the end of it.
+        (
+            "repeat 2 a && … cd …",
+            "repeat 2 rm -rf b > o && cd x && ",
+            "ls",
+        ),
         // An alias's value is a body too, read from where it is used.
         ("alias x='…'…; cd /", "alias x='rm -rf b > o'; x; ", "cd /"),
         (
@@ -1263,6 +1281,37 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
                 "{open}{}cd /; {close}",
                 filled("rm -rf b > o < i; ", size, slack)
             )
+        });
+    }
+    // The grammar reads a `repeat`'s body as the commands after it, so its
+    // bodies nest as deep as the line is long.
+    for (what, open, close) in [
+        (
+            "repeat 2 { … (nested to the length)",
+            "repeat 2 { rm -rf b > o; cd x; ",
+            "}; ",
+        ),
+        (
+            "repeat 2 do … (nested to the length)",
+            "repeat 2 do rm -rf b > o; cd x; ",
+            "done; ",
+        ),
+        // Inside a loop the grammar reads, whose `done` it pairs with the
+        // innermost `do`.
+        (
+            "for … do repeat 2 { … (nested to the length)",
+            "for i in 1; do repeat 2 { rm -rf b > o; cd x; ",
+            "}; done; ",
+        ),
+        (
+            "for … do repeat 2 do … (nested to the length)",
+            "for i in 1; do repeat 2 do rm -rf b > o; cd x; ",
+            "done; done; ",
+        ),
+    ] {
+        assert_linear(what, shell, &paths, |size| {
+            let deep = size / (open.len() + close.len());
+            format!("{}{}", open.repeat(deep), close.repeat(deep))
         });
     }
 }

@@ -55,6 +55,9 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         sets: std::collections::HashMap::new(),
         functions: std::collections::HashSet::new(),
         chained: std::collections::HashMap::new(),
+        chain: None,
+        contexts: Vec::new(),
+        awaiting: false,
     };
     // One walk of the tree finds the variables the line sets and the values
     // it gives them.
@@ -70,6 +73,14 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         environment(walker.split, tree.root_node(), text);
     }
     walker.walk(tree.root_node(), None, 0);
+    // `repeat 3` with no statement after it: zsh refuses the line.
+    if walker.awaiting {
+        walker.split.problem(
+            Rule::Unreadable,
+            "repeats a body that cannot be read",
+            Some("repeat"),
+        );
+    }
     walker.fork_bombs(tree.root_node());
     walker.split.last_read = walker.last_command.clone();
 }
@@ -1079,6 +1090,15 @@ fn reassigns(body: Node<'_>, name: &str, source: &str) -> bool {
     found
 }
 
+/// The nodes a chain of `&&`, `||` and `|` is made of, around the commands
+/// in it: zsh's short `repeat N cmd` repeats the chain `cmd` starts.
+const CHAINS: [&str; 4] = [
+    "list",
+    "pipeline",
+    "negated_command",
+    "redirected_statement",
+];
+
 /// The kinds of node that are a statement of their own: the right side of
 /// an `&&` after one runs when it succeeded, whatever a `cd` before it did
 /// (see [`Split::statement`]).
@@ -1103,14 +1123,16 @@ const STATEMENTS: [&str; 18] = [
     "function_definition",
 ];
 
-/// Whether `name`, a command's name, is a bare `}`: the reserved word that
-/// closes a group, which the grammar reads as a command when it did not see
-/// the group open (`coproc { ls; }`). A quoted `'}'` is a program's name.
-fn closes_group(name: Node<'_>, source: &str) -> bool {
+/// Whether `name`, a command's name, is a bare `word`: `}`, the reserved
+/// word that closes a group, or `done`, the one that closes a loop's list,
+/// which the grammar reads as a command when it did not see the group or
+/// the list open (`coproc { ls; }`, `repeat 3 do ls; done`). A quoted `'}'`
+/// is a program's name.
+fn bare_word(name: Node<'_>, source: &str, word: &str) -> bool {
     name.named_child_count() == 1
         && name
             .named_child(0)
-            .is_some_and(|word| word.kind() == "word" && unit::text(&word, source) == "}")
+            .is_some_and(|child| child.kind() == "word" && unit::text(&child, source) == word)
 }
 
 /// What stands for an expansion in a template: a variable the guard cannot
@@ -1160,6 +1182,17 @@ struct Walker<'a> {
     /// whether the chain gives `GLOBIGNORE` a value (see
     /// [`Walker::assigns_in_chain`]).
     chained: std::collections::HashMap<usize, bool>,
+    /// The chain of `&&`, `||` and `|` being walked, by the node id of its
+    /// outermost list, pipeline, negation or redirected statement: where a
+    /// short zsh `repeat` in it ends (see [`unit::Split::end_repeats`]).
+    chain: Option<usize>,
+    /// The chains a node that holds statements of its own (a group, a
+    /// loop, a substitution, a word) set aside while the walk reads it, by
+    /// that node's id: what it holds is in no chain of the line's.
+    contexts: Vec<(usize, Option<usize>)>,
+    /// Whether a zsh `repeat N` with nothing after its count was read last:
+    /// the next statement is its body (see [`Walker::repeat_body`]).
+    awaiting: bool,
 }
 
 /// The state just before the last command of a list: a redirect on a list
@@ -1400,13 +1433,63 @@ impl Walker<'_> {
         self.split.branches += usize::from(background);
         if STATEMENTS.contains(&node.kind()) {
             self.split.statement();
+            if std::mem::take(&mut self.awaiting) {
+                self.repeat_body(node);
+            }
+        }
+        if CHAINS.contains(&node.kind()) {
+            self.chain.get_or_insert(node.id());
+        } else if node.kind() != "command" && self.chain.is_some() {
+            self.contexts.push((node.id(), self.chain.take()));
         }
         true
+    }
+
+    /// Begin the body of a zsh `repeat N` that stood alone at `node`, the
+    /// statement after it, which zsh reads past the separators (`repeat 3;
+    /// do …; done`, `repeat 3` and a group or a command on the next line):
+    /// a group that starts it is the body, a `do` that starts it opens the
+    /// list up to a `done`, and anything else is the body whole, as zsh's
+    /// `repeat N` and a sublist.
+    fn repeat_body(&mut self, node: Node<'_>) {
+        let mut first = node;
+        while CHAINS.contains(&first.kind()) {
+            let Some(child) = first
+                .child_by_field_name("body")
+                .or_else(|| first.named_child(0))
+            else {
+                break;
+            };
+            first = child;
+        }
+        if first.kind() == "compound_statement" {
+            let at = self.split.begin_repeat(false, false);
+            self.split.repeat_until(at, Some(first.id()));
+        } else if first.kind() == "command"
+            && first
+                .child_by_field_name("name")
+                .is_some_and(|name| bare_word(name, self.source, "do"))
+        {
+            let at = self.split.begin_repeat(true, false);
+            self.split.repeat_until(at, None);
+            self.split.repeat_do = true;
+        } else {
+            let at = self.split.begin_repeat(false, true);
+            self.split.repeat_until(at, Some(node.id()));
+        }
     }
 
     /// After the walk read `node`, which [`Walker::enter`] let it read.
     #[inline(never)]
     fn leave(&mut self, node: Node<'_>, background: bool) {
+        if self.contexts.last().is_some_and(|(id, _)| *id == node.id()) {
+            if let Some((_, chain)) = self.contexts.pop() {
+                self.chain = chain;
+            }
+        } else if self.chain == Some(node.id()) {
+            self.chain = None;
+        }
+        self.split.left(node.id(), self.chain);
         // `! cd s && rm -rf ../x` runs `rm` when the `cd` failed.
         if node.kind() == "negated_command" {
             self.split.statement();
@@ -2212,9 +2295,14 @@ impl Walker<'_> {
                     .insert(unit::text(arg, self.source).to_string());
             }
         }
-        // The `}` that closes a group a `coproc` opened runs nothing.
-        if self.split.open_groups > 0 && nodes.is_empty() && closes_group(name, self.source) {
+        // The `}` that closes a group a `coproc` opened runs nothing, nor
+        // does the `done` that closes the list of a `repeat N do`.
+        if self.split.open_groups > 0 && nodes.is_empty() && bare_word(name, self.source, "}") {
             self.split.open_groups -= 1;
+            return;
+        }
+        if self.split.open_dos > 0 && nodes.is_empty() && bare_word(name, self.source, "done") {
+            self.split.close_do();
             return;
         }
         // `rm -rf *git(D)`: the qualifier is for this command's wildcards.
@@ -2997,7 +3085,12 @@ impl Walker<'_> {
     /// (`cd "$(cat ../x)"`), what they run starts where it does.
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let first = self.split.units.len();
+        let repeats = self.split.repeats_open();
         self.command(node, stage);
+        // `repeat 3` alone: the statement after it is its body. A `do` the
+        // walk read as the list of one runs what comes after it only here.
+        let alone = std::mem::take(&mut self.split.repeat_alone);
+        self.split.repeat_do = false;
         let own = first..self.split.units.len();
         self.split.enter_start(&own, plain(node));
         let mut cursor = node.walk();
@@ -3025,6 +3118,8 @@ impl Walker<'_> {
                 self.split.text_fed(own.clone(), text);
             }
         }
+        self.split.end_repeats(repeats, self.chain);
+        self.awaiting |= alone;
     }
 
     /// Walk `redirect`, a redirect of a file on a command whose own units are
