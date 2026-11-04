@@ -612,8 +612,9 @@ cmd rules=unknown | bun run - < x.js
 cmd rules=unknown | deno < x.js
 cmd rules=unknown | deno repl < x.js
 # A handle copied onto the input (`0<&3`, `<&3`, `0>&3`) is code the line
-# does not show, as a file is, and so is any input redirect after one from
-# the null device.
+# does not show, as a file is. Every input redirect counts whatever its
+# order: cmd keeps the last one for handle 0, but a null device given last
+# is still read as an input given on purpose, which errs on the risky side.
 cmd rules=unknown | python 0<&3
 cmd rules=unknown | node 0<&3
 cmd rules=unknown | python <&3
