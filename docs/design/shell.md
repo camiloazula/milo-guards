@@ -3764,7 +3764,12 @@ guard does not know is not judged as a writer; these are the ones it knows.
   library gawk loads with `-l`, `--load` or `@load` in the program
   (`awk -l ./ext.so 1 a`, `awk '@load "ext"; 1' a`) runs native code the
   line does not show, `unknown` whatever its name (`-l inplace` too, and
-  beside `-i inplace` the edit is still judged). The options are
+  beside `-i inplace` the edit is still judged). A directive is read as
+  gawk's lexer reads it: `@` is a token of its own, and `include` or `load`
+  after it, past spaces, tabs, carriage returns and backslash-newlines, is
+  the directive (`@ load "ext"`, `@ include "inplace"` the edit); only the
+  whole word counts, so `@loader` is none, and one written in a string or
+  regex (`print "@load"`) is found too, risky and not safe. The options are
   read as gawk's `getopt_long` reads them: a bundle a letter at a time
   (`-bi inplace`, `-Oiinplace`), `f E i l v F e Z` taking the rest of the
   bundle or else the next word and `d D L o p` only the rest; a long option
