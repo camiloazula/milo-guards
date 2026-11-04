@@ -68,14 +68,13 @@ fn a_delete_among_plain_words_and_separators_is_never_safe() {
 
 /// What `shell` reads as a plain word, where another shell reads syntax: the
 /// pieces an unfinished line may end in that are not unfinished there. cmd
-/// has no single quotes, backticks, `$(`, `${` or braces; PowerShell's grammar
-/// reads a `<<` as a plain word (PowerShell itself refuses the line, so
-/// nothing runs). The list is kept apart from the guard, so a safe
-/// verdict for a line that ends in one of these is not mistaken for a false
-/// one.
+/// has no single quotes, backticks, `$(`, `${` or braces. (PowerShell's
+/// grammar reads a `<<` as a plain word, but PowerShell refuses a `<`, so
+/// the line is unreadable there.) The list is kept apart from the guard, so
+/// a safe verdict for a line that ends in one of these is not mistaken for a
+/// false one.
 fn literal_in(shell: Shell) -> &'static [&'static str] {
     match shell {
-        Shell::PowerShell => &["<<EOF", "<<-EOF", "<<'EOF'"],
         Shell::Cmd => &[
             "'", "`", "$(", "$((", "${", "$'", "(", "((", "<<EOF", "<<-EOF", "<<'EOF'",
         ],

@@ -28,7 +28,7 @@ mod wrappers;
 
 use find::find_exec;
 pub(crate) use find::{find_targets, find_unread_primary, FIND_VALUED};
-pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global};
+pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global, Unread};
 pub(crate) use interpreters::{
     after_run, code_options, is_interpreter, is_ipython, is_node, is_python, is_ts_node, options,
     own_args, perl_edits, py_picks_three, valued_options, Options, BUN_VALUES, DENO_VALUES, SHELLS,
@@ -184,6 +184,7 @@ fn sets_environment(key: &str, own: &[Arg]) -> bool {
             | "builtin"
             | "timeout"
             | "gtimeout"
+            | "gtime"
             | "command"
             | "exec"
             | "setsid"
@@ -1227,6 +1228,14 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
                 start => runs(args, start),
             }
         }
+        // Homebrew's name for GNU `time`, a program and never a shell's
+        // word: it runs the program after its options.
+        "gtime" if posix => runs(
+            args,
+            after_options_by(args, |text, next| {
+                getopt(text, next, &tools::TIME_OPTIONS).0
+            }),
+        ),
         "timeout" | "gtimeout" if posix => runs(
             args,
             after_options(args, &["-s", "-k", "--signal", "--kill-after"])
@@ -1244,7 +1253,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
             }
         }
         "xargs" if posix => xargs(args),
-        "parallel" if posix => parallel::parallel(args),
+        "parallel" if posix => parallel::parallel(args, input),
         // Tracers and runners that run the program after their options.
         "strace" if posix => tools::strace(args),
         "ltrace" if posix => tools::ltrace(args),

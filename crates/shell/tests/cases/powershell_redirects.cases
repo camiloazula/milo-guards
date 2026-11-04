@@ -153,3 +153,48 @@ powershell finds=overwrite reason="writes to your SSH keys" | Get-Date >>~\\.ssh
 powershell finds=overwrite reason="writes to a system folder" | Get-Date >C:\\Windows\\System32\\x.dll
 powershell safe | Get-Date >out.txt
 powershell safe | Get-ChildItem 2>$null
+
+# PowerShell reserves `<` and refuses a line that holds one, so what it does
+# is not known: the grammar reads it as an input redirect (`sort < x.txt`), a
+# word (`sort <x`) or part of one (`0<`, then `&3`, a job). In cmd the same
+# lines are read (#226).
+powershell rules=unreadable first=unreadable reason="holds a <, which PowerShell refuses to run" instead="quote a < meant as text, or pipe a file in with Get-Content" | python 0<&3
+powershell rules=unreadable | sort < x.txt
+powershell rules=unreadable | sort <x.txt
+powershell rules=unreadable | sort 0< x.txt
+powershell rules=unreadable | sort 2< x.txt
+powershell rules=unreadable | echo a<b
+powershell finds=unreadable | ssh-keygen -C <comment>
+powershell finds=unreadable | git log --format=%an<%ae>
+powershell rules=unreadable | 1 < 2
+powershell rules=unreadable | echo $(1 < 2)
+powershell rules=unreadable | echo "a$(1 < 2)b"
+powershell finds=unreadable | & { sort < x.txt }
+powershell rules=unreadable | Get-ChildItem | ForEach-Object { sort < $_ }
+powershell rules=unreadable | echo a"b"<c
+powershell finds=unreadable | sort < ~\\.ssh\\id_rsa
+powershell finds=unreadable lacks=overwrite | sort < ~\\.bashrc
+powershell finds=unreadable | pwsh -c 'sort < x.txt'
+powershell finds=unreadable | echo x <<EOF
+powershell effect=unknown | sort < x.txt
+# A merge, a string, a comment, a variable's name, an escaped `<` and what
+# `--%` passes on are no `<` operator.
+powershell safe | python script.py 2>&1
+powershell safe | python script.py 2>&1 > out.txt
+powershell safe | echo '<'
+powershell safe | echo "<"
+powershell safe | echo "a $HOME <b"
+powershell safe | echo @"\n<x\n"@
+powershell safe | echo @'\n<x\n'@
+powershell safe | echo x # <y
+powershell safe | echo x <# <y #> z
+powershell safe | echo a`<b
+powershell safe | echo a"<"b
+powershell safe | echo a'<'b
+powershell safe | echo ${a<b}
+powershell safe | echo --% < x.txt
+powershell safe | Get-Content x.txt | sort
+powershell safe | $x = '<' + "$HOME<"
+# In cmd, `<` is a redirect of the program's input.
+cmd safe | sort < x.txt
+cmd lacks=unreadable | python 0<&3

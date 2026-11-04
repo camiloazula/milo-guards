@@ -13,7 +13,7 @@ use crate::unit::{has_flag, operands, Arg, Unit};
 use crate::Rule;
 
 /// What a command word only known when it runs may change.
-const UNKNOWN_VERB: &str = "changes a system service only known when it runs";
+pub(super) const UNKNOWN_VERB: &str = "changes a system service only known when it runs";
 
 /// The short options of `sysrc` that take a value: the file (`-f`), the
 /// jail (`-j`), the root folder (`-R`) and the service (`-s`).
@@ -229,8 +229,9 @@ impl Checker<'_> {
     /// starts again, are everyday work, but after `-O`, `-o` or `-Q` s6 does
     /// not start it again, so a signal that ends it ([`ends`]) or a restart
     /// (`-r`, `-l`) stops it. An option only known when it runs may be any
-    /// of them.
-    pub(super) fn s6_svc(&mut self, args: &[Arg]) {
+    /// of them. A folder is named as [`Checker::service_folder`] reads it.
+    pub(super) fn s6_svc(&mut self, unit: &Unit) {
+        let args = unit.args.as_slice();
         let walk = getopt_walk(args, S6_SVC_VALUED, &[]);
         let options = short_options(args, S6_SVC_VALUED);
         let once = options
@@ -248,7 +249,8 @@ impl Checker<'_> {
             });
         if stops {
             for service in &walk.operands {
-                self.stop_service("stops", service);
+                let service = self.service_folder(unit, service);
+                self.stop_service("stops", &service);
             }
         }
     }
@@ -380,11 +382,17 @@ impl Checker<'_> {
     /// `brew services command formula...`, Homebrew's: `stop` and `kill`
     /// stop each formula's service, and under `--all` every one Homebrew
     /// runs, any of which may protect the machine. A command only known when
-    /// it runs may be either.
+    /// it runs may be either, and a subcommand only known when it runs may
+    /// be `services` and what follows it.
     pub(super) fn brew_services(&mut self, args: &[Arg]) {
         let words = operands(args, &["--file", "--sudo-service-user", "--max-wait"]);
-        if !matches!(first_word(&words), Word::Is(sub) if sub == "services") {
-            return;
+        match first_word(&words) {
+            Word::Is(sub) if sub == "services" => {}
+            Word::Unknown => {
+                self.add(Rule::SystemSettings, UNKNOWN_VERB, None);
+                return;
+            }
+            _ => return,
         }
         let rest = &words[1..];
         let stops = match first_word(rest) {

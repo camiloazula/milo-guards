@@ -492,7 +492,8 @@ pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
     } else {
         match key {
             "bun" => &["--version", "-v", "--help", "-h"],
-            "deno" => &["--version", "-V", "--help", "-h"],
+            // None of xonsh's options takes a word that starts with a dash.
+            "deno" | "xonsh" => &["--version", "-V", "--help", "-h"],
             _ => {
                 others = true;
                 &["--version", "--help", "-h"]

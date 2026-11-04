@@ -187,8 +187,10 @@ pub(crate) struct Unit {
     /// arguments where it runs, by name (see [`Split::argument_variables`]):
     /// `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`, which terraform reads as
     /// arguments of its command, `npm_config_call`, the command `npx`
-    /// runs, and the editor, pager and shell `psql` runs (`PAGER`). Shared with the line's, so a long value is not copied for
-    /// each program.
+    /// runs, the editor, pager and shell `psql` runs (`PAGER`), and the
+    /// config git reads from its environment (`GIT_CONFIG_PARAMETERS`).
+    /// Shared with the line's, so a long value is not copied for each
+    /// program.
     pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
@@ -909,24 +911,54 @@ pub(crate) const PSQL_PROGRAMS: [&str; 7] = [
     "SHELL",
 ];
 
+/// The variable git hands the `-c` settings it was given to a git it starts.
+pub(crate) const GIT_CONFIG_PARAMETERS: &str = "GIT_CONFIG_PARAMETERS";
+
+/// The variable that says how many `GIT_CONFIG_KEY_<n>` and
+/// `GIT_CONFIG_VALUE_<n>` pairs git reads.
+pub(crate) const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
+
+/// Whether git reads the variable `name` as config given on its command
+/// line: `GIT_CONFIG_PARAMETERS`, which is how git hands `-c` to the git it
+/// starts, and `GIT_CONFIG_COUNT` with each `GIT_CONFIG_KEY_<n>` and
+/// `GIT_CONFIG_VALUE_<n>` below it, `<n>` written as git writes it, in
+/// decimal with no leading zero.
+pub(crate) fn git_config_variable(name: &str) -> bool {
+    let index = |prefix: &str| {
+        name.strip_prefix(prefix).is_some_and(|n| {
+            !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit())
+                && (n == "0" || !n.starts_with('0'))
+        })
+    };
+    matches!(name, GIT_CONFIG_PARAMETERS | GIT_CONFIG_COUNT)
+        || index("GIT_CONFIG_KEY_")
+        || index("GIT_CONFIG_VALUE_")
+}
+
 /// Whether a program reads the variable `name` as arguments or a command
-/// line of its own: terraform's [`tf_cli_args`], npm's [`npm_call`], and the
-/// editor, pager and shell `psql` runs ([`PSQL_PROGRAMS`]). The line's values
-/// of these are noted where it sets them (see [`Split::argument_variables`]).
+/// line of its own: terraform's [`tf_cli_args`], npm's [`npm_call`], the
+/// editor, pager and shell `psql` runs ([`PSQL_PROGRAMS`]), and the config
+/// git reads from its environment ([`git_config_variable`]). The line's
+/// values of these are noted where it sets them (see
+/// [`Split::argument_variables`]).
 pub(crate) fn read_as_arguments(name: &str) -> bool {
-    tf_cli_args(name) || npm_call(name) || PSQL_PROGRAMS.contains(&name)
+    tf_cli_args(name)
+        || npm_call(name)
+        || PSQL_PROGRAMS.contains(&name)
+        || git_config_variable(name)
 }
 
 /// The name a program reads, when `name` is one of [`read_as_arguments`]'s
 /// written in any case, as Windows reads the names of variables
 /// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`, `$env:NPM_CONFIG_CALL`
-/// is `npm_config_call`).
+/// is `npm_config_call`, `$env:git_config_count` is `GIT_CONFIG_COUNT`).
 pub(crate) fn argument_variable(name: &str) -> Option<String> {
     if npm_call(name) {
         return Some("npm_config_call".to_string());
     }
     let upper = name.to_ascii_uppercase();
-    if upper == "TF_CLI_ARGS" {
+    if upper == "TF_CLI_ARGS" || git_config_variable(&upper) {
         return Some(upper);
     }
     let command = upper.strip_prefix("TF_CLI_ARGS_")?;

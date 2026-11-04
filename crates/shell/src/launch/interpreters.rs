@@ -16,10 +16,12 @@ pub(crate) const SHELLS: [&str; 11] = [
 /// Language interpreters that read code from their input when given no
 /// script: besides python (and the other names of a Python, by
 /// [`is_interpreter`]) and node, the Python launcher `py`, `pypy`, `ipython`,
-/// and the TypeScript runners `tsx` and `ts-node`, which take node's options.
-pub(crate) const INTERPRETERS: [&str; 17] = [
+/// the TypeScript runners `tsx` and `ts-node`, which take node's options,
+/// and `xonsh`, a shell whose language is Python and its own, so that what
+/// it runs is code the guard does not read, as another interpreter's is.
+pub(crate) const INTERPRETERS: [&str; 18] = [
     "python", "python2", "python3", "py", "pypy", "pypy3", "ipython", "perl", "ruby", "node",
-    "nodejs", "tsx", "ts-node", "php", "lua", "bun", "deno",
+    "nodejs", "tsx", "ts-node", "php", "lua", "bun", "deno", "xonsh",
 ];
 
 /// Whether `key` is the interpreter named in [`INTERPRETERS`] or one of its
@@ -258,6 +260,7 @@ pub(crate) fn code_options(key: &str) -> (&'static [char], &'static [&'static st
         "ruby" => (&['e'], &["--eval"]),
         "php" => (&['r', 'R', 'F'], &[]),
         "lua" => (&['e'], &[]),
+        "xonsh" => (&['c'], &[]),
         _ => (&['c', 'e'], &["--eval", "--print"]),
     }
 }
@@ -277,6 +280,8 @@ pub(crate) fn valued_options(key: &str) -> &'static [char] {
         "node" | "nodejs" | "tsx" => &['r', 'C'],
         "php" => &['c', 'd', 'z', 't', 'B', 'E', 'S', 'f'],
         "lua" => &['l'],
+        // `-D NAME=VALUE` sets a variable.
+        "xonsh" => &['D'],
         _ => &[],
     }
 }
@@ -291,6 +296,17 @@ struct Table {
     /// Long options, without their dashes, that take the next word as their
     /// value when no `=` gives it one.
     long_values: &'static [&'static str],
+    /// Long options, without their dashes, that take every word after them
+    /// that is not an option when no `=` gives them one (`argparse`'s
+    /// `nargs="+"`: xonsh's `--rc a.xsh b.xsh`).
+    long_lists: &'static [&'static str],
+    /// Whether a long option may be written as a shorter start of its name,
+    /// as Python's `argparse` takes it (xonsh's `--r` is `--rc`).
+    abbreviated: bool,
+    /// Short options of more than one letter, as whole words, that take the
+    /// next word as their value when no `=` gives them one (xonsh's `-st`,
+    /// and `-s`, which `argparse` takes as a shorter start of it).
+    short_words: &'static [&'static str],
     /// Whether every long option is in the table or an error: python, perl,
     /// ruby, php and lua. Node also passes any option it does not know to V8,
     /// whose options with a value take the next word too.
@@ -446,6 +462,9 @@ fn table(key: &str) -> Table {
     let plain = Table {
         attached: &[],
         long_values: &[],
+        long_lists: &[],
+        abbreviated: false,
+        short_words: &[],
         strict: true,
         interactive: None,
         names_script: None,
@@ -512,6 +531,18 @@ fn table(key: &str) -> Table {
             ..plain
         },
         "lua" => Table {
+            interactive: Some('i'),
+            ..plain
+        },
+        // `xonsh --rc FILE… script`, `--shell-type readline` (`-st
+        // readline`): Python's `argparse` takes an option by a shorter start
+        // of it, so one it does not know may still take a value.
+        "xonsh" => Table {
+            long_values: &["shell-type"],
+            long_lists: &["rc"],
+            abbreviated: true,
+            short_words: &["-st", "-s"],
+            strict: false,
             interactive: Some('i'),
             ..plain
         },
@@ -628,6 +659,13 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
                 break;
             }
             unknown_before = false;
+            // The option `name` is, as written or by a shorter start of it.
+            let named = |names: &[&str]| {
+                names.iter().any(|known| {
+                    *known == name
+                        || (table.abbreviated && !name.is_empty() && known.starts_with(&name))
+                })
+            };
             if table
                 .harmless_long
                 .is_some_and(|harmless| !harmless.contains(&name.as_str()))
@@ -637,7 +675,18 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
             }
             if node && name == "interactive" {
                 found.interactive = true;
-            } else if value.is_none() && table.long_values.contains(&name.as_str()) {
+            } else if value.is_none() && named(table.long_lists) {
+                // Every word after it that is not an option is its value; a
+                // word only known when it runs may be an option, and stands
+                // where the script is.
+                while args
+                    .get(at + 1)
+                    .and_then(Arg::known)
+                    .is_some_and(|next| !next.starts_with('-'))
+                {
+                    at += 1;
+                }
+            } else if value.is_none() && named(table.long_values) {
                 if node && preloads(&name) {
                     found.preloads.extend(args.get(at + 1).cloned());
                 }
@@ -659,6 +708,11 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
                 unknown_before = value.is_none() && !table.strict;
             }
             at += 1;
+            continue;
+        }
+        if table.short_words.contains(&text) {
+            unknown_before = false;
+            at += 2;
             continue;
         }
         let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) else {
@@ -724,10 +778,11 @@ fn preloads(name: &str) -> bool {
 /// `timeit` times, the script `cProfile`, `profile` and `trace` run under
 /// them, and the input `pdb` and `code` read.
 /// The REPLs `asyncio`, `IPython`, `bpython` and `ptpython` read code from
-/// the input as `code` does.
-const RUNS_GIVEN: [&str; 10] = [
+/// the input as `code` does, and `xonsh`, the shell `xonsh` is, runs its
+/// `-c` code or reads what to run from the input.
+const RUNS_GIVEN: [&str; 11] = [
     "timeit", "cProfile", "profile", "pdb", "trace", "code", "asyncio", "IPython", "bpython",
-    "ptpython",
+    "ptpython", "xonsh",
 ];
 
 /// An interpreter runs code the guard does not read when it is given code inline

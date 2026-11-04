@@ -638,6 +638,10 @@ cmd rules=delete first=delete reason="deletes your home directory" | C:\\msys64\
 cmd rules=delete | zsh -c "rm -rf /"
 cmd rules=delete | cmd /c bash -c "rm -rf ~"
 cmd rules=unknown | python -c "import shutil; shutil.rmtree('C:/Users/me')"
+cmd rules=unknown | xonsh -c "rm -rf ~"
+powershell finds=unknown | xonsh -c 'rm -rf ~'
+powershell finds=unknown | python3 -m xonsh -c 'rm -rf ~'
+cmd rules=unknown | python -m xonsh -c "rm -rf ~"
 cmd rules=unknown | node -e "x"
 cmd rules=unknown | bun -e "x"
 cmd rules=unknown | deno eval "x"

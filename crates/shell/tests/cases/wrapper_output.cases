@@ -131,6 +131,12 @@ posix rules=overwrite | time -o/etc/passwd ls
 posix rules=overwrite | time -ao /etc/passwd ls
 posix rules=overwrite | time -a -o /etc/passwd ls
 posix rules=overwrite | time -p -o /etc/passwd ls
+posix rules=overwrite first=overwrite reason="writes to a shell startup file" | gtime -o ~/.bashrc ls
+posix rules=overwrite | gtime --output=/etc/passwd ls
+posix rules=overwrite | gtime -ao /etc/passwd ls
+posix rules=overwrite | /opt/homebrew/bin/gtime -o /etc/passwd ls
+posix safe | gtime -o time.log ls
+posix safe | gtime ls -o /etc/passwd
 posix rules=overwrite | time -f %e -o /etc/passwd ls
 posix rules=overwrite | time --output /etc/passwd ls
 posix rules=overwrite | time --output=/etc/passwd ls
