@@ -23,7 +23,7 @@ fn every_case_holds() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn shells_and_interpreters_a_cmd_line_starts_are_read_in_linear_time() {

@@ -31,9 +31,10 @@ format:
     cargo fmt --all
 
 # `just verify` runs them again in its one instrumented build, apart from
-# the doctests, which `just doc-test` runs. `--locked`: fail if Cargo.lock
-# would need updating.
-# Every test, without coverage: quicker while working.
+# the doctests, which `just doc-test` runs, and the timing tests, which
+# `just timing` runs: a debug build ignores them. `--locked`: fail if
+# Cargo.lock would need updating.
+# Every test but the timing ones, without coverage: quicker while working.
 test:
     cargo test --workspace --all-features --locked
 
@@ -48,8 +49,9 @@ coverage:
     cargo llvm-cov --no-clean --workspace --all-features --locked --fail-under-lines 90
 
 # The tests that time the guard compare against limits that describe an
-# optimized build, and the instrumented build of `coverage` is several times
-# slower, so they are ignored there (`cfg(coverage)`) and run here.
+# optimized build, and the instrumented build of `coverage` and the debug
+# build of `test` are several times slower, so they are ignored there
+# (`cfg(any(coverage, debug_assertions))`) and run here.
 # Every test, in an optimized build: the timing tests among them.
 timing:
     cargo test --release --workspace --all-features --locked

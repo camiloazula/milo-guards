@@ -39,7 +39,7 @@ fn clear_item_judges_the_last_path_of_a_long_list() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_long_hidden_listing_is_read_quickly() {
@@ -71,7 +71,7 @@ fn a_long_hidden_listing_is_read_quickly() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn long_lists_and_pipelines_of_the_item_cmdlets_are_read_quickly() {

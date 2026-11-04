@@ -25,13 +25,13 @@ fn serial() -> MutexGuard<'static, ()> {
     reason = "the guard keeps no clock; only this test times it, to catch a stall"
 )]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn wide_random_lines_never_panic_and_stay_quick() {
     let _serial = serial();
-    // The time a turn can wait for one line, with room for the debug build
-    // `just verify` runs: lines this short take microseconds.
+    // The time a turn can wait for one line, with room for a machine several
+    // times slower and busy: lines this short take microseconds.
     const WORST: std::time::Duration = std::time::Duration::from_millis(500);
     let mut random = Lcg(0x5eed);
     let mut worst = (std::time::Duration::ZERO, String::new());
@@ -81,15 +81,16 @@ fn wide_random_lines_never_panic_and_stay_quick() {
     reason = "the guard keeps no clock; only this test times it, to catch an explosion"
 )]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn finds_in_finds_are_read_in_time_whatever_their_arguments_weigh() {
     let _serial = serial();
     // The work of `find -exec` is the bytes it builds, not the arguments it
     // hands on: a few arguments of many `{}` each, or one big one, made the
-    // same blow-up through a budget counted in arguments. The bound is for
-    // the debug build `just verify` runs.
+    // same blow-up through a budget counted in arguments. An optimized build
+    // reads each in tens of milliseconds; the bound leaves room for a
+    // machine several times slower and busy.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let levels = |places: &str, each: usize, last: &str| {
         let mut line = format!("find {places}");
@@ -160,14 +161,14 @@ fn finds_in_finds_are_read_in_time_whatever_their_arguments_weigh() {
     reason = "the guard keeps no clock; only this test times it, to catch a stall"
 )]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn a_line_at_the_length_limit_is_read_in_time() {
     let _serial = serial();
     // Longest line there is, in the shapes a real or a broken line takes.
-    // The bound is for the debug build `just verify` runs; a release build
-    // takes a tenth of it or less. A POSIX line that turns zsh's
+    // An optimized build takes a tenth of the bound or less, which leaves
+    // room for a machine several times slower and busy. A POSIX line that turns zsh's
     // `extendedglob` on costs up to about twice as much: a word or redirect
     // the option reads another way is judged both ways, and a line with a
     // loop or a function body is read a second time. A bound for such a line
@@ -234,7 +235,7 @@ fn a_line_at_the_length_limit_is_read_in_time() {
     reason = "the guard keeps no clock; only this test times it, to catch an explosion"
 )]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn wrappers_that_build_their_command_are_read_in_time() {
@@ -242,7 +243,7 @@ fn wrappers_that_build_their_command_are_read_in_time() {
     // `parallel` builds a line for each job from its command and its values,
     // and `wsl`, `env -S`, `nix run`, `nix shell`, `nix-shell`, `limactl
     // shell`, `sem` and the other runners read their words as a command.
-    // The bound is for the debug build `just test` runs.
+    // An optimized build reads each in a tenth of the bound or less.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let values = |count: usize, each: usize| {
         (0..count)
@@ -404,15 +405,15 @@ fn wrappers_that_build_their_command_are_read_in_time() {
     reason = "the guard keeps no clock; only this test times it, to catch a stall"
 )]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn cmd_commands_read_again_are_read_in_time() {
     let _serial = serial();
     // cmd's `ver && if …`, `i^f`, `f^or`, `ca^ll` and `call call` are each
     // read again as a statement of their own, and each holds the rest of the
-    // line: repeated, the line would be read once for each. `just timing`
-    // runs it in an optimized build; the bound holds in a debug build too.
+    // line: repeated, the line would be read once for each. An optimized
+    // build reads each in a tenth of the bound or less.
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
     let fit = |unit: &str| {
         let tail = "rd /s /q C:\\";
@@ -456,7 +457,7 @@ type Shape = (&'static str, fn(usize) -> String);
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn find_expressions_are_read_in_linear_time() {
@@ -542,7 +543,7 @@ fn find_expressions_are_read_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn find_path_tests_over_many_folders_are_read_in_time() {
@@ -584,7 +585,7 @@ fn find_path_tests_over_many_folders_are_read_in_time() {
     reason = "the guard keeps no clock; only this test times it, to catch a stall"
 )]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
@@ -612,14 +613,13 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     // each other folder a `cd` that may have failed or not run may have left
     // the line in, which made the `cd` rows two to three times slower until a
     // `cd ..` back from one after `&&` added none and every folder only known
-    // when it runs counted as one (`MAX_ELSEWHERE` in `unit.rs`). A release
-    // build reads each in tens of milliseconds; the bounds leave room for a
-    // machine busy with other work, and for the debug build `just test` runs.
-    let limit = if cfg!(debug_assertions) {
-        std::time::Duration::from_secs(2)
-    } else {
-        std::time::Duration::from_millis(250)
-    };
+    // when it runs counted as one (`MAX_ELSEWHERE` in `unit.rs`). An
+    // optimized build reads the slowest, a PowerShell line or a runner that
+    // starts another at the length limit, in about a tenth of a second; the
+    // bound leaves room for a machine several times slower and busy. Most of
+    // these are held to a budget or a count, not to their length, so the
+    // bound is on the time, not on how it grows.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
     let fit = |unit: &str, head: &str, tail: &str| {
         let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
         format!("{head}{}{tail}", unit.repeat(count))
@@ -706,7 +706,7 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
         let started = std::time::Instant::now();
         let _ = classify(line, *shell, &paths);
         let took = started.elapsed();
-        assert!(took < limit, "{took:?} for {:?} in {shell:?}", &line[..20]);
+        assert!(took < LIMIT, "{took:?} for {:?} in {shell:?}", &line[..20]);
     }
 }
 
@@ -716,7 +716,7 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_time() {
     reason = "the guard keeps no clock; only this test times it, to catch a stall"
 )]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
@@ -766,15 +766,11 @@ fn commands_of_a_name_the_line_sets_many_times_are_read_in_time() {
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a stall"
-)]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
-fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
+fn blocks_held_in_variables_properties_and_members_are_read_in_linear_time() {
     let _serial = serial();
     // The variables of a line are read once for the whole of it, and the
     // ones that may reach the session are followed from one to the next once
@@ -783,16 +779,7 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
     // letters of numbers are made lower case in one pass, subexpressions in
     // strings only as deep as a limit; a cmdlet is given at most 16 default
     // parameter values, and the cmdlets of a line at most 1024 arguments by
-    // them.
-    let limit = if cfg!(debug_assertions) {
-        std::time::Duration::from_secs(2)
-    } else {
-        std::time::Duration::from_millis(250)
-    };
-    let fit = |unit: &str, head: &str, tail: &str| {
-        let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
-        format!("{head}{}{tail}", unit.repeat(count))
-    };
+    // them. Each row is the part repeated, the head and the tail.
     // A table of 16 entries, each `entry`.
     let defaults = |entry: &str| {
         format!(
@@ -800,80 +787,85 @@ fn blocks_held_in_variables_properties_and_members_are_read_in_time() {
             vec![entry; 16].join("; ")
         )
     };
+    let sixteen = format!(
+        "$PSDefaultParameterValues = @{{ {} }}; ",
+        (0..16)
+            .map(|at| format!("'*:P{at}' = '~'"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+    let any_p = defaults("'Remove-*:P*' = '~'");
+    let path = defaults("'Remove-*:Path' = '~'");
     let rows = [
-        fit("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
-        fit("$v = 1; ", "", "Invoke-Command $v"),
-        fit("$v = { 1 }; Invoke-Command $v; ", "", ""),
-        fit(".a()", "$x", ""),
-        fit(".a()", "$ExecutionContext", ""),
-        fit(".a", "$ExecutionContext", " = $b"),
-        fit("[0]", "$ExecutionContext.InvokeCommand", ".Value = $b"),
-        fit(".Add(1, $b)", "$PSDefaultParameterValues", ""),
-        fit(
-            "Remove-Item -Recurse; ",
-            &format!(
-                "$PSDefaultParameterValues = @{{ {} }}; ",
-                (0..16)
-                    .map(|at| format!("'*:P{at}' = '~'"))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
-            "",
-        ),
-        fit(
+        ("Invoke-Command $sb; ", "$sb = { Get-ChildItem }; ", ""),
+        ("$v = 1; ", "", "Invoke-Command $v"),
+        ("$v = { 1 }; Invoke-Command $v; ", "", ""),
+        (".a()", "$x", ""),
+        (".a()", "$ExecutionContext", ""),
+        (".a", "$ExecutionContext", " = $b"),
+        ("[0]", "$ExecutionContext.InvokeCommand", ".Value = $b"),
+        (".Add(1, $b)", "$PSDefaultParameterValues", ""),
+        ("Remove-Item -Recurse; ", sixteen.as_str(), ""),
+        (
             "$PSDefaultParameterValues['*:Path'] = '~'; ",
             "",
             "Remove-Item",
         ),
-        fit("ri;", &defaults("'Remove-*:P*' = '~'"), ""),
-        fit("ri;", &defaults("'Remove-*:Path' = '~'"), ""),
-        fit("gci|ri;", &defaults("'Remove-*:P*' = '~'"), ""),
-        fit("iex 'ri';", &defaults("'Remove-*:P*' = '~'"), ""),
-        fit("Update-TypeData -Force -TypeName X ", "", "x.ps1xml"),
-        fit("$env:BASH_ENV = 'x.sh'; bash; ", "", ""),
-        fit("@{e=", "Get-ChildItem | Sort-Object ", ""),
-        fit("@{e=@{e=1}}, ", "Get-ChildItem | Sort-Object ", "x"),
-        fit(" -replace 'a', $b", "'a'", ""),
-        fit(" -replace 'a', 'b'", "'a'", ""),
-        fit("1MB ", "echo ", ""),
-        fit("1MB+", "", "1"),
-        fit("\"$(1MB)\" ", "echo ", ""),
-        fit("\"$(", "echo ", ""),
-        fit(".SessionStateProxy", "$x", ".$h = $b"),
-        fit(".$h", "$x.InvokeCommand", " = $b"),
-        fit(
+        ("ri;", any_p.as_str(), ""),
+        ("ri;", path.as_str(), ""),
+        ("gci|ri;", any_p.as_str(), ""),
+        ("iex 'ri';", any_p.as_str(), ""),
+        ("Update-TypeData -Force -TypeName X ", "", "x.ps1xml"),
+        ("$env:BASH_ENV = 'x.sh'; bash; ", "", ""),
+        ("@{e=", "Get-ChildItem | Sort-Object ", ""),
+        ("@{e=@{e=1}}, ", "Get-ChildItem | Sort-Object ", "x"),
+        (" -replace 'a', $b", "'a'", ""),
+        (" -replace 'a', 'b'", "'a'", ""),
+        ("1MB ", "echo ", ""),
+        ("1MB+", "", "1"),
+        ("\"$(1MB)\" ", "echo ", ""),
+        ("\"$(", "echo ", ""),
+        (".SessionStateProxy", "$x", ".$h = $b"),
+        (".$h", "$x.InvokeCommand", " = $b"),
+        (
             "[0]",
             "$x",
             ".psobject.Properties['CommandNotFoundAction'].Value = $b",
         ),
-        fit(
+        (
             "$a = $e; $e = $a; ",
             "$e = $ExecutionContext; ",
             "$a.$m.$h = $b",
         ),
-        fit("Name, ", "Get-ChildItem | Select-Object ", "x"),
-        fit("Name, ", "Compare-Object $a $c -Property ", "x"),
-        fit(" -split $b", "'a'", ""),
-        fit("Invoke-Command; ", "", ""),
-        fit(
+        ("Name, ", "Get-ChildItem | Select-Object ", "x"),
+        ("Name, ", "Compare-Object $a $c -Property ", "x"),
+        (" -split $b", "'a'", ""),
+        ("Invoke-Command; ", "", ""),
+        (
             "$h.Add(1, 2); ",
             "$h = @{}; ",
             "Get-ChildItem | Select-Object $h",
         ),
-        fit("$o | Add-Member ScriptMethod X $b; ", "", ""),
-        fit(
+        ("$o | Add-Member ScriptMethod X $b; ", "", ""),
+        (
             "-Value $b ",
             "Add-Member -MemberType ScriptMethod -Name X ",
             "",
         ),
     ];
-    for line in &rows {
-        assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let paths = paths_for(Shell::PowerShell);
-        let started = std::time::Instant::now();
-        let _ = classify(line, Shell::PowerShell, &paths);
-        let took = started.elapsed();
-        assert!(took < limit, "{took:?} for {:?}", &line[..20]);
+    let paths = paths_for(Shell::PowerShell);
+    for (part, head, tail) in rows {
+        assert_linear(
+            &format!("{head}{part}…{tail}"),
+            Shell::PowerShell,
+            &paths,
+            |size| {
+                format!(
+                    "{head}{}{tail}",
+                    filled(part, size, head.len() + tail.len())
+                )
+            },
+        );
     }
 }
 
@@ -894,7 +886,7 @@ fn distinct_assignments() -> String {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn drives_devices_and_session_places_are_read_in_linear_time() {
@@ -976,7 +968,7 @@ fn drives_devices_and_session_places_are_read_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn values_only_known_when_they_run_are_read_in_linear_time() {
@@ -1012,7 +1004,7 @@ fn values_only_known_when_they_run_are_read_in_linear_time() {
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() {
@@ -1107,70 +1099,63 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
 }
 
 #[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a stall"
-)]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
-fn machine_settings_given_many_patterns_names_or_options_are_read_in_time() {
+fn machine_settings_given_many_patterns_names_or_options_are_read_in_linear_time() {
     let _serial = serial();
     // Each unit pattern is tested against the units that protect the
     // machine and the ones it needs, each name copied into a folder against
     // the files SELinux reads (the folder placed once), and each option of
     // a settings program read once: a line at the length limit of them is
-    // read in time that grows with its length.
-    let limit = if cfg!(debug_assertions) {
-        std::time::Duration::from_secs(2)
-    } else {
-        std::time::Duration::from_millis(250)
-    };
-    let fit = |unit: &str, head: &str, tail: &str| {
-        let count = (64 * 1024 - head.len() - tail.len()) / unit.len();
-        format!("{head}{}{tail}", unit.repeat(count))
-    };
+    // read in time that grows with its length. Each row is the shell, the
+    // part repeated, the head and the tail.
     let rows = [
         (
             Shell::Posix,
-            fit("'*a*b*c*d*e*f*g*h*i*j*k*l*m*n*o*p' ", "systemctl stop ", ""),
+            ("'*a*b*c*d*e*f*g*h*i*j*k*l*m*n*o*p' ", "systemctl stop ", ""),
         ),
-        (Shell::Posix, fit("'[a-z]?*[0-9]' ", "systemctl edit ", "")),
-        (Shell::Posix, fit("? ", "systemctl stop ", "")),
-        (Shell::Posix, fit("d*@x* ", "sv down ", "")),
-        (Shell::Posix, fit("conf* ", "cp ", " /etc/selinux/")),
-        (Shell::Posix, fit("s* ", "cp -r ", " /etc/")),
-        (Shell::Posix, fit("$x ", "auditctl -k ", "")),
-        (Shell::Posix, fit("-v ", "efibootmgr ", "")),
-        (Shell::Posix, fit("-nv ", "iptables ", "")),
-        (Shell::Posix, fit("a=b ", "sysctl ", "")),
-        (Shell::Posix, fit("x ", "semanage fcontext ", "")),
-        (Shell::Posix, fit("--info ALL ", "grubby ", "")),
-        (Shell::PowerShell, fit("x ", "service ", " stop")),
-        (Shell::Posix, fit("'d*@x*' ", "rcctl stop ", "")),
-        (Shell::Posix, fit("x_enable=YES ", "sysrc ", "")),
-        (Shell::Posix, fit("-wd ", "s6-svc ", " /run/service/x")),
-        (Shell::Posix, fit("d*@x* ", "s6-rc -d change ", "")),
-        (Shell::Posix, fit("--force ", "dinitctl ", " stop x")),
-        (Shell::Posix, fit("-v ", "insserv ", " x")),
-        (Shell::Posix, fit("start 20 2 . ", "update-rc.d x ", "")),
-        (Shell::Posix, fit("'d*@x*' ", "brew services stop ", "")),
-        (Shell::Posix, fit("-a ", "nsenter ", " true")),
+        (Shell::Posix, ("'[a-z]?*[0-9]' ", "systemctl edit ", "")),
+        (Shell::Posix, ("? ", "systemctl stop ", "")),
+        (Shell::Posix, ("d*@x* ", "sv down ", "")),
+        (Shell::Posix, ("conf* ", "cp ", " /etc/selinux/")),
+        (Shell::Posix, ("s* ", "cp -r ", " /etc/")),
+        (Shell::Posix, ("$x ", "auditctl -k ", "")),
+        (Shell::Posix, ("-v ", "efibootmgr ", "")),
+        (Shell::Posix, ("-nv ", "iptables ", "")),
+        (Shell::Posix, ("a=b ", "sysctl ", "")),
+        (Shell::Posix, ("x ", "semanage fcontext ", "")),
+        (Shell::Posix, ("--info ALL ", "grubby ", "")),
+        (Shell::PowerShell, ("x ", "service ", " stop")),
+        (Shell::Posix, ("'d*@x*' ", "rcctl stop ", "")),
+        (Shell::Posix, ("x_enable=YES ", "sysrc ", "")),
+        (Shell::Posix, ("-wd ", "s6-svc ", " /run/service/x")),
+        (Shell::Posix, ("d*@x* ", "s6-rc -d change ", "")),
+        (Shell::Posix, ("--force ", "dinitctl ", " stop x")),
+        (Shell::Posix, ("-v ", "insserv ", " x")),
+        (Shell::Posix, ("start 20 2 . ", "update-rc.d x ", "")),
+        (Shell::Posix, ("'d*@x*' ", "brew services stop ", "")),
+        (Shell::Posix, ("-a ", "nsenter ", " true")),
     ];
-    for (shell, line) in &rows {
-        assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let paths = paths_for(*shell);
-        let started = std::time::Instant::now();
-        let _ = classify(line, *shell, &paths);
-        let took = started.elapsed();
-        assert!(took < limit, "{took:?} for {:?} in {shell:?}", &line[..20]);
+    for (shell, (part, head, tail)) in rows {
+        assert_linear(
+            &format!("{head}{part}…{tail} in {shell:?}"),
+            shell,
+            &paths_for(shell),
+            |size| {
+                format!(
+                    "{head}{}{tail}",
+                    filled(part, size, head.len() + tail.len())
+                )
+            },
+        );
     }
 }
 
 #[test]
 #[cfg_attr(
-    coverage,
+    any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
 fn writers_given_many_files_commands_or_libraries_are_read_in_linear_time() {
