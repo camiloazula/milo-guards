@@ -339,7 +339,10 @@ pub fn took(line: &str, shell: Shell, paths: &Paths) -> Duration {
 /// A line of a quarter of the size takes about a quarter of the time; one
 /// that is read in quadratic time takes sixteen times as long. `line` makes
 /// the line of a size; the two are compared with each other, so a slow or
-/// busy machine, which slows both, does not fail it.
+/// busy machine, which slows both, does not fail it. The longer line taking
+/// less than half the time of the shorter fails too: the guard stops reading
+/// at a count between the two sizes, and two sizes cannot show how it grows
+/// below that, so the shape is held to [`assert_within`] instead.
 pub fn assert_linear(what: &str, shell: Shell, paths: &Paths, line: impl Fn(usize) -> String) {
     assert_linear_by(what, |line| took(line, shell, paths), line);
 }
@@ -357,13 +360,46 @@ pub fn assert_linear_by(
         let small = took(&line(16 * 1024));
         let big = took(&line(64 * 1024));
         last = (small, big);
-        big <= 10 * small.max(floor)
+        let capped = small > floor && big * 2 < small;
+        big <= 10 * small.max(floor) && !capped
     });
     assert!(
         linear,
-        "{what}: 16 KB took {:?}, 64 KB took {:?}",
+        "{what}: 16 KB took {:?}, 64 KB took {:?}; a longer line much quicker \
+         is read only to a count, for `assert_within`",
         last.0, last.1
     );
+}
+
+/// The sizes, in KB, at which [`assert_within`] holds a stage that feeds
+/// many clients: finer around 16 to 24 KB, where the count is reached.
+pub const STAGE_SIZES: [usize; 9] = [4, 8, 12, 16, 20, 24, 32, 48, 64];
+
+/// For a shape the guard reads only to a count, past which it stops: two
+/// sizes cannot show how the time grows below the count, so the line of
+/// each of `sizes`, in KB, up to and past the count, is held to `bound`, set
+/// wide enough for a machine several times slower. A line over the bound is
+/// timed again, up to three times in all, and the quickest counts, so a
+/// `took` of one run is enough. Run only in an optimized build.
+pub fn assert_within(
+    what: &str,
+    bound: Duration,
+    sizes: &[usize],
+    took: impl Fn(&str) -> Duration,
+    line: impl Fn(usize) -> String,
+) {
+    for size in sizes {
+        let line = line(size * 1024);
+        assert!(line.len() <= 64 * 1024, "{what}: {}", line.len());
+        let mut quickest = Duration::MAX;
+        for _ in 0..3 {
+            quickest = quickest.min(took(&line));
+            if quickest < bound {
+                break;
+            }
+        }
+        assert!(quickest < bound, "{what}: {size} KB took {quickest:?}");
+    }
 }
 
 /// What makes a line of about a size, for [`assert_linear`].

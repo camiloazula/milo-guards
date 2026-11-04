@@ -52,7 +52,12 @@ A timing test reads the clock in an optimized build only, with
 slow build or a busy machine does not fail it. Where it checks that a shape
 is read in time that grows with its length, it compares a line of 16 KB with
 one of 64 KB (`assert_linear` in the shell guard's `tests/common`), not one
-line with a fixed limit. Where it holds a line to a fixed limit, the limit
+line with a fixed limit. A shape the guard reads only to a count, and stops
+past it, can make the longer line the quicker one, so two lengths do not show
+how it grows: `assert_linear` fails when the longer takes less than half the
+time of the shorter, and such a shape holds each of several lengths, up to
+and past the count, to a fixed limit instead (`assert_within`). Where it
+holds a line to a fixed limit, the limit
 leaves room for a machine several times slower and busy with another gate:
 about ten times what an optimized build takes here.
 

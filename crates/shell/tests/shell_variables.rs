@@ -53,7 +53,7 @@ fn more_bash_env_files_than_are_read_is_unknown() {
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
-fn a_line_that_sets_bash_env_or_moves_over_and_over_is_judged_within_a_bound() {
+fn a_line_that_sets_bash_env_or_moves_over_and_over_is_read_in_linear_time() {
     // At 64 KB each line holds the counts written here (`at`), at 16 KB a
     // quarter of them: the one must take about four times as long as the
     // other, not sixteen.
@@ -100,7 +100,7 @@ fn a_line_that_sets_bash_env_or_moves_over_and_over_is_judged_within_a_bound() {
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
-fn a_line_that_reads_values_again_over_and_over_is_judged_within_a_bound() {
+fn a_line_that_reads_values_again_over_and_over_is_read_in_linear_time() {
     // At 64 KB each line holds the counts written here (`at`), at 16 KB a
     // quarter of them: the one must take about four times as long as the
     // other, not sixteen.

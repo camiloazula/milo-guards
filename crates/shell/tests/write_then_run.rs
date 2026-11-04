@@ -17,8 +17,11 @@
 mod common;
 
 use std::fmt::Write as _;
+use std::time::Duration;
 
-use common::{assert_linear, check, classify, filled, posix, windows, Maker};
+use common::{
+    assert_linear, assert_within, check, classify, filled, posix, took, windows, Maker, STAGE_SIZES,
+};
 use milo_guards_shell::{Rule, Shell};
 
 #[test]
@@ -159,7 +162,7 @@ fn a_line_that_writes_by_too_many_patterns_writes_any_file() {
     any(coverage, debug_assertions),
     ignore = "timing: `just timing` runs it in an optimized build"
 )]
-fn many_pattern_writes_and_many_runs_are_read_in_time() {
+fn many_pattern_writes_and_many_runs_are_read_in_linear_time() {
     // A write by a pattern costs the guard more than a write by a name
     // whatever the runs are (about 0.1 ms in an optimized build).
     // A write and a run, each `#` in them the number of the pair: distinct
@@ -307,11 +310,14 @@ fn the_files_database_clients_write_are_read_in_linear_time() {
             line
         },
     );
-    // Many clients of one stage that writes many files, and a run.
-    assert_linear(
+    // Many clients of one stage that writes many files, and a run: the files
+    // are read only to a count, reached between 16 and 24 KB, so the line is
+    // held to a bound at each size up to and past it.
+    assert_within(
         "a stage of outputs to many clients",
-        shell,
-        &paths,
+        Duration::from_secs(1),
+        &STAGE_SIZES,
+        |line| took(line, shell, &paths),
         |size| {
             let mut said = String::new();
             for at in 0..size / 80 {

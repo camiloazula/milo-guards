@@ -6832,7 +6832,11 @@ are each held to the bound;
   what an optimized build takes here. A shape that must be read in time that
   grows with its length is checked by comparing two lengths
   (`assert_linear`), not one length against a fixed bound, so a slow or busy
-  machine, which slows both, does not fail it. The worst of the random
+  machine, which slows both, does not fail it. A shape read only to a count,
+  such as `pwsh -wd:x …` or a stage that feeds many clients, comes back early
+  past the count, so its longer line may be the quicker; `assert_linear`
+  fails on that, and the shape holds each of several lengths up to and past
+  the count to a fixed bound instead (`assert_within`). The worst of the random
   lines, and a line at the length limit
   in each of fourteen shapes in each shell (a chain, a pipeline and a
   conjunction with each shell's own separator: `;` is no separator in cmd, `&`
