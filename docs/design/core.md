@@ -292,7 +292,10 @@ itself.
     -Recurse`, `robocopy /E`, `xcopy /s`) can replace anything below its
     destination, so there the full `place` is used, holding rule included.
     What other rules own stays theirs: `rsync --delete` and `robocopy /MIR`
-    delete through the delete rule, and unpacking an archive is not read.
+    delete through the delete rule. A recursive copy onto the workspace
+    itself, an archive unpacked into a folder and a patch applied in one
+    replace what the folder holds too, which `holds_protected` answers for
+    the workspace and a temporary folder as well (`cp -r tmpl/. .`).
   - **Names compare without case on every host**, not only Windows: a macOS
     or Windows file system ignores it, and the caller names a path as it
     knows it. A protected name is also matched, on Windows, by its 8.3 short
@@ -565,6 +568,26 @@ path made absolute, with the working directory and `~` applied.
   wildcard (that is `place`'s) and for one known only when it runs. It does not
   change `place`, so the shell guard's verdicts for deleting and writing stay
   what they were.
+- `holds_protected(path, flavour, hidden)` is `Some(words)`, the caller's
+  words, for a protected path that a program can reach when it changes files
+  below `path` that the input does not name: the files a search finds there,
+  the ones a patch or an archive names, what a recursive copy brings. That is
+  a protected path `path` is, is under, or holds, whatever else `path` is:
+  the workspace itself, a temporary folder and the home directory included,
+  where `place` answers only that, since a delete of the workspace is a
+  delete of the workspace whatever it holds. A pattern holds one when it can
+  pick it or a folder that holds it, or go below a protected folder, as for
+  `place`. It is `None` for a device and a path known only when it runs. It
+  does not change `place`: a guard asks it of a folder whose files it cannot
+  name, and what to say where the folder is already risky is the guard's.
+- `any_protected()` is the words of the first protected path, for a folder
+  only known when it runs, which may hold any of them; `None` when nothing
+  is protected.
+- `workspace_of(path, flavour)` is the workspace folder `path` is in, or is,
+  the deepest when folders nest, as an absolute path: the top of the work
+  tree a program such as `git am` changes wherever below it it runs. It is
+  `None` for a path in no workspace folder, a device, a wildcard, and a path
+  on another drive's own working directory.
 - `cwd_is_clear()` says whether a path written from the working directory, with
   no `..`, `~`, drive or variable in it, can only land in the agent's own
   workspace: the working directory is in a workspace folder that holds no key,
@@ -655,10 +678,10 @@ Core's own tests hold the path model to its cases, in case files in
 sensitive place, case, short names, other users' homes, long paths,
 drive-relative paths and a Mac's links), `startup.cases` (`startup`,
 `startup_below` and what a write into one is), `picks.cases`
-(`picks_secret`), `reaches_secret.cases`, `absolute.cases` and
-`opened.cases`. A case asks the `Resolver` one or more questions of one path,
-on one machine, and gives each answer. What is made in a loop or asks the API
-itself stays in Rust: the folds NTFS does not make and the flavour in
+(`picks_secret`), `holds_protected.cases`, `reaches_secret.cases`,
+`absolute.cases` and `opened.cases`. A case asks the `Resolver` one or more
+questions of one path, on one machine, and gives each answer. What is made
+in a loop or asks the API itself stays in Rust: the folds NTFS does not make and the flavour in
 `sensitive.rs`, and that applying the `..` of what is opened gives the
 absolute path in `opened.rs`. `tests/cases.rs` tests the shared reading of
 the format and core's runner (`tests/common/runner.rs`), and dumps every

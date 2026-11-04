@@ -5,7 +5,7 @@ use super::{
     Checker, Pattern, CONTENTS, COPY_VALUED,
 };
 use crate::launch::{find_targets, find_unread_primary, perl_edits};
-use crate::path::{Access, Place};
+use crate::path::{self, Access, Place};
 use crate::powershell::{
     Param, Params, CLEAR_CONTENT, EXPORT_CLIXML, EXPORT_CSV, FOREACH_OBJECT, NEW_ITEM, OUT_FILE,
     SET_CONTENT, TEE_OBJECT,
@@ -60,8 +60,21 @@ impl Checker<'_> {
             }
             "del" | "erase" if shell == Shell::Cmd => {
                 let targets = builtin(key, args);
-                self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
-                if has_switch(args, "s") {
+                let search = has_switch(args, "s");
+                for target in &targets {
+                    let before = self.found.len();
+                    self.delete(unit, &[target], "deletes");
+                    // `/s` deletes the names that match in every folder
+                    // below too, as a search finds them (`del /s *.yaml`).
+                    if search && self.found.len() == before {
+                        if let Some(text) = target.known() {
+                            let at = text.rfind(['/', '\\', ':']).map_or(0, |at| at + 1);
+                            let found = path::found_in(&folder_of(&text[..at]));
+                            self.delete(unit, &[&Arg::Known(found)], "deletes");
+                        }
+                    }
+                }
+                if search {
                     self.search_deletes(unit, &targets);
                 }
             }
@@ -80,10 +93,26 @@ impl Checker<'_> {
                 if targets.is_empty() && from_pipe(unit) {
                     self.delete(unit, &[&Arg::Input], "deletes");
                 } else {
-                    let targets = narrowed(unit, &params, dedup(targets));
+                    let mut targets = narrowed(unit, &params, dedup(targets));
+                    // With `-Recurse`, a wildcard path's last part matches in
+                    // every folder below (`Remove-Item *.yaml -Recurse`).
+                    if params
+                        .named
+                        .iter()
+                        .any(|(name, _)| "recurse".starts_with(name.as_str()))
+                    {
+                        let below: Vec<Arg> = targets
+                            .iter()
+                            .filter_map(Arg::known)
+                            .filter(|text| glob::has_wildcard(text))
+                            .map(|text| Arg::Known(path::found_below(text)))
+                            .collect();
+                        targets.extend(below);
+                    }
                     self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
                 }
             }
+            "patch" => self.patch(unit),
             "clear-recyclebin" => self.add(Rule::Delete, "empties the recycle bin", None),
 
             // Moving and copying: what is moved away, and where it lands.

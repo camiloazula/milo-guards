@@ -141,7 +141,9 @@ pub(super) fn resolve(
 /// except those the shell itself applied (`read.folded`): a program opens
 /// `link/../x` by following `link` first.
 fn opened(read: &Landed, resolver: &Resolver) -> Option<PathBuf> {
-    let (text, shell) = (read.text.as_str(), read.shell);
+    // A folder a search hands on whole is read as the folder.
+    let text = read.text.as_str();
+    let (text, shell) = (crate::path::whole_folder(text).unwrap_or(text), read.shell);
     match read.folded {
         0 => resolver.opened(text, shell),
         at if at >= text.len() => resolver.absolute(text, shell),
