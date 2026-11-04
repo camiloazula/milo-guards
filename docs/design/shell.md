@@ -1221,9 +1221,15 @@ and its findings are the line's, since the shell runs it as the same user.
   name (`./ls` and `/home/me/bin/ls` may be a script, `LS` is not on the
   list), started directly or through `command`, `exec`, `nohup`, `nice`,
   `timeout`, `time` or `stdbuf`, and only when the line does not change what
-  a bare name runs: it sets no `PATH` (nor zsh's `path`, `PATH=./bin ls`,
-  `export "PATH=./bin"`, a declared name only known when it runs) and runs no
-  `hash`. `env` may set `PATH`, so `env LC_ALL=C ls` is `unknown`; so is a
+  a bare name runs or what the program loads: it sets no variable, by a
+  prefix, a declaration or a plain assignment, but `BASH_ENV`, `ENV` and
+  those that set a language or a display (`LC_ALL=C ls` stays safe; `PATH`,
+  zsh's `path`, `LD_PRELOAD=./x.so ls`, `LD_LIBRARY_PATH` and
+  `DYLD_INSERT_LIBRARIES`, whose library may start a bash, make it
+  `unknown`), declares no name it does not show as written (`export
+  "PATH=./bin"`, `export PA''TH=./bin`, `export {PATH,X}=./bin`, `export
+  "$v=./bin"`; a bare `export PATH` sets nothing), and runs no `hash`. `env`
+  may set `PATH`, so `env LC_ALL=C ls` is `unknown`; so is a
   wrapper that runs its command through a shell (`watch ls`, `script -c
   ls`), `sudo ls`, `find -exec ls`, `xargs ls`, and a function or an alias
   named `ls` (its body is judged as the shell it starts). Not on the list: a
@@ -4227,16 +4233,19 @@ words are the ones the same program would get naming it.
 never what a folder holds, so a protected file below the folder searched,
 not the folder itself, is not among what it deletes when no name test of
 the expression can match the file's name (core's `holds_protected_picked`).
-The expression is walked for a file known by its name alone: a `-name` or
-`-iname` is matched without case (a file system that ignores case finds
-`RULES.md` by `-name 'RULES*'`), a name that is not ASCII is taken to match
-(it may be stored in another form), a `-lname` may match (a link points
-anywhere), a `-path`, a `-type`, a `-regex` and any other test may be true,
-and any action reached counts. An expression that cannot be read, or holds a
-word that may split, reaches every name. A protected folder may hold any
-name, so `find . -name '*.log' -delete` still deletes in a protected
-`.agent/`, and a protected file on a Windows root may be picked by its short
-name. What `-exec`, `-execdir` and a program fed by `xargs` are handed is
+The expression is walked for a file known by its name alone, which a file
+system that ignores case may store in any case. A `-name` may match when,
+compared with case, it takes each of the name's characters or its lower or
+upper case (`-name 'RULES*'` and `-name '[!R]ules.md'` may match
+`rules.md`), and is never sure to (`! -name RULES.MD` may delete it); an
+`-iname` compares without case, as `find` does. A name that is not ASCII is
+taken to match (it may be stored in another form), a `-lname` may match (a
+link points anywhere), a `-path`, a `-type`, a `-regex` and any other test
+may be true, and any action reached counts. An expression that cannot be
+read, or holds a word that may split, reaches every name. A protected folder
+may hold any name, so `find . -name '*.log' -delete` still deletes in a
+protected `.agent/`, and a protected file on a Windows root may be picked by
+its short name. What `-exec`, `-execdir` and a program fed by `xargs` are handed is
 judged as before: they may act on a folder that holds the file (`find .
 -name .agent -exec rm -rf {} +`).
 

@@ -175,18 +175,44 @@ pub(crate) const DOWNLOADERS: [&str; 10] = [
     "start-bitstransfer",
 ];
 
-/// Whether `unit` may change which program a bare name runs: `hash`, and a
-/// declaration whose word, as written, may set `PATH`: quoted (`export
-/// "PATH=./bin"`), or with a name only known when it runs.
+/// Whether setting the variable `name` leaves a program that starts no shell
+/// as it is: `BASH_ENV` and `ENV`, which only a shell reads, and a variable
+/// that sets a language or a display ([`crate::effect::harmless`]). Any
+/// other may change which program a bare name runs (`PATH`) or load code
+/// into the one it runs (`LD_PRELOAD`, `LD_LIBRARY_PATH`,
+/// `DYLD_INSERT_LIBRARIES`), which may start a bash.
+fn leaves_programs(name: &str) -> bool {
+    ["BASH_ENV", startup::SH_ENV]
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(name))
+        || crate::effect::harmless(name)
+}
+
+/// Whether `unit` may change which program a bare name runs, or what that
+/// program loads: `hash`, and a declaration with a word that may set a
+/// variable [`leaves_programs`] does not take: one whose name is not plain
+/// as the word reads (`export "$v=./bin"`), or another variable (`command
+/// export PATH=./bin`). A plain name alone (`export PATH`) sets nothing.
 fn respells(unit: &Unit) -> bool {
+    let plain = |name: &str| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
     match unit.key().as_deref() {
         Some("hash") => true,
         Some("export" | "declare" | "typeset" | "local" | "readonly") => {
             unit.args.iter().any(|arg| {
                 let text = arg.text();
-                let name = text.split(['=', '[', '+']).next().unwrap_or(text);
-                let name = name.trim_matches(['"', '\'']);
-                name.contains(['$', '`', '"', '\'', '\\']) || name.eq_ignore_ascii_case("path")
+                if text.starts_with(['-', '+']) {
+                    return false;
+                }
+                match text.split_once('=') {
+                    Some((name, _)) => {
+                        let name = name.strip_suffix('+').unwrap_or(name);
+                        !plain(name) || !leaves_programs(name)
+                    }
+                    None => !plain(text),
+                }
             })
         }
         _ => false,
@@ -516,8 +542,11 @@ struct Checker<'a> {
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,
-    /// Whether the line may change which program a bare name runs: it sets
-    /// `PATH` (or zsh's `path`), or runs `hash`, which ties a name to a file
+    /// Whether the line may change which program a bare name runs, or what
+    /// that program loads: it sets a variable other than those
+    /// [`leaves_programs`] takes (`PATH`, zsh's `path`, `LD_PRELOAD`), by a
+    /// prefix assignment, a declaration or a plain assignment, declares a
+    /// name it does not show, or runs `hash`, which ties a name to a file
     /// (see [`respells`]).
     respelled: bool,
 }
@@ -545,7 +574,9 @@ impl<'a> Checker<'a> {
             lengths: HashMap::new(),
             pipelines: HashMap::new(),
             flow: send::Flow::default(),
-            respelled: split.reassigned("path") || split.units.iter().any(respells),
+            respelled: split.declares_unread
+                || split.reassigned_any(|name| !leaves_programs(name))
+                || split.units.iter().any(respells),
         };
         for (at, unit) in split.units.iter().enumerate() {
             let Some(stage) = unit.stage else {

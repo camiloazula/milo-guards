@@ -470,6 +470,19 @@ posix finds=unknown | export BASH_ENV=x; path=(./bin $path); ls
 posix finds=unknown | export BASH_ENV=x; hash -p ./x ls; ls
 posix finds=unknown | export BASH_ENV=x; export "$v=./bin"; ls
 posix finds=unknown | export BASH_ENV=x; declare -x PATH=./bin; ls
+posix finds=unknown | export BASH_ENV=x; export PA''TH=./bin; ls
+posix finds=unknown | export BASH_ENV=x; export {PATH,X}=./bin; ls
+posix finds=unknown | export BASH_ENV=x; command export PATH=./bin; ls
+posix finds=unknown | export BASH_ENV=x; PATH=./bin; ls
+posix safe | export BASH_ENV=x; export PATH; ls
+# A library the dynamic loader runs may start a bash itself.
+posix finds=unknown | export BASH_ENV=x; LD_PRELOAD=./x.so ls
+posix finds=unknown | export BASH_ENV=x; export LD_PRELOAD=./x.so; ls
+posix finds=unknown | export BASH_ENV=x; LD_PRELOAD=./x.so; ls
+posix finds=unknown | export BASH_ENV=x; LD_LIBRARY_PATH=./lib ls
+posix finds=unknown | export BASH_ENV=x; DYLD_INSERT_LIBRARIES=./x.dylib ls
+posix finds=unknown | LD_PRELOAD=./x.so BASH_ENV=x ls
+posix safe | export BASH_ENV=x; LC_ALL=C TZ=UTC ls
 posix finds=unknown | export BASH_ENV=x; ls() { bash -c true; }; ls
 posix finds=unknown | export BASH_ENV=x; alias ls='bash -c true'; ls
 posix finds=unknown reason="runs a script the same line writes" | echo 'rm -rf ~' > e.sh; export BASH_ENV=e.sh; ls; make

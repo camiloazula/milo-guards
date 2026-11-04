@@ -653,7 +653,9 @@ posix@workspace_folder safe | find . -name '*.rs' -exec cp {} dist/ \\;
 posix@workspace_file safe | find conf/other -name x.yaml -delete
 # `find -delete` removes a file or an empty folder, never what a folder
 # holds, so a protected file whose name its name tests can never match is
-# not among what it deletes; names compare without case. A protected
+# not among what it deletes. The file may be stored with its name in any
+# case, and `-name` compares with case: it may match when it takes some case
+# of each character (`[!R]` takes `r`), and is never sure to. A protected
 # folder may hold any name, so a search below it may still delete in it.
 posix@workspace_rules safe | find . -name '*.log' -delete
 posix@workspace_rules safe | find . -type f -name '*.log' -delete
@@ -666,6 +668,18 @@ posix@workspace_rules finds=delete reason="deletes the agent's settings" | find 
 posix@workspace_rules finds=delete | find . -name 'RULES.MD' -delete
 posix@workspace_rules finds=delete | find . -iname 'RULES.md' -delete
 posix@workspace_rules finds=delete | find . -name '[r]ules.md' -delete
+posix@workspace_rules finds=delete | find . -name '[!R]ules.md' -delete
+posix@workspace_rules finds=delete | find . -name '[^R]ules.md' -delete
+posix@workspace_rules finds=delete | find . -name '[!A-Z]ules.md' -delete
+posix@workspace_rules finds=delete | find . -name 'rules.m[!D]' -delete
+posix@workspace_rules finds=delete | find .agent -name '[!R]ules.md' -delete
+posix@workspace_rules finds=delete | cd .agent && find . -name '[!R]ules.md' -delete
+posix@workspace_rules finds=delete | command find . -name '[!R]ules.md' -delete
+posix@workspace_rules finds=delete | busybox find . -name '[!R]ules.md' -delete
+posix@workspace_rules finds=delete | find . ! -name 'RULES.MD' -delete
+posix@workspace_rules safe | find . ! -iname 'RULES.MD' -name '*.md' -delete
+posix@workspace_rules safe | find . -name '[!Rr]ules.md' -delete
+posix@workspace_file finds=delete | find . -name '[!X].yaml' -delete
 posix@workspace_rules finds=delete | find . -name '*.md' -delete
 posix@workspace_rules finds=delete | find . -name '*.log' -o -name '*.md' -delete
 posix@workspace_rules finds=delete | find . ! -name '*.log' -delete

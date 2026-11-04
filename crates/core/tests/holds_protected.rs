@@ -17,9 +17,9 @@ fn a_folder_holds_the_protected_paths_below_it() {
 /// itself, a protected folder of any name and a file on Windows still are.
 #[test]
 fn a_search_reaches_a_protected_file_only_by_a_name_it_can_act_on() {
-    use milo_guards_core::{testing, Flavour, Protected, Resolver, Spelling};
+    use milo_guards_core::{Flavour, Protected, Resolver, Spelling};
 
-    let posix = testing::posix().with_protected([
+    let posix = common::cases::posix().with_protected([
         Protected::file("/home/me/work/repo/.agent/rules.md", "the agent's rules"),
         Protected::folder("/home/me/work/repo/cfg", "the agent's settings"),
     ]);
@@ -41,7 +41,7 @@ fn a_search_reaches_a_protected_file_only_by_a_name_it_can_act_on() {
         Some("the agent's rules")
     );
 
-    let windows = testing::windows().with_protected([Protected::file(
+    let windows = common::cases::windows().with_protected([Protected::file(
         r"C:\Users\me\dev\repo\.agent\rules.md",
         "the agent's rules",
     )]);

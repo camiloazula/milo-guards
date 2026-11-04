@@ -127,12 +127,14 @@ enum Node {
     /// answer of an ordinary entry.
     Fixed([Tri; PLACES]),
     /// `-name` and its kin: the answer for each place (as [`Node::Fixed`]),
-    /// the pattern as written and as `find`'s matching reads it, and whether
-    /// it tests what a link points to (`-lname`).
+    /// the pattern as written and as `find`'s matching reads it, whether it
+    /// compares without case (`-iname`), and whether it tests what a link
+    /// points to (`-lname`).
     Name {
         answers: [Tri; PLACES],
         raw: String,
         read: String,
+        fold: bool,
         link: bool,
     },
     /// `-path` and its kin: the pattern as written, the pattern as `find`'s
@@ -280,9 +282,10 @@ impl Search {
 
     /// Whether the search may act on a file named `name` at any depth below
     /// a folder it searches, whatever its path and kind: only its name tests
-    /// can say it does not. Names are compared without case, as a file
-    /// system that ignores case finds them, and a name that is not ASCII may
-    /// be stored in another form, so only an ASCII one is read.
+    /// can say it does not. The file may be stored with its name in any case,
+    /// as a file system that ignores case finds it (see [`named_answer`]),
+    /// and a name that is not ASCII may be stored in another form, so only
+    /// an ASCII one is read.
     pub(super) fn may_act_on_named(&self, name: &str) -> bool {
         if self.whole || !name.is_ascii() {
             return true;
@@ -341,12 +344,13 @@ impl Search {
                 answers,
                 raw,
                 read,
+                fold,
                 link,
             } => match place {
                 Subject::At(place) => answers[place.index()],
                 // A link may point anywhere.
                 Subject::Named(_) if *link => Tri::Maybe,
-                Subject::Named(name) => matching(raw, read, name, true),
+                Subject::Named(name) => named_answer(raw, read, name, *fold),
             },
             Node::Path { raw, read, fold } => match (place, git, raw, read) {
                 (Subject::At(place), Some(git), Some(raw), Some(read)) => {
@@ -508,6 +512,23 @@ fn matching(raw: &str, read: &str, subject: &str, fold: bool) -> Tri {
         Tri::True
     } else {
         Tri::Maybe
+    }
+}
+
+/// The answer of a name test for a file known by its name alone, which a
+/// file system that ignores case may store in any case. `-iname` compares
+/// without case, as `find` does, and is sure when it is read exactly. `-name`
+/// compares with case: it may match when it takes some case of each of the
+/// name's characters ([`glob::matches_in_any_case`]: `[!R]ules.md` takes
+/// `rules.md`), and is never sure, since the file may be stored in a case it
+/// does not take (`! -name RULES.MD` may delete `rules.md`).
+fn named_answer(raw: &str, read: &str, name: &str, fold: bool) -> Tri {
+    if fold {
+        matching(raw, read, name, true)
+    } else if glob::matches_in_any_case(read, name, Flavour::Posix, true) {
+        Tri::Maybe
+    } else {
+        Tri::False
     }
 }
 
@@ -845,6 +866,7 @@ fn name_test(raw: &str, fold: bool, link: bool) -> Node {
         answers: [on_git, on_git, on_entry, on_other],
         raw: raw.to_string(),
         read,
+        fold,
         link,
     }
 }

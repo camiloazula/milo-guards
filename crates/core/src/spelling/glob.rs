@@ -643,6 +643,28 @@ pub fn matches_ignoring_case(pattern: &str, name: &str, flavour: Flavour, hidden
     matches_case(pattern, name, flavour, hidden, true)
 }
 
+/// As [`matches()`] on POSIX, for a name that may be stored in other cases:
+/// whether the pattern, compared with case, matches the name with any of its
+/// characters in its lower or upper case, as a file system that ignores case
+/// may hold it. A character is taken when the pattern takes it, its lower
+/// case or its upper case, each read with case: `[!R]ules.md` matches
+/// `rules.md`, which a fold of both would refuse. On Windows names compare
+/// without case, as in [`matches()`].
+#[must_use]
+pub fn matches_in_any_case(pattern: &str, name: &str, flavour: Flavour, hidden: bool) -> bool {
+    if flavour == Flavour::Windows {
+        return matches_case(pattern, name, flavour, hidden, true);
+    }
+    let name: Vec<char> = name.chars().collect();
+    [false, true].iter().any(|&zsh| {
+        let tokens = tokens(pattern, flavour, zsh);
+        matches_tokens(&tokens, &name, hidden, |token, c| {
+            let (lower, upper) = cases(c);
+            token.takes(c, false) || token.takes(lower, false) || token.takes(upper, false)
+        })
+    })
+}
+
 /// [`matches()`], with names compared without case when `fold` or on
 /// Windows.
 fn matches_case(pattern: &str, name: &str, flavour: Flavour, hidden: bool, fold: bool) -> bool {
@@ -654,12 +676,18 @@ fn matches_case(pattern: &str, name: &str, flavour: Flavour, hidden: bool, fold:
     let readings: &[bool] = if fold { &[false] } else { &[false, true] };
     readings.iter().any(|&zsh| {
         let tokens = tokens(pattern, flavour, zsh);
-        matches_tokens(&tokens, &name, fold, hidden)
+        matches_tokens(&tokens, &name, hidden, |token, c| token.takes(c, fold))
     })
 }
 
-/// Whether the `tokens` of a pattern match the file name `name`.
-fn matches_tokens(tokens: &[Token], name: &[char], fold: bool, hidden: bool) -> bool {
+/// Whether the `tokens` of a pattern match the file name `name`, where
+/// `takes` says whether a token (not a `*`) takes a character.
+fn matches_tokens(
+    tokens: &[Token],
+    name: &[char],
+    hidden: bool,
+    takes: impl Fn(&Token, char) -> bool,
+) -> bool {
     if !hidden && name.first() == Some(&'.') && tokens.first() != Some(&Token::Literal('.')) {
         return false;
     }
@@ -672,7 +700,7 @@ fn matches_tokens(tokens: &[Token], name: &[char], fold: bool, hidden: bool) -> 
                 star = Some((at, on));
                 at += 1;
             }
-            Some(token) if token.takes(name[on], fold) => {
+            Some(token) if takes(token, name[on]) => {
                 at += 1;
                 on += 1;
             }
@@ -1340,6 +1368,37 @@ mod tests {
         }
         assert!(matches_ignoring_case(".GIT", ".git", Flavour::Posix, true));
         assert!(!matches(".GIT", ".git", Flavour::Posix, true));
+    }
+
+    #[test]
+    fn a_name_in_any_case_is_matched_with_case_for_each_of_its_cases() {
+        for pattern in [
+            "rules.md",
+            "RULES.MD",
+            "[!R]ules.md",
+            "[^R]ules.md",
+            "[!A-Z]ules.md",
+            "rules.m[!D]",
+            "[R]ULES.*",
+            "*.MD",
+        ] {
+            assert!(
+                matches_in_any_case(pattern, "rules.md", Flavour::Posix, true),
+                "{pattern}"
+            );
+        }
+        for pattern in ["*.log", "rules", "[!Rr]ules.md", "[!a-zA-Z]ules.md", "x*"] {
+            assert!(
+                !matches_in_any_case(pattern, "rules.md", Flavour::Posix, true),
+                "{pattern}"
+            );
+        }
+        assert!(!matches_ignoring_case(
+            "[!R]ules.md",
+            "rules.md",
+            Flavour::Posix,
+            true
+        ));
     }
 
     #[test]
