@@ -291,7 +291,8 @@ posix finds=overwrite reason="unpacks to absolute paths only known when it runs"
 posix finds=overwrite | jar -xPf a.jar -C build
 posix safe | python3 -m zipfile -e a.zip build
 posix safe | python3 -m zipfile -l a.zip
-posix lacks=overwrite | python3 -m zipfile -c a.zip src
+posix safe | python3 -m zipfile -c a.zip src
+posix safe | python3 -m zipfile --create a.zip src
 posix safe | python3 -m zipfile -t a.zip
 posix finds=overwrite reason="unpacks to absolute paths only known when it runs" | python3 -m tarfile -e a.tar
 posix safe | python3 -m tarfile --filter data -e a.tar build

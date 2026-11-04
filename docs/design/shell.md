@@ -128,7 +128,17 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   when there is one, which only the disk can say, so a word that names a
   program (`dir.bat`, `echo\..\..\Windows\System32\shutdown.exe`) is
   read both ways and the riskier counts; each reading may be the one that
-  does not run, so a `cd` among them may not have moved the line. Any other
+  does not run, so a `cd` among them may not have moved the line. Read as
+  the built-in, a `call` found so (`call.bat`) runs the program the rest of
+  the word names, read both with the character that ends the name (`.bat`)
+  and without it, as `echo` drops it (`bat`; `call.rd /s /q C:\Windows` is
+  the `delete` of `rd`); a `for` found so (`for.exe`) whose next word starts
+  neither a loop variable (`%`) nor an option (`/`), with that character or
+  without it, is a syntax error cmd refuses, and runs nothing, when the rest
+  of the word is one piece the line shows whole (`for.;%%i in …` may start
+  a loop variable after the delimiters). Any other (`call.`, `for. %%i in
+  …`, `for.;%%i in …`, `if.exe`) is a `call`, `if` or `for` the guard
+  does not read (below). Any other
   name, quoted or not, is the path of a program, judged by its last part as
   the bare name is (`%SystemRoot%\System32\cmd.exe /c …` is `cmd /c …`).
   A drive with no folder after it is read past too: cmd and PowerShell run
@@ -428,7 +438,9 @@ rm -rf ~; }` and `coproc > out rm -rf ~` are `Delete`. The grammar reads the
 for it, so the walk takes off one bare `}` with no arguments for each `{` a
 `coproc` opened in the same script, and it is no unit: `coproc { ls *.txt; }`
 and `coproc NAME { ls; }` only read, as `coproc cat` does, and a quoted `'}'`
-is still a program. A group whose commands start on the next line (`coproc
+is still a program. The same holds for a group after the other words that
+start a command of their own, which the grammar reads as programs: `time {
+ls; }`, `! { ls; }` and zsh's `repeat 3 { ls; }` only read too. A group whose commands start on the next line (`coproc
 NAME {`, a newline, `ls`) leaves the `coproc` with nothing to run on its own
 line: it is no unit either, and the lines after it are read as they stand. The
 grammar has no `coproc`, so three forms are not read, and are risky:
@@ -947,11 +959,46 @@ and its findings are the line's, since the shell runs it as the same user.
   many times is not read again for each use.
   `f() { rm -rf build; }; f`, `cd src; f() { rm -rf build; }; f`, `for i in
   1 2; do rm -rf build; done`, `for i in 1 2; do cd /tmp; rm -rf build;
-  done` and `for d in */; do (cd "$d" && make); done` stay safe. A loop is
+  done` and `for d in */; do (cd "$d" && make); done` stay safe. So does a
+  body whose first `cd` since it began comes after it and after every
+  command that may call a function: one named as a function the line defines
+  (any, as one may call another), one known only when it runs, a builtin
+  that runs code (`eval`, `command`, `builtin`, `exec`, `trap`, `alias`,
+  `fc`, zsh's `sched`, `autoload`, `add-zsh-hook` and `zle`), or one given a
+  word that names a function the line defines or is only known when it
+  runs, since a builtin may call a function by a name it is given
+  (`mapfile -C f`, `compgen -F f`, `complete -F f`, `bind -x '"\C-x": f'`).
+  Every call is then made before the `cd`, from where the walk has
+  it: `f() { rm -rf build; }; f; (cd sub && make)` and `f() { rm -rf build;
+  }; f; cd /` are safe, while `… f; cd /; g`, where `g` is a function, `…
+  f; cd /; eval "$x"` and `… f; cd /; bash -c f` are not. A `cd` in a loop
+  or a body counts from where the outermost of them begins, since a loop
+  runs what comes before the `cd` again after it: `… while true; do f; cd /;
+  done` is not safe. It does not hold
+  for a function the shell calls itself (zsh's `TRAP…` functions and hooks,
+  `chpwd` on every `cd`, `precmd`, `preexec`, `periodic`, `zshexit`,
+  `zshaddhistory`, `zsh_directory_name` for `~[x]`;
+  `command_not_found_handle` and zsh's `command_not_found_handler`), nor on
+  a line that is not all POSIX, has an action that runs later (a trap), an
+  alias, sets a variable that names hooks or holds a prompt
+  (`chpwd_functions`, `PROMPT_COMMAND`, `PS1`, zsh's `functions`, `PROMPT`,
+  `RPROMPT`, `RPS1`, `SPROMPT`), exports a function to the programs it
+  starts (`export -f`, `declare -fx`, any flag with an `f` of `export`,
+  `declare`, `typeset`, `local` or `readonly`; `set -a`, `set -o
+  allexport`), sources a file (`source`, `.`: it may set a trap or a hook),
+  uses zsh's `functions` with an option (`functions -c f g` copies a
+  function to a name the line does not define, `functions -M f` lets
+  arithmetic call it), or has zsh's `repeat`, which runs what comes before
+  a `cd` in it again after it. A loop is
   read once, with every `cd` in it one that may not have run, so one whose
   `cd`s come back (`cd crates/shell; …; cd ../..`) is still read from where a
   `cd` that failed or was skipped leaves it, as the same commands written out
-  twice are. And a function body is read from a folder only known when it
+  twice are. So `for x in a b; do cd sub && cargo test > log; cd -; done` stays
+  an `overwrite` of a file only known when it runs: the `cd sub` may not have
+  run, and `cd -` goes back to a folder the guard does not follow (the shell's
+  `OLDPWD`, only known when it runs), so a later pass may start anywhere. The
+  same loop with the `cd` in a subshell, `(cd sub && cargo test > log)`, is
+  safe. And a function body is read from a folder only known when it
   runs even when every call is placed (`build() { cargo build > build.log;
   }; cd crates/shell; build` is an `overwrite` of a file only known when it
   runs), since a call may come from a script the line runs, or a second call
@@ -1561,7 +1608,14 @@ line is in). `{ cd sub; cat; } < ../../.ssh/id_rsa` and `while read
 l; do cd sub; done < ../../.ssh/id_rsa` open the same key `cat
 ../../.ssh/id_rsa` does (`read_secret`), `{ cd sub; ls; } > ../x` writes
 `<cwd>/../x`, while `{ cd ../..; cat; } < .ssh/id_rsa` reads `<cwd>/.ssh/id_rsa`
-and `{ cd ../..; ls; } > x` writes `<cwd>/x`. When that folder is not certain,
+and `{ cd ../..; ls; } > x` writes `<cwd>/x`. What a here-string or a
+here-document on such a statement runs is expanded before the body too, so
+it is read from the folders the redirect would open its file from, not from
+where the body left the line: `if true; then cd sub || exit; fi <<< "$(rm -rf
+../x)"` and the same with a here-document delete `<cwd>/../x`, and `while
+read l; do cd ../..; done <<< "$(cat .ssh/id_rsa)"` reads the workspace's
+`.ssh`, which holds no key of the user's. The grammar reads no here-string on
+a group (`{ cd sub; } <<< x`), and such a line is `unreadable`. When that folder is not certain,
 the redirect is placed from every folder that may be it, as for a `cd` above:
 where the line is when the statement ends too if the statement is in a loop or
 a function body, and where the line began too if an earlier `cd` may not have
@@ -3445,7 +3499,21 @@ a path.
   (`-n`), a `--` or a splat leaves the path unclear
   (`Clear-ItemProperty -n a HKCU:\Software\x`). A `--` is never a path. A
   splat is `@` and a variable name (`@p`, `@args`); `@(...)` and `@{...}` are
-  not one. `Copy-Item` and
+  not one. A splat of a table the line holds for certain (see [What cannot
+  be read is risky](#what-cannot-be-read-is-risky)) that it writes out with
+  a name for each key and, for each value, text with nothing in it only known
+  when it runs (no `$`, backtick or quote inside) that does not start with
+  `-`, with at most 16 entries (a bigger one is not bound, so a line of
+  many splats stays quick), binds those parameters, and is read as them
+  written out: `$p = @{ Path
+  = 'x' }; Set-Content @p` is safe and `$p = @{ LiteralPath = '~\.ssh' };
+  Remove-Item @p -Recurse` deletes the keys, while a table changed in place
+  (`$p.Path = …`, `$p.Add(…)`), set more than once, used before it is set or
+  with a scope (`@global:p`), with a key that stores into a variable
+  (`OutVariable`), given to a command (`f $p`), or on a line that runs code
+  the guard does not read in its scope (a script dot-sourced, `. ./x.ps1`,
+  or `Import-Module`) leaves the splat, and every variable of the line, only
+  known when it runs. `Copy-Item` and
   `Move-Item` judge a splat as a possible destination when no `-Destination` is
   named (`Copy-Item @p`, `Copy-Item @p src\a`). A `Get-ChildItem` listing reads
   `-s` (`-Recurse`), `-ar` (`-ReadOnly`) and `-Name` as switches, so they do
@@ -4138,6 +4206,15 @@ interpreter or a shell reads from its input (`python3 < <(curl -s …)`,
 `bash < <(curl …)`). What `xargs` hands on is the
 files a listing names, and stays a script of the workspace's
 (`… | xargs python3`). The words after the script are its own arguments.
+For CPython (`python`, `python3`, `py`) they are not read for inline code
+either, after the script or after the module of `-m`: `python3 -m zipfile
+-c a.zip src` makes an archive, and `python3 x.py -c 'import os'` hands
+`x.py` its `-c`. CPython's table names every option that takes a value, and
+CPython refuses one it does not know, so the script is where it says. The
+other Pythons have every word read as before: IPython reads its own options
+after the file, where `-c` runs code (`ipython x.py -c …`), and PyPy has
+long options that take a value the table does not know (`pypy3 --jit off
+-c …`).
 
 **Modules that run what they are given.** `python -m MODULE` runs the module
 in place of a script, judged as a script is (`python3 -m pytest` is safe),
@@ -4705,7 +4782,8 @@ A line is never safe because the guard gave up on it. These come back risky:
   sets, `New-PSDrive`, a command whose name is only known when it runs (`&
   $c`, `& ('Set-' + 'Variable')`), `Set-Item`, `New-Item`, `Rename-Item`,
   `Copy-Item`, `Move-Item`, `Set-Content` or `Add-Content` with a path not
-  written out or piped to it, a splat, a `-OutVariable` or another common
+  written out or piped to it, a splat (but one of a table the line holds,
+  below), a `-OutVariable` or another common
   parameter that stores into a variable, a path on the `Variable:` or `Alias:`
   drive, `[ref]`, a `data` section, a `trap` (which may run before an
   assignment ahead of it), a member name only known when it runs, a member
@@ -6250,7 +6328,9 @@ inside the workspace.
 `sudo cat` reads only. Only the wrappers that just run the next program are
 let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
 `time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
-`nocorrect`, `-`, `coproc`, and the `find` a `-exec` makes), and only with
+`nocorrect`, `-`, `coproc`, the `{`, `!` and zsh's `repeat` the grammar
+reads as programs before a group (`time { ls; }`, `! { ls; }`, `repeat 3 {
+ls; }` read only), and the `find` a `-exec` makes), and only with
 options the guard knows: any other option makes the line `Unknown`, since it
 could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
 `env -P` changes where programs are found, `env -C` the folder they run in).

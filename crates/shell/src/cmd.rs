@@ -476,7 +476,31 @@ impl Walker<'_> {
             return;
         };
         let (args, spans) = self.args(&after);
-        let readings = self.word(&word);
+        let mut readings = self.word(&word);
+        // `call.bat`, `for.exe`: the built-in cmd may read before the dot.
+        let mut called = Vec::new();
+        readings.retain(|reading| {
+            if !reading.before_dot {
+                return true;
+            }
+            match reading
+                .program
+                .known()
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("call") => match self.called(reading) {
+                    Some(more) => {
+                        called.extend(more);
+                        false
+                    }
+                    None => true,
+                },
+                Some("for") => !self.bad_for(reading, &args),
+                _ => true,
+            }
+        });
+        readings.extend(called);
         let statement = readings.iter().any(|reading| {
             let name = reading.program.known().map(str::to_ascii_lowercase);
             match name.as_deref() {
@@ -506,6 +530,52 @@ impl Walker<'_> {
             units.push(unit);
         }
         launch::add_readings(self.split, units, self.depth);
+    }
+
+    /// What a `call` that cmd may read before a `.`, `\` or `:` of its
+    /// word runs (`call.bat x`): the program the rest of the word names,
+    /// read with the character that ends the built-in's name (`.bat`, or
+    /// `\..\Windows\System32\shutdown.exe`, a path) and without it, as
+    /// `echo.` drops it (`bat`, or a built-in: `call.rd /s /q C:\x` runs
+    /// `rd`). `None` when the rest is not known or is that character alone.
+    fn called(&self, reading: &Reading) -> Option<Vec<Reading>> {
+        let (first, span) = reading.first.first()?;
+        first.known()?;
+        let word = self.source.get(span.clone())?;
+        let mut chars = word.char_indices();
+        chars.next();
+        let (at, _) = chars.next()?;
+        let mut readings = self.path(word, span.start);
+        readings.extend(self.name(&word[at..], span.start + at));
+        Some(readings)
+    }
+
+    /// Whether a `for` that cmd may read before a `.`, `\` or `:` of its
+    /// word (`for.exe`) is one it refuses: the word after the name, read
+    /// with the character that ends the name or without it, starts neither
+    /// a loop variable (`%`) nor an option (`/`), so cmd reports a syntax
+    /// error and runs nothing for it. The rest of the word must be one
+    /// piece the line shows whole: a word with a part only known when it
+    /// runs, or quoted or expanded apart (`for.;%i in (1) do …`), may start a
+    /// loop variable after the delimiters, and so keeps the built-in reading.
+    fn bad_for(&self, reading: &Reading, args: &[Arg]) -> bool {
+        let [(first, _)] = reading.first.as_slice() else {
+            return false;
+        };
+        let Some(first) = first.known() else {
+            return false;
+        };
+        let dropped = first.get(1..).unwrap_or_default();
+        let next = if dropped.trim_start_matches(DELIMITERS).is_empty() {
+            match args.first() {
+                Some(arg) => arg.known(),
+                None => Some(""),
+            }
+        } else {
+            Some(dropped.trim_start_matches(DELIMITERS))
+        };
+        let starts_loop = |text: &str| text.starts_with(['%', '/', '^', '!']);
+        next.is_some_and(|next| !starts_loop(next)) && !starts_loop(first)
     }
 
     /// The arguments of a program that splits its own command line, as
@@ -567,7 +637,7 @@ impl Walker<'_> {
         pieces: &[Node<'_>],
         stage: Option<Stage>,
     ) -> Unit {
-        let Reading { program, first } = reading;
+        let Reading { program, first, .. } = reading;
         // `start "title" program …`: cmd takes a first quoted argument as
         // the window's title, which the values here no longer show.
         let title =
@@ -691,6 +761,7 @@ impl Walker<'_> {
         let mut readings = vec![Reading {
             program: Arg::Known(name),
             first: first.into_iter().collect(),
+            before_dot: maybe_file,
         }];
         if maybe_file {
             readings.extend(
@@ -718,6 +789,7 @@ impl Walker<'_> {
             return vec![Reading {
                 program: Arg::Known(drive[..1].to_string()),
                 first: vec![(Arg::Known(":".to_string()), end.saturating_sub(1)..end)],
+                before_dot: false,
             }];
         }
         let whole = Reading::program(whole);
@@ -736,6 +808,7 @@ impl Walker<'_> {
         let cut = Reading {
             program: before,
             first: vec![(self.known(&raw[at..]), start + at..end)],
+            before_dot: false,
         };
         if folder {
             vec![cut, whole]
@@ -1184,6 +1257,10 @@ struct Reading {
     /// What is left of the word, the program's first arguments, and where
     /// each is in the source.
     first: Vec<Placed>,
+    /// Whether the program is a built-in found before a `.`, `\` or `:` of
+    /// the word (`call.bat`, `for.exe`), which cmd may read as the file the
+    /// word names instead.
+    before_dot: bool,
 }
 
 impl Reading {
@@ -1191,6 +1268,7 @@ impl Reading {
         Self {
             program,
             first: Vec::new(),
+            before_dot: false,
         }
     }
 }

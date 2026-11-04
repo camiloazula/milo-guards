@@ -750,7 +750,21 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
     }
     let args = own_args(key, args);
     let (short, long) = code_options(key);
-    let code = args.iter().any(|arg| {
+    let read = options(key, args);
+    // CPython's words after the script or the module are its own
+    // arguments, not the interpreter's: `python3 -m zipfile -c a.zip src`
+    // makes an archive. Its table names every option that takes a value,
+    // and it refuses one it does not know. Not so for the others that read
+    // python's options: IPython reads its own options after the file (`-c`
+    // there runs code), and PyPy has long options the table does not know
+    // that take a value (`--jit off`), so every word of theirs is read.
+    let cpython = key.starts_with("python") || key == "py";
+    let end = read
+        .script
+        .or(read.module.as_ref().map(|(_, own)| *own))
+        .filter(|_| cpython && !read.unsure)
+        .unwrap_or(args.len());
+    let code = args.get(..end).unwrap_or(args).iter().any(|arg| {
         arg.known()
             .is_some_and(|text| match text.strip_prefix('-') {
                 Some(bundle) if !bundle.is_empty() && !bundle.starts_with('-') => {
@@ -761,7 +775,6 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
     });
     // Code in a `data:` URL that node loads first runs, and is not read.
     let code = code || (is_node(key) && inline::loads_foreign_code(args));
-    let read = options(key, args);
     // `ipython --InteractiveShellApp.exec_lines=… x.py` runs code first.
     let code = code || read.runs_code;
     let file = read.script.is_some() || read.module.is_some();

@@ -1335,6 +1335,14 @@ pub(crate) struct Split {
     /// How many `cd`s the walk has read in all, in a subshell or not, which
     /// nothing gives back: how an action that runs later tells it holds one.
     moved: usize,
+    /// For each of those `cd`s, in order, where it is among the units: the
+    /// `cd`'s own unit, or the first unit read after it, or, in a loop, where
+    /// the outermost loop or body around it begins, since what the loop runs
+    /// before it runs again after it (see [`Self::uncalled_since`]).
+    moved_at: Vec<usize>,
+    /// Whether the line has an action that runs later (see [`Self::later`]),
+    /// kept once those are settled.
+    ever_later: bool,
     /// How many of them go to a folder that is not a whole path the line
     /// writes out (`cd sub`, `cd ..`, `cd -`, `cd "$d"`, a folder a location
     /// stack gives back): one that goes to where it starts from. A loop
@@ -1389,12 +1397,14 @@ pub(crate) struct Split {
     /// checked against `MAX_EXEC_WORK` in `find.rs`: the levels multiply, so
     /// a line must not make this grow without bound.
     pub(crate) find_work: usize,
-    /// How many groups a `coproc` opened that the grammar did not see
-    /// (`coproc { ls; }`, `coproc NAME { { ls; }; }`): it has no `coproc`,
-    /// so it reads each `{` as a word and each `}` that closes one as a
-    /// command of its own. The walk takes such a `}` off as it closes one,
-    /// and runs nothing for it.
-    pub(crate) coproc_groups: usize,
+    /// How many groups a word that starts a command of its own opened that
+    /// the grammar did not see (`coproc { ls; }`, `coproc NAME { { ls; }; }`,
+    /// `time { ls; }`, `! { ls; }`, zsh's `repeat 3 { ls; }`): it has no
+    /// `coproc` or `repeat`, and reads no group after `time` or `!`, so it
+    /// reads each `{` as a word and each `}` that closes one as a command of
+    /// its own. The walk takes such a `}` off as it closes one, and runs
+    /// nothing for it.
+    pub(crate) open_groups: usize,
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
@@ -1943,6 +1953,7 @@ impl Split {
         if let (Some(_), Some(saved)) = (&moved, back) {
             self.moves += 1;
             self.moved += 1;
+            self.note_moved();
             self.relative_moves += 1;
             self.dir = saved.dir;
             self.dir_code = saved.dir_code;
@@ -1960,6 +1971,7 @@ impl Split {
     fn move_line(&mut self, target: &Arg, shell: Shell, unsure: bool) {
         self.moves += 1;
         self.moved += 1;
+        self.note_moved();
         self.relative_moves += usize::from(!whole_path(target, shell));
         if shell == Shell::Posix && target.known().is_some_and(names_after_dots) {
             self.pwd.climbed = true;
@@ -2663,6 +2675,67 @@ impl Split {
     pub(crate) fn leave_start(&mut self) {
         if let Some(mover) = self.step_out() {
             self.move_on(mover);
+        }
+    }
+
+    /// Read what comes next from the folders `from` names, as a redirect
+    /// read now opens its file from them (see [`Self::redirect_dirs`]),
+    /// until [`Self::leave_from`]: the shell expands a here-string or a
+    /// here-document on a group, a loop or a branch before the body runs,
+    /// so what a substitution in it runs (`if true; then cd sub || exit; fi
+    /// <<< "$(rm -rf ../x)"`) starts where the statement begins, not where
+    /// the body left the line. `$PWD` there is plain text only when it is so
+    /// wherever the line has been.
+    pub(crate) fn enter_from(&mut self, from: &OpensFrom) {
+        let (dir, elsewhere) = match from {
+            OpensFrom::Line => {
+                self.aways.push(None);
+                return;
+            }
+            OpensFrom::Start(start) => (start.dir.clone(), start.others.clone()),
+            OpensFrom::Both(start) => {
+                let mut others = start.others.clone();
+                others.push(match &start.went {
+                    Went::Here => self.dir.clone(),
+                    Went::To(dir) => dir.clone(),
+                });
+                (start.dir.clone(), others)
+            }
+            OpensFrom::Among(dirs) => {
+                let mut others: Vec<Option<Arg>> = dirs.iter().skip(1).cloned().collect();
+                others.push(self.dir.clone());
+                (
+                    dirs.first().cloned().unwrap_or_else(|| self.dir.clone()),
+                    others,
+                )
+            }
+        };
+        let code = self.dir_code || self.pwd.unplain;
+        let moved = Moved {
+            mover: usize::MAX,
+            moves: self.moves,
+            dir: std::mem::replace(&mut self.dir, dir),
+            dir_code: std::mem::replace(&mut self.dir_code, code),
+            elsewhere: std::mem::take(&mut self.elsewhere),
+            stayed: std::mem::take(&mut self.stayed),
+            adrift: std::mem::replace(&mut self.adrift, false),
+            last_stayed: std::mem::take(&mut self.last_stayed),
+        };
+        self.set_elsewhere(elsewhere);
+        self.aways.push(Some(moved));
+    }
+
+    /// Put the line back where it was before the last [`Self::enter_from`].
+    /// What was read in between is a POSIX substitution, which runs in a
+    /// subshell of its own and moves no later command.
+    pub(crate) fn leave_from(&mut self) {
+        if let Some(moved) = self.aways.pop().flatten() {
+            self.dir = moved.dir;
+            self.dir_code = moved.dir_code;
+            self.elsewhere = moved.elsewhere;
+            self.stayed = moved.stayed;
+            self.adrift = moved.adrift;
+            self.last_stayed = moved.last_stayed;
         }
     }
 
@@ -3677,9 +3750,15 @@ impl Split {
         // (A trap function's folders are where the line ends: see
         // [`Self::note_end`].)
         let moved = self.moved;
+        let calls_end = self
+            .function_runs
+            .iter()
+            .any(|run| run.moved != moved)
+            .then(|| self.calls_end())
+            .flatten();
         let runs: Vec<FunctionRun> = std::mem::take(&mut self.function_runs)
             .into_iter()
-            .filter(|run| run.moved != moved)
+            .filter(|run| run.moved != moved && !self.uncalled_since(run, calls_end))
             .collect();
         if runs.is_empty() {
             return;
@@ -3727,6 +3806,137 @@ impl Split {
         }
     }
 
+    /// Note where the `cd` read now is among the units (see
+    /// [`Self::moved_at`]).
+    fn note_moved(&mut self) {
+        let at = if self.repeats > 0 {
+            self.bodies_began.first().map_or(0, |body| body.units)
+        } else {
+            self.units.len()
+        };
+        self.moved_at.push(at);
+    }
+
+    /// Whether the body of `run` cannot run after any `cd` read since it
+    /// began: the first of them comes after the body, and after every unit
+    /// that may call a function (`calls_end`, see [`Self::calls_end`]), and
+    /// the shell calls no function of that name by itself (zsh's `TRAP…`
+    /// and hook functions, which `chpwd` is on every `cd`; bash's
+    /// `command_not_found_handle`). Then each call is made before the `cd`,
+    /// from where the walk has it: `f() { rm -rf build; }; f; (cd sub &&
+    /// make)`.
+    fn uncalled_since(&self, run: &FunctionRun, calls_end: Option<usize>) -> bool {
+        const HOOKS: [&str; 9] = [
+            "chpwd",
+            "precmd",
+            "preexec",
+            "periodic",
+            "zshexit",
+            "zshaddhistory",
+            "zsh_directory_name",
+            "command_not_found_handle",
+            "command_not_found_handler",
+        ];
+        let Some(calls_end) = calls_end else {
+            return false;
+        };
+        let Some(&cd) = self.moved_at.get(run.moved) else {
+            return false;
+        };
+        cd >= run.body.units.end
+            && calls_end <= cd
+            && !run.name.starts_with("TRAP")
+            && !HOOKS.contains(&run.name.as_str())
+    }
+
+    /// One past the last unit that may call a function the line defines:
+    /// one named as a function the line defines (any, since one may call
+    /// another), one known only when it runs, a builtin that runs code it is
+    /// given (`eval`, `command`), or one given a word that names such a
+    /// function or is only known when it runs, since a builtin may call a
+    /// function by a name it is given (`mapfile -C f`, `compgen -F f`,
+    /// `complete -F f`, `bind -x '"\C-x": f'`). `None` when the line may
+    /// call a function in a way no unit shows: a line that is not all POSIX,
+    /// an action that runs later (a `trap`'s, which may run after any `cd`),
+    /// an alias, a variable that names hooks or holds a prompt the shell
+    /// runs (`chpwd_functions`, `PROMPT_COMMAND`, `PS1`, zsh's `PROMPT`), a
+    /// function exported to the programs the line starts (`export -f`,
+    /// `set -a`), a file it sources (which may set a trap or a hook), zsh's
+    /// `functions` with an option (`functions -c f g` copies one to a name
+    /// the line does not define, `functions -M f` lets arithmetic call it),
+    /// or zsh's `repeat`, which runs what comes before a `cd` in it again
+    /// after it, though the walk does not read it as a loop.
+    fn calls_end(&self) -> Option<usize> {
+        const RUNS: [&str; 11] = [
+            "eval",
+            "trap",
+            "alias",
+            "command",
+            "builtin",
+            "exec",
+            "fc",
+            "sched",
+            "autoload",
+            "add-zsh-hook",
+            "zle",
+        ];
+        const UNSEEN: [&str; 3] = ["source", ".", "repeat"];
+        let unseen = |name: &str| UNSEEN.contains(&key(name, Shell::Posix).as_str());
+        const DECLARES: [&str; 5] = ["export", "declare", "typeset", "local", "readonly"];
+        let hooks = self.reassigned.iter().any(|name| {
+            name.ends_with("_functions")
+                || name == "prompt_command"
+                || name == "functions"
+                || name.starts_with("ps")
+                || matches!(name.as_str(), "prompt" | "rprompt" | "sprompt")
+                || name.starts_with("rps")
+        });
+        if self.ever_later || hooks || self.renames_builtins() {
+            return None;
+        }
+        let flag = |arg: &Arg, letter: char| {
+            arg.known()
+                .is_none_or(|text| text.starts_with(['-', '+']) && text.contains(letter))
+        };
+        let defined: HashSet<&str> = self.functions.iter().map(String::as_str).collect();
+        let mut end = 0;
+        for (at, unit) in self.units.iter().enumerate() {
+            if unit.shell != Shell::Posix {
+                return None;
+            }
+            let Some(program) = unit.program.known() else {
+                end = at + 1;
+                continue;
+            };
+            let key = unit.key().unwrap_or_default();
+            let exports = (DECLARES.contains(&key.as_str())
+                && unit.args.iter().any(|arg| flag(arg, 'f')))
+                || (key == "set"
+                    && unit
+                        .args
+                        .iter()
+                        .any(|arg| flag(arg, 'a') || arg.known() == Some("allexport")));
+            let options = key == "functions"
+                && unit
+                    .args
+                    .iter()
+                    .any(|arg| arg.known().is_none_or(|text| text.starts_with(['-', '+'])));
+            if exports || options || unseen(program) || unit.wrappers.iter().any(|w| unseen(w)) {
+                return None;
+            }
+            let names_one = unit.args.iter().any(|arg| {
+                arg.known().is_none_or(|text| {
+                    text.split(|c: char| c.is_whitespace() || "\"';:|&(){}<>=`$,".contains(c))
+                        .any(|word| defined.contains(word))
+                })
+            });
+            if self.defines_function(program) || RUNS.contains(&key.as_str()) || names_one {
+                end = at + 1;
+            }
+        }
+        Some(end)
+    }
+
     /// Note where the line ends, once the line itself is read and before
     /// the walk puts it back where it began: every folder it may be in then
     /// (see [`Self::end`]).
@@ -3745,6 +3955,7 @@ impl Split {
     /// A `cd` in the action itself may run before any of the line, so the
     /// rest of the line is read from somewhere unknown.
     pub(crate) fn end_later(&mut self, began: Began, inherited: bool) {
+        self.ever_later = true;
         if self.moved != began.moved {
             self.dir = Some(Arg::Unknown("where the action moves to".to_string()));
             self.dir_code = true;
@@ -3946,6 +4157,7 @@ impl Split {
     pub(crate) fn move_unknown(&mut self, why: &str) {
         self.moves += 1;
         self.moved += 1;
+        self.note_moved();
         self.dir = Some(Arg::Unknown(why.to_string()));
         self.dir_code = true;
         self.pwd.unplain = true;
@@ -5135,8 +5347,9 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     // (The line itself, at depth 0, is the shell whose functions these are.)
     let apart = !here && depth > 0;
     split.apart += usize::from(apart);
-    // A group a `coproc` opens closes in the same script.
-    let groups = std::mem::take(&mut split.coproc_groups);
+    // A group a `coproc`, `time`, `!` or `repeat` opens closes in the same
+    // script.
+    let groups = std::mem::take(&mut split.open_groups);
     // A new process has none of the session's default parameter values;
     // `Invoke-Expression` runs its text with them.
     let defaults = (!here).then(|| std::mem::take(&mut split.powershell_defaults));
@@ -5147,7 +5360,7 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
     // One it never closes (`coproc {`) is a line the shell does not run
     // as written.
-    if std::mem::replace(&mut split.coproc_groups, groups) > 0 {
+    if std::mem::replace(&mut split.open_groups, groups) > 0 {
         split.problem(
             Rule::Unreadable,
             "opens a group that never closes",

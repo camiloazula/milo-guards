@@ -35,6 +35,10 @@ struct Value {
     /// The assignment, for the walk to read its block as one that runs
     /// later.
     assignment: usize,
+    /// A table written out whose every key is a name and every value text
+    /// with nothing in it only known when it runs (`@{ Path = 'x' }`): the
+    /// parameters a splat of it binds, as names and values.
+    table: Option<Vec<(String, String)>>,
 }
 
 /// The variables of a line, read before its commands are judged.
@@ -178,6 +182,12 @@ const STORE_ALIASES: [&str; 5] = ["ov", "ev", "wv", "iv", "pv"];
 /// list. A deeper one is only known when it runs.
 const MAX_DEPTH: usize = 16;
 
+/// How many entries a table written out may have for a splat of it to bind
+/// them (see [`table`]): a splat that binds parameters holds a handful, and
+/// a line that splats a big table many times must not bind each entry each
+/// time.
+const MAX_SPLATTED: usize = 16;
+
 impl Variables {
     /// Read the variables the line under `root` sets.
     pub(super) fn read(root: Node<'_>, source: &str) -> Self {
@@ -201,6 +211,14 @@ impl Variables {
         // whether anything on the line may change a table or a list in place.
         let mut reached: HashSet<String> = HashSet::new();
         let mut changes = false;
+        // Each splat, by name, with where it is and whether it names a scope.
+        let mut splats: Vec<(String, usize, bool)> = Vec::new();
+        // The variables the line reads other than by a splat (`f $p`), which
+        // a command given one may change, and whether it runs code that may
+        // set its variables where the guard does not read it (`. ./x.ps1`,
+        // `Import-Module`).
+        let mut given: HashSet<String> = HashSet::new();
+        let mut unread = false;
         // The stages of pipelines after the first, which their input goes to.
         let mut piped: HashSet<usize> = HashSet::new();
         let top = top_level(root);
@@ -217,8 +235,13 @@ impl Variables {
             match node.kind() {
                 "variable" => {
                     let text = unit::text(&node, source);
-                    // A splat may hold `-OutVariable sb`.
-                    all &= !text.starts_with('@');
+                    // A splat may hold `-OutVariable sb`, unless it is a
+                    // table the line writes out (see below).
+                    if text.starts_with('@') {
+                        splats.push((normal(text), node.start_byte(), text.contains(':')));
+                    } else if !set {
+                        given.insert(normal(text));
+                    }
                     let name = normal(text);
                     if set {
                         *sets.entry(name.clone()).or_default() += 1;
@@ -260,6 +283,12 @@ impl Variables {
                 }
                 "command" => {
                     all &= !sets_variables(node, source, piped.contains(&node.id()));
+                    unread |= node.child(0).is_some_and(|first| {
+                        first.kind() == "command_invokation_operator"
+                            && unit::text(&first, source) == "."
+                    }) || command_name(node, source).is_some_and(|name| {
+                        matches!(super::canonical(&name), "import-module" | "ipmo")
+                    });
                     // `$h | % Add e $b` calls a method of each item.
                     changes |= calls_members(node, source);
                 }
@@ -308,6 +337,33 @@ impl Variables {
             session: closure(seeds, &from),
             ..Self::default()
         };
+        // A splat binds only the parameters its table holds when the line
+        // sets it once, before the splat, to a table it writes out, that
+        // nothing changes in place, no command is given and no code the
+        // guard does not read may reach, and none of them stores into a
+        // variable.
+        let tables: HashMap<&str, &Value> = candidates
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
+            .collect();
+        all &= splats.iter().all(|(name, at, scoped)| {
+            !scoped
+                && !unread
+                && !given.contains(name)
+                && sets.get(name) == Some(&1)
+                && !changes
+                && !reached.contains(name)
+                && tables.get(name.as_str()).is_some_and(|value| {
+                    *at >= value.after
+                        && value.table.as_ref().is_some_and(|table| {
+                            table.iter().all(|(key, _)| {
+                                let key = key.to_ascii_lowercase();
+                                !STORE_ALIASES.contains(&key.as_str())
+                                    && !STORES.iter().any(|full| full.starts_with(&key))
+                            })
+                        })
+                })
+        });
         if !all {
             return variables;
         }
@@ -342,6 +398,21 @@ impl Variables {
         }
         let value = self.known.get(&normal(text))?;
         (node.start_byte() >= value.after).then_some(value.held)
+    }
+
+    /// The parameters the splat `node` (however the grammar wraps it)
+    /// binds, as names and values, when it splats a table the line writes
+    /// out (see [`Value::table`]).
+    pub(super) fn splat(&self, node: Node<'_>, source: &str) -> Option<&[(String, String)]> {
+        let node = blocks::unwrap(node);
+        let text = unit::text(&node, source);
+        if node.kind() != "variable" || !text.starts_with('@') || text.contains(':') {
+            return None;
+        }
+        let value = self.known.get(&normal(text))?;
+        (node.start_byte() >= value.after)
+            .then_some(value.table.as_deref())
+            .flatten()
     }
 
     /// Whether the assignment `node` gives a variable a block that a later
@@ -525,8 +596,79 @@ fn candidate(node: Node<'_>, source: &str, top: &HashSet<usize>) -> Option<(Stri
             collection,
             after: node.end_byte(),
             assignment: node.id(),
+            table: table(value, source),
         },
     ))
+}
+
+/// The parameters a table written out binds when it is splatted (`@{ Path
+/// = 'x'; Value = "y" }`): each key a name, once, and each value text with
+/// nothing in it only known when it runs that does not start with `-`,
+/// and at most [`MAX_SPLATTED`] of them, so the parameters every splat of
+/// it binds stay few. `None` for anything else.
+fn table(value: Node<'_>, source: &str) -> Option<Vec<(String, String)>> {
+    let value = blocks::unwrap(value);
+    if value.kind() != "hash_literal_expression" {
+        return None;
+    }
+    let Some(body) = value.named_child(0) else {
+        return Some(Vec::new());
+    };
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut cursor = body.walk();
+    for entry in body.named_children(&mut cursor) {
+        if entry.kind() != "hash_entry" || entry.named_child_count() != 2 {
+            return None;
+        }
+        let key = entry.named_child(0)?;
+        let key = blocks::unwrap(
+            key.named_child(0)
+                .filter(|_| key.kind() == "key_expression")?,
+        );
+        let key = match key.kind() {
+            "simple_name" => unit::text(&key, source).to_string(),
+            _ => literal_text(key, source)?,
+        };
+        let named = key.starts_with(|c: char| c.is_ascii_alphabetic())
+            && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        let text = literal_text(entry.named_child(1)?, source)?;
+        if !named
+            || text.starts_with('-')
+            || entries
+                .iter()
+                .any(|(known, _)| known.eq_ignore_ascii_case(&key))
+        {
+            return None;
+        }
+        entries.push((key, text));
+        if entries.len() > MAX_SPLATTED {
+            return None;
+        }
+    }
+    Some(entries)
+}
+
+/// The text a string written out holds, when nothing in it is only known
+/// when it runs: `'x'` or `"x"` with no `$`, backtick or quote of any kind
+/// inside.
+fn literal_text(node: Node<'_>, source: &str) -> Option<String> {
+    let node = blocks::unwrap(node);
+    if node.kind() != "string_literal" {
+        return None;
+    }
+    let text = unit::text(&node, source);
+    let inner = text
+        .strip_prefix('\'')
+        .and_then(|text| text.strip_suffix('\''))
+        .or_else(|| {
+            text.strip_prefix('"')
+                .and_then(|text| text.strip_suffix('"'))
+        })?;
+    let quotes = [
+        '\'', '"', '$', '`', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}', '\u{201c}',
+        '\u{201d}', '\u{201e}',
+    ];
+    (!inner.contains(quotes)).then(|| inner.to_string())
 }
 
 /// The assignments that are statements of their own at the top of the line
@@ -578,7 +720,7 @@ fn sets_variables(node: Node<'_>, source: &str, piped: bool) -> bool {
             let mut cursor = elements.walk();
             let unwritten = elements
                 .named_children(&mut cursor)
-                .any(|element| !written_out(element, 0));
+                .any(|element| !written_out(element, source, 0));
             unwritten
         });
         if piped || unwritten {
@@ -795,13 +937,16 @@ fn unwrap_parens(node: Node<'_>) -> Node<'_> {
 
 /// Whether an argument is written out: a word, a parameter, text with
 /// nothing in it only known when it runs, or a list of them.
-fn written_out(node: Node<'_>, depth: usize) -> bool {
+fn written_out(node: Node<'_>, source: &str, depth: usize) -> bool {
     if depth > MAX_DEPTH {
         return false;
     }
     let node = blocks::unwrap(node);
     match node.kind() {
         "generic_token" | "command_parameter" | "command_argument_sep" => true,
+        // A splat is held to a table the line writes out once the line is
+        // read (see [`Variables::read`]).
+        "variable" => unit::text(&node, source).starts_with('@'),
         "string_literal" => match node.named_child(0) {
             Some(part) if part.kind() == "verbatim_string_characters" => true,
             Some(part) if part.kind() == "expandable_string_literal" => {
@@ -813,7 +958,7 @@ fn written_out(node: Node<'_>, depth: usize) -> bool {
             let mut cursor = node.walk();
             let all = node
                 .named_children(&mut cursor)
-                .all(|item| written_out(item, depth + 1));
+                .all(|item| written_out(item, source, depth + 1));
             all
         }
         _ => false,

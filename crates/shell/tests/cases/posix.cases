@@ -826,7 +826,63 @@ posix safe | f() { rm -rf build; }; f
 posix safe | cd src; f() { rm -rf build; }; f
 posix safe | for i in 1 2; do rm -rf build; done
 posix safe | for d in */; do (cd "$d" && make); done
+# A loop is read once, with every `cd` in it one that may not have run, and
+# `cd -` goes to a folder only known when it runs: a pass after the first may
+# start anywhere.
+posix finds=overwrite reason="writes to a file only known when it runs" | for x in a b; do cd sub && cargo test > log; cd -; done
+posix safe | for x in a b; do (cd sub && cargo test > log); done
+posix safe | cd sub && cargo test > log; cd -
 posix safe | for i in 1 2; do rm -rf /tmp/build; cd /; done
+# A `cd` after the body that comes after every command that may call a
+# function (one the line defines, one only known when it runs, `eval`,
+# `source`, `command`) cannot be where a call starts. Not when the shell may
+# call the function itself (zsh's hooks and `TRAP*`, a trap, a prompt), the
+# line exports it, or an alias may stand for a call.
+posix safe | f() { rm -rf build; }; f; (cd sub && make)
+posix safe | f() { rm -rf build; }; f; cd /
+posix safe | f() { rm -rf build; }; f; cd /; ls
+posix safe | f() { rm -rf build; }; for i in 1 2; do f; done; cd /
+posix safe | f() { rm -rf build; }; f; for i in 1 2; do cd /; done
+# A loop runs what comes before its `cd` again after it.
+posix finds=delete | f() { rm -rf build; }; while true; do f; cd /; done
+posix finds=delete | f() { rm -rf build; }; for i in 1 2; do f; (cd /); done
+posix finds=delete | f() { rm -rf build; }; f; (cd / && f)
+posix finds=delete | f() { rm -rf build; }; g() { f; }; f; cd /; g
+posix finds=delete | f() { rm -rf build; }; f; cd /; eval "$x"
+posix finds=delete | f() { rm -rf build; }; f; cd /; $x
+posix finds=delete | f() { rm -rf build; }; f; cd /; source x.sh
+posix finds=delete | f() { rm -rf build; }; f; cd /; command f
+posix finds=delete | f() { rm -rf build; }; f; cd /; bash -c f
+posix finds=delete | f() { rm -rf build; }; f; cd /; precmd() { f; }
+posix finds=delete | chpwd() { rm -rf build; }; cd /
+posix finds=delete | command_not_found_handle() { rm -rf build; }; cd /; nosuch
+posix finds=delete | f() { rm -rf build; }; chpwd_functions=(f); cd /
+posix finds=delete | f() { rm -rf build; }; f; PROMPT_COMMAND=f; cd /
+posix finds=delete | trap f EXIT; f() { rm -rf build; }; f; cd /
+posix finds=delete | f() { rm -rf build; }; export -f f; f; cd /; make
+posix finds=delete | alias g=f; f() { rm -rf build; }; f; cd /; g
+posix finds=delete | cd() { rm -rf build; }; f() { ls; }; f; cd /
+# A builtin may call a function by a name it is given, and the shell calls
+# some by itself: a word that names one is a call too.
+posix finds=delete | f() { rm -rf build; }; f; cd /; mapfile -C f -c 1 x < y
+posix finds=delete | f() { rm -rf build; }; f; cd /; readarray -C f -c 1 x < y
+posix finds=delete | f() { rm -rf build; }; f; cd /; compgen -F f x
+posix finds=delete | f() { rm -rf build; }; f; cd /; compgen -C f x
+posix finds=delete | f() { rm -rf build; }; f; cd /; complete -F f ls
+posix finds=delete | f() { rm -rf build; }; f; cd /; bind -x '"\\C-x": f'
+posix finds=delete | f() { rm -rf build; }; f; cd /; mapfile -C "$g" x < y
+posix finds=delete | f() { rm -rf build; }; f; functions -c f g; cd /; g
+posix finds=delete | f() { rm -rf build; }; f; functions -M f; cd /; let 'x=f()'
+posix finds=delete | zsh_directory_name() { rm -rf build; }; cd /; echo ~[x]
+posix finds=delete | f() { rm -rf build; }; repeat 3 { f; cd /; }
+posix finds=delete | f() { rm -rf build; }; f; PROMPT='$(f)'; cd /
+posix finds=delete | f() { rm -rf build; }; f; RPROMPT='$(f)'; cd /
+# A file it sources may set a trap or a hook that calls one, and `set -a`
+# exports every function the line defines after it.
+posix finds=delete | f() { rm -rf build; }; f; source ./x.sh; cd /
+posix finds=delete | f() { rm -rf build; }; f; . ./x.sh; cd /
+posix finds=delete | set -a; f() { rm -rf build; }; f; cd /; bash ./run.sh
+posix finds=delete | set -o allexport; f() { rm -rf build; }; f; cd /; bash ./run.sh
 # A loop whose every `cd` goes to a whole path starts each pass in one of
 # the folders it may end in.
 posix safe | for i in 1 2; do cd /tmp; rm -rf build; done

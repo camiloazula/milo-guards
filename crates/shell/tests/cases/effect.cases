@@ -587,6 +587,16 @@ posix effect=unknown | env FOO_UNSET=1 ls
 posix effect=reads_workspace | env LC_ALL=C ls
 posix effect=reads_workspace | time cat a
 posix effect=changes | time rm a
+# A group after `time`, `!` or zsh's `repeat`, which the grammar does not
+# read: the `}` that closes it runs nothing.
+posix effect=reads_workspace | time { ls; }
+posix effect=reads_workspace | ! { ls; }
+posix effect=reads_workspace | repeat 3 { ls; }
+posix effect=reads_workspace | time { { ls; }; }
+posix effect=reads_workspace | coproc { ls; }
+posix effect=changes | time { ls; rm a; }
+posix effect=unknown | time { ls; }; }
+posix effect=unknown | time { ls
 posix effect=changes | nice -n 5 cargo build
 posix effect=unknown | timeout 10 foo
 posix effect=changes | xargs rm
