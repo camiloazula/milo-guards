@@ -3380,7 +3380,9 @@ stands: `rm $n` deletes a path only known when it runs, and `cp a $n` and
 argument mode as in a double-quoted string, so the reader takes a bare word
 that holds `$name`, `${…}` or `$(…)` (not after a backtick, nor inside single
 quotes) as only known when it runs: `dd if=/dev/zero of=$d` is `wipe_disk`,
-`rm -r x$d` a `delete` and `cp a x$d` an `overwrite`.
+`rm -r x$d` a `delete` and `cp a x$d` an `overwrite`. The one bare word it
+spells out is an option whose attached value is a place and a path
+(`--post-file=$HOME\.ssh\id_rsa`; see the paths below).
 
 ### The rule enum is exhaustive on purpose
 
@@ -3416,6 +3418,14 @@ a path.
   after a name, where a word can begin; a line with a here-string, or a
   subexpression in a string, is read as written), so that the rules see the
   paths. What the second reading finds is added; the line stays `unreadable`.
+- A native program's option with such a word as its attached value
+  (`wget.exe --post-file=$HOME\.ssh\id_rsa`, `-x=$PWD\.env`), which the
+  grammar reads whole as one bare word, is that option with the place spelled
+  out (`--post-file=~\.ssh\id_rsa`): PowerShell expands the variable in a
+  bare word, and the program reads what follows the `=` as a path. Only an
+  option of a `-` or `--` and a plain name, and a value of a variable the line
+  does not set and plain path characters, are spelled out; any other bare
+  word with a variable in it stays only known when it runs.
 - A PowerShell drive such as `HKLM:` is the registry. `Env:` and `Variable:`
   hold the session's environment and variables, as `$env:FOO = 'bar'` sets
   them, so a change there is the session's own and safe: `Set-Item
@@ -5184,7 +5194,8 @@ dist .` packs `dist`.
   `--data-binary`, `--json`, `--data-urlencode name@f`, `-F name=@f` and
   `name=<f`, `-T f`, `--upload-file`, `-H @f`, in a bundle such as `-sd @f`;
   curl expands a `{a,b}` list in `-T`'s name itself, unless `-g`, so `curl -T
-  "{.env,README}"` sends `.env`), `wget --post-file f` and `--body-file`,
+  "{.env,README}"` sends `.env`), `wget --post-file f` and `--body-file`
+  (and `wget.exe` in PowerShell and cmd, as `curl.exe` is),
   `http`, `https` and `xh` with `field@f`, `field=@f` or `@f`, and
   `Invoke-WebRequest` and `Invoke-RestMethod -InFile f`, `Send-MailMessage
   -Attachments f` (a list), and `Start-BitsTransfer -Source f` when

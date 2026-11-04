@@ -2946,12 +2946,18 @@ impl Walker<'_> {
         match node.kind() {
             "generic_token" => match bare_expansion(source) {
                 None => Arg::Known(unescape(source)),
+                Some(false) if let Some(word) = attached_path(source, self.split) => {
+                    Arg::Known(word)
+                }
                 Some(runs) => Arg::Template {
                     text: unescape(source),
                     source: source.into(),
                     runs,
                 },
             },
+            "command_parameter" if let Some(word) = attached_path(source, self.split) => {
+                Arg::Known(word)
+            }
             "command_parameter" => match quoted_parameter(source) {
                 Some(Parameter {
                     text,
@@ -5708,6 +5714,27 @@ pub(crate) fn bare_path(source: &str, split: &Split) -> Option<String> {
         return None;
     }
     Some(format!("{}{}", place_variable(name)?, &source[end..]))
+}
+
+/// The word a native program's option with its value attached is, when the
+/// value is a variable and a path [`bare_path`] spells out
+/// (`--post-file=$HOME\.ssh\id_rsa` is `--post-file=~\.ssh\id_rsa`):
+/// PowerShell expands the variable in it as it does in any bare word, and
+/// the program reads what follows the `=` as a path of its own. An option
+/// is a `-` or `--` and a plain name; anything else in the word stays as it
+/// was read.
+fn attached_path(source: &str, split: &Split) -> Option<String> {
+    let (option, value) = source.split_once('=')?;
+    let name = option.strip_prefix('-')?;
+    let name = name.strip_prefix('-').unwrap_or(name);
+    let plain = name.starts_with(|c: char| c.is_ascii_alphabetic())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    if !plain {
+        return None;
+    }
+    Some(format!("{option}={}", bare_path(value, split)?))
 }
 
 #[cfg(test)]
