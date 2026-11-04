@@ -1018,6 +1018,15 @@ fn loops_and_function_bodies_that_run_again_elsewhere_are_read_in_linear_time() 
             "f() { rm -rf b > o; cd x; }; f; ",
             "",
         ),
+        // An alias's value is a body too, read from where it is used.
+        ("alias x='…'…; cd /", "alias x='rm -rf b > o'; x; ", "cd /"),
+        (
+            "alias x='… cd …'; x…",
+            "alias x='rm -rf b > o; cd x' y=ls; x; ",
+            "",
+        ),
+        // With `autocd` on, a command of one word is a `cd`.
+        ("setopt autocd; a; b…", "setopt autocd; a; rm -rf b; ", ""),
     ] {
         assert_linear(what, shell, &paths, |size| {
             format!("{}{tail}", filled(part, size, tail.len()))

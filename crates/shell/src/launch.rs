@@ -471,7 +471,12 @@ fn add_launched(
                 // And `zsh -o extendedglob -c` with zsh's extended patterns.
                 let starts_extended = SHELLS.contains(&key.as_str())
                     && shell == Shell::Posix
-                    && extended::starts_with(&unit.args);
+                    && extended::starts_with(extended::EXTENDED_GLOB, &unit.args);
+                // And `zsh -o autocd -c` with a command of one word run as a
+                // `cd` to it.
+                let starts_autocd = SHELLS.contains(&key.as_str())
+                    && shell == Shell::Posix
+                    && extended::starts_with(extended::AUTO_CD, &unit.args);
                 let stage = unit.stage;
                 // A shell handed a file or a pipe on its input hands it on
                 // to what its script runs (`cmd /c python < x.py`).
@@ -524,6 +529,11 @@ fn add_launched(
                         if starts_extended {
                             split.extend_glob();
                         }
+                        // `autocd` too, which an `eval`, a `trap` or an
+                        // alias turns on for the line, as each runs in
+                        // this shell.
+                        let outer_autocd = split.autocd;
+                        split.autocd |= starts_autocd;
                         // A `trap`'s script runs later: when the line ends,
                         // or between its commands. It is a body, judged with
                         // the option on if the line ever turns it on, and
@@ -561,9 +571,21 @@ fn add_launched(
                                         .collect()
                                 })
                                 .unwrap_or_default();
+                            // A use of the name runs the value in this shell,
+                            // where the line is then, as a call runs a
+                            // function's body: it is read as one (see
+                            // `Split::end_body`), and its `cd` moves the line.
                             for (name, value) in definitions {
                                 let first = split.units.len();
-                                unit::script_in(split, &value, shell, depth + 1, here);
+                                split.branches += 1;
+                                split.bodies += 1;
+                                split.repeats += 1;
+                                split.begin_body();
+                                unit::script_in(split, &value, shell, depth + 1, true);
+                                split.end_body(Some(&name));
+                                split.repeats -= 1;
+                                split.bodies -= 1;
+                                split.branches -= 1;
                                 split.alias_body(&name, first..split.units.len());
                             }
                         } else {
@@ -583,6 +605,9 @@ fn add_launched(
                                 split.show_source(began, source);
                             }
                             split.end_later(began, inherited);
+                        }
+                        if !matches!(key.as_str(), "eval" | "trap" | "alias") {
+                            split.autocd = outer_autocd;
                         }
                         if !matches!(key.as_str(), "eval" | "trap") {
                             split.restore_hidden(outer);
@@ -865,6 +890,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         repeated: false,
         downloaded: false,
         relocates: false,
+        autocd: false,
         listings: Vec::new(),
         unread_item: false,
         listed: Vec::new(),

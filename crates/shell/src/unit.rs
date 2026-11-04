@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::dotglob;
 use crate::effect::Kind;
-use crate::extended;
+use crate::extended::{self, AUTO_CD, EXTENDED_GLOB};
 use crate::inline;
 use crate::said::Said;
 use crate::startup::{self, Startup};
@@ -156,6 +156,10 @@ pub(crate) struct Unit {
     /// runs (`& $b`, `. $b`) may hold a `cd`, and the session has one
     /// location, whatever scope the block runs in.
     pub(crate) relocates: bool,
+    /// Whether it is a POSIX command of one word, no builtin, run after the
+    /// line may have turned zsh's `autocd` on: zsh runs it as a `cd` to the
+    /// word when that names a folder (see [`Split::autocd`]).
+    pub(crate) autocd: bool,
     /// The `Get-Process` listings written inside the arguments of a
     /// `Stop-Process` (`-InputObject (Get-Process)`), which it stops.
     pub(crate) listings: Vec<Listing>,
@@ -273,6 +277,7 @@ impl Unit {
             repeated: false,
             downloaded: false,
             relocates: false,
+            autocd: false,
             listings: Vec::new(),
             unread_item: false,
             listed: Vec::new(),
@@ -1077,6 +1082,14 @@ pub(crate) struct Split {
     /// folder the variable of that name holds, as one by `CDPATH` goes to
     /// a place only known when it runs (see [`by_cdpath`]).
     cdable: bool,
+    /// Whether the line may have turned on zsh's `autocd`: a command of one
+    /// word that is no builtin and no function or alias the line defines
+    /// (`/etc`, `..`, `src`) then runs as a `cd` to it when it names a
+    /// folder, and as itself when it does not, so as a plain `cd` that may
+    /// fail (see [`Unit::autocd`]). zsh reads it only from commands it reads
+    /// on its input, which may be how the line is given; turning it off is
+    /// not read, so once on it stays on.
+    pub(crate) autocd: bool,
     /// The folders the last unit added to [`Self::stayed`], when it is a
     /// plain `cd`: the right side of `&&` after it runs only when it ran.
     last_stayed: Vec<Option<Arg>>,
@@ -1788,7 +1801,7 @@ impl Split {
         if let Some(on) = unit
             .key()
             .filter(|_| unit.shell == Shell::Posix)
-            .and_then(|key| extended::change(&key, &unit.args))
+            .and_then(|key| extended::change(EXTENDED_GLOB, &key, &unit.args))
         {
             if on {
                 self.extend_glob();
@@ -1809,6 +1822,15 @@ impl Split {
             self.psdrive = true;
             self.drives.push(crate::powershell::made_drive(&unit.args));
         }
+        if unit.shell == Shell::Posix
+            && unit
+                .key()
+                .and_then(|key| extended::change(AUTO_CD, &key, &unit.args))
+                == Some(true)
+        {
+            self.autocd = true;
+        }
+        unit.autocd = self.autocd && self.runs_as_cd(&unit);
         let mut moved = moves_to(&unit);
         // Whether this `cd` may not have run, so the line may still be where
         // it was.
@@ -3245,6 +3267,22 @@ impl Split {
         self.functions.push(name.to_string());
     }
 
+    /// Whether zsh, with `autocd` on, may run `unit` as a `cd` to its
+    /// program: a POSIX command of one word, written out, with nothing in
+    /// front of it, that is not a builtin or a reserved word, and not a
+    /// function or an alias the line defines, which run as themselves.
+    fn runs_as_cd(&self, unit: &Unit) -> bool {
+        unit.shell == Shell::Posix
+            && unit.args.is_empty()
+            && unit.wrappers.is_empty()
+            && unit.program.known().is_some_and(|program| {
+                !program.is_empty()
+                    && !ZSH_BUILTINS.contains(&program)
+                    && !self.defines_function(program)
+                    && !self.is_alias(program)
+            })
+    }
+
     /// Whether the line defines the function `name`.
     pub(crate) fn defines_function(&self, name: &str) -> bool {
         self.functions.iter().any(|known| known == name)
@@ -4385,6 +4423,10 @@ pub(crate) fn moves_to(unit: &Unit) -> Option<Arg> {
         return Some(Arg::Unknown(unit.program.text().to_string()));
     }
     let program = unit.program.known()?;
+    // zsh's `autocd` runs a command of one word as a `cd` to it.
+    if unit.autocd {
+        return Some(Arg::Known(program.to_string()));
+    }
     let lower = program.to_ascii_lowercase();
     // `D:` moves to another drive, whose current folder the line does not
     // show: cmd reads it as the program `D` given `:`, PowerShell as a
@@ -4623,6 +4665,116 @@ const MAX_DIR_PARTS: usize = 128;
 /// person wrote to be read call by call, and it bounds what a call has to
 /// look through.
 const MAX_MOVING_FUNCTIONS: usize = 256;
+
+/// zsh's builtins and reserved words: with `autocd` on, a command of one
+/// of these names runs as itself, never as a `cd` (see [`Split::autocd`]).
+const ZSH_BUILTINS: &[&str] = &[
+    "-",
+    ".",
+    ":",
+    "[",
+    "[[",
+    "]]",
+    "{",
+    "}",
+    "!",
+    "alias",
+    "autoload",
+    "bg",
+    "bindkey",
+    "break",
+    "builtin",
+    "bye",
+    "case",
+    "cd",
+    "chdir",
+    "command",
+    "continue",
+    "coproc",
+    "declare",
+    "dirs",
+    "disable",
+    "disown",
+    "do",
+    "done",
+    "echo",
+    "echotc",
+    "echoti",
+    "elif",
+    "else",
+    "emulate",
+    "enable",
+    "end",
+    "esac",
+    "eval",
+    "exec",
+    "exit",
+    "export",
+    "false",
+    "fc",
+    "fg",
+    "fi",
+    "float",
+    "for",
+    "foreach",
+    "function",
+    "functions",
+    "getln",
+    "getopts",
+    "hash",
+    "history",
+    "if",
+    "integer",
+    "jobs",
+    "kill",
+    "let",
+    "limit",
+    "local",
+    "logout",
+    "noglob",
+    "nocorrect",
+    "popd",
+    "print",
+    "printf",
+    "pushd",
+    "pushln",
+    "pwd",
+    "r",
+    "read",
+    "readonly",
+    "rehash",
+    "repeat",
+    "return",
+    "sched",
+    "select",
+    "set",
+    "setopt",
+    "shift",
+    "source",
+    "suspend",
+    "test",
+    "then",
+    "time",
+    "times",
+    "trap",
+    "true",
+    "type",
+    "typeset",
+    "ulimit",
+    "umask",
+    "unalias",
+    "unfunction",
+    "unhash",
+    "unlimit",
+    "unset",
+    "unsetopt",
+    "until",
+    "wait",
+    "whence",
+    "where",
+    "which",
+    "while",
+];
 
 /// The most bodies kept apart for one function or alias name (see
 /// [`Split::body`]): a name defined again runs the last definition, or one of

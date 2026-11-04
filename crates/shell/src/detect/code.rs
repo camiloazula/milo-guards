@@ -114,7 +114,19 @@ impl Checker<'_> {
                 repository,
             );
         }
-        let Some(sub) = args.get(at).and_then(Arg::known) else {
+        // A subcommand only known when it runs may be any of them, those
+        // that throw work away among them (`git $CMD`: `clean -fdx`, `reset
+        // --hard`, `push --force`). PowerShell's `"$null"` is an empty
+        // string, which git refuses as a subcommand.
+        let Some(sub) = args.get(at).filter(|arg| !matches!(arg, Arg::Null)) else {
+            return;
+        };
+        let Some(sub) = sub.known() else {
+            self.add(
+                Rule::Unknown,
+                "runs a git command only known when it runs",
+                args.get(at),
+            );
             return;
         };
         let rest = &args[at + 1..];

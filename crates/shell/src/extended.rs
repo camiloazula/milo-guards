@@ -1,4 +1,5 @@
-//! zsh's `extendedglob`: the option, and how a word reads under it.
+//! zsh's `extendedglob`: the option, and how a word reads under it; and the
+//! reading of a zsh option the line turns on, which `autocd` shares.
 //!
 //! With the option on, zsh reads `#`, `##`, `^` and `~` in an unquoted word
 //! as parts of a pattern: `x#` is zero or more of `x`, `x##` one or more,
@@ -7,39 +8,71 @@
 //! plain names do not. This module reads the units that turn the option on
 //! or off, or a zsh started with it; [`crate::unit::Split`] carries it to the
 //! units after, and the POSIX walker reads each word again under it (see
-//! [`reading`]).
+//! [`reading`]). `autocd`, which runs a command that is one word naming a
+//! folder as a `cd` to it, is read on and off the same way (see
+//! [`AUTO_CD`]).
 
 use crate::unit::Arg;
 
-/// zsh's reading of an option name: `Some(true)` for `extendedglob` in any
-/// case and with any underscores, `Some(false)` for `noextendedglob`.
-fn named(name: &str) -> Option<bool> {
+/// A zsh option, read wherever the line may turn it on or off: its name, as
+/// zsh spells it with no underscores and in lower case, and the letter that
+/// stands for it among the flags of `set`, `setopt` and a zsh it starts.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ZshOption {
+    name: &'static str,
+    letter: Option<char>,
+}
+
+/// `extendedglob`, which has no letter.
+pub(crate) const EXTENDED_GLOB: ZshOption = ZshOption {
+    name: "extendedglob",
+    letter: None,
+};
+
+/// `autocd`, `-J`.
+pub(crate) const AUTO_CD: ZshOption = ZshOption {
+    name: "autocd",
+    letter: Some('J'),
+};
+
+/// zsh's reading of an option name: `Some(true)` for the option's name in
+/// any case and with any underscores, `Some(false)` for it with `no` before.
+fn named(option: ZshOption, name: &str) -> Option<bool> {
     let name: String = name
         .chars()
         .filter(|c| *c != '_')
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    match name.as_str() {
-        "extendedglob" => Some(true),
-        "noextendedglob" => Some(false),
-        _ => None,
+    if name == option.name {
+        Some(true)
+    } else if name.strip_prefix("no") == Some(option.name) {
+        Some(false)
+    } else {
+        None
     }
+}
+
+/// Whether `flags`, the letters of one word after its `-` or `+`, hold the
+/// option's letter.
+fn lettered(option: ZshOption, flags: &str) -> bool {
+    option.letter.is_some_and(|letter| flags.contains(letter))
 }
 
 /// What the builtin `key` does to the option when run with `args`:
 /// `Some(true)` turns it on, `Some(false)` off, `None` leaves it. `setopt`
 /// and `unsetopt` name it (`extendedglob`, `EXTENDED_GLOB`,
-/// `noextendedglob`), and `set` and `emulate` after `-o` or `+o`. On wins
+/// `noextendedglob`) or give its letter (`setopt -J`), and `set` and
+/// `emulate` after `-o` or `+o`, or by its letter (`set -J`). On wins
 /// when a line names it both ways. A name only known when it runs, and a `-m` pattern, which
 /// may name it, count as on; so does `source` or `.`, whose file the guard
 /// cannot read.
-pub(crate) fn change(key: &str, args: &[Arg]) -> Option<bool> {
+pub(crate) fn change(option: ZshOption, key: &str, args: &[Arg]) -> Option<bool> {
     match key {
-        "setopt" => options(args, true),
-        "unsetopt" => options(args, false),
-        "set" => set(args),
+        "setopt" => options(option, args, true),
+        "unsetopt" => options(option, args, false),
+        "set" => set(option, args),
         // `emulate zsh -o extendedglob`: the pairs before its `-c` script.
-        "emulate" => set(script_flags(args)),
+        "emulate" => set(option, script_flags(args)),
         "source" | "." => Some(true),
         _ => None,
     }
@@ -65,11 +98,13 @@ fn script_flags(args: &[Arg]) -> &[Arg] {
 /// is not the one that turns it off; and `options=(…)` or `options+=(…)`
 /// that names it or holds a word only known when it runs. `name` is the
 /// assignment's name as written, `values` its value's words.
-pub(crate) fn assigns(name: &str, values: &[Arg]) -> bool {
+pub(crate) fn assigns(option: ZshOption, name: &str, values: &[Arg]) -> bool {
     if name == "options" {
-        return values
-            .iter()
-            .any(|value| value.known().is_none_or(|word| named(word).is_some()));
+        return values.iter().any(|value| {
+            value
+                .known()
+                .is_none_or(|word| named(option, word).is_some())
+        });
     }
     let Some(key) = name
         .strip_prefix("options[")
@@ -80,7 +115,7 @@ pub(crate) fn assigns(name: &str, values: &[Arg]) -> bool {
     let on = if key.contains(['$', '`', '"', '\'', '\\']) {
         None
     } else {
-        named(key)
+        named(option, key)
     };
     let off = match on {
         Some(true) => "off",
@@ -98,18 +133,21 @@ fn and(change: Option<bool>, one: bool) -> bool {
     change.unwrap_or(false) || one
 }
 
-fn options(args: &[Arg], setting: bool) -> Option<bool> {
+fn options(option: ZshOption, args: &[Arg], setting: bool) -> Option<bool> {
     let mut change = None;
     for arg in args {
         let one = match arg.known() {
             Some(flags) if flags.starts_with(['-', '+']) && flags.len() > 1 => {
                 if flags.contains('m') {
                     true
+                } else if lettered(option, &flags[1..]) {
+                    // `setopt +J` turns it off, as `unsetopt -J` does.
+                    (flags.starts_with('-')) == setting
                 } else {
                     continue;
                 }
             }
-            Some(name) => match named(name) {
+            Some(name) => match named(option, name) {
                 Some(on) => on == setting,
                 None => continue,
             },
@@ -120,7 +158,7 @@ fn options(args: &[Arg], setting: bool) -> Option<bool> {
     change
 }
 
-fn set(args: &[Arg]) -> Option<bool> {
+fn set(option: ZshOption, args: &[Arg]) -> Option<bool> {
     let mut change = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -131,11 +169,17 @@ fn set(args: &[Arg]) -> Option<bool> {
         let Some(sign) = text.chars().next().filter(|sign| matches!(sign, '-' | '+')) else {
             continue;
         };
-        if text.len() < 2 || text.starts_with("--") || !text.contains('o') {
+        if text.len() < 2 || text.starts_with("--") {
+            continue;
+        }
+        if lettered(option, &text[1..]) {
+            change = Some(and(change, sign == '-'));
+        }
+        if !text.contains('o') {
             continue;
         }
         let one = match iter.next().map(Arg::known) {
-            Some(Some(name)) => match named(name) {
+            Some(Some(name)) => match named(option, name) {
                 Some(on) => on == (sign == '-'),
                 None => continue,
             },
@@ -148,9 +192,10 @@ fn set(args: &[Arg]) -> Option<bool> {
 }
 
 /// Whether a shell's own flags turn the option on when it starts: zsh's `-o
-/// extendedglob`, `--extendedglob`, `--extended-glob`. A name or flag only
-/// known when it runs counts as on. Only the flags before the script are read.
-pub(crate) fn starts_with(args: &[Arg]) -> bool {
+/// extendedglob`, `--extendedglob`, `--extended-glob`, or its letter (`zsh
+/// -J`). A name or flag only known when it runs counts as on. Only the flags
+/// before the script are read.
+pub(crate) fn starts_with(option: ZshOption, args: &[Arg]) -> bool {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else {
@@ -161,12 +206,15 @@ pub(crate) fn starts_with(args: &[Arg]) -> bool {
         }
         let sign = text.chars().next().unwrap_or('-');
         if let Some(long) = text.strip_prefix("--") {
-            if named(&long.replace('-', "")) == Some(true) {
+            if named(option, &long.replace('-', "")) == Some(true) {
                 return true;
             }
             continue;
         }
         let flags = &text[1..];
+        if sign == '-' && lettered(option, flags) {
+            return true;
+        }
         // bash's `-O` takes a name too, which is not this option.
         for flag in ['O', 'o'] {
             if !flags.contains(flag) {
@@ -174,7 +222,7 @@ pub(crate) fn starts_with(args: &[Arg]) -> bool {
             }
             match iter.next().map(Arg::known) {
                 Some(Some(name)) => {
-                    if flag == 'o' && named(name) == Some(sign == '-') {
+                    if flag == 'o' && named(option, name) == Some(sign == '-') {
                         return true;
                     }
                 }
@@ -485,7 +533,11 @@ mod tests {
             (".", &["./env.sh"], Some(true)),
             ("echo", &["extendedglob"], None),
         ] {
-            assert_eq!(change(key, &args(words)), want, "{key} {words:?}");
+            assert_eq!(
+                change(EXTENDED_GLOB, key, &args(words)),
+                want,
+                "{key} {words:?}"
+            );
         }
     }
 
@@ -507,7 +559,11 @@ mod tests {
             ("option[extendedglob]", &["on"], false),
             ("extendedglob", &["on"], false),
         ] {
-            assert_eq!(assigns(name, &args(words)), want, "{name} {words:?}");
+            assert_eq!(
+                assigns(EXTENDED_GLOB, name, &args(words)),
+                want,
+                "{name} {words:?}"
+            );
         }
     }
 
@@ -529,8 +585,42 @@ mod tests {
             (&["--", "-o", "extendedglob"], false),
             (&[], false),
         ] {
-            assert_eq!(starts_with(&args(words)), want, "{words:?}");
+            assert_eq!(starts_with(EXTENDED_GLOB, &args(words)), want, "{words:?}");
         }
+    }
+
+    #[test]
+    fn autocd_is_read_by_its_name_and_its_letter() {
+        for (key, words, want) in [
+            ("setopt", &["autocd"][..], Some(true)),
+            ("setopt", &["AUTO_CD"], Some(true)),
+            ("setopt", &["noautocd"], Some(false)),
+            ("setopt", &["-J"], Some(true)),
+            ("setopt", &["+J"], Some(false)),
+            ("unsetopt", &["-J"], Some(false)),
+            ("unsetopt", &["+J"], Some(true)),
+            ("unsetopt", &["NO_AUTO_CD"], Some(true)),
+            ("set", &["-J"], Some(true)),
+            ("set", &["-eJ"], Some(true)),
+            ("set", &["+J"], Some(false)),
+            ("set", &["-o", "auto_cd"], Some(true)),
+            ("set", &["-e"], None),
+            ("setopt", &["extendedglob"], None),
+        ] {
+            assert_eq!(change(AUTO_CD, key, &args(words)), want, "{key} {words:?}");
+        }
+        assert_eq!(change(EXTENDED_GLOB, "set", &args(&["-J"])), None);
+        for (words, want) in [
+            (&["-J", "-c", "x"][..], true),
+            (&["-o", "autocd", "-c", "x"], true),
+            (&["--auto-cd", "-c", "x"], true),
+            (&["+J", "-c", "x"], false),
+            (&["-c", "x"], false),
+        ] {
+            assert_eq!(starts_with(AUTO_CD, &args(words)), want, "{words:?}");
+        }
+        assert!(assigns(AUTO_CD, "options[autocd]", &args(&["on"])));
+        assert!(!assigns(AUTO_CD, "options[autocd]", &args(&["off"])));
     }
 
     #[test]
