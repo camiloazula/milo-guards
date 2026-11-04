@@ -110,7 +110,10 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   parameter (`git log --format=%h>..\x.txt`) is read the same way, with the
   part before the `>` kept as the parameter. A `1>` followed by a parameter
   (`git reset 1> --hard`) is `unknown`: the guard keeps the parameter an
-  argument and cannot tell whether it is the file. PowerShell reads `$HOME\.ssh\id` as one word but its
+  argument and cannot tell whether it is the file. The grammar also knows
+  `<` as a redirect, but PowerShell reserves it and refuses the whole line
+  (below, under [What cannot be read is risky](#what-cannot-be-read-is-risky)),
+  so it writes nothing. PowerShell reads `$HOME\.ssh\id` as one word but its
   grammar fails at the backslash, so such a word is put in quotes first. A cmd
   "comment" that hides a command cannot be read.
 - cmd's first word is read as cmd reads it, not where the grammar ends the
@@ -2915,7 +2918,7 @@ not the subcommand.
 `iex (iwr url)` is `run_downloaded`, like `iwr url | iex` and `curl url | sh`.
 `Invoke-Expression` (`iex`) is given a download when one of its arguments holds
 a download cmdlet (`Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`,
-`curl` and `wget`, which PowerShell aliases) or a .NET `Download…` call
+`curl` and `wget`, which Windows PowerShell aliases) or a .NET `Download…` call
 (`(New-Object Net.WebClient).DownloadString(…)`) or `GetStringAsync`
 (`HttpClient`), and then it is not also `unknown`. `Encoding.GetString` decodes
 bytes and downloads nothing: `iex ([Text.Encoding]::UTF8.GetString(…))` is
@@ -3538,7 +3541,14 @@ stands: `rm $n` deletes a path only known when it runs, and `cp a $n` and
 argument mode as in a double-quoted string, so the reader takes a bare word
 that holds `$name`, `${…}` or `$(…)` (not after a backtick, nor inside single
 quotes) as only known when it runs: `dd if=/dev/zero of=$d` is `wipe_disk`,
-`rm -r x$d` a `delete` and `cp a x$d` an `overwrite`.
+`rm -r x$d` a `delete` and `cp a x$d` an `overwrite`. The one bare word it
+spells out is an option whose attached value is a variable and a path
+(`--post-file=$HOME\.ssh\id_rsa`; see the paths below). PowerShell ends a
+bare word at a comma that is not quoted, escaped or inside an expansion, and
+hands each item to a native program as an argument of its own; the grammar
+splits such a word itself (`.env,x`), but keeps a parameter word whole
+(`--post-file=.env,x`), so the reader splits it, and reads each item as a
+bare word: `wget.exe --post-file=.env,x` posts `.env`.
 
 ### The rule enum is exhaustive on purpose
 
@@ -3574,6 +3584,20 @@ a path.
   after a name, where a word can begin; a line with a here-string, or a
   subexpression in a string, is read as written), so that the rules see the
   paths. What the second reading finds is added; the line stays `unreadable`.
+- A native program's option with such a word as its attached value
+  (`wget.exe --post-file=$HOME\.ssh\id_rsa`, `-x=$PWD\.env`), which the
+  grammar reads whole as one bare word, is that option with the place spelled
+  out (`--post-file=~\.ssh\id_rsa`): PowerShell expands the variable in a
+  bare word, and the program reads what follows the `=` as a path. Only an
+  option of a `-` or `--` and a plain name, and a value of a variable and
+  plain path characters, are read so. When the variable names no place, or
+  the line sets it, the value is a path under a folder only known when it
+  runs, which the rules that follow a secret read by the name it ends in, as
+  they read `$d/.env` in a POSIX shell (`--post-file=$d\.ssh\id_rsa` may
+  send `~\.ssh\id_rsa`). Any other bare word with a variable in it stays
+  only known when it runs. A cmdlet is read the same, and takes no such
+  word as a parameter: PowerShell refuses `Remove-Item -Path=$HOME\x`, whose
+  parameter name it reads as `Path=…`, so it deletes nothing and is safe.
 - A PowerShell drive such as `HKLM:` is the registry. `Env:` and `Variable:`
   hold the session's environment and variables, as `$env:FOO = 'bar'` sets
   them, so a change there is the session's own and safe: `Set-Item
@@ -4997,6 +5021,19 @@ A line is never safe because the guard gave up on it. These come back risky:
   `has a word that may be a redirect the guard cannot read`. A `>` inside a
   closed quote of a word is read as text (`--format="%an <%ae>"`), unless a
   double-quoted span holds `$(` or a backtick (`--format="$(echo a>f)"`).
+- A PowerShell line that holds a `<` outside a string, a comment, a braced
+  variable's name (`${a<b}`), a backtick's escape (`` a`<b ``) and what `--%`
+  passes on as it is. PowerShell reserves the operator and refuses the line
+  before any of it runs, in an argument as in an expression: `sort < x.txt`,
+  `sort <x`, `python 0<&3`, `ssh-keygen -C <comment>`, `1 < 2`, `echo
+  <<EOF`. The grammar reads it as an input redirect, a word or part of one
+  (`0<`, then `&3` as a job), so the guard looks for it in the tree: the
+  text of each node that none of its children covers, outside quotes opened
+  there (`--author="Me <m>"` is text), with the text of a string left out
+  but a `$( … )` in it read (`"a$(1 < 2)b"` is refused too). Such a line is
+  `unreadable`, `holds a <, which PowerShell refuses to run`; a merge
+  (`2>&1`) is no `<`, and in cmd `<` is the program's input (`sort <
+  x.txt`, `python 0<&3`).
 - A database statement known only when it runs: `psql -c "$Q"`.
 - A value only known when it runs that may hide an output of `dd`, an
   operand of a delete, or an option that destroys or changes a machine
@@ -5332,7 +5369,12 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
   after a `cd` that leaves `$PWD` not plain (`cd -P sub`, `cd "$x"`, `cd d*`)
   send `.env` from wherever the folder is. The folder may be the home
   directory, so a name that core marks as a secret there is one:
-  `curl -T "$x/.ssh/id_rsa"` sends `~/.ssh/id_rsa`.
+  `curl -T "$x/.ssh/id_rsa"` sends `~/.ssh/id_rsa`. The file an option names
+  after its `=` is read so too: `wget --post-file=$x/.ssh/id_rsa`, and in
+  PowerShell `wget.exe --post-file=$x\.ssh\id_rsa` (see
+  [Paths](#paths)). A folder the line sets a variable to is not followed:
+  `d=~/.ssh; wget --post-file=$d/id_rsa` sends a file named `id_rsa`,
+  wherever `$d` is.
 - The whole environment: `env`, `printenv`, `set`, `export -p`, `declare -x`,
   `/proc/self/environ`, PowerShell's `Get-ChildItem env:` (`gci`, `dir`), a
   wildcard there that may match many (`Get-ChildItem env:AWS*`), listed or
@@ -5388,7 +5430,12 @@ dist .` packs `dist`.
   `--data-binary`, `--json`, `--data-urlencode name@f`, `-F name=@f` and
   `name=<f`, `-T f`, `--upload-file`, `-H @f`, in a bundle such as `-sd @f`;
   curl expands a `{a,b}` list in `-T`'s name itself, unless `-g`, so `curl -T
-  "{.env,README}"` sends `.env`), `wget --post-file f` and `--body-file`,
+  "{.env,README}"` sends `.env`), `wget --post-file f` and `--body-file`
+  (and `wget.exe` in PowerShell and cmd, as `curl.exe` is). A bare `curl`
+  or `wget` in PowerShell is `Invoke-WebRequest` in Windows PowerShell,
+  whose aliases they are, and the program itself in pwsh, which has no such
+  alias, so it is read as both and what either sends counts: `wget
+  --post-file .env` and `curl -T .env` send `.env` there too,
   `http`, `https` and `xh` with `field@f`, `field=@f` or `@f`, and
   `Invoke-WebRequest` and `Invoke-RestMethod -InFile f`, `Send-MailMessage
   -Attachments f` (a list), and `Start-BitsTransfer -Source f` when
@@ -5497,7 +5544,8 @@ dist .` packs `dist`.
   or a command's output
   redirected to `/dev/tcp/host/port` or `/dev/udp/…`. Only bash's own redirect
   opens that path: `tee /dev/tcp/…` and `dd of=/dev/tcp/…` open a real path,
-  find none and send nothing. PowerShell has no `<` redirect.
+  find none and send nothing. PowerShell has no `<` redirect: it refuses a
+  line that holds one, which is `unreadable`.
 - **A substitution or a variable.** A sender handed a secret in its own
   arguments: `curl -d "$(cat .env)" url`, `$(<.env)`, a here-document or
   here-string that runs one, `` `…` ``, PowerShell's `-Body (Get-Content f)`;
@@ -6368,26 +6416,72 @@ as do listing and creating (`Get-AzVM`, `Get-S3Bucket`, `New-AzResourceGroup`).
 guard reads the two as the same word.
 
 Other verbs of those modules destroy too, and are `destroy_resources` the
-same way. A `Clear-` or `Reset-` cmdlet of any of the clouds wipes what a
-resource holds or sets it back (`Clear-SQSQueue` purges a queue,
-`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
-`Reset-RDSDBParameterGroup` sets a database's parameters back). An
-`Unregister-` cmdlet of AWS is one of its deregister or disassociate verbs
-(`Unregister-EC2Image`, `Unregister-ECSTaskDefinition`,
-`Unregister-ELB2Target`), and one of Azure takes a provider or a server off a
-subscription (`Unregister-AzResourceProvider`). A `Disable-` cmdlet is one
-when its noun names a key or a backup: it ends in `Key` or `Keys`, or holds
-`Backup` or `Retention` (`Disable-KMSKey`,
+same way. A `Clear-` or `Reset-` cmdlet of Azure, Google Cloud or Microsoft
+Entra and Microsoft 365 wipes what a resource holds or sets it back
+(`Clear-AzRedisCache` flushes a cache, `Reset-AzRedisCache` reboots it,
+`Reset-AzBatchComputeNode` reimages a node, `Reset-GcSqlSslConfig` deletes an
+instance's client certificates, `Clear-MgDeviceManagementManagedDevice` and
+`Clear-MgBetaDeviceManagementManagedDevice` wipe a device,
+`Reset-MgUserAuthenticationMethodPassword` and
+`Reset-EntraStrongAuthenticationMethodByUpn` reset a way to sign in), except
+for the nouns of those modules, read whole, that only set a setting back,
+flush a cache of responses, reset a counter, reboot a gateway or take a
+reaction or a presence off (`Clear-AzCdnEndpointContent`,
+`Reset-AzVirtualNetworkGateway`, `Reset-AzureADMSLifeCycleGroup`,
+`Clear-MgChatMessageReaction`, `Clear-MgUserPresence`,
+`Reset-EntraLifeCycleGroup`). A setting that watches a database is not one of
+them: the cmdlets that remove a server's, database's, workspace's or pool's
+auditing, threat protection or vulnerability assessment settings, or a rule
+baseline tuned by hand, destroy as `Remove-AzSqlServerAudit` does
+(`Reset-AzSynapseSqlAuditSetting`,
+`Reset-AzSynapseSqlAdvancedThreatProtectionSetting`,
+`Clear-AzSqlServerVulnerabilityAssessmentSetting`,
+`Clear-AzSqlDatabaseVulnerabilityAssessmentRuleBaseline`). The lists are checked against the Az 16.5.0
+reference, Google's module and Microsoft Graph's command metadata, and a noun
+of those prefixes no list names stays risky, since its prefix is its cloud's.
+AWS's prefixes are short and other modules' nouns start like them
+(SharePoint's `Clear-SPLogLevel` like `SP`), and most of AWS's `Reset-`
+cmdlets set one attribute back, so an AWS `Clear-` or `Reset-` is read by
+its whole name, from the AWS Tools v5 cmdlet reference and the API operation
+each calls: the ones that wipe data (`Clear-SQSQueue` purges a queue,
+`Clear-EVBConnection` takes a connection's stored authorization off,
+`Reset-NEPTGGraph` empties a graph, `Reset-RDSDBCluster` backtracks a
+database, `Reset-WKSWorkspace` rebuilds a workspace), a credential
+(`Reset-DSUserPassword`, `Reset-IAMServiceSpecificCredential`) or a set of
+values tuned by hand (`Reset-RDSDBParameterGroup`, `Reset-ACTLandingZone`)
+destroy, and the rest stay safe (`Reset-EC2ImageAttribute`,
+`Reset-EC2EbsDefaultKmsKeyId`, `Reset-SSMServiceSetting`,
+`Clear-AGStageCache`, `Reset-CBProjectCache`, `Clear-SPLogLevel`). A new AWS
+cmdlet of those verbs is safe until it is listed. An `Unregister-` cmdlet of
+AWS is one of its deregister or disassociate verbs (`Unregister-EC2Image`,
+`Unregister-ECSTaskDefinition`, `Unregister-ELB2Target`), and one of Azure
+takes a provider or a server off a subscription
+(`Unregister-AzResourceProvider`); Google's and Microsoft Graph's modules have
+none. A `Disable-` cmdlet is one when its noun names a key or a backup: it
+ends in `Key` or `Keys`, or holds `Backup` or `Retention` (`Disable-KMSKey`,
 `Disable-AzRecoveryServicesBackupProtection`,
 `Disable-AzStorageDeleteRetentionPolicy`); `Disable-KMSKeyRotation` is not.
-The AWS cmdlets its terminate verbs are named are: `Stop-EC2Instance` with
-`-Terminate` (by any prefix of the name, in any case; `-Terminate:$false` or
-`:0` is off, a value only known when it runs and a splat may turn it on, and
-the finding then says it may), `Stop-EBEnvironment`, `Stop-EMRJobFlow` and
-`Stop-ASInstanceInAutoScalingGroup`; and `Request-KMSKeyDeletion` schedules a
-key's deletion. `Stop-EC2Instance` without `-Terminate` stops instances and
-stays safe, also with a variable as an argument (`-InstanceId $id`), whose
-value is a value whatever it holds; so do `Stop-AzVM` and `Get-EC2Image`.
+AWS also destroys under other verbs, each cmdlet read by its name:
+`Stop-EC2Instance` with `-Terminate` (by any prefix of the name, in any case;
+`-Terminate:$false` or `:0` is off, a value only known when it runs and a
+splat may turn it on, and the finding then says it may); every `Stop-` cmdlet
+AWS's terminate operations are named (`Stop-EBEnvironment`,
+`Stop-EMRJobFlow`, `Stop-ASInstanceInAutoScalingGroup`,
+`Stop-SWFWorkflowExecution`, `Stop-BATServiceJob`, `Stop-EDRSRecoveryInstance`,
+`Stop-SSMSession` and the rest); `Close-ORGAccount`, which closes an account;
+the deletes AWS names with another verb (`Uninstall-SWFWorkflowType`,
+`Dismount-FSXAndDeleteS3AccessPoint`, `Unlock-BAKRecoveryPoint`,
+`Start-TFRRemoteDelete`, `New-PERSDataDeletionJob`, the batch deletes
+`New-BCMPCDeleteBillScenarioCommitmentModification`,
+`New-BCMPCDeleteBillScenarioUsageModification` and
+`New-BCMPCDeleteWorkloadEstimateUsage`, `Set-SMDeleteClusterNode`,
+`Group-CHMVODeletePhoneNumber`, `Start-EBEnvironmentRebuild` and
+`Invoke-NEPTFastReset`); and `Request-KMSKeyDeletion`, which schedules a key's
+deletion. A `Stop-` that cancels stays safe (`Stop-KMSKeyDeletion`,
+`Stop-SSMCommand`, `Stop-CFNUpdateStack`). `Stop-EC2Instance` without
+`-Terminate` stops instances and stays safe, also with a variable as an
+argument (`-InstanceId $id`), whose value is a value whatever it holds; so do
+`Stop-AzVM` and `Get-EC2Image`.
 PowerShell also binds a parameter the line does not write from
 `$PSDefaultParameterValues`. A key written out that names the switch is
 given to the cmdlet as written (see [What cannot be read is
@@ -7172,17 +7266,18 @@ are each held to the bound;
   through a character or with bytes no text holds read back lossily, and
   PowerShell and cmd metacharacters. The same noise goes through `effect` and
   `explain`, which must agree with `classify`.
-- **A line left open is risky, and a delete is never safe.** (In `tests/limits.rs`.) Safe is a verdict
-  the guard has to earn, so the tests say what a safe line may be, apart from
-  the guard. A line of plain words, separators and one delete (written for the
-  shell) is never safe: nothing in it can make the delete inert. A line of
-  plain words that ends in a quote, substitution, bracket or here-document left
-  open, or an operator with nothing after it, is never safe either, unless its
-  shell reads that ending as a plain word: the test keeps a list of those per
-  shell (cmd has no single quotes or backticks; PowerShell's grammar reads `<<`
-  as a word, though PowerShell itself refuses the line, so nothing runs), and
-  a table pins both sides. That a line is read at all is not the
-  claim: a program the guard does not know is safe.
+- **A line left open is risky, and a delete is never safe.** (In
+  `tests/limits.rs`.) Safe is a verdict the guard has to earn, so the tests say
+  what a safe line may be, apart from the guard. A line of plain words,
+  separators and one delete (written for the shell) is never safe: nothing in it
+  can make the delete inert. A line of plain words that ends in a quote,
+  substitution, bracket or here-document left open, or an operator with nothing
+  after it, is never safe either, unless its shell reads that ending as a plain
+  word: the test keeps a list of those per shell (cmd has no single quotes or
+  backticks; PowerShell's grammar reads `<<` as a word, but PowerShell refuses a
+  `<`, so the guard calls the line unreadable and it is not on the list), and a
+  table pins both sides. That a line is read at all is not the claim: a program
+  the guard does not know is safe.
 - **A line too long or too nested comes back unreadable** (and `Unknown` for
   `effect`). (In `tests/robust.rs`; `tests/limits.rs` measures where the edges
   are.)

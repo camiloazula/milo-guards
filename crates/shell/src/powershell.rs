@@ -59,6 +59,18 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     } else {
         (text, first)
     };
+    // `sort < x.txt`, `python 0<&3`: PowerShell reserves `<` and refuses
+    // the whole line, which the grammar reads as a redirect or a word.
+    if let Some(refused) = refused_input(tree.root_node(), text) {
+        split.problem(
+            Rule::Unreadable,
+            Said::instead(
+                "holds a <, which PowerShell refuses to run",
+                "quote a < meant as text, or pipe a file in with Get-Content",
+            ),
+            Some(refused),
+        );
+    }
     // `$env:TEMP = $HOME`: a variable the line sets no longer names its
     // usual place.
     let mut names = Vec::new();
@@ -113,6 +125,92 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     walker.session_changes(tree.root_node());
     walker.read_defaults(tree.root_node());
     walker.walk(tree.root_node(), None, 0);
+}
+
+/// The text of the first node under `root` that holds a `<` PowerShell reads
+/// as an operator: one outside a string, a comment, a variable's name and
+/// what `--%` passes on as it is. PowerShell reserves `<` and refuses a line
+/// that holds one, in an argument (`sort <x`, `python 0<&3`, `a<b`) as in an
+/// expression (`1 < 2`), while the grammar reads it as an input redirect,
+/// a word or part of one. A part of a word in quotes (`--author="Me <m>"`)
+/// or after a backtick (`` a`<b ``) is text. Only a node that spans a `<`
+/// is visited, and each one's own text, apart from its children, is scanned
+/// once, so the time grows with the line, and a line with no `<` costs one
+/// search of its text.
+fn refused_input<'s>(root: Node<'_>, source: &'s str) -> Option<&'s str> {
+    let marks: Vec<usize> = source.match_indices('<').map(|(at, _)| at).collect();
+    if marks.is_empty() {
+        return None;
+    }
+    let mut found = None;
+    unit::for_each_node_until(root, |node| {
+        if found.is_some() {
+            return false;
+        }
+        let Range { start, end } = node.byte_range();
+        let next = marks.partition_point(|&mark| mark < start);
+        if marks.get(next).is_none_or(|&mark| mark >= end) {
+            return false;
+        }
+        match node.kind() {
+            "comment"
+            | "stop_parsing"
+            | "verbatim_string_characters"
+            | "verbatim_here_string_characters"
+            | "variable"
+            | "braced_variable" => false,
+            // The text of a string is text; what a `$(…)` in it holds is code.
+            "expandable_string_literal" | "expandable_here_string_literal" => true,
+            _ => {
+                if holds_operator(node, source) {
+                    found = Some(unit::text(&node, source));
+                    false
+                } else {
+                    true
+                }
+            }
+        }
+    });
+    found
+}
+
+/// Whether the text of `node` that none of its children covers holds a `<`
+/// outside quotes and not escaped by a backtick. A quote opened in that text
+/// runs on past a child (`a"$x<"`).
+fn holds_operator(node: Node<'_>, source: &str) -> bool {
+    let Range { start, end } = node.byte_range();
+    let mut cursor = node.walk();
+    let mut children = node
+        .children(&mut cursor)
+        .map(|child| child.byte_range())
+        .peekable();
+    let mut quote: Option<char> = None;
+    let mut at = start;
+    while at < end {
+        if let Some(child) = children.next_if(|child| child.start <= at) {
+            at = at.max(child.end);
+            continue;
+        }
+        let Some(c) = source.get(at..).and_then(|rest| rest.chars().next()) else {
+            return false;
+        };
+        at += c.len_utf8();
+        match (quote, c) {
+            (None, '<') => return true,
+            (None | Some('"'), '`') => {
+                // The next character is text, unless a child starts there.
+                if children.peek().is_none_or(|child| child.start > at) {
+                    if let Some(next) = source.get(at..).and_then(|rest| rest.chars().next()) {
+                        at += next.len_utf8();
+                    }
+                }
+            }
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(open), _) if open == c => quote = None,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The cmdlets that register a script block to run when an event happens:
@@ -1863,9 +1961,28 @@ impl Walker<'_> {
                         // word on the list of the argument before, or starts
                         // a list of one, and is not part of it.
                         let item = source.trim_start_matches(',');
+                        let bare = matches!(element.kind(), "generic_token" | "command_parameter");
                         if element.kind() == "generic_token" && item.len() < source.len() {
                             args.push(comma_item(item, source));
                             shapes.push(self.shape(element, after_argument));
+                        } else if let Some(items) = bare.then(|| comma_items(source)).flatten() {
+                            // `--post-file=.env,x`: the grammar reads the word
+                            // whole, but PowerShell ends a bare word at a
+                            // comma, and hands each item on as an argument.
+                            for (index, item) in items.into_iter().enumerate() {
+                                let arg = attached_path(item, self.split)
+                                    .unwrap_or_else(|| comma_item(item, item));
+                                shapes.push(if index == 0 {
+                                    self.shape(element, joined)
+                                } else {
+                                    blocks::Shape {
+                                        joined: true,
+                                        plain: arg.known().is_some(),
+                                        ..blocks::Shape::default()
+                                    }
+                                });
+                                args.push(arg);
+                            }
                         } else {
                             self.push_element(
                                 &mut args,
@@ -2953,12 +3070,14 @@ impl Walker<'_> {
         match node.kind() {
             "generic_token" => match bare_expansion(source) {
                 None => Arg::Known(unescape(source)),
+                Some(false) if let Some(word) = attached_path(source, self.split) => word,
                 Some(runs) => Arg::Template {
                     text: unescape(source),
                     source: source.into(),
                     runs,
                 },
             },
+            "command_parameter" if let Some(word) = attached_path(source, self.split) => word,
             "command_parameter" => match quoted_parameter(source) {
                 Some(Parameter {
                     text,
@@ -3978,13 +4097,14 @@ impl Walker<'_> {
     }
 
     /// A redirect to a file: `>`, `>>`, `2>`, `*>`. A merge (`2>&1`) writes
-    /// nothing.
+    /// nothing, and neither does the `<` the grammar reads as one, which
+    /// makes the line unreadable (see [`refused_input`]).
     fn redirect(&mut self, node: Node<'_>) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-        let writes = children
-            .iter()
-            .any(|child| child.kind() == "file_redirection_operator");
+        let writes = children.iter().any(|child| {
+            child.kind() == "file_redirection_operator" && unit::text(child, self.source) != "<"
+        });
         let Some(file) = children
             .iter()
             .find(|child| child.kind() == "redirected_file_name")
@@ -5852,6 +5972,75 @@ pub(crate) fn bare_path(source: &str, split: &Split) -> Option<String> {
         return None;
     }
     Some(format!("{}{}", place_variable(name)?, &source[end..]))
+}
+
+/// The word an option with its value attached is, when the value is a
+/// variable and a path (`--post-file=$HOME\.ssh\id_rsa`): PowerShell
+/// expands the variable in it as it does in any bare word, and the program
+/// reads what follows the `=` as a path of its own. When [`bare_path`] spells
+/// the place out, the word is known, `--post-file=~\.ssh\id_rsa`; when it
+/// does not (a variable that names no place, or one the line sets), the
+/// value is a path under a folder only known when it runs, which the rules
+/// that follow a secret read by the name it ends in, as they read `$d/.env`
+/// in a POSIX shell. An option is a `-` or `--` and a plain name (see
+/// [`unit::attached`]); anything else in the word stays as it was read.
+fn attached_path(source: &str, split: &Split) -> Option<Arg> {
+    let (option, value) = unit::attached(source)?;
+    if !value.starts_with('$') {
+        return None;
+    }
+    if let Some(path) = bare_path(value, split) {
+        return Some(Arg::Known(format!("{option}={path}")));
+    }
+    let chars: Vec<char> = value.chars().collect();
+    if variable_word(&chars, 0)? != chars.len() {
+        return None;
+    }
+    let (_, rest) = value.split_once(['\\', '/'])?;
+    let rest = unescape(rest.trim_start_matches(['\\', '/']));
+    Some(Arg::Template {
+        text: format!("{option}={}/{rest}", crate::posix::OPAQUE),
+        source: source.into(),
+        runs: false,
+    })
+}
+
+/// The items of a bare word the grammar reads whole though it holds a
+/// comma (`--post-file=.env,x`), split at each comma that is not quoted,
+/// escaped, or inside an expansion or brackets: `None` when there is none.
+fn comma_items(source: &str) -> Option<Vec<&str>> {
+    if !source.contains(',') || ends_in_dollar(source) {
+        return None;
+    }
+    let mut items = Vec::new();
+    let mut start = 0;
+    let mut depth = 0_usize;
+    let mut quote = None;
+    let mut chars = source.char_indices();
+    while let Some((at, c)) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') => quote = None,
+            (Some('\''), _) => {}
+            (_, '`') => {
+                chars.next();
+            }
+            (Some('"'), '"') => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '(' | '{' | '[') => depth += 1,
+            (None, ')' | '}' | ']') => depth = depth.saturating_sub(1),
+            (None, ',') if depth == 0 => {
+                items.push(&source[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    if items.is_empty() {
+        return None;
+    }
+    items.push(&source[start..]);
+    Some(items)
 }
 
 #[cfg(test)]
