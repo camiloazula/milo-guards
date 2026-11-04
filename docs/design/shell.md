@@ -531,7 +531,15 @@ each with the options it reads and those of them that take a value, as
   `nix develop`'s old one, read the same. `nix-shell` runs the shell line `--run` or `--command` gives, the
   last of them as Nix keeps the last, in bash (`nix-shell -p hello --run 'rm
   -rf ~'` is `delete`, `nix-shell --run "$CMD"` is `unknown`); without one
-  it opens a shell. Nix takes any of its settings as an option, so a known
+  it opens a shell. Given a script whose first lines are `#!` and `#!
+  nix-shell` as its first word, it runs that script (shebang mode), the
+  words after it the script's: a first word that may be a file other than
+  a Nix expression (not an option, a `.nix` file, a folder such as `.` or
+  one that ends in `/`, a `<nixpkgs>` path, a URL, or a `channel:` or
+  `flake:` name, which Nix fetches as it does a URL) runs code the guard
+  does not read, `unknown`, beside the reading of the words as nix-shell's
+  own (`nix-shell ./x.sh`, `nix-shell "$f"`; `nix-shell shell.nix` is
+  Safe). Nix takes any of its settings as an option, so a known
   table is read (`-I`, `-j`, `--arg NAME VALUE`, `--option NAME VALUE`, a
   setting turned off, `--no-NAME`, or added to, `--extra-NAME VALUE`, and
   bundled short letters, `-vvL`, `-j4`, as Nix splits them).
@@ -610,6 +618,9 @@ not only the last, which is the one the program keeps.
   POSIX shell without one runs the program, so the option is read whichever
   runs. The options are read as GNU `time` reads them for what it runs too:
   `time -ao log rm -rf ~` and `time --out log rm -rf ~` judge the `rm`.
+  Homebrew installs GNU `time` as `gtime`, read the same, though as a
+  program and never a shell's word (`gtime rm -rf ~` is `delete`, `gtime
+  -o ~/.bashrc ls` is `overwrite`).
 - `script FILE`, the file it records to: the first word after its options,
   after `-c` too, or `typescript` in the folder it runs in when there is
   none (`cd /etc && script` is `overwrite`), unless `-p` plays it back,
@@ -638,7 +649,20 @@ riskier reading counts. `--trim` takes the spaces off the sides of each value
 it names before the value is put in. With no command each
 value is a line of its own, and lines read from the input are its input run
 as a shell runs it. A command of plain words fed its input is read as
-`xargs` reads it (`ls ~ | parallel rm -rf`). A value only known when it runs,
+`xargs` reads it (`ls ~ | parallel rm -rf`). With values from `:::`,
+`::::` or `-a`, `parallel` hands its own input, a pipe or a file redirected
+onto it, to the job: a job whose program, a shell (or `powershell`) or an
+interpreter, is read with its own words as reading what to run from its
+input, or cannot be read, may run what it reads there, so the line reads it
+as a shell or an interpreter reads its input, beside the jobs (`echo 'rm -rf
+~' | parallel sh ::: a` is `run_input`; `echo x | parallel echo ::: a`, `echo
+x | parallel sh -c 'echo {}' ::: a`, `echo x | parallel sh build.sh ::: a`
+and `echo x | parallel python3 x.py ::: a` stay Safe). The program is the
+job's first word as its shell splits it; one a replacement string makes is
+each value, and a value read from a file or only known when it runs may be
+any. A word after it that holds a replacement string, or is only known when
+it runs, may be any too: it is read both as `-` and as a word only known
+when it runs (`echo x | parallel sh {} ::: -s` is `run_input`). A value only known when it runs,
 or read from the input or a file, stands in a line as `"$1"`. Past 256 jobs
 or 32 sources, for jobs whose lines together are longer than the longest
 line (64 KiB, which is as far as they are built), for a replacement string
@@ -4351,7 +4375,8 @@ in place of a script, judged as a script is (`python3 -m pytest` is safe),
 but `timeit` runs the code it is given, `cProfile`, `profile` and `trace` run
 a script under them, and `pdb` and `code` read what to run from the input:
 the REPLs `asyncio`, `IPython`, `bpython` and `ptpython` read it from the
-input as `code` does: these are `unknown`, `runs code the guard does not
+input as `code` does, and so does `xonsh`, the shell `xonsh` is, which runs
+its `-c` code too (`python3 -m xonsh -c 'rm -rf ~'`): these are `unknown`, `runs code the guard does not
 read`, also attached (`-mtimeit`) and after other options. IPython's own
 options are its own table: it reads any `--Class.trait=value` as a setting,
 and some of those run code before the script
@@ -4680,7 +4705,13 @@ A line is never safe because the guard gave up on it. These come back risky:
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
 - Code handed to an interpreter that is not read: Ruby, Perl (beyond
-  `perl -pi`), PHP and Lua, and any code piped into an interpreter, or read
+  `perl -pi`), PHP and Lua, and xonsh's, a shell whose language is Python
+  and its own (`xonsh -c 'rm -rf ~'`, `echo … | xonsh`; a script file it is
+  given, `xonsh build.xsh`, is the workspace's own, as `python3 x.py` is;
+  its `-D`, `--shell-type` and `-st` take a value, and `--rc` every word
+  after it that is not an option, as Python's `argparse` reads them, by a
+  shorter start of their names too, so `xonsh --rc a.xsh build.xsh` has no
+  script and reads its input; `xonsh -V` prints), and any code piped into an interpreter, or read
   from a file it is redirected from, or from a here-document after an option
   that took the next word (`perl -I lib <<'PL'`). A script only known when it
   runs (`python3 $F`, `node <(…)`), a module that runs what it is given
@@ -6462,14 +6493,14 @@ inside the workspace.
 **Wrappers** come off as `classify` takes them off, and what they run decides:
 `sudo cat` reads only. Only the wrappers that just run the next program are
 let through (`sudo`, `doas`, `gsudo`, `pkexec`, `env`, `nice`, `ionice`,
-`time`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
+`time`, `gtime`, `timeout`, `stdbuf`, `xargs`, `command`, `builtin`, `noglob`,
 `nocorrect`, `-`, `coproc`, the `{`, `!` and zsh's `repeat` the grammar
 reads as programs before a group (`time { ls; }`, `! { ls; }`, `repeat 3 {
 ls; }` read only), and the `find` a `-exec` makes), and only with
 options the guard knows: any other option makes the line `Unknown`, since it
 could do anything (`sudo -e` edits a file, `sudo -s` and `-i` start a shell,
 `env -P` changes where programs are found, `env -C` the folder they run in).
-`time -o FILE` and `time --output=FILE` write a file, so they are `Changes`.
+`time -o FILE` and `time --output=FILE` (and `gtime`'s) write a file, so they are `Changes`.
 `flock` makes its lock file, `nohup` may make `nohup.out`, `tmux` and `screen`
 start sessions: those wrap a reader into `Unknown`. So do the other tools that
 run a command (`strace -o` and `script` write files, `parallel` runs many,

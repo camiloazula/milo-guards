@@ -4,8 +4,9 @@
 //! stands (`{}`, `{.}`, `{1}`) or after the words when none does. `sem`
 //! (`parallel --semaphore`) runs its command once, with no value.
 
+use super::interpreters::{interpreter, is_interpreter, shell, SHELLS};
 use super::{join, shell_word, Launch};
-use crate::unit::{Arg, Reads, MAX_LEN};
+use crate::unit::{self, Arg, Reads, MAX_LEN};
 use crate::Shell;
 
 /// How many jobs the values of a line may make before it runs too many to
@@ -265,8 +266,14 @@ struct Options {
 /// each value is a line of its own. A line that runs too many jobs, or that
 /// builds them in a way the guard does not follow (`--colsep`, a `{= … =}`
 /// expression, an option it does not know), is not read.
-pub(super) fn parallel(args: &[Arg]) -> Launch {
-    read(args, false)
+///
+/// With values from `:::`, `::::` or `-a`, `parallel` hands its own input,
+/// when it is `input`, a pipe or a file, to the job: a job whose program is
+/// a shell or an interpreter that is not given its code (`sh`, `python3
+/// x.py`, not `sh -c '…'`) may run what it reads there ([`job_reads`]), and
+/// that reading is judged beside the jobs.
+pub(super) fn parallel(args: &[Arg], input: bool) -> Launch {
+    read(args, false, input)
 }
 
 /// `sem`, GNU parallel's `parallel --semaphore`: its options, as
@@ -274,11 +281,11 @@ pub(super) fn parallel(args: &[Arg]) -> Launch {
 /// without reading its input. With no command (`sem --wait`) it runs
 /// nothing.
 pub(super) fn sem(args: &[Arg]) -> Launch {
-    read(args, true)
+    read(args, true, false)
 }
 
 /// [`parallel`], or [`sem`] when `semaphore`.
-fn read(args: &[Arg], semaphore: bool) -> Launch {
+fn read(args: &[Arg], semaphore: bool, input: bool) -> Launch {
     let Some(options) = read_options(args) else {
         return Launch::Opaque(UNREAD);
     };
@@ -315,6 +322,8 @@ fn read(args: &[Arg], semaphore: bool) -> Launch {
         }
         at = end;
     }
+    // The input is handed to the job when the values come from elsewhere.
+    let hands_input = input && !semaphore && !sources.is_empty();
     if sources.is_empty() {
         if semaphore {
             if command.is_empty() {
@@ -324,8 +333,108 @@ fn read(args: &[Arg], semaphore: bool) -> Launch {
             sources.push(vec![Value::Input]);
         }
     }
+    let launch = run(command, &options, &sources, grouping);
+    if !hands_input || matches!(launch, Launch::Opaque(_)) {
+        return launch;
+    }
+    match job_reads(command, &options, &sources) {
+        Some(reads) => Launch::Either(Box::new(launch), Box::new(Launch::Reads(reads))),
+        None => launch,
+    }
+}
+
+/// What a job of `command` reads from the input it is handed, when its
+/// program, read with its own words, reads what to run from its input or
+/// cannot be read: a shell its commands, an interpreter its code (`sh`,
+/// `python3`, not `sh -c '…'`, `sh build.sh` or `python3 x.py`). The program
+/// is the first word as the job's shell splits it (with `-q`, the whole
+/// first word); one a replacement string makes is a value, and each known
+/// value is read as the program, one only known when it runs or read from
+/// a file as any. A word after it that holds a replacement string, or that
+/// is only known when it runs, may be any ([`reads_input`]).
+fn job_reads(command: &[Arg], options: &Options, sources: &[Vec<Value>]) -> Option<Reads> {
+    // A program only known when it runs may be any.
+    if command.first()?.known().is_none() {
+        return Some(Reads::Shell);
+    }
+    let holds = |text: &str| text.contains(options.replace.as_str()) || text.contains(['{', '}']);
+    // Each word's text, or `None` for one that may be any.
+    let mut words: Vec<Option<&str>> = Vec::new();
+    for arg in command {
+        match arg.known() {
+            None => words.push(None),
+            Some(text) if options.quote => words.push(Some(text)),
+            Some(text) => words.extend(text.split_whitespace().map(Some)),
+        }
+    }
+    let (program, rest) = words.split_first()?;
+    let rest: Vec<Option<&str>> = rest
+        .iter()
+        .map(|word| word.filter(|text| !holds(text)))
+        .collect();
+    let program = (*program)?;
+    if holds(program) {
+        let mut found = None;
+        for value in sources.iter().flatten() {
+            let reads = match value {
+                Value::Known(name) => reads_input(name, &rest),
+                Value::Later(_) | Value::Input => Some(Reads::Shell),
+            };
+            if reads == Some(Reads::Shell) {
+                return reads;
+            }
+            found = found.or(reads);
+        }
+        return found;
+    }
+    reads_input(program, &rest)
+}
+
+/// What the program `name`, given `args`, reads from its input when it is
+/// handed one: a shell (or `powershell`) reads commands and an interpreter
+/// code, when it is read as reading its input or cannot be read. A word
+/// that may be any (`None`) is read both as `-`, the word that has a shell
+/// or an interpreter read its input where it stands, and as a word only
+/// known when it runs.
+fn reads_input(name: &str, args: &[Option<&str>]) -> Option<Reads> {
+    let key = unit::key(name, Shell::Posix);
+    let shell_reads = SHELLS.contains(&key.as_str());
+    if !shell_reads && matches!(key.as_str(), "pwsh" | "powershell") {
+        return Some(Reads::Shell);
+    }
+    if !shell_reads && !is_interpreter(&key) {
+        return None;
+    }
+    // The readings of a word that may be any; with none, one reading.
+    let mut substitutes = vec![Arg::Known("-".to_string())];
+    if args.iter().any(Option::is_none) {
+        substitutes.push(Arg::Unknown("{}".to_string()));
+    }
+    let reads = substitutes.iter().any(|any| {
+        let args: Vec<Arg> = args
+            .iter()
+            .map(|word| word.map_or_else(|| any.clone(), |text| Arg::Known(text.to_string())))
+            .collect();
+        let launch = if shell_reads {
+            shell(&args)
+        } else {
+            interpreter(&key, &args, true, true)
+        };
+        matches!(launch, Launch::Reads(_) | Launch::Unread(_))
+    });
+    let kind = if shell_reads {
+        Reads::Shell
+    } else {
+        Reads::Interpreter
+    };
+    reads.then_some(kind)
+}
+
+/// The launch of `command` run with the values of `sources`, as [`read`]
+/// reads it.
+fn run(command: &[Arg], options: &Options, sources: &[Vec<Value>], grouping: bool) -> Launch {
     if command.is_empty() {
-        return values_as_lines(&sources);
+        return values_as_lines(sources);
     }
     if command.iter().any(|word| word.known().is_none()) {
         return Launch::Script(Shell::Posix, join(command));
@@ -335,7 +444,7 @@ fn read(args: &[Arg], semaphore: bool) -> Launch {
     let joined = [joined[0].as_str()];
     // A command of plain words fed its input is `xargs`: what the input
     // holds is judged where it lands.
-    if sources == [vec![Value::Input]] && plain(command, &options) {
+    if sources == [vec![Value::Input]] && plain(command, options) {
         let replace = command
             .iter()
             .filter_map(Arg::known)
@@ -346,7 +455,7 @@ fn read(args: &[Arg], semaphore: bool) -> Launch {
             replace,
         };
     }
-    let Some(mut jobs) = jobs(&sources) else {
+    let Some(mut jobs) = jobs(sources) else {
         return Launch::Opaque(TOO_MANY);
     };
     // The jobs run together: a command given every value at once is judged
