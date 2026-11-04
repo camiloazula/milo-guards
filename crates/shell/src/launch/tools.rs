@@ -5,6 +5,8 @@
 //! `doppler run`, `op run`, `infisical run`, `direnv exec`, `dotenv`). And
 //! the files the tracers, `script` and `time` write their own output to.
 
+use std::collections::HashSet;
+
 use super::wrappers::{getopt, running, Getopt};
 use super::{
     after_getopt, after_options, after_options_by, getopt_value, getopt_word, join, runs,
@@ -86,11 +88,7 @@ fn script_with(args: &[Arg], short: &str) -> Launch {
     let Some(file) = after_getopt(args, short, SCRIPT_LONG) else {
         return Launch::Itself;
     };
-    let playback = args[..file].iter().filter_map(Arg::known).any(|text| {
-        text.strip_prefix('-')
-            .is_some_and(|bundle| !bundle.starts_with('-') && bundle.contains('p'))
-    });
-    if playback {
+    if plays_back(&args[..file], short) {
         return Launch::Itself;
     }
     let mut start = file + 1;
@@ -98,6 +96,32 @@ fn script_with(args: &[Arg], short: &str) -> Launch {
         start += 1;
     }
     runs(args, Some(start))
+}
+
+/// Whether `script`'s options `options`, read with the letters of `short`
+/// taking a value, play a recording back: `-p` as a flag letter in a
+/// bundle, before the first letter that takes a value (`-dp`, not `-cpwd`
+/// or `-Bperf.log`), and never the value of an option (`-c -p`).
+fn plays_back(options: &[Arg], short: &str) -> bool {
+    let mut at = 0;
+    while let Some(text) = options.get(at).and_then(Arg::known) {
+        let Some(bundle) = text.strip_prefix('-').filter(|_| text != "--") else {
+            break;
+        };
+        if !bundle.starts_with('-')
+            && bundle
+                .chars()
+                .take_while(|letter| !short.contains(*letter))
+                .any(|letter| letter == 'p')
+        {
+            return true;
+        }
+        at += match getopt_word(text, short, SCRIPT_LONG) {
+            Word::Value => 2,
+            Word::Flag | Word::Operand => 1,
+        };
+    }
+    false
 }
 
 /// The options of `ltrace` that take a value, as `getopt_long` reads them.
@@ -344,33 +368,27 @@ fn strace_output(file: Arg) -> Output {
 
 /// The files `script` writes: the one it records to, the first word after
 /// its options (`typescript`, in the folder it runs in, when there is none),
-/// unless `-p` plays that back, and the files of `-B`, `-I`, `-O` and `-T`
+/// unless `-p` plays that back (see [`plays_back`]), and the files of `-B`, `-I`, `-O` and `-T`
 /// (`--log-io`, `--log-in`, `--log-out`, `--log-timing`), of `-t` and
 /// `--timing=`, and of FreeBSD's `-F pipe`, wherever they stand, as
 /// util-linux reads its options. Both readings of `-F` (see [`script`]) are
 /// taken.
 fn script_outputs(args: &[Arg]) -> Vec<Arg> {
     let mut files: Vec<Arg> = Vec::new();
+    let mut seen: HashSet<Arg> = HashSet::new();
     for (short, spec) in [
         (SCRIPT_SHORT.to_string(), &SCRIPT_OPTIONS),
         (format!("{SCRIPT_SHORT}F"), &SCRIPT_PIPE),
     ] {
         let file = after_getopt(args, &short, SCRIPT_LONG);
-        let playback = args[..file.unwrap_or(args.len())]
-            .iter()
-            .filter_map(Arg::known)
-            .any(|text| {
-                text.strip_prefix('-')
-                    .is_some_and(|bundle| !bundle.starts_with('-') && bundle.contains('p'))
-            });
         let recorded = match file {
-            _ if playback => None,
+            _ if plays_back(&args[..file.unwrap_or(args.len())], &short) => None,
             Some(at) => args.get(at).cloned(),
             None => Some(Arg::Known("typescript".to_string())),
         };
         let options = written(args, true, |text, next| script_option(text, next, spec));
         for file in recorded.into_iter().chain(options) {
-            if !files.contains(&file) {
+            if seen.insert(file.clone()) {
                 files.push(file);
             }
         }

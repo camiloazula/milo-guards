@@ -537,7 +537,8 @@ not only the last, which is the one the program keeps.
 - `script FILE`, the file it records to: the first word after its options,
   after `-c` too, or `typescript` in the folder it runs in when there is
   none (`cd /etc && script` is `overwrite`), unless `-p` plays it back,
-  which reads it; and the files of util-linux's `-B`, `-I`, `-O` and `-T`
+  which reads it (a flag letter `-p`, as in `-dp`; not a `p` in an option's
+  value, as in `-cpwd` or `-Bperf.log`, nor the value `-c -p`); and the files of util-linux's `-B`, `-I`, `-O` and `-T`
   (`--log-io`, `--log-in`, `--log-out`, `--log-timing`, any of them also
   shortened), `-t` (its file attached on util-linux, a time on the BSDs,
   read as a file either way) and `--timing=FILE`, wherever they stand, as

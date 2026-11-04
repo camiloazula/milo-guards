@@ -108,6 +108,18 @@ posix rules=overwrite | cd /etc && script -c ls
 # -p plays a recording back: it reads the file.
 posix safe | script -p /etc/passwd
 posix safe | script -dp /etc/passwd
+posix safe | script -q -p /etc/passwd
+# Only a flag letter -p plays back: not a letter in an option's value, nor
+# an option's value.
+posix rules=overwrite | script -cpwd /etc/passwd
+posix rules=overwrite | script -qcpwd /etc/passwd
+posix rules=overwrite | cd /etc && script -cpwd
+posix rules=overwrite | script -Bperf.log /etc/passwd
+posix rules=overwrite | script -Ologs/p.log /etc/passwd
+posix rules=overwrite | script -Iinput.log -c pwd /etc/passwd
+posix rules=overwrite | script -tperf.log /etc/passwd
+posix rules=overwrite | script -c -p /etc/passwd
+posix rules=overwrite | script -Fpipe /etc/passwd
 posix finds=delete | script -q session.log rm -rf ~
 posix finds=delete,overwrite | script -q /etc/passwd rm -rf ~
 

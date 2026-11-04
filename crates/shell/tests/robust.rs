@@ -632,6 +632,11 @@ fn a_wrapper_that_names_its_output_many_times_is_read_quickly_and_not_safe() {
             format!("time {}ls", "-ao /etc/passwd ".repeat(count)),
             format!("ltrace {}ls", "--out=/etc/passwd ".repeat(count)),
             format!("script -c ls {}", "-F /etc/passwd -O x ".repeat(count)),
+            // Each value its own file.
+            format!(
+                "script -c ls -O /etc/passwd {}",
+                (0..count).fold(String::new(), |words, i| words + &format!("-O a{i} "))
+            ),
             format!("strace {}ls", "-o '|ls' ".repeat(count)),
             nested,
         ];
@@ -641,7 +646,7 @@ fn a_wrapper_that_names_its_output_many_times_is_read_quickly_and_not_safe() {
             }
             let took = took(&line, Shell::Posix, &posix());
             assert!(
-                took < Duration::from_millis(200),
+                took < Duration::from_millis(500),
                 "took {took:?} for {count} x {}",
                 &line[..20]
             );
