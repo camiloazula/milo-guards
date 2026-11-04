@@ -143,9 +143,9 @@ returns without a panic. A line that is too long or too deeply nested must
 come back risky and unreadable.
 
 The secrets guard reads any text, so it has no unreadable answer. Its
-`robust.rs` checks instead that a hostile text of a megabyte is read inside a
-bound and in time linear in its length, with the clock in the test and none in
-the crate.
+`robust.rs` checks instead the answer a hostile text of a megabyte gets, and
+its `timing.rs` that the text is read inside a bound and in time linear in its
+length, with the clock in the test and none in the crate.
 
 The workspace also forbids `unsafe`, and the dependency check allows only
 permissive licences.

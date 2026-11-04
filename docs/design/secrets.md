@@ -419,10 +419,11 @@ expression of the `regex` crate, which never backtracks, and compiles once
 (`std::sync::OnceLock`); a row whose text cannot be there (the lowercase text
 holds none of its needles) is skipped; the hand loops (a block of key, a name
 and its value, the escapes) move forward and never rescan what they passed.
-`tests/robust.rs` measures: a megabyte of one character, of nested quotes, of
+`tests/timing.rs` measures: a megabyte of one character, of nested quotes, of
 base64, of partial prefixes, and thirty more kinds of hostile text are read
 inside a bound, and four times the text takes less than ten times as long
-(a read that rescans takes sixteen). The test keeps the clock; the crate never
+(a read that rescans takes sixteen); `tests/robust.rs` checks the spans each
+of them gets, in every build. The test keeps the clock; the crate never
 does.
 
 ## Tests
@@ -450,4 +451,4 @@ repository, and stays in the test file. `tests/cases.rs` tests the runner.
   whole (each byte of it in a span): the keys of each provider and format,
   where a value ends, spans that overlap, and values that look like a
   stand-in but are real.
-- `tests/entropy.rs`, `tests/names.rs` and `tests/robust.rs`.
+- `tests/entropy.rs`, `tests/names.rs`, `tests/robust.rs` and `tests/timing.rs`.

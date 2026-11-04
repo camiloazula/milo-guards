@@ -1,11 +1,15 @@
-# One job that runs the gate the way it runs locally: `just verify` (format,
-# clippy, every test with coverage, doctests, rustdoc and the dependency
-# gates for bans, licences and sources), over the whole workspace. The crates
-# are plain Rust with no platform code, so the job runs on Linux. This is a
-# library: nothing here builds for a platform or produces an artefact.
-# Advisories are their own job, running `just advisories`, because they change
-# without a commit and must not be confused with a code failure; the verify
-# job does not run them.
+# The gate the way it runs locally, `just verify`, split in two jobs. The
+# `verify` job runs every recipe of it but `timing`, in its order (format,
+# clippy, every test with coverage, doctests, rustdoc, the shell guard without
+# its inline reader, and the dependency gates for bans, licences and sources),
+# over the whole workspace: none of them reads a clock, so its answer is the
+# same on every machine. The `timing` job runs `just timing` alone, the tests
+# that read the clock, on a runner of its own; it is advisory for now, while
+# its rows are measured on GitHub's runner. The crates are plain Rust with no
+# platform code, so the jobs run on Linux. This is a library: nothing here
+# builds for a platform or produces an artefact. Advisories are their own
+# job, running `just advisories`, because they change without a commit and
+# must not be confused with a code failure; the verify job does not run them.
 name: CI
 
 on:
@@ -63,8 +67,34 @@ jobs:
 
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
 
-      - run: just verify
+      # Every recipe of `just verify` but `timing`, in its order.
+      - run: just format-check lint coverage doc-test doc no-inline deny
         timeout-minutes: 50
+
+  timing:
+    name: timing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.99.1"
+
+      # The cache key carries the job's name, so this job's optimized build
+      # and the verify job's builds are kept apart.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: "epoch-${{ vars.RUST_CACHE_EPOCH || '1' }}"
+          cache-on-failure: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      - run: just timing
+        timeout-minutes: 20
 
   advisories:
     name: advisories
