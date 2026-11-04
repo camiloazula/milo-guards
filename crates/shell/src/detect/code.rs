@@ -45,19 +45,30 @@ impl Checker<'_> {
 
     /// awk code that runs commands (`system(…)`, a pipe) or writes files
     /// (`print > "f"`) is risky; so is code the guard cannot read (`-f script`,
-    /// a library `-i` or `@include` loads, a variable). gawk's `inplace`
-    /// library (`-i inplace`) edits each file awk reads, so each is a write,
-    /// as is the file `-o`, `-p` or `-d` is given. The options are read as
-    /// gawk's `getopt_long` reads them (see [`awk_options`]).
+    /// a library `-i` or `@include` loads, a variable), and so is a shared
+    /// library `-l` or `@load` loads, native code whatever its name. gawk's
+    /// `inplace` library (`-i inplace`) edits each file awk reads, so each
+    /// is a write, as is the file `-o`, `-p` or `-d` is given. The options
+    /// are read as gawk's `getopt_long` reads them (see [`awk_options`]).
     fn awk(&mut self, unit: &Unit) {
         let args = unit.args.as_slice();
         let read = awk_options(args);
         let mut programs: Vec<Value<'_>> = Vec::new();
         let mut file = false;
         let mut libraries: Vec<Library<'_>> = Vec::new();
+        // A shared library `-l` or `@load` loads, with the word that names
+        // it when that is only known when it runs.
+        let mut extension: Option<Option<&Arg>> = None;
         for &(name, value) in &read.options {
             match name {
                 "file" | "exec" => file = true,
+                "load" => {
+                    let unread = match value {
+                        Some(Value::Word(arg)) if arg.known().is_none() => Some(arg),
+                        _ => None,
+                    };
+                    extension = Some(extension.flatten().or(unread));
+                }
                 "source" => programs.extend(value),
                 "include" => libraries.push(value.map_or(Library::Other, library)),
                 "dump-variables" | "pretty-print" | "profile" => {
@@ -99,7 +110,12 @@ impl Checker<'_> {
                             None,
                         );
                     }
-                    libraries.extend(included(code));
+                    for directive in directives(code) {
+                        match directive {
+                            Directive::Include(library) => libraries.push(library),
+                            Directive::Load => extension = Some(extension.flatten()),
+                        }
+                    }
                 }
                 None => self.add(
                     Rule::Unknown,
@@ -107,6 +123,13 @@ impl Checker<'_> {
                     Some(&program.arg()),
                 ),
             }
+        }
+        if let Some(arg) = extension {
+            self.add(
+                Rule::Unknown,
+                "loads an awk extension the guard does not read",
+                arg,
+            );
         }
         if libraries.iter().any(|library| *library != Library::InPlace) {
             self.add(
@@ -966,19 +989,59 @@ fn named_library(name: &str) -> Library<'static> {
     }
 }
 
-/// The libraries awk code loads with `@include "name"`: one whose name is
-/// not a plain string is one the guard does not read.
-fn included(code: &str) -> Vec<Library<'static>> {
-    code.split("@include")
+/// A directive in awk code: `@include "name"` or `@load "name"`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Directive {
+    /// A library `@include` loads.
+    Include(Library<'static>),
+    /// A shared library `@load` loads.
+    Load,
+}
+
+/// The directives in awk code, read as gawk's lexer reads them: `@` is a
+/// token of its own, and the word after it, past spaces, tabs, carriage
+/// returns and backslash-newlines, is a directive when it is `include` or
+/// `load`. Only a word made of ASCII letters, digits and `_` is a name, so
+/// `@loader` is no directive. An `@include` whose name is not a plain
+/// string is a library the guard does not read. A directive is found in a
+/// string or regex too, where gawk reads none: risky, not safe.
+fn directives(code: &str) -> Vec<Directive> {
+    code.split('@')
         .skip(1)
-        .map(|after| {
-            after
-                .trim_start()
-                .strip_prefix('"')
-                .and_then(|name| name.split_once('"'))
-                .map_or(Library::Other, |(name, _)| named_library(name))
+        .filter_map(|after| {
+            let after = skip_blanks(after);
+            let end = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            let (word, rest) = after.split_at(end);
+            match word {
+                "load" => Some(Directive::Load),
+                "include" => Some(Directive::Include(
+                    skip_blanks(rest)
+                        .strip_prefix('"')
+                        .and_then(|name| name.split_once('"'))
+                        .map_or(Library::Other, |(name, _)| named_library(name)),
+                )),
+                _ => None,
+            }
         })
         .collect()
+}
+
+/// awk code past the blanks gawk's lexer skips between two tokens: spaces,
+/// tabs, carriage returns, and a backslash before a newline, with or
+/// without a carriage return between.
+fn skip_blanks(mut code: &str) -> &str {
+    loop {
+        let trimmed = code.trim_start_matches([' ', '\t', '\r']);
+        match trimmed
+            .strip_prefix("\\\n")
+            .or_else(|| trimmed.strip_prefix("\\\r\n"))
+        {
+            Some(rest) => code = rest,
+            None => return trimmed,
+        }
+    }
 }
 
 /// Whether an awk operand is an assignment (`x=1`, `ns::x=1`), which awk
