@@ -383,6 +383,21 @@ posix finds=delete | script --command='rm -rf ~' /dev/null
 posix finds=delete | ssh-agent rm -rf ~
 posix finds=delete | ssh-agent -t 600 rm -rf ~
 posix finds=delete | chronic rm -rf ~
+# Homebrew installs GNU time as `gtime`, read as GNU `time`.
+posix finds=delete | gtime rm -rf ~
+posix finds=delete | gtime -v rm -rf ~
+posix finds=delete | gtime -f %e -o time.log rm -rf ~
+posix finds=delete | /opt/homebrew/bin/gtime --verbose rm -rf ~
+posix safe | gtime ls
+posix safe | gtime -v make
+# xonsh is a shell whose code is Python and its own: it is not read.
+posix finds=unknown | xonsh -c 'rm -rf ~'
+posix finds=unknown | xonsh -ic 'rm -rf ~'
+posix finds=unknown | xonsh --no-rc -c 'import shutil; shutil.rmtree("/home/me")'
+posix finds=unknown | echo 'rm -rf ~' | xonsh
+posix finds=unknown | xonsh - < cmds.xsh
+posix safe | xonsh build.xsh
+posix safe | xonsh --version
 posix finds=delete | chronic -ev rm -rf ~
 posix finds=destroy_resources | chronic terraform destroy
 posix finds=delete | parallel rm -rf ::: ~
@@ -402,6 +417,20 @@ posix finds=unreadable | parallel -n2 rm -rf {1} {2} ::: a ~
 posix finds=unreadable | parallel --frobnicate rm -rf ::: ~
 posix finds=delete | parallel ::: 'rm -rf ~' 'echo hi'
 posix finds=delete | ls ~ | parallel rm -rf
+# With values from `:::`, `::::` or `-a`, parallel hands its own input to
+# the job: a job that is a shell or an interpreter runs it.
+posix finds=run_input | echo 'rm -rf ~' | parallel sh ::: a
+posix finds=run_input | echo 'rm -rf ~' | parallel -a list.txt bash
+posix finds=run_input | echo 'rm -rf ~' | parallel /bin/sh :::: list.txt
+posix finds=run_input | parallel sh ::: a < cmds.txt
+posix finds=run_input | echo 'rm -rf ~' | parallel -j1 'sh -x' ::: a
+posix finds=run_input | echo 'rm -rf ~' | parallel {} ::: sh
+posix finds=run_input | echo 'rm -rf ~' | parallel {} a ::: sh
+posix finds=unknown | echo 'import os' | parallel python3 ::: a
+posix finds=delete | echo x | parallel sh -c 'rm -rf {}' ::: ~
+posix safe | echo x | parallel sh -c 'echo {}' ::: a
+posix safe | echo x | parallel echo ::: a b
+posix safe | parallel sh ::: a
 posix finds=delete | parallel rm -rf {} ::: ~/.ssh/id.pub
 posix finds=delete | parallel rm -rf {//} ::: ~/x
 posix finds=unreadable | parallel rm -rf '{= s/a/b/ =}' ::: ~
@@ -511,6 +540,13 @@ posix finds=delete | nix-shell -p hello jq --run 'rm -rf ~'
 posix finds=delete | nix-shell shell.nix --pure -A dev --run 'cd / && rm -rf usr'
 posix finds=delete | nix-shell --arg x 1 --run 'rm -rf ~'
 posix finds=unknown | nix-shell --run "$CMD"
+# Given a script whose first lines are `#!` and `#! nix-shell`, nix-shell
+# runs it (shebang mode): a first word that is not a `.nix` expression may
+# be one.
+posix finds=unknown | nix-shell ./x.sh
+posix finds=unknown | nix-shell x.sh --run ls
+posix finds=unknown | nix-shell "$f"
+posix finds=delete,unknown | nix-shell x.sh --run 'rm -rf ~'
 posix finds=delete | limactl shell default rm -rf ~
 posix finds=delete | limactl shell --shell /bin/bash default rm -rf ~
 posix finds=delete | limactl --debug shell --reconnect default rm -rf ~
@@ -550,6 +586,12 @@ posix safe | nix flake update --commit-lock-file
 posix safe | nix-shell --run ls
 posix safe | nix-shell -p hello
 posix safe | nix-shell
+posix safe | nix-shell shell.nix
+posix safe | nix-shell ./default.nix -A dev
+posix safe | nix-shell '<nixpkgs>' -A hello
+posix safe | nix-shell .
+posix safe | nix-shell ./project/
+posix safe | nix-shell -p hello x.sh
 posix safe | limactl shell default ls
 posix safe | limactl shell default
 posix safe | limactl list

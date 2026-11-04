@@ -16,10 +16,12 @@ pub(crate) const SHELLS: [&str; 11] = [
 /// Language interpreters that read code from their input when given no
 /// script: besides python (and the other names of a Python, by
 /// [`is_interpreter`]) and node, the Python launcher `py`, `pypy`, `ipython`,
-/// and the TypeScript runners `tsx` and `ts-node`, which take node's options.
-pub(crate) const INTERPRETERS: [&str; 17] = [
+/// the TypeScript runners `tsx` and `ts-node`, which take node's options,
+/// and `xonsh`, a shell whose language is Python and its own, so that what
+/// it runs is code the guard does not read, as another interpreter's is.
+pub(crate) const INTERPRETERS: [&str; 18] = [
     "python", "python2", "python3", "py", "pypy", "pypy3", "ipython", "perl", "ruby", "node",
-    "nodejs", "tsx", "ts-node", "php", "lua", "bun", "deno",
+    "nodejs", "tsx", "ts-node", "php", "lua", "bun", "deno", "xonsh",
 ];
 
 /// Whether `key` is the interpreter named in [`INTERPRETERS`] or one of its
@@ -258,6 +260,7 @@ pub(crate) fn code_options(key: &str) -> (&'static [char], &'static [&'static st
         "ruby" => (&['e'], &["--eval"]),
         "php" => (&['r', 'R', 'F'], &[]),
         "lua" => (&['e'], &[]),
+        "xonsh" => (&['c'], &[]),
         _ => (&['c', 'e'], &["--eval", "--print"]),
     }
 }
@@ -277,6 +280,8 @@ pub(crate) fn valued_options(key: &str) -> &'static [char] {
         "node" | "nodejs" | "tsx" => &['r', 'C'],
         "php" => &['c', 'd', 'z', 't', 'B', 'E', 'S', 'f'],
         "lua" => &['l'],
+        // `-D NAME=VALUE` sets a variable.
+        "xonsh" => &['D'],
         _ => &[],
     }
 }
@@ -512,6 +517,15 @@ fn table(key: &str) -> Table {
             ..plain
         },
         "lua" => Table {
+            interactive: Some('i'),
+            ..plain
+        },
+        // `xonsh --rc FILE… script`, `--shell-type readline`: Python's
+        // `argparse` takes a long option by a shorter start of it, so one
+        // it does not know may still take a value.
+        "xonsh" => Table {
+            long_values: &["rc", "shell-type"],
+            strict: false,
             interactive: Some('i'),
             ..plain
         },
