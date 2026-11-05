@@ -666,6 +666,26 @@ pub fn cmd_commands_read_again() -> [String; 9] {
     ]
 }
 
+/// cmd lines of about a size that delete `C:\\` with the `'VBS` marker in
+/// them, which cmd's grammar reads as a comment and the guard reads again
+/// as the command cmd runs, with a caret before each marker: many markers,
+/// after a space or a tab, after quoted words, and markers already given a
+/// caret.
+pub const VBS_MARKERS: [Shape; 4] = [
+    ("markers after spaces", |size| {
+        format!("rd /s /q C:\\ {}", filled("x 'VBS ", size, 16))
+    }),
+    ("markers after tabs", |size| {
+        format!("rd /s /q C:\\ {}", filled("x\t'VBS\t", size, 16))
+    }),
+    ("quoted words after a marker", |size| {
+        format!("rd /s /q C:\\ 'VBS {}", filled("\"a\" ", size, 24))
+    }),
+    ("markers with a caret", |size| {
+        format!("rd /s /q C:\\ 'VBS {}", filled("^'VBS ", size, 24))
+    }),
+];
+
 /// `count` folders, each the folder searched spelled its own way and ending
 /// in `//`, each followed by a space.
 pub fn distinct_folders(count: usize) -> String {

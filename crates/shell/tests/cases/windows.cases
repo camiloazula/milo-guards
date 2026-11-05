@@ -473,7 +473,6 @@ cmd finds=delete | git submodule foreach "rm -rf ~"
 cmd finds=git_discard | git clean --f
 cmd finds=run_input | type script.txt | cmd
 cmd finds=delete | start "run" cmd /c rd /s /q C:\\
-cmd finds=unreadable | rd /s /q C:\\Users\\me & echo 'VBS
 cmd finds=delete | rd /s /q x,C:\\Users\\me
 cmd finds=delete | del /q a;C:\\Windows\\x.dll
 cmd finds=delete | cd.. & cd.. & rd /s /q Documents
