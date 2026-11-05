@@ -21,7 +21,7 @@ use common::lines::{
     names, names_set_many_times, nested_do_strings, nested_outputs, numbered,
     one_function_defined_and_called_many_times, open_bracket_shapes, open_brackets,
     redirects_and_substitutions, too_much_said, variable_chain, wide_traps, wrapper_shapes, Shape,
-    EXTENDED_GLOB, FIND_EXPRESSIONS, OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES,
+    EXTENDED_GLOB, FIND_EXPRESSIONS, OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES, VBS_MARKERS,
 };
 use common::{
     assert_linear_by, assert_within, at, filled, linear_by, posix, windows, within, Maker,
@@ -515,6 +515,22 @@ fn cmd_commands_read_again_are_read_in_time() {
         let _ = classify(line, Shell::Cmd, &paths);
         let took = started.elapsed();
         assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn cmd_lines_with_the_vbs_marker_are_read_in_linear_time() {
+    let _serial = serial();
+    // cmd's grammar reads such a line as one comment, and the guard reads it
+    // once more with a caret before each marker, as the command cmd runs.
+    // What each line gets is in `tests/cmd_comments.rs`.
+    let paths = windows();
+    for (what, line) in VBS_MARKERS {
+        assert_linear(what, Shell::Cmd, &paths, line);
     }
 }
 
