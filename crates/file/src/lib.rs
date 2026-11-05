@@ -343,3 +343,14 @@ fn has_variable(path: &str) -> bool {
         _ => false,
     })
 }
+
+/// The README's example, compiled and run with the doctests so it cannot
+/// drift from the code. Only rustdoc's doctest pass reads the file, so
+/// building this crate never needs the README.
+#[cfg(doctest)]
+#[allow(
+    clippy::disallowed_macros,
+    reason = "the README include is read by rustdoc's doctest pass only"
+)]
+#[doc = include_str!("../README.md")]
+mod readme {}
