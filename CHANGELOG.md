@@ -6,6 +6,11 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+- Each crate carries a README of its own (what it reads, how to depend on
+  it, its example, compiled with the doctests), where every crate showed the
+  workspace's; the front door `milo-guards` keeps that one.
+- The README's logo is named by its absolute URL, so crates.io shows it.
+
 ## 0.1.0 (2026-11-05)
 
 The first release, on crates.io as `milo-guards` with the guards behind it.
