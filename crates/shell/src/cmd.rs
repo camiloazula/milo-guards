@@ -29,6 +29,8 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         depth,
         input: false,
         tail: false,
+        blocks: 0,
+        block_head: None,
         loops: Vec::new(),
         split,
     };
@@ -68,6 +70,12 @@ struct Walker<'a> {
     /// Whether the text is the rest of a longer statement, split again on
     /// its own (see [`Self::statement`]).
     tail: bool,
+    /// How many `( … )` blocks the node being walked is in.
+    blocks: usize,
+    /// The first statement of the block being walked, when it is in one
+    /// block only: the one statement in a block that no line of the block
+    /// comes before (see [`Walker::label`]).
+    block_head: Option<usize>,
     split: &'a mut Split,
 }
 
@@ -113,6 +121,8 @@ impl Walker<'_> {
                 self.children(node, stage, level);
             }
             "comment" => self.comment(node, level),
+            "label" => self.label(node),
+            "parenthesized" => self.block(node, stage, level),
             // `for %%i in (…) do …`: what it does runs once for each item.
             "for_stmt" => self.for_node(node, stage, level),
             // What a condition guards may not run.
@@ -368,6 +378,8 @@ impl Walker<'_> {
                 depth: self.depth,
                 input: self.input,
                 tail: true,
+                blocks: self.blocks,
+                block_head: None,
                 loops: Vec::new(),
                 split: self.split,
             };
@@ -414,11 +426,49 @@ impl Walker<'_> {
         }
     }
 
-    /// A comment the grammar reads. cmd skips only two kinds: the `rem`
-    /// command (`rem`, `@rem`, in any case, then a space, a tab or the end
-    /// of the line), which skips the rest of the line, `&` and `|` and all,
-    /// and `::` at the start of a statement, a label that never runs. The
-    /// grammar reads more as a comment running to the end of the line, all
+    /// A `( … )` block. An arm of [`Self::walk`], kept out of its frame,
+    /// which nests as deep as the tree.
+    #[inline(never)]
+    fn block(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let outer = self.block_head;
+        self.blocks += 1;
+        self.block_head = node.named_child(0).map(|head| head.id());
+        self.children(node, stage, level);
+        self.blocks -= 1;
+        self.block_head = outer;
+    }
+
+    /// A label, `:name`, or a `::` comment, which the grammar reads to the
+    /// end of the line. cmd skips it, but not always in a `( … )` block:
+    /// there it runs a line as a command when the line above ended with a
+    /// label it skipped (at the end of an `&` chain, in an `if`, `else` or
+    /// `for` body, or joined to that line by a `^`), and with it every
+    /// command joined to it. Any statement of a block but its first may be
+    /// such a line, so one that holds an `&`, `|`, `<` or `>` outside
+    /// quotes, a `%` (a variable may hold any of them), or ends in a `^`
+    /// that joins the next line to it, cannot be read. Elsewhere a label
+    /// judges nothing.
+    fn label(&mut self, node: Node<'_>) {
+        if self.may_run(node) {
+            self.split
+                .problem(Rule::Unreadable, "cannot be read in full", None);
+        }
+    }
+
+    /// Whether `node`, a label or a `::` comment, may be a line cmd runs in
+    /// a `( … )` block and holds more than a label (see [`Self::label`]).
+    fn may_run(&self, node: Node<'_>) -> bool {
+        let first = self.blocks == 1 && self.block_head == Some(node.id());
+        self.blocks > 0 && !first && holds_more(unit::text(&node, self.source))
+    }
+
+    /// A comment the grammar reads. The guard trusts only two kinds, both
+    /// of which cmd skips: the `rem` command spelled `rem` or `@rem`, in any
+    /// case, then a space, a tab or the end of the line, which skips the rest
+    /// of the line, `&` and `|` and all; and `::` at the start of a
+    /// statement, a label that never runs (but see [`Self::label`] for one
+    /// in a `( … )` block). cmd takes `rem` before other delimiters too; the
+    /// guard judges those as text cmd runs. The grammar reads more as a comment running to the end of the line, all
     /// text cmd runs: `<#` and `%#…#%` (a redirect and a variable to cmd),
     /// a `:` that `::` does not start, a `::` after a label in a `( … )`
     /// block (cmd runs the line after a label there as a command), and any
@@ -441,7 +491,11 @@ impl Walker<'_> {
             }
             return;
         }
-        if is_rem(text) || (text.starts_with("::") && !after_label(node, self.source)) {
+        if is_rem(text) {
+            return;
+        }
+        if text.starts_with("::") && !after_label(node, self.source) {
+            self.label(node);
             return;
         }
         match vbs_read(text) {
@@ -1272,9 +1326,23 @@ fn find_unquoted(text: &str, stop: impl Fn(char) -> bool) -> Option<usize> {
     None
 }
 
-/// Whether `text`, a comment the grammar reads, is the `rem` command:
-/// `rem`, with or without an `@`, in any case, then a space, a tab or the
-/// end of the line, as the grammar reads one.
+/// Whether `text`, a label or a `::` comment, holds what makes it more
+/// than a label when cmd runs it as a command: an `&`, `|`, `<` or `>`
+/// outside double quotes and not escaped with a `^`, a `%` anywhere (a
+/// variable may hold any of them), or a `^` at the end that joins the next
+/// line to it.
+fn holds_more(text: &str) -> bool {
+    let text = text.trim_end_matches(['\r', '\n']);
+    let carets = text.len() - text.trim_end_matches('^').len();
+    text.contains('%')
+        || carets % 2 == 1
+        || find_unquoted(text, |c| matches!(c, '&' | '|' | '<' | '>')).is_some()
+}
+
+/// Whether `text`, a comment the grammar reads, is the `rem` command the
+/// guard trusts: `rem`, with or without an `@`, in any case, then a space,
+/// a tab or the end of the line, as the grammar reads one. cmd takes more
+/// spellings, which the guard judges as text cmd runs.
 fn is_rem(text: &str) -> bool {
     let rest = text.strip_prefix('@').unwrap_or(text);
     rest.get(..3)

@@ -178,31 +178,46 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   instead of read once for each command. A `for` typed at the prompt
   (`for %i in …`, not `%%i`) is not read by the grammar and is `unreadable`
   wherever it stands.
-- cmd skips only two kinds of comment: the `rem` command (`rem`, `@rem`, in
-  any case, then a space, a tab or the end of the line), which skips the
-  rest of the line, `&`, `|` and a `'VBS` included, and `::` at the start of
-  a statement, a label that never runs. Only those are trusted and judge
+- The guard trusts two kinds of comment, both of which cmd skips: the `rem`
+  command spelled `rem` or `@rem`, in any case, then a space, a tab or the
+  end of the line, which skips the rest of the line, `&`, `|` and a `'VBS`
+  included, and `::` at the start of a statement, a label that never runs.
+  cmd takes `rem` before its other delimiters too; the guard judges those as
+  text cmd runs, a false alarm at worst. Only the trusted ones judge
   nothing. The batch grammar's `comment` token reads more as a comment
   running to the end of the line, all of it text cmd runs: any line with
-  `'VBS` after a space or a tab (a marker for files that are also
-  VBScript; to cmd, one more argument, so `rd /s /q C:\ 'VBS` deletes the
-  root of the disk), `%#…#%` (a variable to cmd), `<#` (a redirect from a
-  file named `#`), a `:` that `::` does not start, and a `::` right after a
-  label in a `( … )` block, where cmd runs the line after a label as a
-  command. A comment with `'VBS` is split again with a caret before each
-  `'VBS` outside double quotes, which cmd takes off, so the grammar reads the
-  command cmd runs and the line gets what it gets without the marker (in
-  `&` chains, `( … )`, and `if`, `else` and `for` bodies alike). A `'VBS` in
-  double quotes keeps a caret there, so a line with one the grammar may read
-  a comment for is `unreadable`, as is every other comment the guard does
-  not trust: what cannot be read is risky. Each text split again counts
-  against the line's budget of nested script text, and has no unescaped
-  marker left, so it is split again at most once more. After `goto`'s label
-  the comment is words `goto` ignores, but cmd still ends the statement at a
-  `&`, `|` or redirect in them: such words are `unreadable`. A `rem` spelled
-  with another character after it (`rem.`, `rem/`) the grammar does not read
-  as a comment; with a `'VBS` it is split again and judged as the command
-  the guard reads, which may find more than cmd runs.
+  `'VBS` after a space or a tab (a marker for files that are also VBScript;
+  to cmd, one more argument, so `rd /s /q C:\ 'VBS` deletes the root of the
+  disk), `%#…#%` (a variable to cmd), `<#` (a redirect from a file named
+  `#`), a `:` that `::` does not start, and a `::` right after a label in a
+  `( … )` block, where cmd runs the line after a label as a command (and
+  more in a block, below). A comment with `'VBS` is split again with a caret
+  before each `'VBS` outside double quotes, which cmd takes off, so the
+  grammar reads the command cmd runs and the line gets what it gets without
+  the marker (in `&` chains, `( … )`, and `if`, `else` and `for` bodies
+  alike). A `'VBS` in double quotes keeps a caret there, so a line with one
+  the grammar may read a comment for is `unreadable`, as is every other
+  comment the guard does not trust: what cannot be read is risky. Each text
+  split again counts against the line's budget of nested script text, and
+  has no unescaped marker left, so it is split again at most once more.
+  After `goto`'s label the comment is words `goto` ignores, but cmd still
+  ends the statement at a `&`, `|` or redirect in them: such words are
+  `unreadable`. A `rem` spelled with another character after it (`rem.`,
+  `rem/`) the grammar does not read as a comment; with a `'VBS` it is split
+  again and judged as the command the guard reads, which may find more than
+  cmd runs.
+- In a `( … )` block cmd does not always skip a label (`:name`, which the
+  grammar reads to the end of the line, `&` and all) or a `::`: it runs a
+  line as a command when the line above ended with a label it skipped,
+  wherever that label stands (at the end of an `&` chain, in an `if`, `else`
+  or `for` body, or joined to that line by a `^`), and runs every command
+  joined to it. Any statement of a block but its first may be such a line,
+  so a label or `::` there that holds an `&`, `|`, `<` or `>` outside
+  quotes, a `%` (a variable may hold any of them), or a `^` at the end that
+  joins the next line to it is `unreadable`: `(`, `:a`, `:b & rd /s /q C:\`,
+  `)` on four lines runs the `rd`. Without those it stays a label, which
+  runs nothing; outside a block, and as the first statement of one, a label
+  judges nothing.
 - Fish has no grammar here. Its line is read as POSIX, which is still safe:
   what the grammar cannot parse comes back risky.
 - The bash grammar reads every word after the operator of a redirect as one
@@ -787,8 +802,8 @@ in this shell, read as a function's body is (see the function bodies in
 counts as far as a depth limit, and the text of all the nested scripts read
 for one line as far as a budget a few times the longest line; a cmd command
 the guard reads again as a statement of its own (`ver && if …`, `i^f`,
-`call call`, a line with the `'VBS` marker) counts against the same budget. Past either, the line is
-unreadable.
+`call call`, a line with the `'VBS` marker) counts against the same budget.
+Past either, the line is unreadable.
 
 The other limits, each read as unreadable past it, and each pinned by a test
 that finds the edge by measuring it and asserts both sides (see Tests):
