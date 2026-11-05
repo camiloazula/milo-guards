@@ -6,6 +6,10 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+## 0.1.1 (2026-11-05)
+
+The pages on crates.io, nothing a caller compiles against or a guard answers.
+
 - Each crate carries a README of its own (what it reads, how to depend on
   it, its example, compiled with the doctests), where every crate showed the
   workspace's; the front door `milo-guards` keeps that one.

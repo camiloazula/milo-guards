@@ -199,7 +199,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "milo-guards"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "milo-guards-code",
  "milo-guards-core",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "milo-guards-code"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "tree-sitter",
  "tree-sitter-javascript",
@@ -220,18 +220,18 @@ dependencies = [
 
 [[package]]
 name = "milo-guards-core"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "milo-guards-file"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "milo-guards-core",
 ]
 
 [[package]]
 name = "milo-guards-secrets"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "milo-guards-core",
  "regex",
@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "milo-guards-shell"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "milo-guards-code",
  "milo-guards-core",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "milo-guards-url"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "milo-guards-core",
  "percent-encoding",
