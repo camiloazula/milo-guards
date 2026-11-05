@@ -47,11 +47,11 @@ answer for the same input on every machine.
 ## Install
 
 milo-guards is a Rust library. It is not on crates.io yet, so depend on it by
-git, pinned to a commit:
+git, pinned to a release tag (`v0.1.0` is the first):
 
 ```toml
 [dependencies]
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", rev = "<commit>" }
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.0" }
 ```
 
 Each guard sits behind a cargo feature. `shell`, `file`, `url` and `code` are
@@ -60,10 +60,10 @@ not a table of credential patterns in their binary.
 
 ```toml
 # Everything, the secrets guard included
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", rev = "<commit>", features = ["secrets"] }
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.0", features = ["secrets"] }
 
 # Only the shell guard
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", rev = "<commit>", default-features = false, features = ["shell"] }
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.0", default-features = false, features = ["shell"] }
 ```
 
 It needs Rust 1.99 or newer. If your program also links tree-sitter, it has
