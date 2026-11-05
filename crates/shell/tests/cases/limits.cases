@@ -118,6 +118,22 @@ powershell rules=unreadable first=unreadable reason="cannot be read in full" | $
 posix rules=unreadable,unknown first=unreadable reason="cannot be read in full" | ${a${a${a${a${a${a${a${a${a${a}}}}}}}}}}${a${a${a${a${a${a${a${a${a${a}}}}}}}}}}
 powershell finds=unreadable,delete | 1 2 1 2; Remove-Item -Recurse ~
 cmd rules=unreadable,unknown first=unreadable reason="cannot be read in full" | for %%i in (a) do for %%i in (a) do for %%i in (a) do\s
+
+# Many redirects on one line. cmd reads a `;` as a space, but its grammar
+# starts a statement at each `echo` after one, and goes back over the rest of
+# the line at each (stopped by the budget of what its lexer reads): it cannot
+# be read in full, and a finding beside the errors is kept. A `>` after a
+# `>` on one command is read once each, in every shell.
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | echo y > NUL; echo y > NUL; echo y > NUL;\s
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | echo y > out.txt; echo y > out.txt; echo y > out.txt;\s
+cmd rules=unreadable,overwrite first=unreadable | echo y > NUL; echo y > ..\\..\\x.txt;\s
+cmd safe | echo y > a > b > c
+cmd rules=overwrite | echo y > a > b > ..\\..\\x.txt
+posix safe | echo y >a >b >c
+posix rules=overwrite | echo y >a >b >../../x
+powershell safe | echo y > a > b > c
+powershell rules=overwrite | echo y > a > b > ..\\..\\x.txt
+
 # A name a copy gives again and again lands at one path.
 posix finds=overwrite reason="writes to a system folder" | cp -r a a a a a a /etc/x
 posix safe | cp -r a a a a a a sub/dir/

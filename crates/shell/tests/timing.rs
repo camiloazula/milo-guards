@@ -200,7 +200,7 @@ fn lines_up_to_the_length_limit_are_read_in_linear_time() {
         Shell::Cmd => "echo x & ",
         _ => "echo x; ",
     };
-    let shapes = |shell: Shell| -> [(&str, Grown); 20] {
+    let shapes = |shell: Shell| -> [(&str, Grown); 21] {
         let chain = chain(shell);
         [
             ("a chain", Box::new(move |size| fit(chain, "", "", size))),
@@ -219,6 +219,12 @@ fn lines_up_to_the_length_limit_are_read_in_linear_time() {
             ),
             ("a string", Box::new(|size| fit("a", "echo \"", "\"", size))),
             ("redirects", Box::new(|size| fit("echo >a; ", "", "", size))),
+            // Each redirect of a command is read once, whatever the redirects
+            // before it on the same command.
+            (
+                "redirects on one command",
+                Box::new(|size| fit(" > a", "echo y", "", size)),
+            ),
             ("brackets", Box::new(|size| fit("[", "echo ", "", size))),
             (
                 "substitutions left open",
