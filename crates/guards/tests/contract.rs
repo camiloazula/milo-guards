@@ -588,6 +588,12 @@ fn other_guard(
     folders: &[String],
     workspace: &HashMap<&str, &Dependency>,
 ) -> Option<String> {
+    // A path to the manifest's own folder is the crate itself, turning on a
+    // feature of its own for its tests: cargo refuses a path that holds
+    // another crate than the one named.
+    if !dep.workspace && dep.path.as_deref().map(|path| path.trim_end_matches('/')) == Some(".") {
+        return None;
+    }
     let mut declared = vec![dep];
     if dep.workspace {
         declared.extend(workspace.get(dep.name.as_str()));
@@ -908,6 +914,7 @@ renamed-core = { path = \"../core\" }
 vendored = { path = \"../../vendor/parser\" }
 [dev-dependencies]
 milo-guards-core = { workspace = true, features = [\"testing\"] }
+milo-guards-files = { path = \".\", default-features = false, features = [\"testing\"] }
 ";
     assert!(wrong_dependencies("files", manifest, root, &folders).is_empty());
     // The core depends on nothing at all.

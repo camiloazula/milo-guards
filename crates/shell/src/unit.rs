@@ -5262,14 +5262,14 @@ const MAX_NESTED_READ: usize = 4 * MAX_LEN;
 /// under a megabyte. The noise that stalls a grammar goes back over the rest
 /// of the line at every token, and reads gigabytes at the length limit (a
 /// lexer reads a megabyte in a few milliseconds).
-const MAX_LEXED: usize = 32;
+pub(crate) const MAX_LEXED: usize = 32;
 
 /// See [`MAX_LEXED`].
-const MAX_LEXED_BASE: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_LEXED_BASE: usize = 4 * 1024 * 1024;
 
 /// The most bytes the grammar is handed at once (more only to end where a
 /// character does): see [`MAX_LEXED`].
-const LEXED_PIECE: usize = 256;
+pub(crate) const LEXED_PIECE: usize = 256;
 
 /// How many times the POSIX and PowerShell grammars may start to recover
 /// from an error in a line before the parse is stopped and the line is
@@ -5523,6 +5523,18 @@ pub(crate) fn split(
     split.settle_functions();
     split.settle_pwd();
     split
+}
+
+impl Split {
+    /// The bytes the grammars' lexers were handed for the line, and the
+    /// bytes of text the grammars parsed for it, in its last read: what
+    /// [`MAX_LEXED`] holds a line to. Only the shell guard's tests read it
+    /// (the `testing` feature): the guard keeps these counts whatever the
+    /// feature, and this changes nothing it does.
+    #[cfg(feature = "testing")]
+    pub(crate) fn lexed(&self) -> (usize, usize) {
+        (self.lexed, self.parsed)
+    }
 }
 
 /// Start `split` afresh for a read of the line from the drive `drive` with

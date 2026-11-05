@@ -64,6 +64,12 @@ milo-guards        ──►  milo-guards-shell  ──►  milo-guards-core
   another reader; the code reader needs nothing of the core and does not depend
   on it.
 - Core depends on nothing but `std`.
+- A crate may be a dev-dependency of itself (`path = "."`), to turn on a
+  feature only its own tests read: the shell guard's `testing`, which shows
+  its tests the count of bytes its grammars' lexers are handed. It is the same
+  crate, not another. The feature is not for callers and not part of the API
+  (its module is hidden from the docs, and may change without notice); cargo
+  would let a caller turn it on, and nothing a caller reads changes with it.
 - The front door depends on core, on every guard and on the readers, behind
   features.
 - Nothing depends on the front door.

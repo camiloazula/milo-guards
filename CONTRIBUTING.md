@@ -77,6 +77,26 @@ what it takes with another gate running beside it. A row that comes nearer
 its bound is not given a wider one: it is held to how its time grows
 instead, or made quicker.
 
+A shape cmd's grammar reads in quadratic time below the budget of what its
+lexer is handed (`MAX_LEXED` in the shell guard's `src/unit.rs`), which stops
+it, is held to that count, not to the clock: its time grows with the square
+of its length up to the budget, so neither two lengths nor a fixed limit
+holds it honestly, and how much slower a machine reads this grammar is not
+how much slower it is on the rest (cmd's statements after a `;` took about
+twenty times as long on GitHub's runner as here, where rows read in linear
+time took two to four times). A count of work is the same on every machine,
+so such a test is no timing test: it runs in every build, in a file named by
+what it checks. The shell guard's `tests/lexer_budget.rs` holds every such
+shape, each with its answer pinned: `cd x; echo y > NUL; `,
+`echo y > NUL; `, `echo y & `, `echo ` then `$((1<<2)); echo `,
+`for %%i in (a) do `, `@`, `()` and `(echo) ` repeated. It holds the bytes
+handed within `MAX_LEXED` and within a written ceiling, so a raise of the
+budget fails there, and reads them through the crate's `testing` feature,
+which only its own tests turn on and which is not for callers. The POSIX
+grammar's shapes that reach the same budget stay timed until the runner
+shows them out of line with the machine. A timed table names every row that
+is over its bound before it fails, so one run on the runner shows them all.
+
 `just advisories` is not part of `just verify`. It checks the RustSec database
 (`cargo deny check advisories`), which needs the network and changes without a
 commit, so CI runs it as its own job and a failure there is not a code
