@@ -1089,8 +1089,12 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
         // (`in_arithmetic`); a chain of PowerShell calls asked of each call
         // whether the chain before it names a hook, reaches the session or
         // starts at `$PSDefaultParameterValues`, time that grew with the
-        // square of the chain up to the depth a tree may have, so it is held
-        // at each length too (`Walker::names_hook` in `powershell.rs`).
+        // square of the chain up to the depth a tree may have
+        // (`Walker::names_hook` in `powershell.rs`). Kept for each link, the
+        // chain is read in linear time at every length, past that depth too
+        // (111 ms at the length limit here, 29 ms at 16 KB), and no count
+        // stops it, so it is held to how its time grows, not to a fixed
+        // bound: on GitHub's runner it took 285 ms at 64 KB, past 250 ms.
         (
             Shell::Posix,
             Grows,
@@ -1126,7 +1130,7 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
         ),
         (
             Shell::PowerShell,
-            Stops,
+            Grows,
             Box::new(|size| fit(".Add(1, $b)", "$PSDefaultParameterValues", "", size)),
         ),
         (
