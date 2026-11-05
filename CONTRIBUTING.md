@@ -33,7 +33,7 @@ while it fails. It runs, in order, over the whole workspace:
 | `just format-check` | `cargo fmt --all --check` |
 | `just lint` | clippy, `--all-targets --all-features`, zero warnings (`cargo lint` runs the same) |
 | `just coverage` | every unit and integration test, `--all-features --locked`, run once in an instrumented build, and line coverage against the floor in the `justfile` (`--fail-under-lines`); raise it as coverage lands, never lower it to pass |
-| `just timing` | every test, in an optimized build (`cargo test --release --workspace --all-features --locked`): the tests that time the guard compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here |
+| `just timing` | the timing tests, and nothing else, in an optimized build: `cargo test --release --locked --all-features -p <crate> --test timing` for each crate with a `tests/timing.rs` (the shell guard and the secrets guard). Every test that reads the clock is in one of those files, and no other test does; they compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here |
 | `just doc-test` | every doctest, README example included (`cargo test --doc --workspace --all-features --locked`), which coverage does not run |
 | `just doc` | rustdoc on the workspace with warnings denied, so a broken intra-doc link fails (`--all-features --no-deps --locked`) |
 | `just no-inline` | the shell guard without its `inline` feature (no readers of Python and JavaScript, no grammars): clippy on all its targets with zero warnings, and `tests/inline_off.rs`, which holds every inline line to `unknown`; `--all-features` never builds it that way |
@@ -41,27 +41,40 @@ while it fails. It runs, in order, over the whole workspace:
 
 The code is compiled by clippy's check pass, by the one instrumented build
 every unit and integration test but the timing tests runs from, and by one
-optimized build that runs every test; the doctests and rustdoc build what they
-need on top, and the shell guard is built once more without its `inline`
+optimized build of the timing tests alone; the doctests and rustdoc build what
+they need on top, and the shell guard is built once more without its `inline`
 feature (`just no-inline`). `just test` runs every test but the timing
 tests, doctests included, in a debug build without coverage, quicker while
-working.
+working. No recipe but `just timing` reads a clock.
 
-A timing test reads the clock in an optimized build only, with
+CI runs the gate in two jobs. The `verify` job runs every recipe above but
+`just timing`, in the same order: it reads no clock, so it gives the same
+answer on any machine. The `timing` job runs `just timing` alone. For now it
+is advisory: its rows are being measured on GitHub's runner, and a red
+`timing` run there is a time to look at, not a change that cannot merge.
+Locally, `just verify` still runs both.
+
+A timing test lives in its crate's `tests/timing.rs`, and only there. It
+reads the clock in an optimized build only, with
 `#[cfg_attr(any(coverage, debug_assertions), ignore = "timing: ...")]`, so a
-slow build or a busy machine does not fail it. Where it checks that a shape
-is read in time that grows with its length, it compares a line of 16 KB with
-one of 64 KB (`assert_linear` in the shell guard's `tests/common`), not one
+slow build or a busy machine does not fail it. A test that checks both what
+the guard answers for a line and how long it takes is two tests: the answer
+beside the rules it checks, run in every build, and the time in `timing.rs`,
+with the line made once in the crate's `tests/common` (the shell guard's
+random noise in its `tests/noise`) so both read the same one. Where it
+checks that a shape is read in time that grows with its length, it compares
+a line of 16 KB with one of 64 KB (`assert_linear` in the shell guard's
+`tests/timing.rs`, over `assert_linear_by` in its `tests/common`), not one
 line with a fixed limit. A shape the guard reads only to a count, and stops
-past it, can make the longer line the quicker one, so two lengths do not show
-how it grows: `assert_linear` fails when the longer takes less than half the
-time of the shorter, and such a shape holds each of several lengths, up to
-and past the count, to a fixed limit instead (`assert_within`). Where it
-holds a line to a fixed limit, the limit
-leaves room for a machine several times slower and busy with another gate:
-about ten times what an optimized build takes here, and never less than four
-times what it takes with another gate running beside it. A row that comes
-nearer its bound is not given a wider one: it is held to how its time grows
+past it, can make the longer line the quicker one, so two lengths do not
+show how it grows: `assert_linear` fails when the longer takes less than
+half the time of the shorter, and such a shape holds each of several
+lengths, up to and past the count, to a fixed limit instead
+(`assert_within`). Where it holds a line to a fixed limit, the limit leaves
+room for a machine several times slower and busy with another gate: about
+ten times what an optimized build takes here, and never less than four times
+what it takes with another gate running beside it. A row that comes nearer
+its bound is not given a wider one: it is held to how its time grows
 instead, or made quicker.
 
 `just advisories` is not part of `just verify`. It checks the RustSec database

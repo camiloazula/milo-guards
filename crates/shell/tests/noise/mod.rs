@@ -132,3 +132,28 @@ pub fn lossy(line: &str, random: &mut Lcg) -> String {
     }
     String::from_utf8_lossy(&bytes).into_owned()
 }
+
+/// The wide noise `robust.rs` judges and `timing.rs` times: 4,500 lines of
+/// up to 32 of [`WIDE_PIECES`], joined with or without spaces, a third of
+/// them cut or with stray bytes joined on ([`lossy`]).
+pub fn wide_lines() -> Vec<String> {
+    let mut random = Lcg(0x5eed);
+    (0..4_500)
+        .map(|number| {
+            let length = random.next() % 32;
+            let pieces: Vec<&str> = (0..length)
+                .map(|_| WIDE_PIECES[random.next() % WIDE_PIECES.len()])
+                .collect();
+            let line = pieces.join(if random.next().is_multiple_of(3) {
+                ""
+            } else {
+                " "
+            });
+            if number % 3 == 0 {
+                lossy(&line, &mut random)
+            } else {
+                line
+            }
+        })
+        .collect()
+}

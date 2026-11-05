@@ -9,138 +9,18 @@
 //! decode, and chains of names held to a bound.
 //!
 //! The lines and their answers are in `tests/cases/inline_names.cases`; here
-//! are the chains of names and the lines of many strings the tests make, and
-//! the time a chain takes.
+//! are the chains of names and the lines of many strings the tests make. The
+//! time a chain takes is in `tests/timing.rs`.
 
 mod common;
 
-use common::{check, posix, took};
+use common::lines::{chain, doubled_names};
+use common::{check, posix};
 use milo_guards_shell::{classify, Rule, Shell};
 
 #[test]
 fn every_case_holds() {
     common::cases::check("inline_names");
-}
-
-/// A script that sets `levels` names, each by `line(at)` from the one before,
-/// and then runs `last`.
-fn chain(interpreter: &str, levels: usize, line: impl Fn(usize) -> String, last: &str) -> String {
-    let (start, prelude, end) = if interpreter == "python3" {
-        (
-            "python3 - <<'PY'",
-            "import os\nfrom pathlib import Path\n",
-            "PY",
-        )
-    } else {
-        ("node - <<'JS'", "const path = require('path');\n", "JS")
-    };
-    let mut text = format!("{start}\n{prelude}");
-    for at in 0..levels {
-        text.push_str(&line(at));
-        text.push('\n');
-    }
-    text.push_str(last);
-    text.push('\n');
-    text.push_str(end);
-    text
-}
-
-/// Scripts whose names are each set to twice the one before, and the rule
-/// each must find. A name put back as its string, when the next name is set,
-/// doubled the string at every line: 30 lines took seconds and 36 ran out of
-/// memory. A string is cut at a length now, and the name that went over it
-/// is a path the guard does not read.
-fn doubled_names() -> Vec<(String, Rule)> {
-    let base = "xy";
-    let mut lines: Vec<(String, Rule)> = Vec::new();
-    let python: Vec<Box<dyn Fn(usize) -> String>> = vec![
-        Box::new(|at| match at {
-            0 => format!("a0 = '{base}'"),
-            _ => format!("a{at} = a{p} + a{p}", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => format!("a0 = '{base}'"),
-            _ => format!("a{at} = f'{{a{p}}}{{a{p}}}'", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => format!("a0 = '{base}'"),
-            _ => format!("a{at} = os.path.join(a{p}, a{p})", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => format!("a0 = '{base}'"),
-            _ => format!("a{at} = Path(a{p}) / a{p}", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => format!("a0 = '{base}'"),
-            _ => format!("a{at} = ''.join([a{p}, a{p}])", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => format!("a0 = '{base}'"),
-            _ => format!("a{at} = Path(a{p}).joinpath(a{p})", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => "a0 = '/home/me/.ssh/id_rsa'".to_string(),
-            _ => format!("a{at} = a{p} + a{p}", p = at - 1),
-        }),
-    ];
-    for line in python {
-        for levels in [30, 40, 100] {
-            let read = format!("print(open(a{}).read())", levels - 1);
-            lines.push((chain("python3", levels, &line, &read), Rule::Unknown));
-        }
-    }
-    let javascript: Vec<Box<dyn Fn(usize) -> String>> = vec![
-        Box::new(|at| match at {
-            0 => format!("const a0 = '{base}';"),
-            _ => format!("const a{at} = a{p} + a{p};", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => format!("const a0 = '{base}';"),
-            _ => format!("const a{at} = `${{a{p}}}${{a{p}}}`;", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => format!("const a0 = '{base}';"),
-            _ => format!("const a{at} = path.join(a{p}, a{p});", p = at - 1),
-        }),
-        Box::new(|at| match at {
-            0 => "const a0 = '/home/me/.ssh/id_rsa';".to_string(),
-            _ => format!("const a{at} = [a{p}, a{p}].join('');", p = at - 1),
-        }),
-    ];
-    for line in javascript {
-        for levels in [30, 40, 100] {
-            let read = format!("require('fs').readFileSync(a{});", levels - 1);
-            lines.push((chain("node", levels, &line, &read), Rule::Unknown));
-        }
-    }
-    // One long string used thousands of times in one expression: built a
-    // piece at a time, it is cut at the limit, not built.
-    let long = "y".repeat(3000);
-    let python_args = vec!["a"; 12_000].join(", ");
-    let python_template = "{a}".repeat(12_000);
-    let javascript_template = "${a}".repeat(10_000);
-    for body in [
-        format!("import os\na = '{long}'\nk = os.path.join({python_args})\nopen(k)"),
-        format!("a = '{long}'\nk = f'{python_template}'\nopen(k)"),
-        format!("a = '{long}'\nk = ''.join([{python_args}])\nopen(k)"),
-        format!("a = '{long}'\nk = Path({python_args})\nopen(k)"),
-    ] {
-        lines.push((format!("python3 - <<'PY'\n{body}\nPY"), Rule::Unknown));
-    }
-    for body in [
-        format!(
-            "const path = require('path');\nconst a = '{long}';\nconst k = path.join({python_args});\nrequire('fs').readFileSync(k);"
-        ),
-        format!(
-            "const a = '{long}';\nconst k = `{javascript_template}`;\nrequire('fs').readFileSync(k);"
-        ),
-        format!(
-            "const a = '{long}';\nconst k = [{python_args}].join('');\nrequire('fs').readFileSync(k);"
-        ),
-    ] {
-        lines.push((format!("node - <<'JS'\n{body}\nJS"), Rule::Unknown));
-    }
-    lines
 }
 
 #[test]
@@ -202,22 +82,6 @@ fn names_each_set_to_twice_the_one_before_are_not_read() {
             ),
         ],
     );
-}
-
-#[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn names_each_set_to_twice_the_one_before_are_read_in_bounded_time() {
-    for (line, _) in &doubled_names() {
-        let took = took(line, Shell::Posix, &posix());
-        assert!(
-            took < std::time::Duration::from_secs(2),
-            "{} bytes took {took:?}: {line}",
-            line.len()
-        );
-    }
 }
 
 /// The lines made of many strings; the names that hold one or two are in

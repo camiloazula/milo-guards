@@ -11,12 +11,14 @@
 //! wildcard. cmd's renames are not provider paths.
 //!
 //! The lines and their answers are in `tests/cases/powershell_items.cases`;
-//! here are a list of thousands of paths, and the timing of a long hidden
-//! listing and of long lists and pipelines of the item cmdlets.
+//! here are a list of thousands of paths, a long hidden listing, and long
+//! lists and pipelines of the item cmdlets. Their time is in
+//! `tests/timing.rs`.
 
 mod common;
 
-use common::{check, rules, took, windows};
+use common::lines::{long_hidden_listings, long_item_cmdlet_lines};
+use common::{check, rules, windows};
 use milo_guards_shell::{Rule, Shell};
 
 #[test]
@@ -38,92 +40,19 @@ fn clear_item_judges_the_last_path_of_a_long_list() {
 }
 
 #[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn a_long_hidden_listing_is_read_quickly() {
-    // Each place is also judged for the secret it may reach, so a line of
-    // this many is slow in the debug build for that alone; these are far
-    // over the `MAX_HIDDEN_MATCHES` pairs the hidden match reads.
-    let items = "a,".repeat(1250);
-    let words = "b ".repeat(1250);
-    let paths = "-Path x ".repeat(500);
-    let includes = "a,".repeat(500);
-    for line in [
-        format!("gci -fo -r -Include {items}a {words} | ren -NewName x"),
-        format!("gci -fo -r {paths} -Include {includes}a | ren -NewName x"),
-        format!("gci -fo -r -Filter a {paths} | ren -NewName x"),
-    ] {
-        // Each of the thousands of words is resolved against the protected
-        // names, which costs about a millisecond in a debug build; a
-        // quadratic read would take minutes.
-        let took = took(&line, Shell::PowerShell, &windows());
-        assert!(
-            took < std::time::Duration::from_secs(3),
-            "{} bytes took {took:?}",
-            line.len()
-        );
+fn a_long_hidden_listing_is_not_read_as_safe() {
+    // Far over the `MAX_HIDDEN_MATCHES` pairs the hidden match reads (the
+    // time is in `timing.rs`).
+    for line in long_hidden_listings() {
         let rules = rules(&line, Shell::PowerShell, &windows());
         assert!(!rules.is_empty(), "a long hidden listing is read as safe");
     }
 }
 
 #[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn long_lists_and_pipelines_of_the_item_cmdlets_are_read_quickly() {
-    // Each item of a list is found by where it sits, a stage is handed the
-    // output of the one it reads once for the line, and the patterns of an
-    // `-Include` are matched a bounded number of times: each grows the work
-    // by a step, not by a scan.
-    let lines = [
-        format!("Set-Content {}~\\.bashrc x", "src\\x,".repeat(2_000)),
-        format!(
-            "Set-Content -Path {}~\\.bashrc -Value x",
-            "src\\x, ".repeat(2_000)
-        ),
-        format!("Set-Content -Value {}y ~\\.bashrc", "x,".repeat(8_000)),
-        format!("Set-Content -Bogus {}~\\.bashrc", "x ".repeat(2_000)),
-        format!(
-            "Get-ChildItem ~ {}| Clear-Content",
-            "| Where-Object x ".repeat(3_000)
-        ),
-        format!(
-            "Get-ChildItem ~ {}| % {{ {}}}",
-            "| ? x ".repeat(2_000),
-            "Remove-Item $_; ".repeat(2_000)
-        ),
-        format!(
-            "Remove-Item * -Include {}.git -Recurse -Force",
-            "a,".repeat(8_000)
-        ),
-        format!(
-            "Remove-Item {}-Include .git -Recurse -Force",
-            "* ".repeat(8_000)
-        ),
-        format!(
-            "Remove-Item {}-Include {}.git -Recurse -Force",
-            (0..3_000)
-                .map(|at| format!("d{at}\\* "))
-                .collect::<Vec<_>>()
-                .concat(),
-            (0..3_000)
-                .map(|at| format!("p{at},"))
-                .collect::<Vec<_>>()
-                .concat()
-        ),
-    ];
-    for line in lines {
+fn long_lists_and_pipelines_of_the_item_cmdlets_are_not_read_as_safe() {
+    for line in long_item_cmdlet_lines() {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::PowerShell, &windows());
-        assert!(
-            took < std::time::Duration::from_secs(3),
-            "{} bytes took {took:?}",
-            line.len()
-        );
         let rules = rules(&line, Shell::PowerShell, &windows());
         assert!(!rules.is_empty(), "a long line is read as safe: {line:.80}");
     }

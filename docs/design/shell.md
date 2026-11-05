@@ -7353,15 +7353,10 @@ check what no line may do to it, for each of the three shells. `tests/robust.rs`
 holds seeded noise that never panics, a line too long or too nested being
 unreadable, a line whose nested scripts are read too often being unreadable,
 too many here-documents, a too-long cmd chain and too-deep nesting not being
-read while everyday lines with many `<<` or `&` are, and the tests that time
-a nasty line: for a shape that grows to fill the line, a line of 64 KB
-against one of 16 KB, which must take about four times as long and not
-sixteen; or, for a line whose time its length does not set (traps nested 26
-deep, redirects over many units, wrappers read only to a count), a fixed
-bound with at least four times room when the whole binary runs at once. Each of them runs `explain` and draws its
-tree too, which do more work than `classify`: a line past a limit is
-unreadable there as well, and `classify`, `explain` and the drawing of the tree
-are each held to the bound;
+read while everyday lines with many `<<` or `&` are, and what the guard
+answers for the nasty lines whose time `tests/timing.rs` takes. Each of them
+runs `explain` and draws its tree too, which do more work than `classify`: a
+line past a limit is unreadable there as well;
 `tests/timing.rs` and `tests/limits.rs` hold the rest, as each bullet says:
 
 - **Never panics, and `classify`, `effect` and `explain` agree.** (The wide run
@@ -7388,12 +7383,15 @@ are each held to the bound;
 - **A line too long or too nested comes back unreadable** (and `Unknown` for
   `effect`). (In `tests/robust.rs`; `tests/limits.rs` measures where the edges
   are.)
-- **The time.** (In `tests/timing.rs`, which runs its tests one at a time, and
-  in a binary of its own: cargo runs test binaries one after another, so no
-  heavy test shares the machine with a clock. The ones in `tests/robust.rs`
-  and beside the rules they time stay there.) Every test that reads the
-  clock runs in the optimized build of `just timing` only, and is ignored in
-  the instrumented build of `just coverage` and the debug build of `just
+- **The time.** (In `tests/timing.rs`, and only there: no other test file
+  reads the clock. It runs its tests one at a time, in a binary of its own,
+  and `just timing` runs that binary alone, so no heavy test shares the
+  machine with a clock; in CI it is a job of its own, `timing`, apart from the
+  deterministic `verify`. A test that checked both an answer and a time is two:
+  the answer beside the rules it checks, in every build, and the time here,
+  with the line made once in `tests/common/lines.rs`.) Every test that reads
+  the clock runs in the optimized build of `just timing` only, and is ignored
+  in the instrumented build of `just coverage` and the debug build of `just
   test`, which are several times slower. A fixed bound leaves room for a
   machine several times slower and busy with another gate: about ten times
   what an optimized build takes here. A shape that must be read in time that
@@ -7417,7 +7415,12 @@ are each held to the bound;
   held to 250 ms at each of seven lengths from 1 KB to the limit. At the
   length limit the slowest, `Set-Content @p` after a table it binds, takes
   most of a second in an optimized build on a busy machine, and most are far
-  quicker. Lines that made `find -exec` build
+  quicker. The lines `tests/robust.rs` judges are timed with `explain` and the
+  drawing of its tree too, each held to the bound: for a shape that grows to
+  fill the line, a line of 64 KB against one of 16 KB; for a line whose time
+  its length does not set (traps nested 26 deep, redirects over many units,
+  wrappers read only to a count), a fixed bound with at least four times
+  room. Lines that made `find -exec` build
   gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
   ones of several levels, are held to 2 s at the length limit, which an
   optimized build here takes a tenth of or less, as are `parallel` lines that

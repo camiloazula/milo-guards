@@ -1,17 +1,20 @@
 //! What the tables share: the directories commands run with, a check that
 //! names every row that came out wrong at once (and one that a row breaks one
 //! rule and not another), the makers of the paths a
-//! reads-only line lists, a clock and a linear-time check for the timed
-//! tests, (in [`cases`]) the runner of the case files in `tests/cases`, and
-//! (in [`inline`]) the builder of nested inline code.
+//! reads-only line lists, the checks `tests/timing.rs` holds the times it
+//! takes to (it alone reads the clock), (in [`cases`]) the runner of the case
+//! files in `tests/cases`, (in [`inline`]) the builder of nested inline code,
+//! and (in [`lines`]) the long lines both a test of an answer and a timed
+//! test build.
 
 #![allow(dead_code, unreachable_pub, unused_imports)]
 
 pub mod cases;
 pub mod inline;
+pub mod lines;
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use milo_guards_core::testing;
 pub use milo_guards_core::testing::{macos, posix, windows};
@@ -319,36 +322,15 @@ pub fn reason(line: &str, shell: Shell, paths: &Paths, rule: Rule) -> Option<Str
         .map(|finding| finding.reason.clone())
 }
 
-/// How long `classify` takes to judge `line`: the best of three runs, so a
-/// busy machine slows it less.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only a test times it, to catch a quadratic read"
-)]
-pub fn took(line: &str, shell: Shell, paths: &Paths) -> Duration {
-    (0..3)
-        .map(|_| {
-            let started = Instant::now();
-            let _ = judge(line, shell, paths);
-            started.elapsed()
-        })
-        .min()
-        .unwrap_or_default()
-}
-
-/// A line of a quarter of the size takes about a quarter of the time; one
-/// that is read in quadratic time takes sixteen times as long. `line` makes
-/// the line of a size; the two are compared with each other, so a slow or
-/// busy machine, which slows both, does not fail it. The longer line taking
-/// less than half the time of the shorter fails too: the guard stops reading
-/// at a count between the two sizes, and two sizes cannot show how it grows
-/// below that, so the shape is held to [`assert_within`] instead.
-pub fn assert_linear(what: &str, shell: Shell, paths: &Paths, line: impl Fn(usize) -> String) {
-    assert_linear_by(what, |line| took(line, shell, paths), line);
-}
-
-/// [`assert_linear`] with the time of a line taken by `took`, for a test
-/// that times more than `classify`.
+/// A line of a quarter of the size takes about a quarter of the time, with
+/// the time of a line taken by `took`; one that is read in quadratic time
+/// takes sixteen times as long. `line` makes the line of a size; the two are
+/// compared with each other, so a slow or busy machine, which slows both,
+/// does not fail it. The longer line taking less than half the time of the
+/// shorter fails too: the guard stops reading at a count between the two
+/// sizes, and two sizes cannot show how it grows below that, so the shape is
+/// held to [`assert_within`] instead. `assert_linear` in `tests/timing.rs`
+/// gives it the time `classify` takes.
 pub fn assert_linear_by(
     what: &str,
     took: impl Fn(&str) -> Duration,
@@ -402,7 +384,7 @@ pub fn assert_within(
     }
 }
 
-/// What makes a line of about a size, for [`assert_linear`].
+/// What makes a line of about a size, for [`assert_linear_by`].
 pub type Maker<'a> = &'a dyn Fn(usize) -> String;
 
 /// `part` repeated to fill `size` bytes, less `slack` for what is around it.
@@ -411,7 +393,7 @@ pub fn filled(part: &str, size: usize, slack: usize) -> String {
 }
 
 /// `count`, the count a line of 64 KB has, scaled to a line of `size`, for
-/// [`assert_linear`]: a row written at the length limit, and the same row a
+/// [`assert_linear_by`]: a row written at the length limit, and the same row a
 /// quarter as long.
 pub fn at(count: usize, size: usize) -> usize {
     count * size / (64 * 1024)

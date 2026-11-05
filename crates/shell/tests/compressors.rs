@@ -4,11 +4,12 @@
 //! `zstd`, `lz4`, `lzop` and `brotli` keep it unless told not to. The same
 //! lines inside the workspace stay safe.
 //!
-//! The lines and their answers are in `tests/cases/compressors.cases`.
+//! The lines and their answers are in `tests/cases/compressors.cases`; the
+//! time of many files and options is in `tests/timing.rs`.
 
 mod common;
 
-use common::{assert_linear, filled, posix};
+use common::posix;
 use milo_guards_shell::{classify, Shell};
 
 #[test]
@@ -29,23 +30,4 @@ fn a_folder_only_known_when_it_runs_stays_in_the_target() {
         assessment.findings()[0].target.as_deref(),
         Some("\"$D\"/a.zst")
     );
-}
-
-#[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn many_files_and_options_are_read_in_linear_time() {
-    for (what, start, part) in [
-        ("gzip ~/a ~/b …", "gzip", " ~/a"),
-        ("gzip -d ~/x.gz ~/y.gz …", "gzip -d", " ~/x.gz ~/y.tgz"),
-        ("zstd -S -o …", "zstd --rm", " -S x -o ~/o -D d ~/x"),
-        ("lz4 \"-$L\" …", "lz4", " \"-$L\" ~/a"),
-        ("xz --files=l …", "xz", " --files=l -k -T 4"),
-    ] {
-        assert_linear(what, Shell::Posix, &posix(), |size| {
-            format!("{start}{}", filled(part, size, start.len()))
-        });
-    }
 }

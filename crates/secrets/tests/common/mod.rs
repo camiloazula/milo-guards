@@ -2,11 +2,12 @@
 //! and are obviously fake, built here so no credential-shaped literal sits in
 //! the repository, one sample per row of the guard's table, and (in
 //! [`cases`]) the runner of the case files in `tests/cases`, which hold the
-//! texts that need no such value.
+//! texts that need no such value, and (in [`hostile`]) the hostile texts.
 
 #![allow(dead_code, unreachable_pub)]
 
 pub mod cases;
+pub mod hostile;
 
 use milo_guards_secrets::{find_spans, Rule};
 

@@ -5,13 +5,14 @@
 //! long code is read in linear time.
 //!
 //! The lines and their answers are in `tests/cases/inline.cases`; here are
-//! the path a finding names, the code nested past the limit, and the timed
-//! test.
+//! the path a finding names and the code nested past the limit. The time
+//! long code takes is in `tests/timing.rs`.
 
 mod common;
 
 use common::inline::nest;
-use common::{posix, rules, took};
+use common::lines::long_code;
+use common::{posix, rules};
 use milo_guards_shell::{classify, Rule, Shell};
 
 #[test]
@@ -82,31 +83,6 @@ fn code_that_starts_code_is_read_to_a_limit() {
     assert!(!found.is_empty(), "too deep to read must be risky");
 }
 
-/// Long inline code, and the chain of members in it, if any. Reading inline
-/// code asked the tree for each name's parent, which walks it from the root,
-/// and built a dotted name again from each member of it: a chain of 30,000
-/// members (60 KB, under the limit) took a minute.
-fn long_code() -> (Vec<String>, String) {
-    let chain = ".b".repeat(30_000);
-    let calls = format!("{}{}", "f(".repeat(10_000), ")".repeat(10_000));
-    // Chains just under the depth limit, many of them: every one is read.
-    let chains = format!("x = a{}\n", ".b".repeat(390)).repeat(80);
-    // Calls nested just under the limit on every line, many of them.
-    let nested = format!("f({}\n", "f(".repeat(380) + &")".repeat(381)).repeat(50);
-    let mut rows = Vec::new();
-    for (interpreter, end) in [("python3", "PY"), ("node", "JS")] {
-        for body in [
-            format!("x = a{chain}"),
-            calls.clone(),
-            chains.clone(),
-            nested.clone(),
-        ] {
-            rows.push(format!("{interpreter} - <<'{end}'\n{body}\n{end}"));
-        }
-    }
-    (rows, chain)
-}
-
 #[test]
 fn long_inline_code_is_read_unless_it_nests_too_deep() {
     let (rows, chain) = long_code();
@@ -126,21 +102,5 @@ fn long_inline_code_is_read_unless_it_nests_too_deep() {
         if line.contains(&"f(".repeat(500)) {
             assert!(!assessment.is_safe(), "{:?}", &line[..20]);
         }
-    }
-}
-
-#[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn long_inline_code_is_read_in_linear_time() {
-    for line in long_code().0 {
-        let took = took(&line, Shell::Posix, &posix());
-        assert!(
-            took < std::time::Duration::from_secs(2),
-            "{:?} took {took:?}",
-            &line[..20]
-        );
     }
 }

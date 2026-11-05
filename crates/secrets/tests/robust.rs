@@ -1,18 +1,12 @@
 //! Whatever the text, reading it ends, never panics, and answers with spans
-//! that are on character boundaries, in order and apart; and a hostile text
-//! of a megabyte is read in time linear in its length, because the table is
-//! built of regular expressions that never backtrack and the hand loops do
-//! not rescan.
-//!
-//! The time is measured here: the crate keeps no clock.
+//! that are on character boundaries, in order and apart, a hostile text of a
+//! megabyte among them. That such a text is read in time linear in its
+//! length, because the table is built of regular expressions that never
+//! backtrack and the hand loops do not rescan, is in `timing.rs`.
 
-#![allow(
-    clippy::disallowed_methods,
-    reason = "the guard keeps no clock; only this test times it, to catch a quadratic read"
-)]
+mod common;
 
-use std::time::{Duration, Instant};
-
+use common::hostile::{hostile, HOSTILE};
 use milo_guards_secrets::{find, find_high_entropy, find_spans, Span};
 
 /// Pieces of what a table of secrets looks for, joined at random into text
@@ -199,177 +193,10 @@ fn a_lone_character_never_panics_and_is_answered_whole() {
     }
 }
 
-// ---- time ----
+// ---- hostile texts ----
 
-/// A hostile text of about `size` bytes, by name.
-fn hostile(name: &str, size: usize) -> String {
-    let repeat = |unit: &str| unit.repeat(size / unit.len() + 1);
-    match name {
-        "one character" => repeat("A"),
-        "digits" => repeat("1"),
-        "spaces" => repeat(" "),
-        "quotes" => repeat("\"'"),
-        "nested quotes" => format!("{}{}", repeat("{\"a\":\""), repeat("\"}")),
-        "escaped quotes" => repeat("\\\""),
-        "at signs" => repeat("@"),
-        "a at" => repeat("a@"),
-        "emails" => repeat("a@b.c"),
-        "colons" => repeat(":"),
-        "one name" => format!("token={}", repeat(" ")),
-        "names" => repeat("token="),
-        "names in names" => repeat("a="),
-        "open quotes" => repeat("password=\""),
-        "key prefixes" => repeat("AKIA"),
-        "token prefixes" => repeat("ghp_"),
-        "partial prefixes" => repeat("sk-ant-api03-AKIA-ghp_-xoxb-eyJ-SG.-npm_-hf_ "),
-        "jwt parts" => repeat("eyJaaaaaaaaaa."),
-        "key headers" => repeat("-----BEGIN PRIVATE KEY-----"),
-        "one key" => format!("-----BEGIN PRIVATE KEY-----{}", repeat("A")),
-        "base64" => repeat("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5+/"),
-        "dots" => repeat("1.2.3.4."),
-        "addresses" => repeat("8.8.8.8 "),
-        "cards" => repeat("4111111111111111 "),
-        "card groups" => repeat("4111 "),
-        "phones" => repeat("+1234567890 "),
-        "escapes" => repeat("%41"),
-        "unicode escapes" => repeat("\\u0041"),
-        "open escapes" => repeat("\\u{"),
-        "entities" => repeat("&#6"),
-        "invisible" => repeat("\u{200b}"),
-        "scheme parts" => repeat("a://b:c@"),
-        "bearers" => repeat("Bearer "),
-        "basics" => repeat("Basic AAAAAAAA "),
-        "wide characters" => repeat("é日本😀"),
-        "spans of escaped names" => repeat("password=\"%22"),
-        "spans of escaped keys" => repeat("%41KIAQ7FAKE2TESTK3YZW "),
-        "spans of escaped values" => repeat("%41 password=F4kePass9 "),
-        "escaped tokens" => repeat("Q7wE9%41rT2yU4%42iO6pA8sD0%43kL1zX3 "),
-        "rejected values" => repeat("token=["),
-        "rejected references" => repeat("password=${"),
-        "documented examples" => repeat("password=EXAMPLE"),
-        "stand-ins" => repeat("secret=CHANGE_ME_"),
-        "escaped separators" => repeat("password=%26"),
-        "unclosed quotes" => repeat("password=\"a "),
-        "armour lines" => repeat("-----BEGIN PRIVATE KEY-----A:"),
-        "armour headers" => repeat("-----BEGIN PGP PRIVATE KEY BLOCK-----\nA: b\n"),
-        "backslashes" => format!("-----BEGIN PRIVATE KEY-----{}", repeat("\\")),
-        "line ends" => format!("-----BEGIN PRIVATE KEY-----{}", repeat("\\n")),
-        "putty files" => repeat("Private-Lines: 99\n"),
-        "netrc words" => repeat("machine password "),
-        "signatures" => repeat("?sig="),
-        "telegram parts" => repeat("1234567890:AA"),
-        "key and secret" => repeat("AKIAFAKE2KEY3ID4TEST,"),
-        other => unreachable!("{other}"),
-    }
-}
-
-const HOSTILE: [&str; 54] = [
-    "one character",
-    "digits",
-    "spaces",
-    "quotes",
-    "nested quotes",
-    "escaped quotes",
-    "at signs",
-    "a at",
-    "emails",
-    "colons",
-    "one name",
-    "names",
-    "names in names",
-    "open quotes",
-    "key prefixes",
-    "token prefixes",
-    "partial prefixes",
-    "jwt parts",
-    "key headers",
-    "one key",
-    "base64",
-    "dots",
-    "addresses",
-    "cards",
-    "card groups",
-    "phones",
-    "escapes",
-    "unicode escapes",
-    "open escapes",
-    "entities",
-    "invisible",
-    "scheme parts",
-    "bearers",
-    "basics",
-    "wide characters",
-    "spans of escaped names",
-    "spans of escaped keys",
-    "spans of escaped values",
-    "escaped tokens",
-    "rejected values",
-    "rejected references",
-    "documented examples",
-    "stand-ins",
-    "escaped separators",
-    "unclosed quotes",
-    "armour lines",
-    "armour headers",
-    "backslashes",
-    "line ends",
-    "putty files",
-    "netrc words",
-    "signatures",
-    "telegram parts",
-    "key and secret",
-];
-
-/// The best of `runs` reads of `text`: noise only ever adds.
-fn timed(text: &str, runs: usize) -> Duration {
-    (0..runs)
-        .map(|_| {
-            let started = Instant::now();
-            let _ = find_spans(text);
-            let _ = find_high_entropy(text, 4.5);
-            started.elapsed()
-        })
-        .min()
-        .unwrap_or_default()
-}
-
-#[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn a_megabyte_of_one_character_and_of_nested_quotes_is_read_in_a_bound() {
-    for name in [
-        "one character",
-        "nested quotes",
-        "base64",
-        "partial prefixes",
-    ] {
-        let text = hostile(name, 1 << 20);
-        let took = timed(&text, 1);
-        assert!(took < LIMIT, "{name} took {took:?}");
-        check_answer_spans_only(&text);
-    }
-}
-
-/// Far above what a read of this size takes (under a second in a build with
-/// no optimisation), far below what a quadratic one would take.
-const LIMIT: Duration = Duration::from_secs(10);
-
-#[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn every_hostile_text_is_read_in_a_bound() {
-    for name in HOSTILE {
-        let text = hostile(name, 128 << 10);
-        let took = timed(&text, 1);
-        assert!(took < LIMIT, "{name} took {took:?}");
-        check_answer_spans_only(&text);
-    }
-}
-
+/// Spans on boundaries, in order and apart: what [`check_answer`] holds,
+/// without the findings, for a text too long to build them for each.
 fn check_answer_spans_only(text: &str) {
     let mut at = 0;
     for span in find_spans(text) {
@@ -380,72 +207,21 @@ fn check_answer_spans_only(text: &str) {
 }
 
 #[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn reading_takes_time_in_proportion_to_the_text() {
-    // Four times the text takes about four times as long to read; a read
-    // that rescans takes sixteen. The bound is ten, with a floor under the
-    // short time so a fast machine's noise is not a ratio.
-    let floor = Duration::from_millis(25);
-    for name in HOSTILE {
-        let small = timed(&hostile(name, 32 << 10), 2);
-        let large = timed(&hostile(name, 128 << 10), 2);
-        assert!(
-            large < small.max(floor) * 10,
-            "{name}: {small:?} for 32 KiB, {large:?} for 128 KiB"
-        );
+fn a_megabyte_of_one_character_and_of_nested_quotes_is_answered_in_order() {
+    // The time it takes is in `timing.rs`.
+    for name in [
+        "one character",
+        "nested quotes",
+        "base64",
+        "partial prefixes",
+    ] {
+        check_answer_spans_only(&hostile(name, 1 << 20));
     }
 }
 
 #[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn a_long_line_of_hits_costs_the_same_per_hit_as_a_short_one() {
-    // Every hit on one line asks where the line begins, and where an escape
-    // ends: a read that looks back over the line for each (it was once
-    // `rfind('\n')`) takes four times the text sixteen times as long.
-    // The sizes are large enough that the difference is not noise.
-    for name in [
-        "spans of escaped names",
-        "spans of escaped values",
-        "spans of escaped keys",
-    ] {
-        let small = hostile(name, 256 << 10);
-        let large = hostile(name, 1 << 20);
-        for (read, label) in [
-            (
-                (|text: &str| {
-                    let _ = find(text);
-                }) as fn(&str),
-                "find",
-            ),
-            (
-                |text: &str| {
-                    let _ = find_spans(text);
-                },
-                "find_spans",
-            ),
-            (
-                |text: &str| {
-                    let _ = find_high_entropy(text, 4.5);
-                },
-                "find_high_entropy",
-            ),
-        ] {
-            let time = |text: &str| {
-                let started = Instant::now();
-                read(text);
-                started.elapsed()
-            };
-            let (a, b) = (time(&small), time(&large));
-            assert!(
-                b < a.max(Duration::from_millis(25)) * 10,
-                "{name} by {label}: {a:?} for 256 KiB, {b:?} for 1 MiB"
-            );
-        }
+fn every_hostile_text_is_answered_in_order() {
+    for name in HOSTILE {
+        check_answer_spans_only(&hostile(name, 128 << 10));
     }
 }

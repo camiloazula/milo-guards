@@ -12,22 +12,17 @@
 //! may run the `x.sh` it wrote.
 //!
 //! The lines and their answers are in `tests/cases/redirect_on_group.cases`;
-//! here are the paths a group lists, the lines made of many definitions and
-//! calls, and the time they take.
+//! here are the paths a group lists and the lines made of many definitions
+//! and calls. The time those take is in `tests/timing.rs`.
 
 mod common;
 
-use common::{exact, lists, posix, took};
+use common::lines::{
+    many_definitions_that_may_not_run, many_functions_that_move_the_line,
+    one_function_defined_and_called_many_times, repeated,
+};
+use common::{exact, lists, posix};
 use milo_guards_shell::{classify, Rule, Shell};
-
-/// The text `piece` makes for each number below `count`, one after the other.
-fn repeated(count: usize, piece: impl Fn(usize) -> String) -> String {
-    let mut text = String::new();
-    for index in 0..count {
-        text.push_str(&piece(index));
-    }
-    text
-}
 
 /// How many `unknown` findings of `line` say it defines more functions that
 /// move the line than the guard keeps.
@@ -143,61 +138,22 @@ fn a_redirect_on_calls_to_many_functions_from_other_folders_is_unknown() {
 }
 
 #[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn many_functions_that_move_the_line_and_many_calls_are_read_in_linear_time() {
-    // A group that calls many functions with several redirects on it, and
-    // one redirected call for each of as many definitions: neither reads
-    // every function, or every earlier unit, again for each call. (Each
-    // definition moves to an absolute folder: a relative one makes the line
-    // a little deeper each time, and a path that deep costs time of its own.)
-    let count = 1_600;
-    let definitions = repeated(count, |i| format!("f{i}() {{ cd /a; }}; "));
-    let calls = repeated(count, |i| format!("f{i}; "));
-    let group = format!("{definitions}{{ {calls}}} < x > y 2> z < w");
-    let each = repeated(count, |i| format!("f{i}() {{ cd /a; }}; f{i} < x; "));
-    for line in [group, each] {
+fn many_functions_that_move_the_line_and_many_calls_are_not_read_as_safe() {
+    // Neither line reads every function, or every earlier unit, again for
+    // each call (the time is in `timing.rs`).
+    for line in many_functions_that_move_the_line() {
         assert!(line.len() < 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::Posix, &posix());
-        assert!(
-            took < std::time::Duration::from_secs(4),
-            "{} bytes took {took:?}",
-            line.len()
-        );
         let rules = common::rules(&line, Shell::Posix, &posix());
         assert!(!rules.is_empty(), "a long line of calls is read as safe");
     }
 }
 
 #[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn one_function_defined_many_times_and_called_many_times_is_read_in_linear_time() {
-    // The same name defined again and again, then called under a redirect:
-    // a later definition replaces the earlier, so a call does not read every
+fn one_function_defined_many_times_and_called_many_times_has_a_finding_for_each_reason() {
+    // A later definition replaces the earlier, so a call does not read every
     // definition of the name, and the name is not reported once for each.
-    let same = repeated(2_700, |_| "f(){ cd /;};".to_string());
-    let cases = repeated(1_350, |_| "f(){ cd /;};F(){ cd /;};".to_string());
-    let group = repeated(15_000, |_| "f;".to_string());
-    let calls = repeated(7_000, |_| "f<x;".to_string());
-    let lines = [
-        format!("{same}{{ {group}}} > y"),
-        format!("{cases}{{ {group}}} > y"),
-        format!("{same}{calls}"),
-        format!("{cases}{calls}"),
-    ];
-    for line in lines {
+    for line in one_function_defined_and_called_many_times() {
         assert!(line.len() < 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::Posix, &posix());
-        assert!(
-            took < std::time::Duration::from_secs(4),
-            "{} bytes took {took:?}",
-            line.len()
-        );
         let assessment = classify(&line, Shell::Posix, &posix());
         assert!(
             !assessment.findings().is_empty(),
@@ -213,30 +169,11 @@ fn one_function_defined_many_times_and_called_many_times_is_read_in_linear_time(
 }
 
 #[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn many_definitions_that_may_not_run_are_unknown_once_and_read_in_linear_time() {
+fn many_definitions_that_may_not_run_are_unknown_once() {
     // Each of them is kept beside the others, so what is kept is counted:
-    // past the most a line may define, it is unknown, once, and a call does
-    // not look through every one.
-    let redirected = repeated(2_000, |_| "true || f(){ :;}>x;".to_string());
-    let moving = repeated(2_000, |_| "true || f(){ cd /;};".to_string());
-    let calls = repeated(5_000, |_| "f;".to_string());
-    let lines = [
-        format!("{redirected}{calls}"),
-        format!("{moving}{{ {calls}}} > y"),
-        format!("{redirected}{calls}f > z"),
-    ];
-    for line in lines {
+    // past the most a line may define, it is unknown, once.
+    for line in many_definitions_that_may_not_run() {
         assert!(line.len() < 64 * 1024, "{}", line.len());
-        let took = took(&line, Shell::Posix, &posix());
-        assert!(
-            took < std::time::Duration::from_secs(4),
-            "{} bytes took {took:?}",
-            line.len()
-        );
         let assessment = classify(&line, Shell::Posix, &posix());
         assert!(
             !assessment.findings().is_empty(),

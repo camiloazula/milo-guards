@@ -10,28 +10,19 @@
 //!
 //! The lines and their answers are in
 //! `tests/cases/stop_processes_windows.cases`; here are the listings nested
-//! deep, every form of a `-match` pattern, made from a list of patterns, and
-//! the timed test.
+//! deep and every form of a `-match` pattern, made from a list of patterns.
+//! The time long patterns, pipelines and listings take is in
+//! `tests/timing.rs`.
 
 mod common;
 
-use common::{assert_linear, at, check, took, windows};
+use common::lines::listing_chain;
+use common::{check, windows};
 use milo_guards_shell::{classify, Rule, Shell};
-use std::time::Duration;
 
 #[test]
 fn every_case_holds() {
     common::cases::check("stop_processes_windows");
-}
-
-/// `ps || Stop-Process -Id (Get-Process | Stop-Process -Id ×n x )×n`: a
-/// listing in the arguments of a `Stop-Process`, `n` deep.
-fn listing_chain(n: usize) -> String {
-    format!(
-        "ps || Stop-Process -Id {}x{}",
-        "(Get-Process | Stop-Process -Id ".repeat(n),
-        ")".repeat(n)
-    )
 }
 
 /// A listing nested deep is still found, and one nested deeper than the
@@ -129,101 +120,4 @@ fn every_form_of_a_dotnet_match_pattern_is_judged_alike() {
         ],
         Rule::StopUnknown,
     );
-}
-
-#[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn the_process_rules_read_long_patterns_and_pipelines_in_linear_time() {
-    // Each line, the shell, the head, the part repeated, the tail and the
-    // count a line of 64 KB holds (`at`): at 16 KB a quarter of them, which
-    // must take about a quarter of the time, not a sixteenth. In a long
-    // pipeline most of the time is the parser's, not the rules'.
-    let windows = windows();
-    for (shell, head, part, tail, count) in [
-        (
-            Shell::PowerShell,
-            "Stop-Process -Name '",
-            "*",
-            "zz'",
-            60_000,
-        ),
-        (Shell::Cmd, "taskkill /IM ", "*?", "q", 30_000),
-        (Shell::PowerShell, "Stop-Process -Name '", "[", "'", 60_000),
-        (
-            Shell::PowerShell,
-            "Stop-Process -Name '",
-            "[a]",
-            "'",
-            20_000,
-        ),
-        (Shell::PowerShell, "gps", "|kill", "", 12_000),
-        (
-            Shell::PowerShell,
-            "Get-Process",
-            " | Stop-Process",
-            "",
-            4_000,
-        ),
-    ] {
-        let line = |size| format!("{head}{}{tail}", part.repeat(at(count, size)));
-        assert!(line(64 * 1024).len() <= 64 * 1024, "{head}{part}");
-        assert_linear(&format!("{head}{part}…{tail}"), shell, &windows, line);
-    }
-}
-
-#[test]
-#[cfg_attr(
-    any(coverage, debug_assertions),
-    ignore = "timing: `just timing` runs it in an optimized build"
-)]
-fn the_process_rules_read_few_wildcards_and_nested_listings_quickly() {
-    // A few wildcards, as many as made a matcher that backtracks take
-    // seconds, and listings written inside the arguments of a
-    // `Stop-Process`, nested: each is read once, and nothing below another
-    // command is read again. Their time is set by a count or a depth, not by
-    // the length, so each is held to a fixed bound, which an optimized build
-    // here takes a fiftieth of or less. Most of the time of a deep listing is
-    // the parser's, so its bound is looser.
-    let windows = windows();
-    let slow = Duration::from_millis(500);
-    let wildcards = [
-        (
-            Shell::PowerShell,
-            format!("Stop-Process -Name '{}zz'", "*".repeat(26)),
-        ),
-        (Shell::Cmd, format!("taskkill /IM {}q", "*".repeat(30))),
-    ];
-    let listings = [
-        (Shell::PowerShell, listing_chain(50)),
-        (Shell::PowerShell, listing_chain(300)),
-        (Shell::PowerShell, listing_chain(1_600)),
-        (
-            Shell::PowerShell,
-            format!(
-                "Stop-Process -InputObject {}x{}",
-                "(Get-Process ".repeat(2_000),
-                ")".repeat(2_000)
-            ),
-        ),
-        (
-            Shell::PowerShell,
-            format!(
-                "Stop-Process -InputObject {}x{}",
-                "(Get-Process | ".repeat(1_600),
-                ")".repeat(1_600)
-            ),
-        ),
-    ];
-    let limits = wildcards
-        .iter()
-        .map(|row| (row, slow))
-        .chain(listings.iter().map(|row| (row, slow * 8)));
-    for ((shell, line), limit) in limits {
-        assert!(line.len() <= 64 * 1024, "{}", line.len());
-        let took = took(line, *shell, &windows);
-        assert!(took < limit, "{shell:?} {} bytes took {took:?}", line.len());
-    }
 }

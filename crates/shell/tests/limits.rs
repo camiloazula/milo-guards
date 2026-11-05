@@ -1,12 +1,12 @@
 //! The limits the shell guard keeps, found by searching for the edge of each
 //! and held there. Each search reads a great many long lines, so these live
 //! in a binary of their own: cargo runs test binaries one after another, so
-//! nothing here loads the machine while the timed tests of `robust.rs` and
-//! `timing.rs` run.
+//! nothing here loads the machine while another binary's tests run.
 
 mod common;
 mod noise;
 
+use common::lines::finds_in_finds_of_heavy_arguments;
 use common::{posix, windows};
 use milo_guards_shell::{classify, effect, Effect, Rule, Shell};
 use noise::{paths_for, Lcg, SHELLS};
@@ -815,6 +815,17 @@ fn finds_in_finds_cost_what_the_line_is_long_not_what_it_multiplies_to() {
             effect(&line, Shell::Posix, &posix()),
             Effect::ReadsOnly(_)
         ));
+    }
+}
+
+#[test]
+fn finds_in_finds_whose_arguments_weigh_a_lot_are_unreadable() {
+    // The work of `find -exec` is the bytes it builds, so a few arguments of
+    // many `{}` each, or one big one, run the budget out as surely as many
+    // arguments do. Their time is in `tests/timing.rs`.
+    for (what, line) in &finds_in_finds_of_heavy_arguments() {
+        assert!(line.len() <= 64 * 1024, "{what}: {}", line.len());
+        assert!(unreadable(line, Shell::Posix), "{what}");
     }
 }
 
