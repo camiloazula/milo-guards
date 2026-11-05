@@ -1,0 +1,79 @@
+# Which text cmd's grammar reads as a comment cmd itself skips: the `rem`
+# command, or `::` at the start of a statement. Any other comment the
+# grammar reads is text cmd runs, read as the command it is or judged
+# unreadable. The format is in CONTRIBUTING.md.
+
+# A line with a ` 'VBS` in it: the grammar reads it all as a comment, there
+# for files that are also VBScript; to cmd, `'VBS` is one more argument, and
+# the command runs. It gets what the line without it gets.
+cmd finds=delete reason="deletes the root of the disk" | rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes the root of the disk" | rd /s /q C:\\
+cmd finds=delete reason="deletes your home directory" | del /s /q C:\\Users\\me\\* 'VBS
+cmd finds=delete reason="deletes your home directory" | del /s /q C:\\Users\\me\\*
+cmd finds=wipe_disk | format C: 'VBS
+cmd finds=wipe_disk | format C:
+cmd safe | echo hi 'VBS
+cmd safe | echo hi
+cmd finds=delete reason="deletes your home directory" | rd /s /q C:\\Users\\me 'vbs
+cmd finds=delete reason="deletes your home directory" | rd /s /q C:\\Users\\me x'VBS
+
+# Other spellings: the marker after a tab, twice, quoted words before it,
+# `@` before the command, after `&`, `&&` and `||`, in `( … )`, and in the
+# bodies of `if`, `else` and `for`.
+cmd finds=delete reason="deletes the root of the disk" | rd /s /q C:\\\t'VBS
+cmd finds=delete reason="deletes the root of the disk" | rd\t/s\t/q\tC:\\\t'VBS\tx
+cmd finds=delete reason="deletes the root of the disk" | rd /s /q C:\\ 'VBS 'VBS
+cmd finds=delete reason="deletes the root of the disk" | rd /s /q C:\\ 'Vbs
+cmd finds=delete reason="deletes the root of the disk" | rd /s /q C:\\ 'VBSx
+cmd finds=delete reason="deletes your home directory" | rd /s /q "C:\\Users\\me" 'VBS
+cmd finds=delete reason="deletes the root of the disk" | @rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes the root of the disk" | echo a & rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes the root of the disk" | echo a && rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes the root of the disk" | echo a || rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes your home directory" | rd /s /q C:\\Users\\me & echo 'VBS
+cmd finds=delete reason="deletes the root of the disk" | (rd /s /q C:\\ 'VBS)
+cmd finds=delete reason="deletes the root of the disk" | (echo a & rd /s /q C:\\ 'VBS)
+cmd finds=delete reason="deletes the root of the disk" | if exist x rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes the root of the disk" | if exist x (rd /s /q C:\\ 'VBS)
+cmd finds=delete reason="deletes the root of the disk" | if exist x (echo) else rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes the root of the disk" | for %%i in (a) do rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes the root of the disk" | goto x & rd /s /q C:\\ 'VBS
+cmd finds=delete reason="deletes your home directory" | cd %USERPROFILE% & rd /s /q . 'VBS
+cmd finds=delete | set T=%USERPROFILE% 'VBS & rd /s /q %T%
+# A marker in quotes keeps its caret: what the line runs cannot be read,
+# unless the grammar reads no comment for it.
+cmd finds=delete reason="deletes the root of the disk" | rd /s /q C:\\ 'VBS "x'VBS"
+cmd finds=unreadable | echo "a 'VBS" & rd /s /q C:\\
+# A program named `'VBS`, which the grammar does not read as a command.
+cmd finds=unreadable | 'VBS rd /s /q C:\\
+
+# The `rem` command and `::` at the start of a statement skip the rest of
+# the line, `&` and `|` and all, marker or not.
+cmd safe | :: rd /s /q C:\\ & x
+cmd safe | rem rd /s /q C:\\ & x
+cmd safe | REM rd /s /q C:\\ | x
+cmd safe | @rem rd /s /q C:\\ & x
+cmd safe | rem\trd /s /q C:\\ & x
+cmd safe | rem
+cmd safe | rem rd /s /q C:\\ 'VBS
+cmd safe | @REM rd /s /q C:\\ 'VBS & x
+cmd safe | :: rd /s /q C:\\ 'VBS & x
+cmd safe | echo a & rem rd /s /q C:\\ & x
+cmd safe | echo a & :: rd /s /q C:\\ & x
+cmd safe | if exist x rem rd /s /q C:\\ & x
+cmd safe | for %%i in (a) do rem rd /s /q C:\\ & x
+cmd safe | (\n:: a\nrem b & x\n)
+cmd safe | goto x :: y
+
+# The grammar reads more as a comment, which cmd runs: `%#…#%` is a
+# variable, `<#` a redirect, a `:` that `::` does not start a label the
+# guard does not take on trust, and a `::` after a label in a `( … )` block
+# a command, as cmd runs the line after a label there. After `goto`'s label
+# the words are ignored, but a `&` in them still ends the statement.
+cmd finds=unreadable | %#a#% rd /s /q C:\\ #%
+cmd finds=unreadable | <# rd /s /q C:\\
+cmd finds=unreadable | : rd /s /q C:\\
+cmd finds=unreadable | (\n:: a\n:: b & rd /s /q C:\\\n)
+cmd finds=unreadable | (\n:a\n:: b & rd /s /q C:\\\n)
+cmd finds=unreadable | goto x rem & rd /s /q C:\\
+cmd finds=unreadable | goto x :: & rd /s /q C:\\

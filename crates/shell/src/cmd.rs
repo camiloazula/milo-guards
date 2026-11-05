@@ -112,7 +112,7 @@ impl Walker<'_> {
                 self.assignment(node);
                 self.children(node, stage, level);
             }
-            "comment" => self.comment(node),
+            "comment" => self.comment(node, level),
             // `for %%i in (…) do …`: what it does runs once for each item.
             "for_stmt" => self.for_node(node, stage, level),
             // What a condition guards may not run.
@@ -345,18 +345,26 @@ impl Walker<'_> {
             let command = self.source.get(from..node.end_byte()).unwrap_or_default();
             format!("{command}\n")
         };
+        self.read_again(node, &text, stage, level);
+        true
+    }
+
+    /// Split `text`, the text of `node` as cmd reads it, again on its own,
+    /// as the rest of the statement `node` ends. The text split again
+    /// counts against the line's budget of nested text.
+    fn read_again(&mut self, node: Node<'_>, text: &str, stage: Option<Stage>, level: usize) {
         if !unit::read_again(
             self.split,
-            &text,
+            text,
             "reads too many of its commands again to judge",
         ) {
-            return true;
+            return;
         }
         let language = tree_sitter_batch::LANGUAGE.into();
-        if let Some(tree) = unit::parse(self.split, &text, &language, unit::Recovery::Cheap) {
-            assigned(self.split, tree.root_node(), &text);
+        if let Some(tree) = unit::parse(self.split, text, &language, unit::Recovery::Cheap) {
+            assigned(self.split, tree.root_node(), text);
             let mut walker = Walker {
-                source: &text,
+                source: text,
                 depth: self.depth,
                 input: self.input,
                 tail: true,
@@ -371,7 +379,6 @@ impl Walker<'_> {
                 self.open_loop(node);
             }
         }
-        true
     }
 
     /// The stages of `node`, numbered from `first` in `pipeline`, and the
@@ -407,23 +414,41 @@ impl Walker<'_> {
         }
     }
 
-    /// The grammar also reads an unmatched quote, `<#` or `%#` as a comment
-    /// running to the end of the line, though cmd still runs what the
-    /// comment holds. A comment that is not a `rem` or `::` and holds a
-    /// command separator or a redirect cannot be read.
-    fn comment(&mut self, node: Node<'_>) {
+    /// A comment the grammar reads. cmd skips only two kinds: the `rem`
+    /// command (`rem`, `@rem`, in any case, then a space, a tab or the end
+    /// of the line), which skips the rest of the line, `&` and `|` and all,
+    /// and `::` at the start of a statement, a label that never runs. The
+    /// grammar reads more as a comment running to the end of the line, all
+    /// text cmd runs: `<#` and `%#…#%` (a redirect and a variable to cmd),
+    /// a `:` that `::` does not start, a `::` after a label in a `( … )`
+    /// block (cmd runs the line after a label there as a command), and any
+    /// line with `'VBS` after a space or a tab (a marker for files that are
+    /// also Visual Basic scripts; to cmd, one more argument). A line with
+    /// `'VBS` is read again with a caret before each `'VBS` outside quotes,
+    /// which cmd takes off, so the grammar reads the command it is (see
+    /// [`vbs_read`]); any other is unreadable. After `goto`'s label the
+    /// comment is words `goto` ignores, but cmd still ends the statement at
+    /// a `&`, `|` or redirect in them: such words cannot be read.
+    fn comment(&mut self, node: Node<'_>, level: usize) {
         let text = unit::text(&node, self.source);
-        let head = text
-            .trim_start()
-            .trim_start_matches('@')
-            .to_ascii_lowercase();
-        let remark = head == "rem"
-            || head.starts_with("rem ")
-            || head.starts_with("rem\t")
-            || head.starts_with("::");
-        if !remark && text.contains(['&', '|', '<', '>']) {
-            self.split
-                .problem(Rule::Unreadable, "cannot be read in full", None);
+        if node
+            .parent()
+            .is_some_and(|parent| parent.kind() == "goto_stmt")
+        {
+            if text.contains(['&', '|', '<', '>']) {
+                self.split
+                    .problem(Rule::Unreadable, "cannot be read in full", None);
+            }
+            return;
+        }
+        if is_rem(text) || (text.starts_with("::") && !after_label(node, self.source)) {
+            return;
+        }
+        match vbs_read(text) {
+            Some(again) => self.read_again(node, &format!("{again}\n"), None, level),
+            None => self
+                .split
+                .problem(Rule::Unreadable, "cannot be read in full", None),
         }
     }
 
@@ -1245,6 +1270,63 @@ fn find_unquoted(text: &str, stop: impl Fn(char) -> bool) -> Option<usize> {
         }
     }
     None
+}
+
+/// Whether `text`, a comment the grammar reads, is the `rem` command:
+/// `rem`, with or without an `@`, in any case, then a space, a tab or the
+/// end of the line, as the grammar reads one.
+fn is_rem(text: &str) -> bool {
+    let rest = text.strip_prefix('@').unwrap_or(text);
+    rest.get(..3)
+        .is_some_and(|head| head.eq_ignore_ascii_case("rem"))
+        && matches!(rest.as_bytes().get(3), None | Some(b' ' | b'\t'))
+}
+
+/// Whether `node`, a comment, follows a label in a `( … )` block: cmd runs
+/// the line after a label there as a command, even one that starts with
+/// `::`.
+fn after_label(node: Node<'_>, source: &str) -> bool {
+    node.parent()
+        .is_some_and(|parent| parent.kind() == "parenthesized")
+        && node.prev_named_sibling().is_some_and(|before| {
+            before.kind() == "label"
+                || (before.kind() == "comment" && unit::text(&before, source).starts_with(':'))
+        })
+}
+
+/// The text cmd runs for `text`, a comment the grammar reads, with a caret
+/// before each `'VBS` outside double quotes, so the grammar no longer reads
+/// a comment for it. cmd takes the caret off: `rd /s /q C:\ ^'VBS` runs as
+/// `rd /s /q C:\ 'VBS` does. In quotes a caret stays, so a `'VBS` there
+/// that the grammar may read a comment for (after a space or a tab, or at
+/// the start) cannot be read: `None`, as for a comment with no `'VBS`
+/// outside quotes to put a caret before.
+fn vbs_read(text: &str) -> Option<String> {
+    let mut read = String::with_capacity(text.len() + 16);
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut changed = false;
+    let mut previous = None;
+    for (at, c) in text.char_indices() {
+        if !escaped && c == '\'' && text[at..].starts_with("'VBS") {
+            if !quoted {
+                read.push('^');
+                changed = true;
+            } else if matches!(previous, None | Some(' ' | '\t')) {
+                return None;
+            }
+        }
+        read.push(c);
+        if escaped {
+            escaped = false;
+        } else if c == '"' {
+            quoted = !quoted;
+        } else if c == '^' && !quoted {
+            escaped = true;
+        }
+        previous = Some(c);
+    }
+    changed.then_some(read)
 }
 
 /// An argument and where it is in the source.
