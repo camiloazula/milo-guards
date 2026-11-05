@@ -26,7 +26,9 @@ that guards build on, and the front door:
   [Its design](docs/design/code.md).
 - `crates/shell` (`milo-guards-shell`) - the shell guard, `classify`. It
   parses POSIX shell, PowerShell and cmd and judges programs, flags, operands
-  and redirects. [Its design](docs/design/shell.md).
+  and redirects, and shows its own tests the count of what its grammars'
+  lexers read behind its `testing` feature, which is not for callers.
+  [Its design](docs/design/shell.md).
 - `crates/file` (`milo-guards-file`) - the file guard, `judge`. It judges one
   read or write of a path through a file API. [Its design](docs/design/file.md).
 - `crates/url` (`milo-guards-url`) - the URL guard, `judge`. It reads a URL with

@@ -23,7 +23,10 @@ use common::lines::{
     redirects_and_substitutions, too_much_said, variable_chain, wide_traps, wrapper_shapes, Shape,
     EXTENDED_GLOB, FIND_EXPRESSIONS, OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES,
 };
-use common::{assert_linear_by, assert_within, at, filled, posix, windows, Maker, STAGE_SIZES};
+use common::{
+    assert_linear_by, assert_within, at, filled, linear_by, posix, windows, within, Maker,
+    STAGE_SIZES,
+};
 use milo_guards_shell::{classify, effect, explain, Paths, Protected, Shell};
 use noise::{paths_for, wide_lines, SHELLS};
 
@@ -90,11 +93,17 @@ const COUNTED_SIZES: [usize; 7] = [1, 2, 4, 8, 16, 32, 64];
 
 impl Time {
     /// Holds the row `line` makes, of the size it is given, to how its time
-    /// grows, with the time of a line taken by `took`.
-    fn holds(self, what: &str, took: impl Fn(&str) -> Duration, line: impl Fn(usize) -> String) {
+    /// grows, with the time of a line taken by `took`, and says what is
+    /// wrong if it does not, so a table names every row that is.
+    fn holds(
+        self,
+        what: &str,
+        took: impl Fn(&str) -> Duration,
+        line: impl Fn(usize) -> String,
+    ) -> Result<(), String> {
         match self {
-            Grows => assert_linear_by(what, took, line),
-            Stops => assert_within(what, COUNTED, &COUNTED_SIZES, took, line),
+            Grows => linear_by(what, took, line),
+            Stops => within(what, COUNTED, &COUNTED_SIZES, took, line),
         }
     }
 }
@@ -297,17 +306,21 @@ fn lines_up_to_the_length_limit_are_read_in_linear_time() {
             Grows
         }
     };
+    let mut wrong = Vec::new();
     for shell in SHELLS {
         let paths = paths_for(shell);
         for (what, line) in shapes(shell) {
             assert!(line(64 * 1024).len() <= 64 * 1024, "{what}");
-            time(shell, what).holds(
+            if let Err(row) = time(shell, what).holds(
                 &format!("{what} in {shell:?}"),
                 |line| took_with_effect(line, shell, &paths),
                 line,
-            );
+            ) {
+                wrong.push(row);
+            }
         }
     }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[test]
@@ -646,11 +659,13 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
     // recoveries and the characters a grammar's lexer moves over counted
     // from its log), takes no longer past it, so two lengths cannot show how
     // its time grows: it is held to a fixed bound at each of several lengths
-    // instead (`Stops`). cmd's statements after a `;` (`cd x; echo y > NUL; `
-    // repeated), which its grammar reads in quadratic time below the budget
-    // of what its lexer reads, are held to that count instead, in every
-    // build (`tests/lexer_budget.rs`): on GitHub's runner their time grew
-    // many times more than the machine's speed explains.
+    // instead (`Stops`). The shapes cmd's grammar reads in quadratic time
+    // below the budget of what its lexer reads (`@`, `()`, `(echo) `,
+    // `cd x; echo y > NUL; `, `echo ` then `$((1<<2)); echo `, and
+    // `for %%i in (a) do ` repeated) are held to that count instead, in
+    // every build (`tests/lexer_budget.rs`): on GitHub's runner their time
+    // grew many times more than the machine's speed explains. Every row is
+    // timed, and the test names every one that is over its bound at once.
     let rows: Vec<(Shell, Time, Grown)> = vec![
         (
             Shell::PowerShell,
@@ -748,18 +763,6 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
             Shell::Posix,
             Grows,
             Box::new(|size| fit("${a", "", "", size)),
-        ),
-        (Shell::Cmd, Stops, Box::new(|size| fit("@", "", "", size))),
-        (Shell::Cmd, Stops, Box::new(|size| fit("()", "", "", size))),
-        (
-            Shell::Cmd,
-            Stops,
-            Box::new(|size| fit("(echo) ", "", "", size)),
-        ),
-        (
-            Shell::Cmd,
-            Stops,
-            Box::new(|size| fit("$((1<<2)); echo ", "echo ", "", size)),
         ),
         (
             Shell::Posix,
@@ -970,12 +973,6 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
                 let unit = format!("{}{}", "${a".repeat(10), "}".repeat(10));
                 fit(&unit, "", "", size)
             }),
-        ),
-        // cmd's grammar reading the rest of the line again at each `for`.
-        (
-            Shell::Cmd,
-            Stops,
-            Box::new(|size| fit("for %%i in (a) do ", "", "", size)),
         ),
         // Thousands of names into a folder thousands of bytes long, the same
         // name each time and each a name of its own.
@@ -1198,13 +1195,17 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
         ),
         (Shell::PowerShell, Grows, Box::new(distinct_assignments)),
     ];
+    let mut wrong = Vec::new();
     for (shell, time, line) in &rows {
         let longest = line(64 * 1024);
         assert!(longest.len() <= 64 * 1024, "{}", longest.len());
         let paths = paths_for(*shell);
         let what = format!("{:?} in {shell:?}", &longest[..20]);
-        time.holds(&what, |line| took(line, *shell, &paths), line);
+        if let Err(row) = time.holds(&what, |line| took(line, *shell, &paths), line) {
+            wrong.push(row);
+        }
     }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[test]

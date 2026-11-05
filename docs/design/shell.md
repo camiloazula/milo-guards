@@ -891,7 +891,8 @@ s, `)a` 9 s, `|` or `>` 4 to 5 s, `<` 3 s, `()` 9 s, `f() ` 1.1 s, `(echo) `
 1 s, and `echo ` then `$((1<<2)); echo ` 3 to 11 s. Each of these goes back
 over the rest of the line at every token, so the budget stops it, and each
 now comes back `unreadable` in tens of milliseconds; `tests/timing.rs` times
-them. `a|` repeated (20 to 30 s) did not read much and is stopped by the
+the POSIX and PowerShell ones, and `tests/lexer_budget.rs` holds the cmd
+ones to the bytes their lexer is handed (see the tests below). `a|` repeated (20 to 30 s) did not read much and is stopped by the
 count of pipes. Some code of the guard's own was slow on noise too, and is
 not now: PowerShell's walk asked each child for the next one, which walks
 the children again (`()` repeated took 24 s), and the POSIX walk read a long
@@ -7433,28 +7434,38 @@ line past a limit is unreadable there as well;
   a function called after `cd`s to many folders, and a `TRAPEXIT` function
   after many `cd`s that may fail.
 - **The work a grammar is let do.** (In `tests/lexer_budget.rs`, in every
-  build.) A line a grammar reads in quadratic time below a budget the guard
-  stops it at is held to the count the budget is, not to the clock: cmd's
-  statements after a `;` or a `&` (`cd x; echo y > NUL; `, `echo y > NUL; `
-  and `echo y & ` repeated), whose grammar reads on to the end of the line at
-  the start of each statement, only to return the command word (the `'VBS`
-  branch of its `comment` token can start at any command word, and only a
-  line break ends it). Each statement costs the rest of the line until
-  `MAX_LEXED` stops it, near 16 KB; the guard cannot read less of such a line
-  without changing its tree, and so its answers. Its time measured the
-  machine, not the guard: GitHub's runner took about twenty times as long as
-  this machine on these lines, against two to four times on lines read in
-  linear time, and failed a 250 ms bound that left ten times room here. The
-  count is the bytes the grammar's lexer is handed for the line, which the
-  guard keeps to enforce the budget, so it is the same number on every
-  machine. At each of seven lengths from 1 KB to the limit the bytes handed
-  stay within `MAX_LEXED` times the text parsed plus `MAX_LEXED_BASE` (and
-  the one piece a parse reads past it before it stops), the line is stopped
-  ("takes too long to read") only past it, and the answer is pinned. The
-  count is read through `milo_guards_shell::testing`, behind the crate's
-  `testing` feature, which only its own tests turn on (a dev-dependency on
-  itself): it reads the counts the guard keeps anyway, and a caller's build
-  has none of it.
+  build.) A line cmd's grammar reads in quadratic time below the budget the
+  guard stops it at is held to the count the budget is, not to the clock.
+  The rows, each repeated to fill the line: cmd's statements after a `;` or
+  a `&` (`cd x; echo y > NUL; `, `echo y > NUL; ` and `echo y & `), whose
+  grammar reads on to the end of the line at the start of each statement,
+  only to return the command word (the `'VBS` branch of its `comment` token
+  can start at any command word, and only a line break ends it); `echo `
+  then `$((1<<2)); echo `, and `for %%i in (a) do `, which grow the same way;
+  and `@`, `()` and `(echo) `, which reach the budget by 2 to 4 KB. Each
+  costs the rest of the line at each statement or token until `MAX_LEXED`
+  stops it, at 4 to 16 KB; the guard cannot read less of such a line without
+  changing its tree, and so its answers. Their time measured the machine,
+  not the guard: GitHub's runner took about twenty times as long as this
+  machine on `cd x; echo y > NUL; `, against two to four times on lines read
+  in linear time, and failed a 250 ms bound that left ten times room here;
+  the other rows hand the lexer as much, and were never timed there, since
+  the timed table stopped at its first failing row (it now names every
+  one). The count is the bytes the grammar's lexer is handed for the line,
+  which the guard keeps to enforce the budget, so it is the same number on
+  every machine. At each of seven lengths from 1 KB to the limit the bytes
+  handed stay within `MAX_LEXED` times the text parsed plus `MAX_LEXED_BASE`
+  (and the one piece a parse reads past it before it stops) and within a
+  written ceiling (6,292,000 bytes, the budget of today at the length
+  limit), so a raise of either constant fails it; the line is stopped
+  ("takes too long to read") only past the budget, and the answer is pinned.
+  The POSIX grammar's shapes that reach the same budget (`>`, `<`, `()`,
+  `f() ` and `(echo) ` among them) stay timed until the runner shows them out
+  of line with the machine. The count is read through
+  `milo_guards_shell::testing`, behind the crate's `testing` feature, which
+  only its own tests turn on (a dev-dependency on itself): it reads the
+  counts the guard keeps anyway, changes nothing the guard answers, and is
+  not for callers (hidden from the docs, and it may change without notice).
 - **The limits.** (In `tests/limits.rs`, another binary of its own, for the
   same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,

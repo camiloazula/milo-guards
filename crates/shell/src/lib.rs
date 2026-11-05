@@ -58,6 +58,7 @@ mod said;
 mod startup;
 mod tangled;
 #[cfg(feature = "testing")]
+#[doc(hidden)]
 pub mod testing;
 mod unit;
 mod values;
@@ -278,7 +279,13 @@ impl Reading {
 /// Judge `command`, run by `shell` with the directories in `paths`.
 #[must_use = "the assessment is the answer: it says whether the line is safe"]
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
-    let findings = Reading::new(command, shell, paths, false).judged.found;
+    assessed(Reading::new(command, shell, paths, false).judged.found)
+}
+
+/// The answer [`classify`] gives for a line it found `findings` in: safe
+/// when there are none. The one place findings become an answer, so the
+/// `testing` feature's read of a line answers what `classify` does.
+fn assessed(findings: Vec<Finding>) -> Assessment {
     if findings.is_empty() {
         Assessment::Safe
     } else {

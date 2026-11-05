@@ -21,8 +21,9 @@ default = ["inline"]
 inline = ["dep:milo-guards-code"]
 # What only the guard's own tests read: the count of bytes its grammars'
 # lexers are handed for a line (`MAX_LEXED` in `src/unit.rs`). Its tests turn
-# it on, through the dev-dependency on this crate below; a caller never does,
-# so a caller's build has none of it.
+# it on, through the dev-dependency on this crate below. It is not for
+# callers and not part of the API (hidden from the docs): it may change or
+# go without notice.
 testing = []
 
 [dependencies]

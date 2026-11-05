@@ -1,9 +1,10 @@
 //! What only the shell guard's own tests read, behind the `testing` feature:
-//! its tests turn it on (the crate's dev-dependency on itself), and a caller
-//! never needs it, so a caller's build has none of it. Nothing here changes
-//! what the guard does or answers; it reads counts the guard keeps anyway.
+//! its tests turn it on (the crate's dev-dependency on itself). It is not
+//! part of the API and not for callers: it is hidden from the docs, and may
+//! change or go without notice. Nothing here changes what the guard does or
+//! answers; it reads counts the guard keeps anyway.
 
-use crate::{Assessment, Paths, Reading, Shell};
+use crate::{assessed, Assessment, Paths, Reading, Shell};
 
 /// How many times the bytes of text the grammars parse for a line their
 /// lexers may be handed, beside [`MAX_LEXED_BASE`], before the line is
@@ -42,14 +43,9 @@ pub struct Lexed {
 pub fn lexed(line: &str, shell: Shell, paths: &Paths) -> Lexed {
     let reading = Reading::new(line, shell, paths, false);
     let (handed, parsed) = reading.split.lexed();
-    let found = reading.judged.found;
     Lexed {
         handed,
         parsed,
-        answer: if found.is_empty() {
-            Assessment::Safe
-        } else {
-            Assessment::Risky(found)
-        },
+        answer: assessed(reading.judged.found),
     }
 }

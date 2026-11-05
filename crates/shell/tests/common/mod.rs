@@ -336,6 +336,17 @@ pub fn assert_linear_by(
     took: impl Fn(&str) -> Duration,
     line: impl Fn(usize) -> String,
 ) {
+    let held = linear_by(what, took, line);
+    assert!(held.is_ok(), "{}", held.err().unwrap_or_default());
+}
+
+/// [`assert_linear_by`], saying what is wrong instead of failing, so a table
+/// of rows names every row that is.
+pub fn linear_by(
+    what: &str,
+    took: impl Fn(&str) -> Duration,
+    line: impl Fn(usize) -> String,
+) -> Result<(), String> {
     let floor = Duration::from_millis(5);
     let mut last = (Duration::ZERO, Duration::ZERO);
     let linear = (0..3).any(|_| {
@@ -345,12 +356,15 @@ pub fn assert_linear_by(
         let capped = small > floor && big * 2 < small;
         big <= 10 * small.max(floor) && !capped
     });
-    assert!(
-        linear,
-        "{what}: 16 KB took {:?}, 64 KB took {:?}; a longer line much quicker \
-         is read only to a count, for `assert_within`",
-        last.0, last.1
-    );
+    if linear {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}: 16 KB took {:?}, 64 KB took {:?}; a longer line much quicker \
+             is read only to a count, for `assert_within`",
+            last.0, last.1
+        ))
+    }
 }
 
 /// The sizes, in KB, at which [`assert_within`] holds a stage that feeds
@@ -370,9 +384,27 @@ pub fn assert_within(
     took: impl Fn(&str) -> Duration,
     line: impl Fn(usize) -> String,
 ) {
+    let held = within(what, bound, sizes, took, line);
+    assert!(held.is_ok(), "{}", held.err().unwrap_or_default());
+}
+
+/// [`assert_within`], saying what is wrong at the first size over the bound
+/// instead of failing, so a table of rows names every row that is.
+pub fn within(
+    what: &str,
+    bound: Duration,
+    sizes: &[usize],
+    took: impl Fn(&str) -> Duration,
+    line: impl Fn(usize) -> String,
+) -> Result<(), String> {
     for size in sizes {
         let line = line(size * 1024);
-        assert!(line.len() <= 64 * 1024, "{what}: {}", line.len());
+        if line.len() > 64 * 1024 {
+            return Err(format!(
+                "{what}: {} bytes, past the length limit",
+                line.len()
+            ));
+        }
         let mut quickest = Duration::MAX;
         for _ in 0..3 {
             quickest = quickest.min(took(&line));
@@ -380,8 +412,11 @@ pub fn assert_within(
                 break;
             }
         }
-        assert!(quickest < bound, "{what}: {size} KB took {quickest:?}");
+        if quickest >= bound {
+            return Err(format!("{what}: {size} KB took {quickest:?}"));
+        }
     }
+    Ok(())
 }
 
 /// What makes a line of about a size, for [`assert_linear_by`].
