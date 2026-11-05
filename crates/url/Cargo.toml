@@ -1,5 +1,4 @@
 [package]
-publish = false
 name = "milo-guards-url"
 description = "Reads a URL an agent is about to fetch and says whether it is safe to fetch without asking, or risky and why."
 version.workspace = true
@@ -7,7 +6,14 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 rust-version.workspace = true
+# The case files are the tests' input, read at test time from the
+# repository; a published crate does not carry them.
+exclude = ["tests/cases/"]
 
 [lints]
 workspace = true

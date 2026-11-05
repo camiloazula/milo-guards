@@ -1,5 +1,4 @@
 [package]
-publish = false
 name = "milo-guards"
 description = "Guards for AI coding agents on your own machine: each reads what an agent is about to do and says whether it is safe without asking, or risky and why."
 version.workspace = true
@@ -7,10 +6,21 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 rust-version.workspace = true
+# The case files are the tests' input, read at test time from the
+# repository; a published crate does not carry them.
+exclude = ["tests/cases/"]
 
 [lints]
 workspace = true
+
+# docs.rs shows every guard, the opt-in `secrets` guard included.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["shell", "file", "url", "code"]
