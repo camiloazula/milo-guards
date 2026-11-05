@@ -57,6 +57,7 @@ coverage:
 # binary runs beside them.
 # The timing tests, and nothing else, in an optimized build.
 timing:
+    cargo test --release --locked --all-features -p milo-guards-shell --test probe -- --ignored --nocapture --test-threads=1
     -cargo test --release --locked --all-features -p milo-guards-shell --test timing -- --test-threads=1
     cargo test --release --locked --all-features -p milo-guards-secrets --test timing -- --test-threads=1
 
