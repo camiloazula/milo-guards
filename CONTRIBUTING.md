@@ -288,13 +288,36 @@ and the runner, are in its `tests/common/cases.rs` (for the path model,
   end in `crates/guards/tests`.
 - Nothing is released yet. Callers depend on a git commit.
 
+## Releasing
+
+The crates are published to crates.io together, at the one version in
+`[workspace.package]`, each internal dependency naming that version beside
+its path. A release is:
+
+1. Bump `version` in `Cargo.toml` and the `version` of every
+   `milo-guards-*` entry under `[workspace.dependencies]`, to the same
+   number: a new rule or any other change to what a caller compiles
+   against is a minor bump at `0.x`; a change to what a guard answers with
+   the same API is a patch ([Versions](README.md#versions)).
+2. Move the changelog's `Unreleased` section under the new version, with the
+   date, in `CHANGELOG.md`.
+3. `just verify`, then `just package`: every crate packaged and built from
+   its package, as crates.io will build it, with the case files left out
+   (`exclude` in each crate's manifest).
+4. Merge, tag the merge commit `vX.Y.Z` and push the tag.
+5. `just publish` from that commit: `cargo publish --workspace`, which
+   uploads the crates in dependency order (`core`, `code`, `shell`, `file`,
+   `url`, `secrets`, `milo-guards`). It needs a crates.io token with publish
+   rights (`cargo login`).
+
 ## How a change reaches a caller
 
-A caller depends on `milo-guards` by git at a fixed `rev`, and its own
-policy decides what to do with each rule. So a change here reaches a caller by
-a pull request in that caller that bumps the `rev`, after the change has merged
-to `main` here. A new rule is new to the caller too: it decides what to do with
-it in that same pull request.
+A caller depends on `milo-guards` from crates.io at a version, or by git at
+a fixed `rev`, and its own policy decides what to do with each rule. So a
+change here reaches a caller by a release, or a pull request in that caller
+that bumps the `rev`, after the change has merged to `main` here. A new rule
+is new to the caller too: it decides what to do with it in that same pull
+request, which is why a new rule is a minor bump.
 
 To work on a caller and a guard at once, point the caller at a checkout of this
 repository without editing its `Cargo.toml`. From the caller's checkout, with

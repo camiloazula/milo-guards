@@ -1,5 +1,4 @@
 [package]
-publish = false
 name = "milo-guards-core"
 description = "What every guard shares: the verdict types, the path model and the test kit."
 version.workspace = true
@@ -7,7 +6,14 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 rust-version.workspace = true
+# The case files are the tests' input, read at test time from the
+# repository; a published crate does not carry them.
+exclude = ["tests/cases/"]
 
 [lints]
 workspace = true

@@ -31,6 +31,18 @@ format-check:
 format:
     cargo fmt --all
 
+# Every crate packaged as crates.io will see it, and built from its package:
+# a manifest field a registry needs, a file the package lacks, or a path the
+# package resolves differently fails here, before a release.
+package:
+    cargo package --workspace --locked
+
+# Publish every crate to crates.io, in dependency order, at the version in
+# Cargo.toml. Run from the tagged release commit, after `just verify` and
+# `just package`; needs `cargo login`.
+publish:
+    cargo publish --workspace --locked
+
 # `just verify` runs them again in its one instrumented build, apart from
 # the doctests, which `just doc-test` runs, and the timing tests, which
 # `just timing` runs: a debug build ignores them, so no test here reads the

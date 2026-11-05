@@ -46,12 +46,14 @@ answer for the same input on every machine.
 
 ## Install
 
-milo-guards is a Rust library. It is not on crates.io yet, so depend on it by
-git, pinned to a release tag (`v0.1.0` is the first):
+milo-guards is a Rust library on crates.io. The one crate a caller depends on
+is `milo-guards`; the guards are crates of their own behind it
+(`milo-guards-shell`, `-file`, `-url`, `-secrets`, with `-core` and the
+`-code` reader), published together at one version.
 
 ```toml
 [dependencies]
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.0" }
+milo-guards = "0.1"
 ```
 
 Each guard sits behind a cargo feature. `shell`, `file`, `url` and `code` are
@@ -60,15 +62,33 @@ not a table of credential patterns in their binary.
 
 ```toml
 # Everything, the secrets guard included
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.0", features = ["secrets"] }
+milo-guards = { version = "0.1", features = ["secrets"] }
 
 # Only the shell guard
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.0", default-features = false, features = ["shell"] }
+milo-guards = { version = "0.1", default-features = false, features = ["shell"] }
+```
+
+To depend on a commit instead, the git form works too, pinned to a release
+tag (`v0.1.0` is the first):
+
+```toml
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.0" }
 ```
 
 It needs Rust 1.99 or newer. If your program also links tree-sitter, it has
 to be on the 0.26 runtime: tree-sitter allows one version per lockfile, and
 the guards are on 0.26.
+
+### Versions
+
+The crates follow semver at `0.x`: a release that changes what a caller
+compiles against is a minor bump (`0.1` to `0.2`), and a fix of what a guard
+answers is a patch (`0.1.0` to `0.1.1`). The rule enums are exhaustive on
+purpose, so **a new rule is a minor bump**: it breaks a caller's `match` at
+compile time, where the caller decides what to do with the rule, and a
+caller pinned to `"0.1"` is never handed a rule it has no answer for. A
+guard that judges a line differently after a fix is a patch, since the API
+is the same, and the change is in [the changelog](CHANGELOG.md).
 
 A command-line program for callers that are not written in Rust is planned,
 with npm and Homebrew packages. Until it ships, the library is the way in.
@@ -115,7 +135,8 @@ What sets the guards apart:
   text before it goes anywhere.
 - **Stable rules.** Every finding carries a rule with a wire name that never
   changes once published. The rule enums are exhaustive, so a new rule breaks
-  your `match` at compile time, where you decide what to do with it.
+  your `match` at compile time, where you decide what to do with it; it
+  ships as a minor bump ([Versions](#versions)).
 
 ### The rules a finding can carry
 

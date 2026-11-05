@@ -72,15 +72,25 @@ edition = "2021"
 authors = ["Camilo Azula"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/camiloazula/milo-guards"
+homepage = "https://github.com/camiloazula/milo-guards"
+# One README for the workspace, relative to its root: crates.io shows it on
+# every crate's page, and it says which crate a caller depends on
+# (`milo-guards`).
+readme = "README.md"
+keywords = ["ai-agent", "security", "sandbox", "shell", "guard"]
+categories = ["development-tools", "command-line-interface"]
 rust-version = "1.99"
 
 [workspace.dependencies]
-milo-guards-core  = { path = "crates/core" }
-milo-guards-code  = { path = "crates/code" }
-milo-guards-shell = { path = "crates/shell" }
-milo-guards-file  = { path = "crates/file" }
-milo-guards-url   = { path = "crates/url" }
-milo-guards-secrets = { path = "crates/secrets" }
+# Each internal crate names its version beside its path: Cargo uses the path
+# in this workspace and the version on crates.io, where every crate is
+# published (`just publish`).
+milo-guards-core  = { path = "crates/core", version = "0.1.0" }
+milo-guards-code  = { path = "crates/code", version = "0.1.0" }
+milo-guards-shell = { path = "crates/shell", version = "0.1.0" }
+milo-guards-file  = { path = "crates/file", version = "0.1.0" }
+milo-guards-url   = { path = "crates/url", version = "0.1.0" }
+milo-guards-secrets = { path = "crates/secrets", version = "0.1.0" }
 
 # tree-sitter's `links` key allows one version of the runtime in a whole
 # lockfile, ours and every caller's. Callers that also parse with
