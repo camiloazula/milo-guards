@@ -16,6 +16,17 @@ fn every_case() {
 }
 
 #[test]
+fn a_mongodb_atlas_uri_is_found_whole() {
+    // Its host is joined here, so that no Atlas connection string with a
+    // password sits in the repository for a secret scanner to report.
+    let host = ["cluster0", "fake", "mongodb", "net"].join(".");
+    let text = format!("DATABASE_URL=mongodb+srv://fakeuser:F4kePass9@{host}/?retryWrites=true");
+    let mut bad = Vec::new();
+    p(&mut bad, "mongodb+srv", &text, "F4kePass9");
+    nothing_wrong(&bad);
+}
+
+#[test]
 fn every_kind_of_key_in_every_dress_is_found_whole() {
     let mut bad = Vec::new();
     let aws = format!("AKIA{}", "Q7FAKE2TESTK3YZW");

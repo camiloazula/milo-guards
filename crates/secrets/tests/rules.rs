@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{base64url, fill, pem, token};
+use common::{base64url, discord, fill, pem, token};
 use milo_guards_core::testing::check;
 use milo_guards_secrets::{find, find_spans, Rule};
 
@@ -510,10 +510,29 @@ fn a_page_access_token_is_still_a_secret() {
 }
 
 #[test]
+fn a_decoy_discord_match_does_not_hide_the_real_token() {
+    // The decoy begins at a glued letter and the real token is inside it, or
+    // the third part of the decoy swallows the id of the real token.
+    for (head, id) in [
+        ("N", "123456789012345678"),
+        ("O_", "123456789012345678"),
+        (
+            "see NavigationControllerDelegate.handler.",
+            "12345678901234567890",
+        ),
+    ] {
+        let real = discord(id);
+        let text = format!("{head}{real}");
+        assert_eq!(rules(&text), [Rule::ApiKey], "{text:?}");
+        assert_eq!(only_span(&text), (Rule::ApiKey, real), "{text:?}");
+    }
+}
+
+#[test]
 fn a_separator_before_a_discord_token_is_not_part_of_a_longer_id() {
     // The base64url of an id made of digits holds no `_` or `-`, so one that
     // touches the token ends the run of letters before it, whatever it was.
-    let secret = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBcDe.Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q";
+    let secret = discord("123456789012345678");
     let rows: Vec<(String, String)> = [
         "token_",
         "key-",
@@ -526,7 +545,7 @@ fn a_separator_before_a_discord_token_is_not_part_of_a_longer_id() {
         "--token--",
     ]
     .into_iter()
-    .map(|head| (format!("{head}{secret}"), secret.to_string()))
+    .map(|head| (format!("{head}{secret}"), secret.clone()))
     .collect();
     assert_found(&rows, Rule::ApiKey);
     assert!(
