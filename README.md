@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo.svg" width="280" alt="Milo, a silver tabby cat in a knight's helmet, slicing a dangerous shell command in half with his sword while other commands bounce off his shield">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/camiloazula/milo-guards/main/assets/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/camiloazula/milo-guards/main/assets/logo.svg" width="280" alt="Milo, a silver tabby cat in a knight's helmet, slicing a dangerous shell command in half with his sword while other commands bounce off his shield">
   </picture>
 </p>
 
