@@ -6,7 +6,7 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
-## 0.1.0
+## 0.1.0 (2026-11-05)
 
 The first release, on crates.io as `milo-guards` with the guards behind it.
 
