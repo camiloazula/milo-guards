@@ -79,6 +79,19 @@ pub fn token(id: &str) -> String {
     format!("{}.GaBcDe.{}", base64url(id), fill("FakeDiscordTok_-9", 38))
 }
 
+/// The Discord bot token of the rows that test where a token begins and
+/// ends: the base64url of `id`, a timestamp, and an HMAC with a `_` and a `-`
+/// at its end. Joined here from its parts, so that no token-shaped literal
+/// sits in the repository for a secret scanner to report.
+pub fn discord(id: &str) -> String {
+    [
+        base64url(id).as_str(),
+        "GaBcDe",
+        "Xk9fQ2mZ7pLw3RtY8vBn4CsHj6KdEa1Ug_-q",
+    ]
+    .join(".")
+}
+
 /// One sample: the text around a secret, the secret itself and the rule and
 /// reason a finding about it must have.
 pub struct Sample {
