@@ -19,6 +19,11 @@ default = ["inline"]
 # the guard still finds such a line but reads none of the code: every inline
 # line is `unknown`, and neither grammar is built.
 inline = ["dep:milo-guards-code"]
+# What only the guard's own tests read: the count of bytes its grammars'
+# lexers are handed for a line (`MAX_LEXED` in `src/unit.rs`). Its tests turn
+# it on, through the dev-dependency on this crate below; a caller never does,
+# so a caller's build has none of it.
+testing = []
 
 [dependencies]
 milo-guards-core.workspace = true
@@ -32,3 +37,8 @@ tree-sitter-batch.workspace = true
 
 [dev-dependencies]
 milo-guards-core = { workspace = true, features = ["testing"] }
+# This crate with `testing` on, so every build of its tests reads the count
+# of what the grammars' lexers are handed (`tests/lexer_budget.rs`). Without
+# its default features, so a build with `inline` off (`just no-inline`) keeps
+# it off.
+milo-guards-shell = { path = ".", default-features = false, features = ["testing"] }

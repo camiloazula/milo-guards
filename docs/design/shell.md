@@ -7432,6 +7432,29 @@ line past a limit is unreadable there as well;
   held to linear time: one after another, a hundred deep around a long body,
   a function called after `cd`s to many folders, and a `TRAPEXIT` function
   after many `cd`s that may fail.
+- **The work a grammar is let do.** (In `tests/lexer_budget.rs`, in every
+  build.) A line a grammar reads in quadratic time below a budget the guard
+  stops it at is held to the count the budget is, not to the clock: cmd's
+  statements after a `;` or a `&` (`cd x; echo y > NUL; `, `echo y > NUL; `
+  and `echo y & ` repeated), whose grammar reads on to the end of the line at
+  the start of each statement, only to return the command word (the `'VBS`
+  branch of its `comment` token can start at any command word, and only a
+  line break ends it). Each statement costs the rest of the line until
+  `MAX_LEXED` stops it, near 16 KB; the guard cannot read less of such a line
+  without changing its tree, and so its answers. Its time measured the
+  machine, not the guard: GitHub's runner took about twenty times as long as
+  this machine on these lines, against two to four times on lines read in
+  linear time, and failed a 250 ms bound that left ten times room here. The
+  count is the bytes the grammar's lexer is handed for the line, which the
+  guard keeps to enforce the budget, so it is the same number on every
+  machine. At each of seven lengths from 1 KB to the limit the bytes handed
+  stay within `MAX_LEXED` times the text parsed plus `MAX_LEXED_BASE` (and
+  the one piece a parse reads past it before it stops), the line is stopped
+  ("takes too long to read") only past it, and the answer is pinned. The
+  count is read through `milo_guards_shell::testing`, behind the crate's
+  `testing` feature, which only its own tests turn on (a dev-dependency on
+  itself): it reads the counts the guard keeps anyway, and a caller's build
+  has none of it.
 - **The limits.** (In `tests/limits.rs`, another binary of its own, for the
   same reason: each search reads many long lines.) The table above, found by measuring and held on both sides:
   the longest line, the deepest bracket nesting for each opener in each shell,

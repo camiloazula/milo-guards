@@ -57,6 +57,8 @@ mod powershell;
 mod said;
 mod startup;
 mod tangled;
+#[cfg(feature = "testing")]
+pub mod testing;
 mod unit;
 mod values;
 mod zipopt;
