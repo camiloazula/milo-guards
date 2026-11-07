@@ -4,7 +4,7 @@ use super::{
     certutil_writes, dd_outputs, downloads_to, hidden_matches, or_here, sources_and_destination,
     Checker, Pattern, CONTENTS, COPY_VALUED,
 };
-use crate::launch::{find_may_act_on, find_targets, find_unread_primary, perl_edits};
+use crate::launch::{find_may_act_on, find_outputs, find_targets, find_unread_primary, perl_edits};
 use crate::path::{self, Access, Place};
 use crate::powershell::{
     Param, Params, CLEAR_CONTENT, EXPORT_CLIXML, EXPORT_CSV, FOREACH_OBJECT, NEW_ITEM, OUT_FILE,
@@ -66,6 +66,11 @@ impl Checker<'_> {
                         &picks,
                     );
                 });
+                // `-fprint FILE` and its kin write the file as `>` would,
+                // and `-fprintf FILE FORMAT` writes any text it is given.
+                for file in find_outputs(args) {
+                    self.write(shell, unit.scope(), file, "writes to");
+                }
             }
             "del" | "erase" if shell == Shell::Cmd => {
                 let targets = builtin(key, args);

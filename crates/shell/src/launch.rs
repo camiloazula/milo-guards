@@ -27,7 +27,9 @@ mod tools;
 mod wrappers;
 
 use find::find_exec;
-pub(crate) use find::{find_may_act_on, find_targets, find_unread_primary, FIND_VALUED};
+pub(crate) use find::{
+    find_may_act_on, find_outputs, find_targets, find_unread_primary, FIND_VALUED,
+};
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global, Unread};
 pub(crate) use interpreters::{
     after_run, code_options, is_interpreter, is_ipython, is_node, is_python, is_ts_node, options,
