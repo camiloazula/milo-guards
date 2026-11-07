@@ -6,6 +6,32 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+Lines the guards judged wrong, nothing a caller compiles against: a patch.
+Each line below was safe, or slow, and is now judged as it reads.
+
+- `milo-guards-shell`: an `alias` with a word only known when it runs
+  (`alias x="$CMD"`) is `unknown`, and a call of it no longer slips through
+  as an unknown bare name (#285).
+- `milo-guards-shell`: the files `find` writes with `-fprint`, `-fprint0`,
+  `-fls` and `-fprintf` are judged as a redirect's are, so
+  `find . -fprint ~/.bashrc` is `overwrite` (#287).
+- `milo-guards-shell`: `firejail`, `fakeroot`, `faketime`, `entr`, `bwrap`
+  and `proot` run the command after their options, which is judged as
+  written; `bwrap` and `proot` map the file system, so their lines are
+  `unreadable` as well. `man -P CMD`, `man -H CMD` and fzf's
+  `--preview CMD` hand a command to a shell, which is read; a key binding of
+  fzf (`--bind`) is `unreadable` (#288).
+- `milo-guards-core`: a write into a long wildcard pattern is placed in time
+  linear in its parts; a line of 60 KB of `**/` took 15 s and takes a tenth
+  of one (#286).
+- `milo-guards-core`: the home directory, the sensitive places and the
+  protected paths compare in either Unicode canonical spelling (`é` as one
+  character, or `e` and a combining accent, as HFS+ keeps it), so the file
+  guard's `write_protected` and the shell guard's findings hold for both
+  (#290).
+- `milo-guards-code`: code nested past the depth the reader walks is never
+  `Understood` (#289).
+
 ## 0.1.1 (2026-11-05)
 
 The pages on crates.io, nothing a caller compiles against or a guard answers.
