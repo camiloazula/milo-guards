@@ -6,6 +6,8 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+## 0.1.2 (2026-11-07)
+
 Lines the guards judged wrong, nothing a caller compiles against: a patch.
 Each line below was safe, or slow, and is now judged as it reads.
 
