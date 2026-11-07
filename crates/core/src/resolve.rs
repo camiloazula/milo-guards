@@ -886,11 +886,17 @@ fn runs_on_its_own(
                         // place it can go down any number of folders first, and
                         // a pattern of nothing but wildcards (`src/*`) takes
                         // whatever is there without naming a place.
-                        let starts = if k == 0 { tail.len() } else { 1 };
-                        (0..starts).any(|from| {
-                            let tail = &tail[from..];
-                            !(k == 0 && tail.iter().all(|part| bare(part)))
-                                && picks(tail, &rest, !below, *is_folder, &matches)
+                        // Every start is read from one table (see
+                        // [`picks_from_each`]), so a long pattern costs time
+                        // in its length, not in its square.
+                        if k > 0 {
+                            return picks(&tail, &rest, !below, *is_folder, &matches);
+                        }
+                        let each = picks_from_each(&tail, &rest, !below, *is_folder, &matches);
+                        let mut all_bare = true;
+                        (0..tail.len()).rev().any(|from| {
+                            all_bare &= bare(tail[from]);
+                            each[from] && !all_bare
                         })
                     }
                     None => below && k > 0,
@@ -2503,15 +2509,35 @@ fn picks(
     below: bool,
     matches: &dyn Fn(&str, &str) -> bool,
 ) -> bool {
+    picks_from_each(tail, names, whole, below, matches)[0]
+}
+
+/// [`picks`] for every part the pattern may start at: entry `i` says whether
+/// the parts `tail[i..]` pick `names`. The table is built from the end, so
+/// asking it of every start costs no more than asking it of the first, where
+/// a call of [`picks`] for each start took time in the square of the
+/// pattern's length.
+fn picks_from_each(
+    tail: &[&str],
+    names: &[String],
+    whole: bool,
+    below: bool,
+    matches: &dyn Fn(&str, &str) -> bool,
+) -> Vec<bool> {
     // `reach[j]`: parts `i..` pick names `j..`, built from the end.
     let mut reach = vec![false; names.len() + 1];
+    let mut starts = vec![false; tail.len() + 1];
+    // Whether the parts `i..` are all globstars, kept as `i` comes down, so
+    // no row reads the rest of the pattern again.
+    let mut globstars = true;
     for i in (0..=tail.len()).rev() {
+        globstars &= tail.get(i).is_none_or(|part| is_globstar(part));
         let mut row = vec![false; names.len() + 1];
         for j in (0..=names.len()).rev() {
             row[j] = if j == names.len() {
                 // Every name reached: more of the pattern goes below the
                 // last one, which only a folder has.
-                below || tail[i..].iter().all(|part| is_globstar(part))
+                below || globstars
             } else if i == tail.len() {
                 !whole
             } else if is_globstar(tail[i]) {
@@ -2524,9 +2550,10 @@ fn picks(
                 matches(tail[i], &names[j]) && reach.get(j + 1).copied().unwrap_or(false)
             };
         }
+        starts[i] = row[0];
         reach = row;
     }
-    reach[0]
+    starts
 }
 
 /// The parts of a relative path, with `.` and `..` applied (a `..` with

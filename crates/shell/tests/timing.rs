@@ -1483,6 +1483,16 @@ fn drives_devices_and_session_places_are_read_in_linear_time() {
         &windows,
         |size| filled("Remove-Item Temp:\\x\\NUL; ", size, 0),
     );
+    for (what, part, last) in [
+        ("cp x src/a*/a*/…/x", "a*/", "x"),
+        ("cp x src/a*/a*/…/.envrc", "a*/", ".envrc"),
+        ("cp x src/**/**/…/x", "**/", "x"),
+        ("cp x src/**/**/…/.envrc", "**/", ".envrc"),
+    ] {
+        assert_linear(what, Shell::Posix, &posix(), |size| {
+            common::lines::long_pattern_copy(size, part, last)
+        });
+    }
     assert_linear(
         "echo x > /dev/fd/../fd/…",
         Shell::Posix,
