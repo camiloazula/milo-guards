@@ -32,6 +32,7 @@
 //! assert_eq!(place("/etc/hosts"), Place::Top("a system folder"));
 //! ```
 
+mod canonical;
 mod paths;
 mod place;
 mod resolve;

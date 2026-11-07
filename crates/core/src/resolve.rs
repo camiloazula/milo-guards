@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use crate::spelling::glob::{self, Shape, WILDCARDS};
-use crate::{Paths, Place, ProtectedKind, Sensitivity};
+use crate::{canonical, Paths, Place, ProtectedKind, Sensitivity};
 
 /// How a path is spelled: what its separators are, and whether it can name
 /// a drive or a share. It follows the system the path will be used on, not
@@ -886,11 +886,17 @@ fn runs_on_its_own(
                         // place it can go down any number of folders first, and
                         // a pattern of nothing but wildcards (`src/*`) takes
                         // whatever is there without naming a place.
-                        let starts = if k == 0 { tail.len() } else { 1 };
-                        (0..starts).any(|from| {
-                            let tail = &tail[from..];
-                            !(k == 0 && tail.iter().all(|part| bare(part)))
-                                && picks(tail, &rest, !below, *is_folder, &matches)
+                        // Every start is read from one table (see
+                        // [`picks_from_each`]), so a long pattern costs time
+                        // in its length, not in its square.
+                        if k > 0 {
+                            return picks(&tail, &rest, !below, *is_folder, &matches);
+                        }
+                        let each = picks_from_each(&tail, &rest, !below, *is_folder, &matches);
+                        let mut all_bare = true;
+                        (0..tail.len()).rev().any(|from| {
+                            all_bare &= bare(tail[from]);
+                            each[from] && !all_bare
                         })
                     }
                     None => below && k > 0,
@@ -2270,10 +2276,27 @@ impl Resolver {
 
 /// Whether a spelled name is the protected `name`: the same without case on
 /// every host (some file systems on POSIX hosts ignore it, and what a
-/// protected path is spelled as is the caller's to say), or, on Windows, its
-/// 8.3 short name.
+/// protected path is spelled as is the caller's to say), canonically the
+/// same (see [`same_canonical`]), or, on Windows, its 8.3 short name.
 fn same_name(spelled: &str, name: &str, windows: bool) -> bool {
-    same_fold(spelled, name) || (windows && spelled.contains('~') && short_name(spelled, name))
+    same_fold(spelled, name)
+        || same_canonical(spelled, name)
+        || (windows && spelled.contains('~') && short_name(spelled, name))
+}
+
+/// Whether two names that are not both ASCII are canonically the same
+/// without case: equal once decomposed ([`canonical::decomposed`]), by
+/// [`fold`]. APFS and HFS+ open `café` spelled with one `é` or with `e` and a
+/// combining accent as one file, and HFS+ keeps the second on disk. Names
+/// that differ in their marks stay apart. A place is never judged the
+/// workspace by it: [`Loc::holds`] compares the workspace as spelled; only
+/// [`Resolver::workspace_of`], which folds case as well, reads either
+/// spelling as the workspace's.
+fn same_canonical(a: &str, b: &str) -> bool {
+    !(a.is_ascii() && b.is_ascii()) && {
+        let (a, b) = (canonical::decomposed(a), canonical::decomposed(b));
+        a.iter().map(|&c| fold(c)).eq(b.iter().map(|&c| fold(c)))
+    }
 }
 
 /// The path `text` as `path` is spelled, from another text.
@@ -2410,7 +2433,17 @@ fn pattern_matches(part: &str, name: &str, flavour: Flavour, hidden: bool, windo
         glob::matches(part, name, flavour, hidden)
             || glob::matches(&part.to_lowercase(), &name.to_lowercase(), flavour, hidden)
     };
-    fold(part, name) || (windows && short_form(name).is_some_and(|short| fold(part, &short)))
+    // A pattern and a name that are not both ASCII are matched as well with
+    // the marks of both dropped, as APFS and HFS+ read them: the disk may keep
+    // either canonical spelling, so `caf?` and `caf[é]` pick `café` both ways
+    // (see [`same_canonical`]). Every caller fails closed on a match too many.
+    fold(part, name)
+        || (!(part.is_ascii() && name.is_ascii())
+            && fold(
+                &canonical::without_marks(part),
+                &canonical::without_marks(name),
+            ))
+        || (windows && short_form(name).is_some_and(|short| fold(part, &short)))
 }
 
 /// Whether a pattern part may pick `name` (see [`pattern_matches`]), by a
@@ -2503,15 +2536,35 @@ fn picks(
     below: bool,
     matches: &dyn Fn(&str, &str) -> bool,
 ) -> bool {
+    picks_from_each(tail, names, whole, below, matches)[0]
+}
+
+/// [`picks`] for every part the pattern may start at: entry `i` says whether
+/// the parts `tail[i..]` pick `names`. The table is built from the end, so
+/// asking it of every start costs no more than asking it of the first, where
+/// a call of [`picks`] for each start took time in the square of the
+/// pattern's length.
+fn picks_from_each(
+    tail: &[&str],
+    names: &[String],
+    whole: bool,
+    below: bool,
+    matches: &dyn Fn(&str, &str) -> bool,
+) -> Vec<bool> {
     // `reach[j]`: parts `i..` pick names `j..`, built from the end.
     let mut reach = vec![false; names.len() + 1];
+    let mut starts = vec![false; tail.len() + 1];
+    // Whether the parts `i..` are all globstars, kept as `i` comes down, so
+    // no row reads the rest of the pattern again.
+    let mut globstars = true;
     for i in (0..=tail.len()).rev() {
+        globstars &= tail.get(i).is_none_or(|part| is_globstar(part));
         let mut row = vec![false; names.len() + 1];
         for j in (0..=names.len()).rev() {
             row[j] = if j == names.len() {
                 // Every name reached: more of the pattern goes below the
                 // last one, which only a folder has.
-                below || tail[i..].iter().all(|part| is_globstar(part))
+                below || globstars
             } else if i == tail.len() {
                 !whole
             } else if is_globstar(tail[i]) {
@@ -2524,9 +2577,10 @@ fn picks(
                 matches(tail[i], &names[j]) && reach.get(j + 1).copied().unwrap_or(false)
             };
         }
+        starts[i] = row[0];
         reach = row;
     }
-    reach[0]
+    starts
 }
 
 /// The parts of a relative path, with `.` and `..` applied (a `..` with

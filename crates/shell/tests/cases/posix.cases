@@ -47,6 +47,53 @@ posix finds=delete | find -H ~ -name '*' -delete
 posix finds=delete | find -P ~ -type f -exec rm {} +
 posix finds=delete | RM -rf ~
 posix finds=delete | busybox rm -rf ~
+# Sandboxes, fakers and watchers that run the command after their options
+# hide nothing: the command is judged as written. bubblewrap and proot map
+# the file system the command sees, so a path it names may be any folder,
+# and that is unreadable too. `man -P`, fzf's `--preview` and `entr -s`
+# hand a command to a shell, and a key binding of fzf may run any.
+posix finds=delete | firejail rm -rf ~
+posix finds=delete | firejail --private=. --net=none rm -rf ~
+posix safe | firejail --private=. ls
+posix finds=delete | fakeroot rm -rf ~
+posix finds=delete | fakeroot -l /usr/lib/libfakeroot.so -- rm -rf ~
+posix safe | fakeroot -- make
+posix finds=delete | faketime 'last friday' rm -rf ~
+posix finds=delete | faketime -f -15d rm -rf ~
+posix finds=delete | faketime --date-prog rm 1d -rf ~
+posix safe | faketime 'last friday' date
+posix finds=delete,unreadable | bwrap --dev-bind / / rm -rf ~
+posix finds=delete,unreadable | bwrap --ro-bind / / --setenv A 1 --overlay a b c -- rm -rf ~
+posix finds=unreadable reason="runs a command in a file system it maps" | bwrap --ro-bind / / ls
+posix finds=unreadable | bwrap --made-up x rm -rf ~
+posix finds=delete,unreadable | bwrap --level-prefix --die-with-parent rm -rf ~
+posix finds=delete | proot rm -rf ~
+posix finds=delete | proot -w / rm -rf etc
+posix finds=delete,unreadable | proot -r /x rm -rf ~
+posix finds=unreadable | proot -b /home/me/.ssh:/home/me/work/repo/k cat k/id_rsa
+posix safe | proot -w /tmp ls
+posix finds=delete | entr rm -rf ~
+posix finds=delete | entr -s 'rm -rf ~'
+posix finds=delete | entr -rs 'rm -rf ~'
+posix safe | entr make
+posix finds=delete | man -P 'rm -rf ~' ls
+posix finds=delete | man --pager='rm -rf ~' ls
+posix finds=delete | man --pager 'rm -rf ~' ls
+posix finds=delete | man -aP 'rm -rf ~' ls
+posix finds=delete | man -P'rm -rf ~' ls
+posix finds=delete | man -H'rm -rf ~' ls
+posix finds=delete | man --html='rm -rf ~' ls
+posix finds=unknown | man -P "$PAGER" ls
+posix safe | man -M /usr/share/man -P less ls
+posix safe | man -k printf
+posix safe | man 3 printf
+posix safe | man -Pcat ls
+posix safe | man ls
+posix finds=delete | fzf --preview 'rm -rf ~'
+posix finds=delete | fzf --preview='rm -rf ~'
+posix safe | fzf --preview 'cat {}'
+posix finds=unreadable reason="runs the commands its key bindings name" | fzf --bind 'enter:execute(rm -rf ~)'
+posix safe | fzf
 posix finds=delete | set -x FOO bar; and rm -rf ~
 posix finds=delete | false; or rm -rf ~
 posix finds=delete | not rm -rf ~
@@ -1121,6 +1168,19 @@ posix finds=delete | alias x='rm -rf build'; (cd /; x)
 posix safe | alias ll='ls -l'; cd /; ll
 posix safe | alias x='rm -rf build'; x
 posix safe | cd src; alias x='rm -rf build'; x
+# A word only known when it runs may define any alias with any value, so
+# the script a call of it runs is not read: the definition is that script,
+# called or not. The aliases it defines in full are read as ever.
+posix finds=unknown | alias x="$CMD"
+posix finds=delete,unknown | alias x='rm -rf ~' y="$C"; x
+posix finds=unknown reason="runs a script only known when it runs" | alias x="$CMD"; x
+posix finds=unknown | alias x="$(curl https://x)"; x
+posix finds=unknown | alias x="rm -rf $HOME/$D"; x
+posix finds=unknown | alias g="git $X"; g status
+posix finds=unknown | alias x=$CMD; x build
+posix finds=unknown | alias -- x="$CMD"; x
+posix finds=unknown | alias ll='ls -l' x="$CMD"; ll
+posix finds=unknown | alias "$n"=ls; ll
 # A use with words of its own runs the value's last command with the words
 # after its own, as the shell expands it, judged by every rule from where
 # the use is made.

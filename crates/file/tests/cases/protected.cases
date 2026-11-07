@@ -156,3 +156,11 @@ paths kelvin base=posix folder=/home/me/.k words="the agent's settings"
 write@kelvin finds=write_protected | /home/me/.\u{212a}/x
 paths windows_kelvin base=windows folder=C:\\Users\\me\\.agent\\k words="the agent's settings"
 write@windows_kelvin finds=write_protected | C:\\Users\\me\\.agent\\\u{212a}\\x
+
+# A protected path is matched in either canonical spelling: `é` as one
+# character, or `e` and a combining accent, which APFS and HFS+ open as one
+# name. A name whose accent differs is another folder, beyond the workspace.
+paths jose cwd=/home/josé/x home=/home/josé workspace=/home/josé/x folder=/home/josé/.agent words="the agent's settings"
+write@jose rules=write_protected | /home/josé/.agent/x
+write@jose rules=write_protected | /home/jose\u{301}/.agent/x
+write@jose rules=write_outside | /home/jose\u{300}/.agent/x

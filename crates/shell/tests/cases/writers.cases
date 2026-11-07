@@ -1,9 +1,10 @@
 # Programs that write a file the line names, beyond the redirects, copies and
 # cmdlets the other files hold: `curl.exe` and `wget.exe` in PowerShell,
 # `certutil`, `Export-Csv` and `Export-Clixml`, `sponge`, `awk -i inplace`,
-# `ex` and `vim`, and `patch`. Each destination is judged where it lands, as any write
-# is: beyond the workspace, a startup or protected place is `overwrite`, and
-# inside the workspace it stays safe. The format is in CONTRIBUTING.md.
+# `ex` and `vim`, `patch`, and `find -fprint`. Each destination is judged
+# where it lands, as any write is: beyond the workspace, a startup or
+# protected place is `overwrite`, and inside the workspace it stays safe. The
+# format is in CONTRIBUTING.md.
 
 paths protected base=posix file=/home/me/work/repo/conf/app.yaml words="the agent's settings"
 paths protected_windows base=windows file=C:\\Users\\me\\dev\\repo\\conf\\app.yaml words="the agent's settings"
@@ -341,3 +342,20 @@ posix finds=overwrite reason="patches files in a folder outside the workspace" |
 posix finds=overwrite | git -C /etc am
 posix finds=overwrite | git --work-tree=$W apply fix.diff
 posix safe | git apply fix.diff
+
+# `find -fprint FILE`, `-fprint0 FILE` and `-fls FILE` write the list they
+# make to the file, and `-fprintf FILE FORMAT` writes any text the format
+# holds: each file is judged as a redirect's is. A test's value and the
+# words an `-exec` runs are not a file it writes.
+posix finds=overwrite reason="writes to a system folder" | find . -fprintf /etc/cron.d/x '* * * * * root sh\\n'
+posix finds=overwrite reason="writes to a shell startup file" | find . -fprint /home/me/.bashrc
+posix finds=overwrite | find . -fprint0 /etc/x
+posix finds=overwrite | find . -fls ~/.bashrc
+posix finds=overwrite | find ~ -name x -fprint /etc/x
+posix finds=overwrite | find . -type f -fprint .envrc
+posix@protected finds=overwrite | find . -fprint conf/app.yaml
+posix finds=overwrite reason="writes to a file outside the workspace" | find . -fprint ../other/list.txt
+posix safe | find . -fprint list.txt
+posix safe | find . -fprintf list.txt '%p\\n'
+posix safe | find . -name -fprint -print
+posix safe | find . -exec echo -fprint /etc/x \\;

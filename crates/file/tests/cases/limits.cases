@@ -16,15 +16,6 @@ read safe | config/secrets.yml
 read safe | ~/.mozilla/firefox/x/cookies.sqlite
 read safe | /mnt/c/Users/me/.ssh/id_rsa
 
-# A name that differs by Unicode normal form is a different name. A file
-# system that ignores the difference between `é` and `e` and an accent reads
-# these as one folder; the guard compares code points. The path is still
-# beyond the workspace, but it is `write_outside`, not the caller's
-# `write_protected`.
-paths jose cwd=/home/josé/x home=/home/josé workspace=/home/josé/x folder=/home/josé/.agent words="the agent's settings"
-write@jose rules=write_protected | /home/josé/.agent/x
-write@jose rules=write_outside | /home/jose\u{301}/.agent/x
-
 # A path as another system spells it is read as this one does: Git Bash's
 # `/c/Users/...` is `C:\c\Users\...` to Windows itself.
 read@windows safe | /c/Users/me/.ssh/id_rsa

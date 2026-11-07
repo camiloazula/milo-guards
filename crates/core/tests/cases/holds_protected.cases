@@ -59,3 +59,22 @@ windows@windows_agent holds="the agent's settings" | C:\\Users\\me\\dev\\repo
 windows@windows_agent holds="the agent's settings" | AGENT~1
 windows@windows_agent holds="the agent's settings" | \\\\?\\C:\\Users\\me\\dev\\repo
 windows@windows_agent holds=none | src
+
+# A name canonically the same as a protected one (`é` as one character, or
+# as `e` and a combining accent, which APFS and HFS+ open as one file) is it,
+# written out or picked by a pattern; a name whose marks differ is not.
+paths cafe base=macos folder=/Users/me/dev/repo/caf\u{e9} words="the agent's settings"
+paths cafe_decomposed base=macos folder=/Users/me/dev/repo/cafe\u{301} words="the agent's settings"
+posix@cafe place="protected:the agent's settings" | caf\u{e9}/x
+posix@cafe place="protected:the agent's settings" holds="the agent's settings" | cafe\u{301}/x
+posix@cafe place="protected:the agent's settings" | CAFE\u{301}/x
+posix@cafe holds="the agent's settings" | cafe\u{301}
+posix@cafe place="protected:the agent's settings" | cafe\u{301}/*
+posix@cafe place="protected:the agent's settings" | caf?\u{301}/x
+posix@cafe_decomposed place="protected:the agent's settings" | caf\u{e9}/x
+posix@cafe_decomposed place="protected:the agent's settings" | caf\u{e9}*/x
+posix@cafe_decomposed place="protected:the agent's settings" | caf?/x
+posix@cafe_decomposed place="protected:the agent's settings" | caf[\u{e9}]/x
+posix@cafe place="protected:the agent's settings" | caf[\u{e9}]/x
+posix@cafe place=inside holds=none | cafe/x
+posix@cafe place=inside holds=none | cafe\u{300}/x

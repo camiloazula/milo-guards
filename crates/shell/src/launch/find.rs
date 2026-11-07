@@ -177,6 +177,43 @@ pub(crate) fn find_unread_primary(args: &[Arg]) -> bool {
     false
 }
 
+/// The files `find` writes with its own actions: the value of `-fprint`,
+/// `-fprint0` and `-fls`, and the first of `-fprintf`'s two (the file, then
+/// the format, which may hold any text). Read as [`find_unread_primary`]
+/// walks the expression, so a test's value and the words an `-exec` runs are
+/// not taken for one.
+pub(crate) fn find_outputs(args: &[Arg]) -> Vec<&Arg> {
+    const ALSO_VALUED: [&str; 7] = [
+        "-printf", "-inum", "-uid", "-gid", "-fstype", "-used", "-context",
+    ];
+    let mut outputs = Vec::new();
+    let mut iter = expression(args).iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some("-fprint" | "-fprint0" | "-fls") => outputs.extend(iter.next()),
+            Some("-fprintf") => {
+                outputs.extend(iter.next());
+                iter.next();
+            }
+            Some(text) if FIND_VALUED.contains(&text) || ALSO_VALUED.contains(&text) => {
+                iter.next();
+            }
+            Some("-exec" | "-execdir" | "-ok" | "-okdir") => {
+                for word in iter.by_ref() {
+                    if matches!(word.known(), Some(";" | "+")) {
+                        break;
+                    }
+                }
+            }
+            Some(text) if text.starts_with("-newer") => {
+                iter.next();
+            }
+            _ => {}
+        }
+    }
+    outputs
+}
+
 /// Whether an argument of `find` starts its expression, after the places
 /// it searches: a test, an action, `(` or `!`, written or only known when
 /// it runs and starting with `-` (`"-$A"`, see [`option_start`]).

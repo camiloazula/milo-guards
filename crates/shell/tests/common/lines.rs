@@ -798,3 +798,15 @@ pub fn names_set_many_times() -> [(String, &'static str, bool); 4] {
         (same, "x | x | x | x; ", false),
     ]
 }
+
+/// A copy into a long pattern of `part` folders (`a*/`, `**/`) inside the
+/// workspace, of about `size` bytes, ending in `last`: each part may be where
+/// a place a tool runs on its own (`.vscode/tasks.json`) starts, which once
+/// took time in the square of the parts for every place on the list.
+pub fn long_pattern_copy(size: usize, part: &str, last: &str) -> String {
+    let head = "cp x src/";
+    format!(
+        "{head}{}{last}",
+        filled(part, size, head.len() + last.len())
+    )
+}

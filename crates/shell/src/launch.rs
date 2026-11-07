@@ -27,7 +27,9 @@ mod tools;
 mod wrappers;
 
 use find::find_exec;
-pub(crate) use find::{find_may_act_on, find_targets, find_unread_primary, FIND_VALUED};
+pub(crate) use find::{
+    find_may_act_on, find_outputs, find_targets, find_unread_primary, FIND_VALUED,
+};
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global, Unread};
 pub(crate) use interpreters::{
     after_run, code_options, is_interpreter, is_ipython, is_node, is_python, is_ts_node, options,
@@ -1094,6 +1096,262 @@ fn aliases(args: &[Arg]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// `faketime [OPTIONS] TIME PROGRAM…`: the program after the time it fakes,
+/// which may start with a dash (`-15d`). `--date-prog PROG` runs `PROG` as
+/// well, to read the time.
+fn faketime(args: &[Arg]) -> Launch {
+    let start = after_options_by(args, |text, _| match text {
+        "--date-prog" => Word::Value,
+        "-m" | "-f" | "--exclude-monotonic" | "--disable-shm" => Word::Flag,
+        _ => Word::Operand,
+    })
+    .map(|time| time + 1);
+    let program = runs(args, start);
+    let date_prog = args
+        .iter()
+        .position(|arg| arg.known() == Some("--date-prog"))
+        .filter(|at| at + 1 < args.len());
+    match date_prog {
+        Some(at) => Launch::Either(Box::new(program), Box::new(Launch::Runs(at + 1))),
+        None => program,
+    }
+}
+
+/// What a bubblewrap or proot run is read as: the program it starts, judged
+/// as written, and unreadable as well, since a bind or another root makes a
+/// path it names stand for any folder (`bwrap --bind ~/.ssh /x cat /x/id_rsa`).
+fn mapped(program: Launch) -> Launch {
+    let unread = Launch::Opaque("runs a command in a file system it maps");
+    match program {
+        Launch::Itself => unread,
+        program => Launch::Either(Box::new(program), Box::new(unread)),
+    }
+}
+
+/// `bwrap [OPTIONS] PROGRAM…`: its options take none, one, two or three
+/// values; past one it does not know, where the program starts is not read.
+fn bwrap(args: &[Arg]) -> Launch {
+    const ONE: [&str; 33] = [
+        "--args",
+        "--argv0",
+        "--userns",
+        "--userns2",
+        "--pidns",
+        "--uid",
+        "--gid",
+        "--hostname",
+        "--chdir",
+        "--unsetenv",
+        "--lock-file",
+        "--sync-fd",
+        "--remount-ro",
+        "--overlay-src",
+        "--tmp-overlay",
+        "--ro-overlay",
+        "--exec-label",
+        "--file-label",
+        "--proc",
+        "--dev",
+        "--tmpfs",
+        "--mqueue",
+        "--dir",
+        "--seccomp",
+        "--add-seccomp-fd",
+        "--block-fd",
+        "--userns-block-fd",
+        "--info-fd",
+        "--json-status-fd",
+        "--cap-add",
+        "--cap-drop",
+        "--perms",
+        "--size",
+    ];
+    const TWO: [&str; 14] = [
+        "--setenv",
+        "--bind",
+        "--bind-try",
+        "--dev-bind",
+        "--dev-bind-try",
+        "--ro-bind",
+        "--ro-bind-try",
+        "--bind-fd",
+        "--ro-bind-fd",
+        "--file",
+        "--bind-data",
+        "--ro-bind-data",
+        "--symlink",
+        "--chmod",
+    ];
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        let Some(text) = arg.known() else {
+            return Launch::Opaque("runs a command in a file system it maps");
+        };
+        at += match text {
+            "--" => return mapped(runs(args, Some(at + 1))),
+            _ if !text.starts_with("--") => return mapped(runs(args, Some(at))),
+            _ if ONE.contains(&text) => 2,
+            _ if TWO.contains(&text) => 3,
+            "--overlay" => 4,
+            _ if text.starts_with("--unshare-")
+                || text.starts_with("--share-")
+                || matches!(
+                    text,
+                    "--disable-userns"
+                        | "--assert-userns-disabled"
+                        | "--clearenv"
+                        | "--new-session"
+                        | "--die-with-parent"
+                        | "--as-pid-1"
+                        | "--level-prefix"
+                ) =>
+            {
+                1
+            }
+            _ => return Launch::Opaque("runs a command in a file system it maps"),
+        };
+    }
+    mapped(Launch::Itself)
+}
+
+/// `proot [OPTIONS] PROGRAM…`: a root (`-r`, `-R`, `-S`) or a bind (`-b`,
+/// `-m`) maps the file system the program sees; without one it is the same.
+/// `-w DIR` starts the program in `DIR`.
+fn proot(args: &[Arg]) -> Launch {
+    const VALUES: [&str; 20] = [
+        "-r",
+        "--rootfs",
+        "-b",
+        "--bind",
+        "-m",
+        "--mount",
+        "-q",
+        "--qemu",
+        "-w",
+        "--pwd",
+        "--cwd",
+        "-k",
+        "--kernel-release",
+        "-i",
+        "--change-id",
+        "-p",
+        "--port",
+        "-v",
+        "-R",
+        "-S",
+    ];
+    const MAPS: [&str; 8] = [
+        "-r", "--rootfs", "-b", "--bind", "-m", "--mount", "-R", "-S",
+    ];
+    let start = after_options(args, &VALUES);
+    let program = started_in(
+        args,
+        start,
+        &["-w", "--pwd", "--cwd"],
+        &VALUES,
+        runs(args, start),
+    );
+    let maps = args
+        .iter()
+        .take(start.unwrap_or(args.len()))
+        .filter_map(Arg::known)
+        .any(|text| {
+            MAPS.iter().any(|map| {
+                text == *map
+                    || text
+                        .strip_prefix(map)
+                        .is_some_and(|rest| rest.starts_with('=') || !map.starts_with("--"))
+            })
+        });
+    if maps {
+        mapped(program)
+    } else {
+        program
+    }
+}
+
+/// The commands `man` is told to run, which it hands to a shell: the pager
+/// (`-P CMD`, `-PCMD`, `--pager=CMD`) and the browser (`-HCMD`,
+/// `--html=CMD`). Its short options are read as getopt reads them: in a
+/// bundle (`-aP CMD`), an option that takes a value takes the rest of the
+/// word, or the next word when the rest is empty, and `-H` takes only what is
+/// attached. A word only known when it runs may be any of them.
+fn man_commands(args: &[Arg]) -> Vec<Arg> {
+    /// The short options of man-db that take a value.
+    const VALUED: &str = "CRLmMSepPrE";
+    let mut commands = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else {
+            if arg.text().starts_with('-') {
+                commands.push(arg.clone());
+            }
+            continue;
+        };
+        if text == "--" {
+            break;
+        }
+        if let Some(long) = text.strip_prefix("--") {
+            match long.split_once('=') {
+                Some(("pager" | "html", value)) => commands.push(Arg::Known(value.to_string())),
+                None if long == "pager" => commands.extend(iter.next().cloned()),
+                _ => {}
+            }
+            continue;
+        }
+        let Some(bundle) = text.strip_prefix('-') else {
+            continue;
+        };
+        for (at, option) in bundle.char_indices() {
+            let rest = &bundle[at + option.len_utf8()..];
+            if option == 'H' {
+                if !rest.is_empty() {
+                    commands.push(Arg::Known(rest.to_string()));
+                }
+                break;
+            }
+            if VALUED.contains(option) {
+                let value = if rest.is_empty() {
+                    iter.next().cloned()
+                } else {
+                    Some(Arg::Known(rest.to_string()))
+                };
+                if option == 'P' {
+                    commands.extend(value);
+                }
+                break;
+            }
+        }
+    }
+    commands
+}
+
+/// `fzf --preview CMD` runs `CMD` through a shell for each line it shows; a
+/// key binding may run any command (`--bind 'enter:execute(…)'`), which is
+/// not read.
+fn fzf(args: &[Arg]) -> Launch {
+    let binds = args.iter().filter_map(Arg::known).any(|text| {
+        text == "--bind" || text.starts_with("--bind=") || text.starts_with("--listen")
+    });
+    if binds {
+        return Launch::Opaque("runs the commands its key bindings name");
+    }
+    option_value(args, "--preview", "--preview").map_or(Launch::Itself, |preview| {
+        Launch::Script(Shell::Posix, preview)
+    })
+}
+
+/// The first word of an `alias` only known when it runs, after a `--` that
+/// ends the options: its name or its value may be anything, so what a call
+/// of the alias runs is not read.
+fn unread_alias(args: &[Arg]) -> Option<&Arg> {
+    let words = match args.split_first() {
+        Some((first, rest)) if first.known() == Some("--") => rest,
+        _ => args,
+    };
+    words.iter().find(|word| word.known().is_none())
+}
+
 /// Say what the options of the wrapper `key`, the arguments before the
 /// program at `start`, do: `time -o FILE` writes, an option the guard does
 /// not know is not read. For `effect` only.
@@ -1306,10 +1564,22 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // `alias f='cat .env'`: a call of `f` runs the value, read as a
         // script where it is defined, as a function's body is; each
         // `NAME=VALUE` is read apart where the script is.
+        // A word only known when it runs (`alias x="$CMD"`) may define any
+        // alias with any value, so a later call of it runs a script the
+        // guard does not see: the definition is that script. The aliases it
+        // defines in full are read as well, so a call of one is judged by
+        // what it runs.
         "alias" if unit.shell == Shell::Posix => {
-            aliases(args).first().map_or(Launch::Itself, |(_, value)| {
+            let known = aliases(args).first().map_or(Launch::Itself, |(_, value)| {
                 Launch::Script(Shell::Posix, Arg::Known((*value).to_string()))
-            })
+            });
+            match (unread_alias(args), known) {
+                (Some(word), Launch::Itself) => Launch::Unread(word.clone()),
+                (Some(word), known) => {
+                    Launch::Either(Box::new(known), Box::new(Launch::Unread(word.clone())))
+                }
+                (None, known) => known,
+            }
         }
         // `busybox rm …` runs its applet: the applet is the program.
         "busybox" if posix => runs(args, after_options(args, &[])),
@@ -1412,6 +1682,36 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         "prlimit" if posix => runs(args, after_options(args, &[])),
         // `nsenter -t 1 -a cmd` runs `cmd` in the init process's namespaces.
         "nsenter" if posix => tools::nsenter(args),
+        // Sandboxes and fakers that run the program after their options:
+        // firejail's options are written with `=`, fakeroot's take a value
+        // apart.
+        "firejail" if posix => runs(args, after_options(args, &[])),
+        "fakeroot" if posix => runs(
+            args,
+            after_options(args, &["-l", "--lib", "--faked", "-s", "-i", "-b"]),
+        ),
+        "faketime" if posix => faketime(args),
+        // bubblewrap and proot run the program in a file system they map, so
+        // a path it names may be any folder of the machine.
+        "bwrap" if posix => bwrap(args),
+        "proot" if posix => proot(args),
+        // `entr cmd` runs `cmd` each time a file changes; `-s` hands its first
+        // argument to a shell.
+        "entr" if posix => match after_options(args, &[]) {
+            Some(start) if has_flag(args, Some('s'), None) => {
+                args.get(start).map_or(Launch::Itself, |script| {
+                    Launch::Script(Shell::Posix, script.clone())
+                })
+            }
+            start => runs(args, start),
+        },
+        // `man -P CMD` and fzf's `--preview CMD` hand a command to a shell.
+        "man" if posix => man_commands(args)
+            .into_iter()
+            .map(|command| Launch::Script(Shell::Posix, command))
+            .reduce(|first, second| Launch::Either(Box::new(first), Box::new(second)))
+            .unwrap_or(Launch::Itself),
+        "fzf" if posix => fzf(args),
         "xcrun" if posix => runs(
             args,
             after_options(args, &["--sdk", "-sdk", "--toolchain", "-toolchain"]),
