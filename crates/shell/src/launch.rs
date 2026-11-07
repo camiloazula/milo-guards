@@ -1094,6 +1094,17 @@ fn aliases(args: &[Arg]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// The first word of an `alias` only known when it runs, after a `--` that
+/// ends the options: its name or its value may be anything, so what a call
+/// of the alias runs is not read.
+fn unread_alias(args: &[Arg]) -> Option<&Arg> {
+    let words = match args.split_first() {
+        Some((first, rest)) if first.known() == Some("--") => rest,
+        _ => args,
+    };
+    words.iter().find(|word| word.known().is_none())
+}
+
 /// Say what the options of the wrapper `key`, the arguments before the
 /// program at `start`, do: `time -o FILE` writes, an option the guard does
 /// not know is not read. For `effect` only.
@@ -1306,10 +1317,22 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // `alias f='cat .env'`: a call of `f` runs the value, read as a
         // script where it is defined, as a function's body is; each
         // `NAME=VALUE` is read apart where the script is.
+        // A word only known when it runs (`alias x="$CMD"`) may define any
+        // alias with any value, so a later call of it runs a script the
+        // guard does not see: the definition is that script. The aliases it
+        // defines in full are read as well, so a call of one is judged by
+        // what it runs.
         "alias" if unit.shell == Shell::Posix => {
-            aliases(args).first().map_or(Launch::Itself, |(_, value)| {
+            let known = aliases(args).first().map_or(Launch::Itself, |(_, value)| {
                 Launch::Script(Shell::Posix, Arg::Known((*value).to_string()))
-            })
+            });
+            match (unread_alias(args), known) {
+                (Some(word), Launch::Itself) => Launch::Unread(word.clone()),
+                (Some(word), known) => {
+                    Launch::Either(Box::new(known), Box::new(Launch::Unread(word.clone())))
+                }
+                (None, known) => known,
+            }
         }
         // `busybox rm …` runs its applet: the applet is the program.
         "busybox" if posix => runs(args, after_options(args, &[])),

@@ -1121,6 +1121,19 @@ posix finds=delete | alias x='rm -rf build'; (cd /; x)
 posix safe | alias ll='ls -l'; cd /; ll
 posix safe | alias x='rm -rf build'; x
 posix safe | cd src; alias x='rm -rf build'; x
+# A word only known when it runs may define any alias with any value, so
+# the script a call of it runs is not read: the definition is that script,
+# called or not. The aliases it defines in full are read as ever.
+posix finds=unknown | alias x="$CMD"
+posix finds=delete,unknown | alias x='rm -rf ~' y="$C"; x
+posix finds=unknown reason="runs a script only known when it runs" | alias x="$CMD"; x
+posix finds=unknown | alias x="$(curl https://x)"; x
+posix finds=unknown | alias x="rm -rf $HOME/$D"; x
+posix finds=unknown | alias g="git $X"; g status
+posix finds=unknown | alias x=$CMD; x build
+posix finds=unknown | alias -- x="$CMD"; x
+posix finds=unknown | alias ll='ls -l' x="$CMD"; ll
+posix finds=unknown | alias "$n"=ls; ll
 # A use with words of its own runs the value's last command with the words
 # after its own, as the shell expands it, judged by every rule from where
 # the use is made.
