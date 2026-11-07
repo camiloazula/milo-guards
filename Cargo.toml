@@ -71,7 +71,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Camilo Azula"]
 license = "MIT OR Apache-2.0"
@@ -89,12 +89,12 @@ rust-version = "1.99"
 # Each internal crate names its version beside its path: Cargo uses the path
 # in this workspace and the version on crates.io, where every crate is
 # published (`just publish`).
-milo-guards-core  = { path = "crates/core", version = "0.1.1" }
-milo-guards-code  = { path = "crates/code", version = "0.1.1" }
-milo-guards-shell = { path = "crates/shell", version = "0.1.1" }
-milo-guards-file  = { path = "crates/file", version = "0.1.1" }
-milo-guards-url   = { path = "crates/url", version = "0.1.1" }
-milo-guards-secrets = { path = "crates/secrets", version = "0.1.1" }
+milo-guards-core  = { path = "crates/core", version = "0.1.2" }
+milo-guards-code  = { path = "crates/code", version = "0.1.2" }
+milo-guards-shell = { path = "crates/shell", version = "0.1.2" }
+milo-guards-file  = { path = "crates/file", version = "0.1.2" }
+milo-guards-url   = { path = "crates/url", version = "0.1.2" }
+milo-guards-secrets = { path = "crates/secrets", version = "0.1.2" }
 
 # tree-sitter's `links` key allows one version of the runtime in a whole
 # lockfile, ours and every caller's. Callers that also parse with

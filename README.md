@@ -69,10 +69,10 @@ milo-guards = { version = "0.1", default-features = false, features = ["shell"] 
 ```
 
 To depend on a commit instead, the git form works too, pinned to a release
-tag (`v0.1.1` is the latest):
+tag (`v0.1.2` is the latest):
 
 ```toml
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.1" }
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.2" }
 ```
 
 It needs Rust 1.99 or newer. If your program also links tree-sitter, it has

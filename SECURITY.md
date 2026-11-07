@@ -41,8 +41,10 @@ caller's policy is reported there.
 
 ## Supported versions
 
-Nothing is released yet. Fixes go to `main` only; callers depend on a git
-commit and move to the fix by bumping it.
+The latest release of the crates on crates.io gets fixes, as a patch of
+its minor version: a caller that depends on `"0.1"` takes one with `cargo
+update`. Older minor versions get none. A caller that depends on a git tag
+moves to the fix by bumping it.
 
 ## Dependencies
 

@@ -286,7 +286,8 @@ and the runner, are in its `tests/common/cases.rs` (for the path model,
   does and of its edge cases in `crates/<crate>/tests/<what-it-checks>.rs`,
   with shared helpers in `tests/common`; a test of the front door from end to
   end in `crates/guards/tests`.
-- Nothing is released yet. Callers depend on a git commit.
+- Callers depend on a release from crates.io, or on a git tag; a merged
+  change reaches them in the next release ([Releasing](#releasing)).
 
 ## Releasing
 
