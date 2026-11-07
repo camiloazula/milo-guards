@@ -33,6 +33,7 @@ use std::collections::HashSet;
 use tree_sitter::Node;
 
 use super::{walk, Ancestor, Language};
+use crate::unit::MAX_TREE_DEPTH;
 
 /// Whether `code` is read whole: nothing in it is outside the subset above.
 /// `None` when it is not; when it is, `Some(true)` if it may load a module,
@@ -54,6 +55,13 @@ pub(super) fn reads_whole_python2(code: &str) -> Option<bool> {
         return None;
     }
     python(code, true)
+}
+
+/// Whether a node with `above` over it is within [`MAX_TREE_DEPTH`]: the
+/// readers stop walking past it (`deep`), so the acts of code nested deeper
+/// are not all found, and such code is never read whole.
+fn shallow(above: &[Ancestor<'_>]) -> bool {
+    above.len() <= MAX_TREE_DEPTH
 }
 
 /// Whether `code` holds a control character other than a newline or a tab,
@@ -228,7 +236,8 @@ fn python(code: &str, python2: bool) -> Option<bool> {
     }
     let mut whole = true;
     walk(root, |node, field, above| {
-        whole = python_node(node, field, above, code, &assigned, &imported, python2);
+        whole =
+            shallow(above) && python_node(node, field, above, code, &assigned, &imported, python2);
         whole
     });
     // Python loads modules from the folder it runs in without an import
@@ -493,7 +502,7 @@ fn javascript(code: &str) -> bool {
     }
     let mut whole = true;
     walk(root, |node, field, above| {
-        whole = javascript_node(node, field, above, code, &assigned);
+        whole = shallow(above) && javascript_node(node, field, above, code, &assigned);
         whole
     });
     whole

@@ -191,7 +191,11 @@ fn code_nested_very_deeply_ends() {
         for depth in [2_000, 20_000] {
             let code = nested(language, depth);
             let _ = read(language, &code);
-            let _ = understand(language, &code);
+            assert_eq!(
+                understand(language, &code),
+                Understanding::NotUnderstood,
+                "{language:?} {depth}"
+            );
         }
         // Nested code of a sensible depth is read as any other.
         assert_ne!(
@@ -256,4 +260,80 @@ fn many_names_and_calls_end() {
         )))
         .collect();
     let _ = read(JavaScript, &javascript);
+}
+
+/// Shapes of code that nest `depth` deep, each followed by a statement the
+/// reader only reads if it walks past the deep part: a write, in Python.
+fn deep_then_write(language: Language, depth: usize) -> Vec<String> {
+    match language {
+        Python => vec![
+            format!(
+                "x = 1\nx{}.b()\nopen('/home/me/.bashrc', 'w')",
+                ".a".repeat(depth)
+            ),
+            format!(
+                "print({}1{})\nopen('/home/me/.bashrc', 'w')",
+                "(".repeat(depth),
+                ")".repeat(depth)
+            ),
+            format!(
+                "x = {}1{}\nopen('/home/me/.bashrc', 'w')",
+                "[".repeat(depth),
+                "]".repeat(depth)
+            ),
+            format!(
+                "x = {}\nopen('/home/me/.bashrc', 'w')",
+                "-".repeat(depth) + "1"
+            ),
+        ],
+        JavaScript => vec![
+            format!(
+                "console.log({}1{})\nconsole.log(2)",
+                "(".repeat(depth),
+                ")".repeat(depth)
+            ),
+            format!("let x = 1\nconsole.log(x{})", ".length".repeat(depth)),
+            format!(
+                "let x = {}1{}\nconsole.log(x)",
+                "[".repeat(depth),
+                "]".repeat(depth)
+            ),
+            format!("let x = {}1\nconsole.log(x)", "-".repeat(depth)),
+        ],
+    }
+}
+
+#[test]
+fn code_the_reader_does_not_walk_whole_is_not_understood() {
+    for language in [Python, JavaScript] {
+        for depth in [10, 100, 199, 200, 201, 300, 399, 400, 401, 450, 800, 2_000] {
+            for code in deep_then_write(language, depth) {
+                if read(language, &code).deep {
+                    assert_eq!(
+                        understand(language, &code),
+                        Understanding::NotUnderstood,
+                        "{language:?}, {depth} deep: {}",
+                        &code[..code.len().min(80)]
+                    );
+                }
+            }
+        }
+        // Some of the deepest shapes are past the reader's walk, so the check
+        // is not empty; one it walks whole still finds the write after it.
+        let deepest = deep_then_write(language, 2_000);
+        assert!(
+            deepest.iter().any(|code| read(language, code).deep),
+            "{language:?}"
+        );
+        if language == Python {
+            for code in &deepest {
+                let reading = read(language, code);
+                assert!(
+                    reading.deep || !reading.acts.is_empty(),
+                    "{}",
+                    &code[..code.len().min(80)]
+                );
+            }
+        }
+    }
 }
