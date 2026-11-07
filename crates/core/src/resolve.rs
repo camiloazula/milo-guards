@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use crate::spelling::glob::{self, Shape, WILDCARDS};
-use crate::{Paths, Place, ProtectedKind, Sensitivity};
+use crate::{canonical, Paths, Place, ProtectedKind, Sensitivity};
 
 /// How a path is spelled: what its separators are, and whether it can name
 /// a drive or a share. It follows the system the path will be used on, not
@@ -2276,10 +2276,27 @@ impl Resolver {
 
 /// Whether a spelled name is the protected `name`: the same without case on
 /// every host (some file systems on POSIX hosts ignore it, and what a
-/// protected path is spelled as is the caller's to say), or, on Windows, its
-/// 8.3 short name.
+/// protected path is spelled as is the caller's to say), canonically the
+/// same (see [`same_canonical`]), or, on Windows, its 8.3 short name.
 fn same_name(spelled: &str, name: &str, windows: bool) -> bool {
-    same_fold(spelled, name) || (windows && spelled.contains('~') && short_name(spelled, name))
+    same_fold(spelled, name)
+        || same_canonical(spelled, name)
+        || (windows && spelled.contains('~') && short_name(spelled, name))
+}
+
+/// Whether two names that are not both ASCII are canonically the same
+/// without case: equal once decomposed ([`canonical::decomposed`]), by
+/// [`fold`]. APFS and HFS+ open `café` spelled with one `é` or with `e` and a
+/// combining accent as one file, and HFS+ keeps the second on disk. Names
+/// that differ in their marks stay apart. A place is never judged the
+/// workspace by it: [`Loc::holds`] compares the workspace as spelled; only
+/// [`Resolver::workspace_of`], which folds case as well, reads either
+/// spelling as the workspace's.
+fn same_canonical(a: &str, b: &str) -> bool {
+    !(a.is_ascii() && b.is_ascii()) && {
+        let (a, b) = (canonical::decomposed(a), canonical::decomposed(b));
+        a.iter().map(|&c| fold(c)).eq(b.iter().map(|&c| fold(c)))
+    }
 }
 
 /// The path `text` as `path` is spelled, from another text.
@@ -2416,7 +2433,17 @@ fn pattern_matches(part: &str, name: &str, flavour: Flavour, hidden: bool, windo
         glob::matches(part, name, flavour, hidden)
             || glob::matches(&part.to_lowercase(), &name.to_lowercase(), flavour, hidden)
     };
-    fold(part, name) || (windows && short_form(name).is_some_and(|short| fold(part, &short)))
+    // A pattern and a name that are not both ASCII are matched as well with
+    // the marks of both dropped, as APFS and HFS+ read them: the disk may keep
+    // either canonical spelling, so `caf?` and `caf[é]` pick `café` both ways
+    // (see [`same_canonical`]). Every caller fails closed on a match too many.
+    fold(part, name)
+        || (!(part.is_ascii() && name.is_ascii())
+            && fold(
+                &canonical::without_marks(part),
+                &canonical::without_marks(name),
+            ))
+        || (windows && short_form(name).is_some_and(|short| fold(part, &short)))
 }
 
 /// Whether a pattern part may pick `name` (see [`pattern_matches`]), by a

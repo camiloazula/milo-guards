@@ -236,7 +236,11 @@ itself.
   `å`, the Ohm sign `Ω` an `ω` and the capital sharp s `ẞ` a `ß` (`.ſsh` is
   `.ssh`). NTFS does not fold the signs. So the wide fold is used only where
   matching too much fails closed: the home directory, the sensitive places,
-  protected paths and `.git`. The workspace and the temporary folders compare
+  protected paths and `.git`. Those places also compare in either canonical
+  spelling (Unicode's canonical equivalence: `é` as one character, or as `e`
+  and a combining accent, which APFS and HFS+ open as one name), from the
+  Unicode 17.0 tables in `src/canonical.rs`; names whose marks differ stay
+  apart. The workspace and the temporary folders compare
   as spelled on POSIX and by ASCII case on Windows, where matching too much
   would make another folder the agent's own: `C:\Users\me\worK` is not the
   workspace `C:\Users\me\work`.

@@ -163,6 +163,11 @@ rows are in `crates/core/tests`.
   places and the protected paths compare without case on every host, by Unicode
   simple fold (`.ſsh` is `.ssh`). The workspace compares as spelled on POSIX,
   so another case is judged outside: a false alarm on a write, never a miss.
+- **Unicode normal forms**: APFS and HFS+ open `é` as one character and as
+  `e` and a combining accent as one name, and HFS+ keeps the second on disk.
+  The home directory, the sensitive places and the protected paths compare in
+  either canonical spelling on every host; names whose marks differ stay
+  apart.
 - **Windows short names** (`SSH~1`, `CAMILO~1`, `AGENT~1`, `GIT~1`), for the
   home directory, the sensitive places, protected paths and `.git`.
 - **`/` against `\`, doubled and trailing separators, `.`, `..`**, and `..`
@@ -264,11 +269,6 @@ Not covered, on purpose, and what to do:
   machine, Git Bash's `/c/Users/...` on a Windows one, each read as the system
   it runs on reads it. A secret in a text is the business of a
   guard that reads text.
-- **Unicode normal forms.** A file system that treats `é` and `e` plus an
-  accent as one name is not read that way: the path is still beyond the
-  workspace, but is `write_outside` and not the caller's `write_protected`.
-  (A secret in another user's home directory is a secret whatever that
-  folder's name.)
 - **Windows reserved names** (`COM1`, `PRN`, `AUX`, `LPT1`) are not devices
   here: a write to one in the workspace is judged as a file.
 - **A relative working directory** puts every relative path outside the

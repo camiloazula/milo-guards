@@ -991,3 +991,10 @@ powershell safe | Get-ChildItem *.yaml -Recurse | Remove-Item
 powershell safe | Remove-Item *.yaml -Recurse
 cmd safe | del /s *.yaml
 cmd safe | del /s config.yaml
+
+# A protected name is matched in either canonical spelling, as a Mac opens
+# both (`é` as one character, or `e` and a combining accent).
+paths cafe base=macos folder=/Users/me/dev/repo/caf\u{e9} words="the agent's settings"
+posix@cafe finds=delete reason="deletes the agent's settings" | rm -rf cafe\u{301}
+posix@cafe finds=delete reason="deletes the agent's settings" | rm -rf cafe\u{301}/*
+posix@cafe safe | rm -rf cafe
