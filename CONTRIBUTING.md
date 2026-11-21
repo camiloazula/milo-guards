@@ -325,16 +325,23 @@ crates.io, and crates.io hands the publish job a token that lasts thirty
 minutes. crates.io does not look at which branch or tag ran the workflow:
 the `release` environment does, and it admits `v*` tags only.
 
+A version on crates.io cannot be replaced, and one version comes from one
+commit: a release tag is pushed once and never moved. If the workflow stops
+after some crates were uploaded and what stopped it is outside the
+repository (a setting at crates.io or on GitHub), mend it and run the failed
+`publish` job again from the run's page: it leaves out every crate that is
+already on crates.io at that version and publishes the rest. If the mend
+needs a commit, it is the next version, with a tag of its own; the workflow
+refuses a new run for a version that is already on crates.io. When crates.io
+answers that the token "is not valid for crate" one of them, that crate's
+trusted publisher is missing or names another repository, workflow or
+environment.
+
 crates.io refuses a new crate from that token, and sets a trusted publisher
 only on a crate that exists. So the release that adds a crate to the
-workspace stops at it: publish the new crate, and every crate the workflow
-did not upload, by hand from the tagged commit, in the order above
-(`cargo login`, then `cargo publish -p <crate> --locked`), and give the new
-crate the same trusted publisher before the next release.
-
-A version on crates.io cannot be replaced. If the workflow stops after some
-crates were uploaded, do not move the tag: publish the rest by hand the
-same way.
+workspace stops at it: publish the new crate by hand from the tagged commit
+(`cargo login`, then `cargo publish -p <crate> --locked`), give it the same
+trusted publisher, and run the `publish` job again for the rest.
 
 ## How a change reaches a caller
 
