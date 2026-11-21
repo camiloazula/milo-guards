@@ -1,0 +1,154 @@
+# A release to crates.io, run when the owner pushes a release tag (`vX.Y.Z`;
+# the tag ruleset lets the owner alone create one).
+#
+# The `package` job decides whether the tag is a release: it refuses a tag
+# that is not the version in Cargo.toml, a commit that `main` did not take as
+# its own (a commit inside a merged branch is refused: only what a pull
+# request merged as is on main's first-parent line), and a commit whose
+# `verify` job in ci.yml did not pass, waiting for that job if it is still
+# running. Then it packages every crate and builds it from its package
+# (`just package`). The `publish` job uploads them in dependency order
+# (`just publish`), compiling nothing.
+#
+# No crates.io token is stored here. crates.io trusts this workflow of this
+# repository in its `release` environment (trusted publishing, set on each
+# crate at crates.io): the publish job shows GitHub's signed statement of
+# which workflow and environment it is, and crates.io answers with a token
+# that lasts thirty minutes and is revoked when the job ends. crates.io does
+# not look at which ref ran the workflow, so the `release` environment is
+# what keeps a branch from publishing: its deployment rule admits `v*` tags
+# only. Only the publish job can ask for that token, and it builds no code:
+# the dependencies' build scripts run in the package job, which cannot.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# One release at a time, and a later tag never cancels a release that
+# started: a published version cannot be taken back.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Least privilege: no job writes to the repo.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # As in ci.yml: outranks rust-toolchain.toml, and a test keeps it, each
+  # `toolchain:` input below and rust-toolchain.toml on the same version.
+  RUSTUP_TOOLCHAIN: "1.99.1"
+
+jobs:
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      # To read the result of ci.yml's verify job on the tagged commit.
+      checks: read
+    steps:
+      # The whole history, so the tag's commit can be looked for on `main`.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.99.1"
+
+      # The tag's name reaches the script through the environment, never
+      # pasted into it.
+      - name: Refuse a tag that is not this version, merged on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -er '.packages[] | select(.name == "milo-guards") | .version')"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::the tag is $TAG but Cargo.toml is at $version: a release tag is v$version"
+            exit 1
+          fi
+          # The list is read whole before it is searched: a search that
+          # stops at the first match would end `git rev-list` early, which
+          # `pipefail` reads as a failure.
+          commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          mainline="$(git rev-list --first-parent origin/main)"
+          if ! grep -qxF "$commit" <<<"$mainline"; then
+            echo "::error::$TAG is not a commit main took as its own: tag the merge commit of the release"
+            exit 1
+          fi
+
+      # ci.yml runs on every push to main and a later push does not cancel
+      # it, so the tagged commit has a verify job of its own. A tag pushed
+      # right after the merge waits for it here; a job run again counts as
+      # running until it ends, and a call to GitHub that fails is tried again.
+      - name: Refuse a commit whose verify job did not pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          for _ in $(seq 1 80); do
+            state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit/check-runs?check_name=verify" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")]
+                    | if length == 0 then "missing"
+                      elif any(.[]; .status != "completed") then "running"
+                      else (sort_by(.completed_at) | last | .conclusion) end')" || state=running
+            case "$state" in
+              success) exit 0 ;;
+              missing | running) sleep 30 ;;
+              *)
+                echo "::error::the verify job on $commit ended as $state: nothing is published from it"
+                exit 1
+                ;;
+            esac
+          done
+          echo "::error::no verify job finished on $commit in 40 minutes: run CI on that commit, then run this job again"
+          exit 1
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      # No build cache: what is checked here is built from nothing but the tag.
+      - run: just package
+        timeout-minutes: 40
+
+  publish:
+    name: publish
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Admits `v*` tags only (a deployment rule of the environment), and is
+    # named in each crate's trusted publisher at crates.io.
+    environment: release
+    permissions:
+      contents: read
+      # Lets the job ask GitHub for the signed statement crates.io checks.
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.99.1"
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      - name: Ask crates.io for this job's token
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+
+      # `--no-verify`: the package job built every crate from its package;
+      # nothing is compiled while the token exists.
+      - run: just publish --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

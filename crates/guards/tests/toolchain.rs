@@ -1,8 +1,8 @@
 //! The Rust version is named in four places, and they must agree: the
 //! toolchain the repository pins, the oldest the crates declare they
-//! build with, and the two ways CI names the one it installs: the
+//! build with, and the two ways a workflow names the one it installs: the
 //! `RUSTUP_TOOLCHAIN` variable and the `toolchain:` input of each Rust
-//! install step.
+//! install step. Every workflow in `.github/workflows` is read.
 
 #![allow(
     clippy::disallowed_methods,
@@ -12,6 +12,27 @@
 
 use std::fs;
 use std::path::Path;
+
+/// Every workflow of the repository, by its path from the root.
+fn workflows() -> Result<Vec<String>, String> {
+    let folder = ".github/workflows";
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(folder);
+    let entries =
+        fs::read_dir(&path).map_err(|e| format!("cannot list {}: {e}", path.display()))?;
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot list {}: {e}", path.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let extension = Path::new(&name).extension().and_then(|e| e.to_str());
+        if matches!(extension, Some("yml" | "yaml")) {
+            found.push(format!("{folder}/{name}"));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
 
 /// A file at the repository root, or a message saying which one is missing.
 fn read(relative: &str) -> Result<String, String> {
@@ -52,15 +73,13 @@ fn major_minor(version: &str) -> String {
 }
 
 #[test]
-fn the_pinned_toolchain_the_minimum_and_ci_agree() -> Result<(), String> {
+fn the_pinned_toolchain_the_minimum_and_the_workflows_agree() -> Result<(), String> {
     let toolchain = value(
         &read("rust-toolchain.toml")?,
         "channel",
         "rust-toolchain.toml",
     )?;
     let minimum = value(&read("Cargo.toml")?, "rust-version", "Cargo.toml")?;
-    let workflow = read(".github/workflows/ci.yml")?;
-    let ci = value(&workflow, "RUSTUP_TOOLCHAIN", ".github/workflows/ci.yml")?;
 
     assert_eq!(
         toolchain.split('.').count(),
@@ -72,33 +91,44 @@ fn the_pinned_toolchain_the_minimum_and_ci_agree() -> Result<(), String> {
         minimum,
         "rust-version in Cargo.toml (`{minimum}`) must be the major.minor of the pinned toolchain (`{toolchain}`)"
     );
-    assert_eq!(
-        ci, toolchain,
-        "CI installs `{ci}` (RUSTUP_TOOLCHAIN in ci.yml) but rust-toolchain.toml pins `{toolchain}`"
-    );
+    let mut installing = 0;
+    for file in workflows()? {
+        let workflow = read(&file)?;
+        if install_steps(&workflow) == 0 {
+            continue;
+        }
+        installing += 1;
+        let ci = value(&workflow, "RUSTUP_TOOLCHAIN", &file)?;
+        assert_eq!(
+            ci, toolchain,
+            "{file} installs `{ci}` (its RUSTUP_TOOLCHAIN) but rust-toolchain.toml pins `{toolchain}`"
+        );
+    }
+    assert!(installing >= 2, "ci.yml and release.yml both install Rust");
     Ok(())
 }
 
 #[test]
-fn every_rust_install_step_in_ci_installs_the_pinned_toolchain() -> Result<(), String> {
+fn every_rust_install_step_in_a_workflow_installs_the_pinned_toolchain() -> Result<(), String> {
     let toolchain = value(
         &read("rust-toolchain.toml")?,
         "channel",
         "rust-toolchain.toml",
     )?;
-    let workflow = read(".github/workflows/ci.yml")?;
-    let inputs = values(&workflow, "toolchain");
-    assert_eq!(
-        inputs.len(),
-        install_steps(&workflow),
-        "every Rust install step in ci.yml needs a `toolchain:` input, and only those do: found {inputs:?}"
-    );
-    assert!(!inputs.is_empty(), "ci.yml installs no Rust");
-    for input in inputs {
+    for file in workflows()? {
+        let workflow = read(&file)?;
+        let inputs = values(&workflow, "toolchain");
         assert_eq!(
-            input, toolchain,
-            "a `toolchain:` input in ci.yml installs `{input}` but rust-toolchain.toml pins `{toolchain}`"
+            inputs.len(),
+            install_steps(&workflow),
+            "every Rust install step in {file} needs a `toolchain:` input, and only those do: found {inputs:?}"
         );
+        for input in inputs {
+            assert_eq!(
+                input, toolchain,
+                "a `toolchain:` input in {file} installs `{input}` but rust-toolchain.toml pins `{toolchain}`"
+            );
+        }
     }
     Ok(())
 }
