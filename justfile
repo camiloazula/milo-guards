@@ -38,10 +38,12 @@ package:
     cargo package --workspace --locked
 
 # Publish every crate to crates.io, in dependency order, at the version in
-# Cargo.toml. Run from the tagged release commit, after `just verify` and
-# `just package`; needs `cargo login`.
-publish:
-    cargo publish --workspace --locked
+# Cargo.toml. The release workflow runs it on a release tag with a token
+# crates.io hands that job, and with `--no-verify`, since `just package`
+# built every crate from its package in the job before; by hand it needs
+# `cargo login`.
+publish *flags:
+    cargo publish --workspace --locked {{flags}}
 
 # `just verify` runs them again in its one instrumented build, apart from
 # the doctests, which `just doc-test` runs, and the timing tests, which

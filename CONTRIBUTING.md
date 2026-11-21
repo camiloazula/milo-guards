@@ -14,7 +14,7 @@ with clippy, rustfmt and `llvm-tools-preview`, the first time `cargo` runs
 here), so every contributor gets the same clippy verdicts. It is also the
 minimum supported version (`rust-version` in `Cargo.toml`) and the version CI
 runs (`RUSTUP_TOOLCHAIN` and each Rust install step's `toolchain:` input in
-`.github/workflows/ci.yml`); a test fails when they differ. Bump them
+`.github/workflows/ci.yml` and `release.yml`); a test fails when they differ. Bump them
 together, to the newest stable. Edition 2021.
 
 Run commands with the pinned toolchain: `cargo --version` in the repo should
@@ -308,11 +308,33 @@ its path. A release is:
 3. `just verify`, then `just package`: every crate packaged and built from
    its package, as crates.io will build it, with the case files left out
    (`exclude` in each crate's manifest).
-4. Merge, tag the merge commit `vX.Y.Z` and push the tag.
-5. `just publish` from that commit: `cargo publish --workspace`, which
-   uploads the crates in dependency order (`core`, `code`, `shell`, `file`,
-   `url`, `secrets`, `milo-guards`). It needs a crates.io token with publish
-   rights (`cargo login`).
+4. Merge, tag the merge commit `vX.Y.Z` and push the tag. Only the owner
+   can create a release tag.
+5. The tag starts `.github/workflows/release.yml`, which does the rest. It
+   refuses a tag that is not `v` and the version in `Cargo.toml`, a commit
+   that is not one `main` took from a pull request (a commit inside the
+   merged branch is refused), and a commit whose `verify` job did not pass
+   on `main`; a tag pushed right after the merge waits for that job. Then
+   it runs `just package`, and `just publish --no-verify`:
+   `cargo publish --workspace`, which uploads the crates in dependency
+   order (`core`, `code`, `shell`, `file`, `url`, `secrets`, `milo-guards`).
+
+The workflow holds no crates.io token. Each crate names this repository,
+`release.yml` and the `release` environment as its trusted publisher at
+crates.io, and crates.io hands the publish job a token that lasts thirty
+minutes. crates.io does not look at which branch or tag ran the workflow:
+the `release` environment does, and it admits `v*` tags only.
+
+crates.io refuses a new crate from that token, and sets a trusted publisher
+only on a crate that exists. So the release that adds a crate to the
+workspace stops at it: publish the new crate, and every crate the workflow
+did not upload, by hand from the tagged commit, in the order above
+(`cargo login`, then `cargo publish -p <crate> --locked`), and give the new
+crate the same trusted publisher before the next release.
+
+A version on crates.io cannot be replaced. If the workflow stops after some
+crates were uploaded, do not move the tag: publish the rest by hand the
+same way.
 
 ## How a change reaches a caller
 
