@@ -90,8 +90,9 @@ caller pinned to `"0.1"` is never handed a rule it has no answer for. A
 guard that judges a line differently after a fix is a patch, since the API
 is the same, and the change is in [the changelog](CHANGELOG.md).
 
-A command-line program for callers that are not written in Rust is planned,
-with npm and Homebrew packages. Until it ships, the library is the way in.
+The guards are a Rust library and ship no command-line program: a caller
+that is not written in Rust reaches them through a program of its own that
+links the crate.
 
 ## Features
 
