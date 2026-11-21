@@ -6,6 +6,16 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+## 0.1.3 (2026-11-21)
+
+The pages on crates.io, nothing a caller compiles against or a guard answers.
+
+- The README no longer says a command-line program is planned, with npm and
+  Homebrew packages: the guards are a Rust library and ship no program.
+- The crates are published by a workflow when the release tag is pushed,
+  with no stored crates.io token (trusted publishing). This is the first
+  release made that way.
+
 ## 0.1.2 (2026-11-07)
 
 Lines the guards judged wrong, nothing a caller compiles against: a patch.
