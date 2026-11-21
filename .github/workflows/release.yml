@@ -8,7 +8,9 @@
 # `verify` job in ci.yml did not pass, waiting for that job if it is still
 # running. Then it packages every crate and builds it from its package
 # (`just package`). The `publish` job uploads them in dependency order
-# (`just publish`), compiling nothing.
+# (`just publish`), compiling nothing, and leaves out a crate that is
+# already on crates.io at this version, so it can be run again after a
+# release that stopped halfway.
 #
 # No crates.io token is stored here. crates.io trusts this workflow of this
 # repository in its `release` environment (trusted publishing, set on each
@@ -147,8 +149,60 @@ jobs:
         id: auth
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
 
+      # A release that stopped halfway is finished by running this job again.
+      # cargo refuses to publish a workspace when one of its crates is already
+      # on crates.io at that version, so those are left out: each crate's
+      # versions are read from crates.io's index, and cargo publishes the
+      # rest in dependency order. A yanked version counts as published.
+      # Only a job run again may find one: on the first attempt of a run,
+      # a crate already at this version means the tag was pushed twice or
+      # moved to another commit, and one version must come from one commit.
       # `--no-verify`: the package job built every crate from its package;
       # nothing is compiled while the token exists.
-      - run: just publish --no-verify
+      - name: Publish every crate not yet on crates.io at this version
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          crates="$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -er '.packages[] | "\(.name) \(.version)"')"
+          exclude=()
+          left=0
+          while read -r name version; do
+            # Where the index keeps a crate depends on the length of its name.
+            case "${#name}" in
+              1) path="1/$name" ;;
+              2) path="2/$name" ;;
+              3) path="3/${name:0:1}/$name" ;;
+              *) path="${name:0:2}/${name:2:2}/$name" ;;
+            esac
+            status="$(curl -sS --retry 3 -o "$RUNNER_TEMP/index" -w '%{http_code}' \
+              "https://index.crates.io/$path")"
+            case "$status" in
+              200)
+                if jq -e --arg version "$version" 'select(.vers == $version)' \
+                  "$RUNNER_TEMP/index" >/dev/null; then
+                  echo "$name $version is already on crates.io"
+                  exclude+=(--exclude "$name")
+                else
+                  left=$((left + 1))
+                fi
+                ;;
+              # A crate crates.io has never seen.
+              404) left=$((left + 1)) ;;
+              *)
+                echo "::error::the index of crates.io answered $status for $name: nothing is published"
+                exit 1
+                ;;
+            esac
+          done <<<"$crates"
+          if [ "${#exclude[@]}" -gt 0 ] && [ "$ATTEMPT" -eq 1 ]; then
+            echo "::error::this version is already on crates.io and this is not a job run again: a release tag is pushed once and never moved"
+            exit 1
+          fi
+          if [ "$left" -eq 0 ]; then
+            echo "every crate is already on crates.io at this version"
+            exit 0
+          fi
+          just publish --no-verify ${exclude[@]+"${exclude[@]}"}
