@@ -49,9 +49,11 @@ working. No recipe but `just timing` reads a clock.
 
 CI runs the gate in two jobs. The `verify` job runs every recipe above but
 `just timing`, in the same order: it reads no clock, so it gives the same
-answer on any machine. The `timing` job runs `just timing` alone. For now it
-is advisory: its rows are being measured on GitHub's runner, and a red
-`timing` run there is a time to look at, not a change that cannot merge.
+answer on any machine. The ruleset on `main` requires it: a pull request
+whose `verify` job is red, or has not finished, cannot merge. The `timing`
+job runs `just timing` alone. For now it is advisory: its rows are being
+measured on GitHub's runner, and a red `timing` run there is a time to look
+at, not a change that cannot merge.
 Locally, `just verify` still runs both.
 
 A timing test lives in its crate's `tests/timing.rs`, and only there. It
@@ -267,7 +269,8 @@ and the runner, are in its `tests/common/cases.rs` (for the path model,
 
 - `main` takes pull requests only. The commits that set the repository up are
   the one exception. A ruleset on `main` refuses a direct push, a force-push
-  and a deletion, so a pull request is the only way in; the release tags
+  and a deletion, so a pull request is the only way in, and it merges only
+  once CI's `verify` job has passed on it; the release tags
   (`v*`) are created, moved or deleted by the owner only.
 - Commit messages describe the change and why. No tool trailers (no
   `Co-Authored-By` or "Generated with" lines) on commits or pull request
