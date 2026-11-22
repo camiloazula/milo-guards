@@ -112,7 +112,13 @@ tree-sitter-javascript = "0.25"
 # The URL guard reads a URL with the WHATWG parser, so every spelling of an
 # address (decimal, octal, hex, shortened, IPv6-mapped, IDN) is judged as the
 # one host a client reads.
-url              = "2.5"
+# 2.5.9 at least: before it the parser dropped the host of a `file:` URL
+# with a drive letter (`file://example.com/C:/x`), so the guard read a file
+# on another machine as a local one and never judged the host. A caller's
+# lockfile decides the version, so the floor is what keeps the answer one
+# answer; `file.cases` holds the URLs. 2.5.9 also mends RUSTSEC-2026-0592
+# (`Url::origin`), which the guard never calls.
+url              = "2.5.9"
 percent-encoding = "2.3"
 
 # The secrets guard reads a text with a table of credential shapes. `regex`

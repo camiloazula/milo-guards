@@ -73,4 +73,10 @@ rules=local_file,local_address first=local_file reason="reads a file from anothe
 finds=local_address reason="fetches your own machine" | file://127.0.0.1/etc/passwd
 @windows first=local_file reason="reads a file from another machine" | file://server/share/x
 @windows first=local_file reason="reads a file from another machine" | file://evil.example.com/share/x
+# A host before a drive letter is still another machine. `url` before 2.5.9
+# dropped the host of such a URL, so its path read as a local one and the
+# host went unjudged: the floor in Cargo.toml is 2.5.9 for these.
+@windows rules=local_file first=local_file reason="reads a file from another machine" | file://evil.example.com/C:/Users/me/dev/repo/src/x.rs
+@windows rules=local_file,local_address first=local_file reason="reads a file from another machine" | file://127.0.0.1/C:/Windows/System32/config/SAM
+@windows finds=metadata | file://169.254.169.254/C:/
 first=unreadable | file://user@host/x
