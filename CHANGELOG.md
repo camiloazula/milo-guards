@@ -6,6 +6,19 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+- `milo-guards-url` needs `url` 2.5.9 or newer. With an older `url` in the
+  caller's lockfile, a `file:` URL with a host and a drive letter
+  (`file://example.com/C:/Users/me/x`) lost its host: on a Windows machine
+  it read as a local path, and the host was not judged. It is now `reads a
+  file from another machine`, with the host's own findings, whatever the
+  lockfile held. Such a URL was a finding before and after.
+- With `url` 2.5.9, a URL of a scheme without a default port and a
+  backslash after its port (`foo://example.com:80\9`) is `unreadable`, where
+  it was `scheme`; and a `^` in a path is shown percent-encoded (`%5E`) in
+  the target of a `credentials` finding.
+- `url` 2.5.9 mends RUSTSEC-2026-0592, a stack overflow in `Url::origin()`.
+  The guard never calls it, so no released version of the guard is affected.
+
 ## 0.1.3 (2026-11-21)
 
 The pages on crates.io, nothing a caller compiles against or a guard answers.

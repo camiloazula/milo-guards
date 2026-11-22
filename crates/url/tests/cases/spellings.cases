@@ -126,6 +126,10 @@ finds=unreadable,local_address | http:\\\\127.0.0.1
 finds=unreadable | http://\\\\example.com/
 finds=unreadable | http:\\/example.com/
 finds=unreadable | http:/\\example.com/
+# After a port, a backslash ends it only for a scheme that has a default
+# port: for any other scheme the parser refuses the URL (`url` 2.5.9; before
+# it, the URL was read and only its scheme was found).
+rules=unreadable | foo://example.com:80\\9
 # A scheme with no or one slash is a path to a client that follows the RFC.
 finds=unreadable | http:/example.com/
 finds=unreadable | http:example.com/
