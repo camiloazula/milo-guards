@@ -7505,7 +7505,20 @@ line past a limit is unreadable there as well;
   ("takes too long to read") only past the budget, and the answer is pinned.
   The POSIX grammar's shapes that reach the same budget (`>`, `<`, `()`,
   `f() ` and `(echo) ` among them) stay timed until the runner shows them out
-  of line with the machine. The count is read through
+  of line with the machine. PowerShell's `${` left open and nested was
+  timed too, and failed the 250 ms bound on the runner alone: about 263 ms
+  at 312 deep, against 9 ms here. It does not reach the budget: its lexer
+  is handed the nest hundreds of times over (379,199 bytes for a line of
+  800 at 400 deep), and what bounds that is the recoveries counted
+  (`MAX_RECOVERIES`, from 256 deep) and the depth past which a nest is
+  refused unread, together. The row is held to the exact bytes handed at
+  nine depths, with the answer pinned at each (read whole with an error up
+  to 255 deep, stopped from 256, refused past 400), and so are the
+  costliest neighbours found at 400 deep, `${` followed by a space, a
+  name, a `;` or a `|`, the last handed 1,182,355 bytes for 1,200: a
+  change to either limit, or a grammar that hands more, fails there. The
+  time of such a line is not held anywhere: by the row's ratio the last
+  would take the runner most of a second, which is an estimate. The count is read through
   `milo_guards_shell::testing`, behind the crate's `testing` feature, which
   only its own tests turn on (a dev-dependency on itself): it reads the
   counts the guard keeps anyway, changes nothing the guard answers, and is

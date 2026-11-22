@@ -715,11 +715,12 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
                 )
             }),
         ),
-        (
-            Shell::PowerShell,
-            Stops,
-            Box::new(|size| "${".repeat(at(10_000, size))),
-        ),
+        // `${` alone, nested, is not timed: PowerShell's lexer is handed
+        // the nest hundreds of times over, and GitHub's runner took about
+        // thirty times as long on it as the machine it was written on, so
+        // its time measured the machine. `tests/lexer_budget.rs` holds it to
+        // that count. The two rows below nest deeper than is read at every
+        // size, and time the refusal.
         (
             Shell::PowerShell,
             Stops,

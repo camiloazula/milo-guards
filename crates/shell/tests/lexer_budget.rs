@@ -18,6 +18,13 @@
 //! budget instead: at each size, from a line far below the budget to the
 //! length limit, the bytes handed stay within it and within a written
 //! ceiling, the line is stopped only past it, and the answer is pinned.
+//!
+//! PowerShell's grammar (tree-sitter-powershell 0.26.6) has such a shape
+//! too, bound by other counts than the budget: `${` left open and nested.
+//! Its lexer is handed the nest hundreds of times over, up to the depth
+//! past which a nest is refused unread, and a time bound on it failed on
+//! the runner the same way. It is held to the exact bytes handed at each
+//! depth, which are far below the budget.
 
 mod common;
 
@@ -49,6 +56,9 @@ const STOPPED: &str = "takes too long to read";
 
 /// What the guard says of a line the grammar reads with an error in it.
 const IN_FULL: &str = "cannot be read in full";
+
+/// What the guard says of a line nested deeper than it reads.
+const TOO_DEEP: &str = "nests too deeply to read";
 
 /// The answer to a row at a size: the rules found, in order and each once,
 /// and the reason of the first finding.
@@ -190,6 +200,80 @@ fn lines_cmd_reads_in_quadratic_time_are_held_to_the_budget_of_what_its_lexer_re
                     "{what}: {rules:?} {reason:?}, not {want_rules:?} {want_reason:?}"
                 ));
             }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn a_nest_powershell_is_handed_hundreds_of_times_over_is_held_to_the_bytes_handed() {
+    // `${` left open and nested, two bytes a level. Up to 255 deep the
+    // grammar reads the line whole, with an error in it, and the bytes its
+    // lexer is handed grow with the square of the depth. A parse starts one
+    // recovery more than the nest is deep, so from 256 deep the recoveries
+    // counted stop it (`MAX_RECOVERIES` in `src/unit.rs`): each level then
+    // adds 1,296 bytes, less than a whole parse would be handed. Past 400
+    // deep the openers are counted before any grammar is handed a byte
+    // (`MAX_TREE_DEPTH`), and the line is refused unread. So the depth and
+    // the recoveries bound the work together, at 474 times the line.
+    //
+    // The row was timed, to 250 ms: 9 ms at 312 deep on the machine it was
+    // written on, about 263 ms on GitHub's runner, where rows read in linear
+    // time take two to four times as long. The count is the same on every
+    // machine, so it is held exactly: a change to either limit, or a grammar
+    // that hands more or less, fails here and needs a measured reason.
+    //
+    // It is the shape that was timed, not the costliest: with a space, a
+    // name, a `;` or a `|` after each `${` the lexer is handed more at the
+    // same depth, a little over three times as much for the `|`. Those are
+    // the most found, not the most there is, and are held too, so that what
+    // such a line costs is written down.
+    let rows: [(&str, usize, usize, &str); 14] = [
+        ("${", 1, 20, IN_FULL),
+        ("${", 100, 38_726, IN_FULL),
+        ("${", 200, 126_215, IN_FULL),
+        ("${", 255, 191_280, IN_FULL),
+        ("${", 256, 192_575, STOPPED),
+        ("${", 312, 265_151, STOPPED),
+        ("${", 400, 379_199, STOPPED),
+        ("${", 401, 0, TOO_DEEP),
+        ("${", 800, 0, TOO_DEEP),
+        ("${ ", 400, 568_829, STOPPED),
+        ("${a ", 400, 703_715, STOPPED),
+        ("${;", 400, 903_252, STOPPED),
+        ("${|", 400, 1_182_355, STOPPED),
+        ("${|", 401, 0, TOO_DEEP),
+    ];
+    let paths = windows();
+    let mut wrong = Vec::new();
+    for (unit, depth, handed, want_reason) in rows {
+        let line = unit.repeat(depth);
+        let read_of = lexed(&line, Shell::PowerShell, &paths);
+        let what = format!("{unit:?} nested {depth} deep in PowerShell");
+        // PowerShell's grammar is handed the line as it is, or nothing,
+        // when the line is refused before it is parsed.
+        let parsed = if want_reason == TOO_DEEP {
+            0
+        } else {
+            line.len()
+        };
+        if read_of.parsed != parsed {
+            wrong.push(format!(
+                "{what}: parsed {} bytes, not {parsed}",
+                read_of.parsed
+            ));
+        }
+        if read_of.handed != handed {
+            wrong.push(format!(
+                "{what}: its lexer was handed {} bytes, not {handed}",
+                read_of.handed
+            ));
+        }
+        let (rules, reason) = read(&read_of.answer);
+        if rules != [Rule::Unreadable] || reason != want_reason {
+            wrong.push(format!(
+                "{what}: {rules:?} {reason:?}, not [Unreadable] {want_reason:?}"
+            ));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
