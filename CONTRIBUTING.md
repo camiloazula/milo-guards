@@ -94,7 +94,11 @@ shape, each with its answer pinned: `cd x; echo y > NUL; `,
 `for %%i in (a) do `, `@`, `()` and `(echo) ` repeated. It holds the bytes
 handed within `MAX_LEXED` and within a written ceiling, so a raise of the
 budget fails there, and reads them through the crate's `testing` feature,
-which only its own tests turn on and which is not for callers. The POSIX
+which only its own tests turn on and which is not for callers. PowerShell's
+`${` left open and nested is held there too, to the exact bytes handed at
+each depth: the recoveries counted and the depth a nest is read to bound
+it, far below the budget, and the runner took about thirty times as long
+on it as here. The POSIX
 grammar's shapes that reach the same budget stay timed until the runner
 shows them out of line with the machine. A timed table names every row that
 is over its bound before it fails, so one run on the runner shows them all.
