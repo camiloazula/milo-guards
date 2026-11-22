@@ -99,7 +99,12 @@ crates depend on each other and how that is enforced is in
   version in a lockfile, so a caller that also links it holds it to the same
   version; a bump here is a bump there. [Architecture](docs/design/architecture.md)
 - **Rust only.** Checks and tools are Rust tests or binaries, never scripts in
-  another language. [Architecture](docs/design/architecture.md)
+  another language. [Architecture](docs/design/architecture.md) The one
+  exception is the shell inside the steps of `.github/workflows/release.yml`,
+  which decides whether a tag is a release and which crates are still to
+  publish: a Rust tool there would be compiled in the job that holds the
+  publishing token. No other workflow and no file of the repository holds a
+  script. [Releasing](CONTRIBUTING.md#releasing)
 
 ### Tests
 

@@ -319,6 +319,12 @@ its path. A release is:
    `cargo publish --workspace`, which uploads the crates in dependency
    order (`core`, `code`, `shell`, `file`, `url`, `secrets`, `milo-guards`).
 
+Those checks are shell inside the workflow's steps, the one exception to
+"Rust only" in [GUIDELINES.md](GUIDELINES.md): a Rust tool would be compiled
+in the job that holds the publishing token. `just verify` does not run
+them, so a change to them is tried by hand against real commits and
+crates.io's index, and the pull request says how.
+
 The workflow holds no crates.io token. Each crate names this repository,
 `release.yml` and the `release` environment as its trusted publisher at
 crates.io, and crates.io hands the publish job a token that lasts thirty
