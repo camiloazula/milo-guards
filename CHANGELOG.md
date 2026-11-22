@@ -6,6 +6,11 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+## 0.1.4 (2026-11-22)
+
+What the URL guard answers for a few `file:` URLs and odd spellings, nothing
+a caller compiles against: a patch.
+
 - `milo-guards-url` needs `url` 2.5.9 or newer. With an older `url` in the
   caller's lockfile, a `file:` URL with a host and a drive letter
   (`file://example.com/C:/Users/me/x`) lost its host: on a Windows machine
