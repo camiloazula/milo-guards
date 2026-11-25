@@ -16,6 +16,10 @@ field added later does not break a caller. The fields stay public to read.
 - `protected`: what the caller gates with, such as its own settings and rules.
   Empty from `Paths::new`; add to it with `Paths::with_protected`, which
   takes `Protected` values and can be called again to add more.
+- `secrets`: what the caller knows holds a secret on this machine, such as a
+  project's `.env`. Empty from `Paths::new`; add to it with
+  `Paths::with_secrets`, which takes `Secret` values and can be called again
+  to add more.
 
 **`Protected`** is a path, the words a reason calls it by, and whether it is a
 file or a folder (`kind`, a `ProtectedKind`): a plain struct
@@ -28,11 +32,24 @@ what a pattern is read by (below). `words` is
 its caller, so the caller passes in the files it gates with, and neither core
 nor any guard knows what they are.
 
+**`Secret`** is the same shape for a secret: a plain struct
+`{ path, words, kind }`, built with `Secret::file(path, words)` or
+`Secret::folder(path, words)`, its `kind` a `ProtectedKind` (one enum says
+"a file or a folder" for both). Core's table of secret places is fixed (keys,
+cloud logins, the system's password hashes); a project's own `.env`, a token a
+tool keeps in the workspace, a browser's cookie store or a password vault are
+not in it, and only the caller knows where they are on its machine. `words`
+follows "reads" in a reason, in the voice of `your SSH keys`:
+`Secret::file("/home/me/work/app/.env", "the project's environment file")`
+gives `reads the project's environment file`. It is a path, never a bare file
+name: a name alone (`.env` anywhere below the workspace, a file that does not
+exist yet) is not something a caller can name here.
+
 Paths are judged by how they are spelled, so these must be spelled the way the
 paths being judged will be. Give them absolute, and either all canonical or
 all as the user wrote them. A protected path is spelled the same way as the
-workspace. A relative `cwd` puts every relative path outside
-the workspace. So does a `cwd` read through a symlink (`/private/tmp/...`) when
+workspace, and so is a secret the caller names. A relative `cwd` puts every
+relative path outside the workspace. So does a `cwd` read through a symlink (`/private/tmp/...`) when
 the workspace is spelled without it (`/tmp/...`). With no workspace at all,
 every path is outside.
 
@@ -95,7 +112,7 @@ does touching it mean? The answer is a **`Place`**.
 | `Workspace { exact }` | A workspace folder itself, or a folder holding one. |
 | `Home { exact }` | The home directory itself, or a folder holding it. |
 | `Top(words)` | The root of a disk, a system folder, or a top-level folder. |
-| `Sensitive(words, kind)` | Keys, credentials, shell startup files, the repository's history; `kind` is a `Sensitivity`. |
+| `Sensitive(words, kind)` | Keys, credentials, shell startup files, the repository's history, and the secrets the caller names in `Paths::secrets` (with `Secret` and the caller's words); `kind` is a `Sensitivity`. |
 | `Protected(words)` | A path the caller named in `Paths::protected`, in the caller's words. |
 | `Disk` | A disk device. |
 | `Registry` | The Windows registry. |
@@ -116,7 +133,7 @@ tell reading a key from reading a startup file without matching on the words:
 
 | Kind | What it is | A read | A write |
 | --- | --- | --- | --- |
-| `Secret` | A key or a credential: SSH, GPG, cloud and registry logins, keychains, the system's password hashes and host keys. | Exposes it. | Replaces it. |
+| `Secret` | A key or a credential: SSH, GPG, cloud and registry logins, keychains, the system's password hashes and host keys, and what the caller names in `Paths::secrets`. | Exposes it. | Replaces it. |
 | `Startup` | A file that runs, or sets how something runs, later: shell startup files, git's settings, the PowerShell profile, what Windows, macOS and a desktop start at login, and a workspace's own files that a tool runs on its own. | Harmless. | Plants a command. |
 | `History` | The repository's history: a workspace's own `.git`. | The agent's everyday work. | Loses work. |
 
@@ -228,24 +245,24 @@ itself.
     (`~/.docker/proj`) keeps its own paths `Inside`. A sensitive place is
     also judged before a temporary folder.
 - Windows paths compare without case. POSIX paths compare with it, except
-  the home directory, the sensitive places and protected paths, which compare
-  without case on every host: a macOS file system ignores it, and a name that
+  the home directory, the sensitive places, protected paths and the secrets
+  a caller names, which compare without case on every host: a macOS file system ignores it, and a name that
   differs only by case is the same folder there. Case is the widest fold
   there is, the Unicode simple fold of each character, as APFS reads it: the
   long s `ſ` is an `s`, the Kelvin sign `K` a `k`, the Ångström sign `Å` an
   `å`, the Ohm sign `Ω` an `ω` and the capital sharp s `ẞ` a `ß` (`.ſsh` is
   `.ssh`). NTFS does not fold the signs. So the wide fold is used only where
   matching too much fails closed: the home directory, the sensitive places,
-  protected paths and `.git`. Those places also compare in either canonical
-  spelling (Unicode's canonical equivalence: `é` as one character, or as `e`
+  protected paths, the secrets a caller names and `.git`. Those places also
+  compare in either canonical spelling (Unicode's canonical equivalence: `é` as one character, or as `e`
   and a combining accent, which APFS and HFS+ open as one name), from the
   Unicode 17.0 tables in `src/canonical.rs`; names whose marks differ stay
   apart. The workspace and the temporary folders compare
   as spelled on POSIX and by ASCII case on Windows, where matching too much
   would make another folder the agent's own: `C:\Users\me\worK` is not the
   workspace `C:\Users\me\work`.
-- A name is also its Windows 8.3 short name, in the home directory and the
-  sensitive places as for a protected path: `C:\Users\CAMILO~1\SSH~1\id_rsa`
+- A name is also its Windows 8.3 short name, in the home directory, the
+  sensitive places and the secrets a caller names as for a protected path: `C:\Users\CAMILO~1\SSH~1\id_rsa`
   is `C:\Users\Camilo Azula\.ssh\id_rsa`. A POSIX name has no short form.
 - macOS's links to the root are read: `/System/Volumes/Data/...`,
   `/Volumes/Macintosh HD/...` and `/Volumes/Macintosh HD - Data/...` are
@@ -334,6 +351,61 @@ itself.
     be a finding wherever a protected file exists. A catch-all at the workspace root is
     still the workspace. Without this a glob inside a workspace would reach a
     protected file that its spelling does not name.
+- A secret the caller names (`Paths::secrets`), and anything under it, is
+  `Sensitive(words, Secret)` in the caller's words. **A named secret wins over
+  the workspace**, a temporary folder and core's own places, as a protected
+  path does, because the caller named it on purpose: a named `.env` inside a
+  workspace folder is a secret, not `Inside`. Only a device, the home
+  directory itself (or a folder holding it) and a protected path are judged
+  before it.
+  - **It is compared as a protected path is**: without case on every host, by
+    the widest fold, in either canonical spelling, by its Windows 8.3 short
+    name (`ENV~1` for `.env`), without the trailing dots and spaces Windows
+    drops, and with a Mac's links dropped on every system. A Mac also links
+    `/tmp`, `/var` and `/etc` into `/private`, so a named secret and a
+    protected path under one of those is looked up under both spellings, on
+    every system: each is kept as two entries, `/tmp/s/token` and
+    `/private/tmp/s/token`, and a path is judged as spelled against either,
+    so a pattern picks either (`/private/*/s/token`, `/priv*/tmp/s/token`)
+    and a folder named `/private` itself still holds every path below it.
+    That is the lookup of those two alone, since core's own secrets are
+    listed under both spellings and a workspace or a temporary folder keeps
+    its own.
+  - **A bracket or a star may be a character of its name.** A pattern part is
+    matched against a named or a protected name by the pattern, and also as
+    the name itself spelled out: a shell hands a pattern that matches nothing
+    on as written, and a quoted, escaped or literal path parameter is that
+    name, so `app/[id]/secret.json` names the secret at that path, as a
+    pattern and as a literal: `place` answers the secret for a pattern that
+    spells one out, `named_secret` reads a path literally for the same
+    reason, and `named_protected` gives a protected path read so, which a
+    file guard asks of its one literal path. The comparison of the name
+    spelled out is made only where a protected or a named path has a `[`, a
+    `*` or a `?` in it; elsewhere it gives nothing the pattern does not.
+  - **It is read as core's own secrets are**, not as a protected path: a
+    folder that holds one is not one (a delete of `app` is not a delete of
+    `app/.env`), and a pattern that can pick one does not change `place`
+    (`.e*` in the workspace stays the workspace's). `picks_secret` gives its
+    words for a pattern that can pick it (the caller's before core's), and
+    `reaches_secret` reaches it from a pattern or from a folder read whole
+    (the workspace that holds it). As for a protected path, only a folder has
+    something below its name for a pattern to go into.
+  - **A path both protected and secret is `Protected`**, so a write or a
+    delete of it keeps the protected finding, in the protected path's words,
+    as before the caller named the secret; `named_secret` gives the secret's
+    words for it, and a guard asks it wherever a read lands on a protected
+    path, so the read is still a read of the secret. Naming a path twice so
+    loses no finding: the file guard's write is `write_protected` and its read
+    `read_secret`, and the shell guard's write, move or delete is `overwrite`
+    or `delete` in the protected path's words and its read or send
+    `read_secret` or `send_secret` in the secret's, through a pattern too
+    (the guard asks `picks_secret` for a pattern, whose place is `Protected`). The other order
+    (the secret first) would have turned a write's `write_protected` into
+    `write_sensitive`, and a caller that refuses the one and asks on the other
+    would have let through less than it said.
+  - A workspace that holds a named secret, or is under one, is not clear
+    (`cwd_is_clear`): a plain name there may be the secret.
+  - With no secret named, every answer is what it was.
 - Windows names are normalised before they are compared, so a spelling that
   Windows resolves to a protected name is judged as that name. Core does this
   in the `Windows` flavour only; a POSIX name keeps every character. `.` and
@@ -556,7 +628,7 @@ machine: a share, spelled with two separators or as a long path or device path;
 `false` on `Posix`) and `verbatim` (what follows a `\\?\` prefix, either
 separator).
 
-Six questions are `Resolver` methods, since a guard needs them resolved: the
+These questions are `Resolver` methods, since a guard needs them resolved: the
 path made absolute, with the working directory and `~` applied.
 
 - `kernel(path, flavour)` is `Some(words)` for what a POSIX kernel serves that
@@ -582,7 +654,8 @@ path made absolute, with the working directory and `~` applied.
   protected path; a part matches a name as `glob::matches` says, `hidden`
   included, and a pattern that stops at a folder holding a secret picks no
   secret, since it reads that folder's name. Only a `Secret` place counts: a
-  startup file or the history is not one. A POSIX part that can match `..`
+  startup file or the history is not one. A secret the caller names counts,
+  its words first, and only a named folder has something below its name. A POSIX part that can match `..`
   (`.*`, `.?`, `.[.]`) is also read as `.` and `..`, here and in `place`, where
   the most serious reading wins. It is `None` for a path with no
   wildcard (that is `place`'s) and for one known only when it runs. It does not
@@ -612,6 +685,34 @@ path made absolute, with the working directory and `~` applied.
 - `any_protected()` is the words of the first protected path, for a folder
   only known when it runs, which may hold any of them; `None` when nothing
   is protected.
+- `named_secret(path, flavour)` is `Some(words)`, the caller's, for a secret
+  it named that `path` is or is under, whatever `place` answers: `place`
+  answers `Protected` for a path also protected, and a guard that judges a
+  read asks this there (see above). The path is read literally, a wildcard
+  being a character of its name (what a pattern can pick is
+  `picks_secret`'s). The shell guard also asks it first for a file sent off
+  the machine, so a named file is sent in the caller's words where the guard
+  has words of its own for its name (`an .env file`). It is `None` for a
+  path no secret was named at, a device and a path known only when it runs.
+- `named_secret_in_unknown_folder(rest, flavour, hidden)` is `Some(words)`
+  for a secret the caller named that `rest`, a relative path written from a
+  folder only known when it runs (after `cd "$x"`), can name wherever that
+  folder is: `rest` spells, or as a pattern can pick, the named path's last
+  names part for part (`token.json` and `deploy/token.json` for
+  `.../deploy/token.json`), and goes below them only for a named folder
+  (`keys/signing.pem`). A name that does not spell the named path's own last
+  name (`signing.pem` alone, for a folder `keys`) is not counted, since the
+  folder would have to be that one. `.` and `..` are applied first, and a
+  `..` above the first name is dropped (it climbs to another folder only
+  known when it runs). `None` for a path with a root, a drive or a `~`.
+- `named_protected(path, flavour)` is `Some(words)` for a protected path
+  that `path`, read literally as `named_secret` reads it, is or is under: a
+  file API's one literal path `app/[id]/x.json` is the protected file of
+  that name, which `place` reads as a pattern.
+- `cwd_is_clear_but_for_named()` is `cwd_is_clear` with no secret named:
+  whether the secrets the caller names are the only ones a plain path from
+  the working directory can be, so a guard can look such a path up among
+  them alone.
 - `workspace_of(path, flavour)` is the workspace folder `path` is in, or is,
   the deepest when folders nest, as an absolute path: the top of the work
   tree a program such as `git am` changes wherever below it it runs. It is
@@ -620,7 +721,8 @@ path made absolute, with the working directory and `~` applied.
 - `cwd_is_clear()` says whether a path written from the working directory, with
   no `..`, `~`, drive or variable in it, can only land in the agent's own
   workspace: the working directory is in a workspace folder that holds no key,
-  startup file or other sensitive place, and is not under `/dev` or `/proc`.
+  startup file, other sensitive place or secret the caller names (and is under
+  none), and is not under `/dev` or `/proc`.
   Such a path is not a secret, so a guard that asks about every operand of every
   program (the shell guard's rule about reading a key) skips resolving it.
 - `git(path, flavour)` is `Some(words)` for a path in a git repository's own
@@ -646,7 +748,8 @@ path made absolute, with the working directory and `~` applied.
   folder, which can hold one that a name cannot tell, does not. Both are
   spelling alone, like everything here.
 - `reaches_secret(path, flavour, hidden, deep)` says whether reading what a
-  path names can reach a secret (`Sensitivity::Secret`) below it, which `place`
+  path names can reach a secret (`Sensitivity::Secret`, core's own or one the
+  caller names) below it, which `place`
   does not say: `place` says what the path itself is, and a folder or a pattern
   holds or picks more. With `deep` the path is read with everything below it (a
   recursive search, a listing), so a folder that holds a secret, another user's
@@ -708,10 +811,14 @@ sensitive place, case, short names, other users' homes, long paths,
 drive-relative paths and a Mac's links), `startup.cases` (`startup`,
 `startup_below` and what a write into one is), `picks.cases`
 (`picks_secret`), `holds_protected.cases`, `reaches_secret.cases`,
-`absolute.cases` and `opened.cases`. A case asks the `Resolver` one or more
+`named_secrets.cases` (the secrets a caller names: `place`, `picks_secret`,
+`reaches_secret` and `named_secret`, a path both protected and secret, and
+the same paths with none named), `absolute.cases` and `opened.cases`. A case asks the `Resolver` one or more
 questions of one path, on one machine, and gives each answer. What is made
 in a loop or asks the API itself stays in Rust: the folds NTFS does not make and the flavour in
-`sensitive.rs`, and that applying the `..` of what is opened gives the
-absolute path in `opened.rs`. `tests/cases.rs` tests the shared reading of
+`sensitive.rs`, that applying the `..` of what is opened gives the
+absolute path in `opened.rs`, and in `named_secrets.rs` that each
+`with_secrets` adds, that none named changes nothing and when the working
+directory is clear. `tests/cases.rs` tests the shared reading of
 the format and core's runner (`tests/common/runner.rs`), and dumps every
 case.

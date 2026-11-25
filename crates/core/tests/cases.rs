@@ -20,7 +20,7 @@ mod common;
 
 use common::cases::{self as runner, Case};
 use format::{decode, encode, parse, read, Record, Word};
-use milo_guards_core::{Flavour, Protected};
+use milo_guards_core::{Flavour, Protected, Secret};
 
 use common::cases::format;
 
@@ -287,7 +287,7 @@ fn a_case_says_its_flavour_paths_spelling_questions_and_path() {
 fn a_paths_declaration_names_the_paths_a_case_is_judged_on() {
     let cases = cases_of(concat!(
         "paths home cwd=/home/me home=/home/me workspace=/home/me\n",
-        "paths agent base=posix workspace=/home/me/other folder=/home/me/.agent words=\"the agent's settings\" file=/home/me/x.yaml words=\"the agent's rules\"\n",
+        "paths agent base=posix workspace=/home/me/other folder=/home/me/.agent words=\"the agent's settings\" file=/home/me/x.yaml words=\"the agent's rules\" secret_file=/home/me/work/repo/.env words=\"the project's environment file\" secret_folder=/home/me/.vault words=\"your password vault\"\n",
         "posix@home place=inside | x\n",
         "posix@agent place=inside | x\n",
     ));
@@ -311,6 +311,13 @@ fn a_paths_declaration_names_the_paths_a_case_is_judged_on() {
         [
             Protected::folder("/home/me/.agent", "the agent's settings"),
             Protected::file("/home/me/x.yaml", "the agent's rules"),
+        ]
+    );
+    assert_eq!(
+        agent.secrets,
+        [
+            Secret::file("/home/me/work/repo/.env", "the project's environment file"),
+            Secret::folder("/home/me/.vault", "your password vault"),
         ]
     );
 }
@@ -353,6 +360,18 @@ fn a_malformed_case_is_refused() {
         (
             "paths x base=posix folder=/a\n",
             "each `folder` and `file` takes its `words`",
+        ),
+        (
+            "paths x base=posix secret_file=/a\n",
+            "as each `secret_folder` and `secret_file` does",
+        ),
+        (
+            "paths x base=posix secret_folder=/a words=w secret_folder=/b\n",
+            "as each `secret_folder` and `secret_file` does",
+        ),
+        (
+            "paths x base=posix secret_file=/a words=w words=v\n",
+            "`words` must follow its `folder` or `file` (or `secret_folder` or `secret_file`)",
         ),
         ("paths x base=posix extra\n", "an unknown word"),
     ] {

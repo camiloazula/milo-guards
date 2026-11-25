@@ -16,7 +16,8 @@ paths, short names, any case) read as Windows reads them, whatever host the
 guard runs on. Nothing is read from the disk, so a symlink is judged by its
 own name.
 
-- A **read** is safe wherever it lands, except a key or a credential
+- A **read** is safe wherever it lands, except a key or a credential, or a
+  file the caller names as holding a secret (`Paths::with_secrets`)
   (`read_secret`). An agent reads widely, and reading is what a caller lets
   run unasked.
 - A **write** (an edit, a create, an append, a rename's target) is safe

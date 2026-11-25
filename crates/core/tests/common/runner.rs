@@ -15,8 +15,8 @@
 //!   `Resolver` and the answer it must give: `place=`, `into=` (a write
 //!   into it, `place_into`) and `place_hidden=` give a place (below);
 //!   `startup=`, `below=` (`startup_below`), `picks=` (`picks_secret`),
-//!   `holds=` (`holds_protected`), `kernel=` and `git=` give their words, or
-//!   `none`; `absolute=` and `opened=` give the path, or `none`; `reaches=`
+//!   `holds=` (`holds_protected`), `named=` (`named_secret`), `kernel=` and
+//!   `git=` give their words, or `none`; `absolute=` and `opened=` give the path, or `none`; `reaches=`
 //!   (`reaches_secret`) and `network=` (`spelling::network`) give `yes` or
 //!   `no`.
 //!
@@ -28,8 +28,8 @@
 //!
 //! A declaration is `paths NAME FIELDS`, as the shell guard's: `base=MACHINE`,
 //! or `cwd=` and `home=`; `workspace=` (one for each folder, after the
-//! base's), and `folder=` or `file=` (a protected path), each followed by its
-//! `words=`.
+//! base's), `folder=` or `file=` (a protected path) and `secret_folder=` or
+//! `secret_file=` (a secret the caller names), each followed by its `words=`.
 
 #![allow(
     dead_code,
@@ -47,7 +47,7 @@ use std::path::PathBuf;
 
 use format::{Record, Word};
 use milo_guards_core::spelling::network;
-use milo_guards_core::{Flavour, Paths, Place, Protected, Resolver, Sensitivity, Spelling};
+use milo_guards_core::{Flavour, Paths, Place, Protected, Resolver, Secret, Sensitivity, Spelling};
 
 /// A POSIX machine: the workspace in the home directory.
 pub fn posix() -> Paths {
@@ -69,7 +69,7 @@ pub fn windows() -> Paths {
 }
 
 /// The questions a case can ask, by the field that asks each.
-pub const ASKS: [&str; 13] = [
+pub const ASKS: [&str; 14] = [
     "place",
     "into",
     "place_hidden",
@@ -77,6 +77,7 @@ pub const ASKS: [&str; 13] = [
     "below",
     "picks",
     "holds",
+    "named",
     "kernel",
     "git",
     "absolute",
@@ -208,6 +209,7 @@ pub fn answer(case: &Case, ask: &str) -> String {
         "below" => words(resolver.startup_below(spelled, flavour, hidden)),
         "picks" => words(resolver.picks_secret(spelled, flavour, hidden)),
         "holds" => words(resolver.holds_protected(spelled, flavour, hidden)),
+        "named" => words(resolver.named_secret(spelled, flavour)),
         "kernel" => words(resolver.kernel(spelled, flavour)),
         "git" => words(resolver.git(spelled, flavour)),
         "absolute" => path(resolver.absolute(spelled, flavour)),
@@ -348,64 +350,28 @@ fn declaration(
     words: &[Word],
     machines: &HashMap<String, Paths>,
 ) -> Result<(String, Paths), String> {
-    let Some(Word::Bare(name)) = words.first() else {
-        return Err("`paths` takes a name first".to_string());
-    };
-    if machines.contains_key(name) {
-        return Err(format!("the paths `{name}` are already named"));
+    let declared = format::declaration(words)?;
+    if machines.contains_key(&declared.name) {
+        return Err(format!("the paths `{}` are already named", declared.name));
     }
-    let mut base: Option<Paths> = None;
-    let (mut cwd, mut home) = (None, None);
-    let mut workspaces: Vec<PathBuf> = Vec::new();
-    let mut protected: Vec<(bool, PathBuf, Option<String>)> = Vec::new();
-    for word in &words[1..] {
-        let (field, value) = match word {
-            Word::Field(field, value) => (field, value),
-            Word::Bare(bare) => {
-                return Err(format!("an unknown word `{bare}` in a `paths` declaration"))
-            }
-        };
-        match field.as_str() {
-            "base" => {
-                let paths = machines
-                    .get(value)
-                    .ok_or_else(|| format!("no paths named `{value}`"))?;
-                base = Some(paths.clone());
-            }
-            "cwd" => cwd = Some(PathBuf::from(value)),
-            "home" => home = Some(PathBuf::from(value)),
-            "workspace" => workspaces.push(PathBuf::from(value)),
-            "folder" | "file" => protected.push((field == "folder", PathBuf::from(value), None)),
-            "words" => match protected.last_mut() {
-                Some((_, _, words @ None)) => *words = Some(value.clone()),
-                _ => return Err("`words` must follow its `folder` or `file`".to_string()),
-            },
-            other => {
-                return Err(format!(
-                    "an unknown field `{other}` in a `paths` declaration"
-                ))
-            }
-        }
-    }
-    let mut paths = match (base, cwd, home) {
-        (Some(base), None, None) => base,
+    let mut paths = match (&declared.base, declared.cwd, declared.home) {
+        (Some(base), ..) => machines
+            .get(base)
+            .cloned()
+            .ok_or_else(|| format!("no paths named `{base}`"))?,
         (None, Some(cwd), Some(home)) => Paths::new(cwd, home, Vec::<PathBuf>::new()),
         _ => return Err("a `paths` declaration takes `base`, or `cwd` and `home`".to_string()),
     };
-    paths.workspaces.extend(workspaces);
-    for (folder, path, words) in protected {
-        let words: &'static str = Box::leak(
-            words
-                .ok_or("each `folder` and `file` takes its `words`")?
-                .into_boxed_str(),
-        );
-        paths = paths.with_protected([if folder {
-            Protected::folder(path, words)
-        } else {
-            Protected::file(path, words)
-        }]);
+    paths.workspaces.extend(declared.workspaces);
+    for named in declared.named {
+        paths = match (named.secret, named.folder) {
+            (false, true) => paths.with_protected([Protected::folder(named.path, named.words)]),
+            (false, false) => paths.with_protected([Protected::file(named.path, named.words)]),
+            (true, true) => paths.with_secrets([Secret::folder(named.path, named.words)]),
+            (true, false) => paths.with_secrets([Secret::file(named.path, named.words)]),
+        };
     }
-    Ok((name.clone(), paths))
+    Ok((declared.name, paths))
 }
 
 /// The case its words make, its place in the file and its path still empty.

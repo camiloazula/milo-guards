@@ -53,7 +53,7 @@ mod shape;
 mod tables;
 
 use host::Verdict;
-pub use milo_guards_core::{Paths, Protected, ProtectedKind};
+pub use milo_guards_core::{Paths, Protected, ProtectedKind, Secret};
 use tables::MAX_URL;
 use url::{Host, Url};
 

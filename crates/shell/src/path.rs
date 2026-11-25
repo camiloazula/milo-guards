@@ -163,7 +163,10 @@ pub(crate) struct Resolver {
     core: milo_guards_core::Resolver,
     /// Whether a plain relative path (see [`plain_relative`]) is the agent's
     /// own, since the working directory is in a workspace that holds no key.
-    clear: bool,
+    clear: Clear,
+    /// Whether the caller names any secret (`Paths::secrets`): only then is
+    /// a path looked up among them (see [`Resolver::named_secret`]).
+    named: bool,
     /// The drive the working directory is on, upper case; `None` when it is
     /// on no drive.
     cwd_drive: Option<char>,
@@ -176,6 +179,20 @@ pub(crate) struct Resolver {
     made_unknown: bool,
     /// The places already found for the line (see [`Resolver::place_spelled`]).
     placed: std::cell::RefCell<HashMap<(String, Shell, bool, bool), Place>>,
+}
+
+/// Whether a plain relative path (see [`plain_relative`]) from the working
+/// directory can be a secret.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Clear {
+    /// No: the working directory is in a workspace that holds no key.
+    Yes,
+    /// Only one the caller named: the workspace holds no key of core's own,
+    /// so such a path is only looked up among the named ones (see
+    /// [`Resolver::secret`]).
+    ButNamed,
+    /// It may be any.
+    No,
 }
 
 /// How [`Resolver::locate`] reads a path: as one written into (a folder that
@@ -199,7 +216,14 @@ impl Resolver {
     pub(crate) fn new(paths: &Paths) -> Self {
         let core = milo_guards_core::Resolver::new(paths);
         Self {
-            clear: core.cwd_is_clear(),
+            clear: if core.cwd_is_clear() {
+                Clear::Yes
+            } else if core.cwd_is_clear_but_for_named() {
+                Clear::ButNamed
+            } else {
+                Clear::No
+            },
+            named: !paths.secrets.is_empty(),
             core,
             cwd_drive: drive_of(&paths.cwd.to_string_lossy()),
             paths: None,
@@ -501,19 +525,34 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
     ) -> Option<&'static str> {
-        // Most words are a name in the workspace, which is no secret.
-        if dir.is_none()
-            && self.clear
-            && arg.known().is_some_and(|text| plain_relative(text, shell))
+        // Most words are a name in the workspace, which is no secret, unless
+        // the caller named one there: then it is only looked up among those.
+        if let Some(text) = arg
+            .known()
+            .filter(|text| dir.is_none() && plain_relative(text, shell))
         {
-            return None;
+            match self.clear {
+                Clear::Yes => return None,
+                // A POSIX name is read so exactly as the full lookup reads
+                // it; a Windows one may end a part in a dot or a space, or
+                // name a stream, which only the full lookup reads for the
+                // file it names.
+                Clear::ButNamed if shell == Shell::Posix => {
+                    return self.named_plain(text, shell, hidden)
+                }
+                Clear::ButNamed | Clear::No => {}
+            }
         }
         // From a folder only known when it runs, a name may be one in the
-        // home directory, which that folder may be.
+        // home directory, which that folder may be, or one the caller named,
+        // wherever it is.
         if let Some(home) = in_unknown_folder(dir, arg, shell) {
             if let Some(words) = self.secret(None, &home, shell, hidden) {
                 return Some(words);
             }
+        }
+        if let Some(words) = self.named_from_unknown_folder(dir, arg, shell, hidden) {
+            return Some(words);
         }
         let owned;
         let arg = if dir.is_some() {
@@ -527,14 +566,23 @@ impl Resolver {
         // A Windows name the spelling does not settle (a stream, a part with
         // a trailing space) is read for the file it is a name of; PowerShell
         // takes `id_rsa::$DATA` for a provider's path, which is outside.
+        let mut file = None;
         if matches!(place, Place::Unknown | Place::Outside) && shell != Shell::Posix {
-            if let Some(file) = without_streams(text) {
-                place = self.place_of(&file, shell, hidden, true);
+            if let Some(named) = without_streams(text) {
+                place = self.place_of(&named, shell, hidden, true);
+                file = Some(named);
             }
         }
         match place {
             Place::Sensitive(words, Sensitivity::Secret) => return Some(words),
             Place::Disk => return Some("a disk, and every key on it"),
+            // A path the caller named both protected and secret is
+            // protected to core; a read of it reads the secret.
+            Place::Protected(_) => {
+                if let Some(words) = self.named_secret_of(file.as_deref().unwrap_or(text), shell) {
+                    return Some(words);
+                }
+            }
             _ => {}
         }
         self.picks(text, shell, hidden).or_else(|| {
@@ -548,6 +596,103 @@ impl Resolver {
                 None
             }
         })
+    }
+
+    /// The caller's words for a secret it named that `arg`, written from
+    /// `dir`, is or is under, whatever its place is, read literally, a
+    /// wildcard being a character of the name (see
+    /// [`milo_guards_core::Resolver::named_secret`]). `None` for a path the
+    /// caller named no secret at and what is only known when it runs.
+    pub(crate) fn named_secret(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+    ) -> Option<&'static str> {
+        if !self.named {
+            return None;
+        }
+        self.named_secret_of(within(dir, arg, shell).known()?, shell)
+    }
+
+    /// The secret the caller named that `text`, a plain relative path (see
+    /// [`plain_relative`]) from the working directory, is or can pick: the
+    /// one place such a path can find a secret where the workspace holds no
+    /// other.
+    fn named_plain(&self, text: &str, shell: Shell, hidden: bool) -> Option<&'static str> {
+        self.named_secret_of(text, shell).or_else(|| {
+            glob::has_wildcard(text)
+                .then(|| {
+                    self.core
+                        .picks_secret(Spelling::Plain(text), flavour(shell), hidden)
+                })
+                .flatten()
+        })
+    }
+
+    /// The secret the caller named that `arg`, a relative path written from
+    /// `dir`, a folder only known when it runs, can name wherever that
+    /// folder is (see
+    /// [`milo_guards_core::Resolver::named_secret_in_unknown_folder`]):
+    /// after `cd "$(git rev-parse --show-toplevel)"`, `.env` may be the
+    /// workspace's `.env`. `None` when `dir` is known or where the line
+    /// began, and when no secret is named.
+    pub(crate) fn named_from_unknown_folder(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        if !self.named || dir?.known().is_some() || brace_list(arg.known()?) {
+            return None;
+        }
+        let text = arg.known()?;
+        self.core
+            .named_secret_in_unknown_folder(text, flavour(shell), hidden)
+    }
+
+    /// The key or credential a pattern `arg`, written from `dir`, can pick
+    /// (see [`milo_guards_core::Resolver::picks_secret`]), a secret the
+    /// caller named among them: for a sender handed a pattern.
+    pub(crate) fn picks_secret(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        self.picks(within(dir, arg, shell).known()?, shell, hidden)
+    }
+
+    fn named_secret_of(&self, text: &str, shell: Shell) -> Option<&'static str> {
+        if !self.named
+            || brace_list(text)
+            || device(text, shell).is_some()
+            || self.made_drive(text, shell).is_some()
+        {
+            return None;
+        }
+        if shell == Shell::PowerShell {
+            if let Some((qualifier, rest)) = text.split_once("::") {
+                let provider = qualifier.rsplit('\\').next().unwrap_or(qualifier);
+                return provider
+                    .eq_ignore_ascii_case("filesystem")
+                    .then(|| self.named_secret_of(rest, shell))
+                    .flatten();
+            }
+        }
+        let flavour = flavour(shell);
+        let ask = |spelling| self.core.named_secret(spelling, flavour);
+        match start(text, shell) {
+            Start::Plain => ask(Spelling::Plain(text)),
+            Start::Home(rest) => ask(Spelling::Home(rest)),
+            Start::Temp(rest) => ask(Spelling::Home(&in_temp(rest))),
+            Start::DriveRelative(letter, rest) => {
+                ask(Spelling::Plain(self.on_cwd_drive(letter, rest)?))
+            }
+            Start::Provider(..) | Start::Unknown => None,
+        }
     }
 
     /// The key or credential a pattern can pick (`~/.s*/id_rsa`): see
@@ -594,8 +739,9 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
     ) -> Option<&'static str> {
+        // A plain name holds no home directory, named secrets or not.
         if dir.is_none()
-            && self.clear
+            && self.clear != Clear::No
             && arg.known().is_some_and(|text| plain_relative(text, shell))
         {
             return None;

@@ -32,9 +32,11 @@ pub enum Place {
     /// The root of a disk, a system folder, or a top-level folder.
     Top(&'static str),
     /// A file or folder whose loss or change hurts: keys, credentials, shell
-    /// startup files, the repository's history. The words are for a reason,
-    /// and the [`Sensitivity`] says what touching it exposes or changes, so a
-    /// guard can tell reading a key from reading a startup file.
+    /// startup files, the repository's history, and the secrets the caller
+    /// named (`Paths::secrets`), with [`Sensitivity::Secret`] and the
+    /// caller's words. The words are for a reason, and the [`Sensitivity`]
+    /// says what touching it exposes or changes, so a guard can tell reading
+    /// a key from reading a startup file.
     Sensitive(&'static str, Sensitivity),
     /// A file or folder the caller named as its own (`Paths::protected`),
     /// such as the agent's settings, with the caller's words for a reason.

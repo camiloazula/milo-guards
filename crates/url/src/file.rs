@@ -1,7 +1,7 @@
 //! A `file:` URL: the path it names, placed through core's resolver like any
 //! other path.
 
-use milo_guards_core::{Flavour, Paths, Resolver, Spelling};
+use milo_guards_core::{Flavour, Paths, Place, Resolver, Spelling};
 use percent_encoding::percent_decode_str;
 use url::Url;
 
@@ -60,9 +60,16 @@ pub(crate) fn judge(url: &Url, paths: &Paths) -> (String, String) {
     let words = if path.chars().any(char::is_control) {
         "a path only known when it runs"
     } else {
-        Resolver::new(paths)
-            .place(Spelling::Plain(&path), flavour)
-            .words()
+        // A path the caller named both protected and secret is protected
+        // to the resolver; a fetch of it reads the secret.
+        let resolver = Resolver::new(paths);
+        let spelled = Spelling::Plain(&path);
+        match resolver.place(spelled, flavour) {
+            place @ Place::Protected(_) => resolver
+                .named_secret(spelled, flavour)
+                .unwrap_or_else(|| place.words()),
+            place => place.words(),
+        }
     };
     (format!("reads {words}"), shown(path))
 }

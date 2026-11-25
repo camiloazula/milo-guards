@@ -80,3 +80,15 @@ finds=local_address reason="fetches your own machine" | file://127.0.0.1/etc/pas
 @windows rules=local_file,local_address first=local_file reason="reads a file from another machine" | file://127.0.0.1/C:/Windows/System32/config/SAM
 @windows finds=metadata | file://169.254.169.254/C:/
 first=unreadable | file://user@host/x
+
+# A secret the caller names (`Paths::secrets`) is in the caller's words, as
+# a key core knows of is.
+paths env base=posix secret_file=/home/me/work/repo/.env words="the project's environment file"
+@env rules=local_file first=local_file reason="reads the project's environment file" | file:///home/me/work/repo/.env
+rules=local_file first=local_file reason="reads a path inside the workspace" | file:///home/me/work/repo/.env
+# A path both protected and secret: a fetch reads the secret.
+paths env_both base=posix file=/home/me/work/repo/.env words="the agent's settings" secret_file=/home/me/work/repo/.env words="the project's environment file"
+@env_both rules=local_file first=local_file reason="reads the project's environment file" | file:///home/me/work/repo/.env
+# A bracket in a named path's name is a character of it.
+paths bracket base=posix secret_file=/home/me/work/repo/app/[id]/secret.json words="the app's secret"
+@bracket rules=local_file first=local_file reason="reads the app's secret" | file:///home/me/work/repo/app/[id]/secret.json

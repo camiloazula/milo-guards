@@ -27,7 +27,7 @@ use common::{
     assert_linear_by, assert_within, at, filled, linear_by, posix, windows, within, Maker,
     STAGE_SIZES,
 };
-use milo_guards_shell::{classify, effect, explain, Paths, Protected, Shell};
+use milo_guards_shell::{classify, effect, explain, Paths, Protected, Secret, Shell};
 use noise::{paths_for, wide_lines, SHELLS};
 
 /// Held for the whole of a timed test, so no two are timed at once.
@@ -546,6 +546,42 @@ fn find_expressions_are_read_in_linear_time() {
     // `.git` holds, and a path pattern again for each folder.
     let paths = posix();
     for (what, line) in FIND_EXPRESSIONS {
+        assert_linear(what, Shell::Posix, &paths, line);
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn lines_over_named_secrets_are_read_in_linear_time() {
+    let _serial = serial();
+    // With a secret named in the workspace no plain name there is skipped
+    // unread: each is looked up among the named paths, and each pattern
+    // matched against them, from the line's folder and from one a `cd` the
+    // guard cannot follow moved to.
+    let paths = posix().with_secrets((0..51).map(|at| {
+        Secret::file(
+            format!("/home/me/work/repo/deploy{at}/token.json"),
+            "the deploy token",
+        )
+    }));
+    let shapes: [Shape; 4] = [
+        ("plain names", |size| {
+            filled("cat src/a.rs b.txt; ", size, 20)
+        }),
+        ("patterns", |size| {
+            filled("cat src/*.rs d*/t*.json; ", size, 25)
+        }),
+        ("patterns sent", |size| {
+            filled("scp d*/t*.json h:; ", size, 19)
+        }),
+        ("names after an unknown cd", |size| {
+            format!("cd \"$x\" && {}", filled("cat token.json d*/x; ", size, 21))
+        }),
+    ];
+    for (what, line) in shapes {
         assert_linear(what, Shell::Posix, &paths, line);
     }
 }

@@ -273,6 +273,123 @@ fn invisible(c: char) -> bool {
     )
 }
 
+/// What a `paths` line declares, as its words say it: each guard's runner
+/// makes its `Paths` of it, from `base` (looked up among the paths it knows)
+/// or from `cwd` and `home`, with the workspaces added and each named path
+/// in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declaration {
+    /// The name a case gives after an `@`.
+    pub name: String,
+    /// `base=`: the paths it starts from. Set exactly when `cwd` and `home`
+    /// are not.
+    pub base: Option<String>,
+    /// `cwd=`, set with `home`.
+    pub cwd: Option<PathBuf>,
+    /// `home=`, set with `cwd`.
+    pub home: Option<PathBuf>,
+    /// Each `workspace=`, added to the base's.
+    pub workspaces: Vec<PathBuf>,
+    /// Each `folder=`, `file=`, `secret_folder=` and `secret_file=`, with
+    /// its `words=`, in order.
+    pub named: Vec<Named>,
+}
+
+/// A path a `paths` line names: protected (`folder=`, `file=`) or secret
+/// (`secret_folder=`, `secret_file=`), and the `words=` that follow it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    /// Whether it is a secret, not a protected path.
+    pub secret: bool,
+    /// Whether it is a folder, not a file.
+    pub folder: bool,
+    /// The path.
+    pub path: PathBuf,
+    /// What a reason calls it, kept for the run as the API takes it.
+    pub words: &'static str,
+}
+
+/// The fields of a `paths` line that name a path.
+pub const PATH_FIELDS: [&str; 7] = [
+    "cwd",
+    "home",
+    "workspace",
+    "folder",
+    "file",
+    "secret_folder",
+    "secret_file",
+];
+
+/// The declaration a `paths` line's words make (the words after `paths`),
+/// or why they are refused.
+pub fn declaration(words: &[Word]) -> Result<Declaration, String> {
+    let Some(Word::Bare(name)) = words.first() else {
+        return Err("`paths` takes a name first".to_string());
+    };
+    let mut declared = Declaration {
+        name: name.clone(),
+        base: None,
+        cwd: None,
+        home: None,
+        workspaces: Vec::new(),
+        named: Vec::new(),
+    };
+    let mut pending: Vec<(bool, bool, PathBuf, Option<String>)> = Vec::new();
+    for word in &words[1..] {
+        let (field, value) = match word {
+            Word::Field(field, value) => (field, value),
+            Word::Bare(bare) => {
+                return Err(format!("an unknown word `{bare}` in a `paths` declaration"))
+            }
+        };
+        match field.as_str() {
+            "base" => declared.base = Some(value.clone()),
+            "cwd" => declared.cwd = Some(PathBuf::from(value)),
+            "home" => declared.home = Some(PathBuf::from(value)),
+            "workspace" => declared.workspaces.push(PathBuf::from(value)),
+            "folder" | "file" | "secret_folder" | "secret_file" => pending.push((
+                field.starts_with("secret_"),
+                field.ends_with("folder"),
+                PathBuf::from(value),
+                None,
+            )),
+            "words" => match pending.last_mut() {
+                Some((.., words @ None)) => *words = Some(value.clone()),
+                _ => {
+                    return Err("`words` must follow its `folder` or `file` \
+                         (or `secret_folder` or `secret_file`)"
+                        .to_string())
+                }
+            },
+            other => {
+                return Err(format!(
+                    "an unknown field `{other}` in a `paths` declaration"
+                ))
+            }
+        }
+    }
+    let whole = matches!(
+        (&declared.base, &declared.cwd, &declared.home),
+        (Some(_), None, None) | (None, Some(_), Some(_))
+    );
+    if !whole {
+        return Err("a `paths` declaration takes `base`, or `cwd` and `home`".to_string());
+    }
+    for (secret, folder, path, words) in pending {
+        let words = words.ok_or(
+            "each `folder` and `file` takes its `words`, \
+             as each `secret_folder` and `secret_file` does",
+        )?;
+        declared.named.push(Named {
+            secret,
+            folder,
+            path,
+            words: Box::leak(words.into_boxed_str()),
+        });
+    }
+    Ok(declared)
+}
+
 /// The cases that repeat an earlier one: each `(at, key)` whose key an
 /// earlier item has, named with where the first one is.
 pub fn repeated<K: Eq + Hash>(items: impl IntoIterator<Item = (String, K)>) -> Vec<String> {

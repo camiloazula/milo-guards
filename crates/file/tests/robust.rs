@@ -4,7 +4,7 @@
 mod common;
 
 use common::{posix, windows};
-use milo_guards_file::{judge, Access, Paths, Protected, Rule, MAX_PATH_LEN};
+use milo_guards_file::{judge, Access, Paths, Protected, Rule, Secret, MAX_PATH_LEN};
 
 /// Pieces of paths, joined at random into texts no file API expects.
 const PIECES: [&str; 44] = [
@@ -115,6 +115,92 @@ fn random_paths_never_panic_and_a_path_it_cannot_read_is_never_safe() {
                 }
             }
         }
+    }
+}
+
+/// Machines that name secrets the caller may get wrong: the root of the
+/// disk, an empty path, a relative one, a share, a device name, wildcard
+/// characters, the home directory itself, and a path both protected and
+/// secret.
+fn hostile_secrets() -> Vec<Paths> {
+    let mut machines = Vec::new();
+    for (paths, root, env) in [
+        (posix(), "/", "/home/me/work/repo/.env"),
+        (windows(), "C:\\", r"C:\Users\me\dev\repo\.env"),
+    ] {
+        let home = paths.home.clone();
+        let named = [
+            Secret::folder(root, "the whole disk"),
+            Secret::file("", "nothing"),
+            Secret::folder("repo/.env", "a relative path"),
+            Secret::folder("\\\\server\\share\\x", "a share"),
+            Secret::file("NUL", "a device"),
+            Secret::file("*", "a star"),
+            Secret::folder("[x]?/**/*", "wildcards"),
+            Secret::folder(home, "the home directory"),
+            Secret::file(env, "the environment file"),
+        ];
+        machines.extend(
+            named
+                .iter()
+                .map(|secret| paths.clone().with_secrets([secret.clone()])),
+        );
+        machines.push(paths.clone().with_secrets(named.clone()));
+        machines.push(
+            paths
+                .with_protected([Protected::file(env, "the agent's settings")])
+                .with_secrets([Secret::file(env, "the environment file")]),
+        );
+    }
+    machines
+}
+
+#[test]
+fn random_paths_with_hostile_named_secrets_never_panic() {
+    let machines = hostile_secrets();
+    let mut random = Lcg(11);
+    for _ in 0..1_000 {
+        let length = random.next() % 14;
+        let path: Vec<&str> = (0..length)
+            .map(|_| PIECES[random.next() % PIECES.len()])
+            .collect();
+        let path = path.join(if random.next().is_multiple_of(2) {
+            ""
+        } else {
+            "/"
+        });
+        for paths in &machines {
+            for access in [Access::Read, Access::Write] {
+                let assessment = judge(access, &path, paths);
+                assert_eq!(assessment, judge(access, &path, paths), "{path:?}");
+                assert_eq!(assessment.is_safe(), assessment.findings().is_empty());
+                let unreadable = path.is_empty()
+                    || path.contains(['\0', '\n', '*', '`'])
+                    || path.starts_with(' ');
+                if unreadable {
+                    assert!(
+                        assessment
+                            .findings()
+                            .iter()
+                            .any(|finding| finding.rule == Rule::Unreadable),
+                        "{access:?} {path:?}: {assessment:?}"
+                    );
+                }
+            }
+        }
+    }
+    // A named secret is a finding however hostile the rest.
+    let named = &machines[machines.len() - 2];
+    let assessment = judge(Access::Read, ".env", named);
+    assert!(assessment
+        .findings()
+        .iter()
+        .any(|finding| finding.rule == Rule::ReadSecret));
+    // And a path at the limit returns on each.
+    let long = "a".repeat(MAX_PATH_LEN);
+    for paths in &machines {
+        let _ = judge(Access::Read, &long, paths);
+        let _ = judge(Access::Read, &"a".repeat(MAX_PATH_LEN + 1), paths);
     }
 }
 

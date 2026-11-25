@@ -13,7 +13,8 @@
 //! read as Windows reads them, whatever host the guard runs on. Nothing is
 //! read from the disk, so a symlink is judged by its own name.
 //!
-//! - A **read** is safe wherever it lands, except a key or a credential
+//! - A **read** is safe wherever it lands, except a key or a credential, or
+//!   a file the caller named as one with [`Paths::with_secrets`]
 //!   ([`Rule::ReadSecret`]). An agent reads widely, and reading is what a
 //!   caller lets run unasked.
 //! - A **write** (an edit, a create, an append, a rename's target) is safe
@@ -44,12 +45,23 @@
 //!
 //! let assessment = judge(Access::Write, "../other/x", &paths);
 //! assert_eq!(assessment.findings()[0].rule, Rule::WriteOutside);
+//!
+//! // A file the caller knows holds a secret, which core does not list.
+//! use milo_guards_file::Secret;
+//! assert!(judge(Access::Read, ".env", &paths).is_safe());
+//! let paths = paths.with_secrets([Secret::file(
+//!     "/home/me/work/repo/.env",
+//!     "the project's environment file",
+//! )]);
+//! let assessment = judge(Access::Read, ".env", &paths);
+//! assert_eq!(assessment.findings()[0].rule, Rule::ReadSecret);
+//! assert_eq!(assessment.findings()[0].reason, "reads the project's environment file");
 //! ```
 
 use milo_guards_core::spelling::{glob, network, verbatim};
 use milo_guards_core::{Flavour, Place, Resolver, Sensitivity, Spelling};
 
-pub use milo_guards_core::{Paths, Protected, ProtectedKind};
+pub use milo_guards_core::{Paths, Protected, ProtectedKind, Secret};
 
 /// What a file API call does to the path.
 ///
@@ -80,9 +92,11 @@ pub type Finding = milo_guards_core::Finding<Rule>;
 /// the new rule. [`Rule::ALL`] lists every rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rule {
-    /// Reads a key or a credential: a place core knows holds one, or a path
-    /// under it. Not the repository's history, not a shell startup file and
-    /// not a protected path: reading those is safe.
+    /// Reads a key or a credential: a place core knows holds one, a path the
+    /// caller named in `Paths::secrets` (in the caller's words, even when it
+    /// is protected too), or a path under either. Not the repository's
+    /// history, not a shell startup file and not a protected path: reading
+    /// those is safe.
     ReadSecret,
     /// Writes beyond the workspace: outside it, a system folder, the home
     /// directory, the workspace folder itself, a disk.
@@ -189,7 +203,26 @@ pub fn judge(access: Access, path: &str, paths: &Paths) -> Assessment {
         let place = resolver.place_hidden(*reading, flavour, true);
         // The plain spelling is the last reading.
         inside |= at + 1 == readings.len() && is_the_callers(place);
-        if class && !place.harmless() {
+        // A secret the caller named, read as the one literal path a file API
+        // takes: a bracket is a character of its name (`app/[id]/x.json`),
+        // and a path also protected is protected to the resolver, so a
+        // write keeps its own rule there and a read is a read of the secret.
+        let named = resolver.named_secret(*reading, flavour);
+        if let Some(words) = named {
+            match access {
+                Access::Read => add(Rule::ReadSecret, format!("reads {words}")),
+                Access::Write if !matches!(place, Place::Protected(_) | Place::Sensitive(..)) => {
+                    add(Rule::WriteSensitive, format!("writes to {words}"));
+                }
+                Access::Write => {}
+            }
+        }
+        // A bracket in a named or a protected path's own name is that path,
+        // judged as the literal path it is (a read of a protected one is
+        // safe, a write `write_protected`), not as a pattern.
+        let literal =
+            named.is_some() || (class && resolver.named_protected(*reading, flavour).is_some());
+        if class && !place.harmless() && !literal {
             add(
                 Rule::Unreadable,
                 "has a pattern that can name more than one file".to_string(),

@@ -130,9 +130,14 @@ impl Context<'_> {
             // The repository's history is inside the workspace.
             Place::Sensitive(_, Sensitivity::History) => false,
             // A startup file or a protected path is the workspace's own
-            // only when it is inside it.
-            Place::Sensitive(_, Sensitivity::Startup) | Place::Protected(_) => {
+            // only when it is inside it, and a protected path the caller also
+            // named a secret is a secret.
+            Place::Sensitive(_, Sensitivity::Startup) => {
                 !self.resolver.inside_workspace(from, shell)
+            }
+            Place::Protected(_) => {
+                !self.resolver.inside_workspace(from, shell)
+                    || self.resolver.named_secret(None, from, shell).is_some()
             }
             _ => true,
         };

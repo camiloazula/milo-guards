@@ -247,6 +247,43 @@ impl Loc {
     fn stripped(&self) -> Option<Self> {
         self.link().map(|_| self.clone().firm())
     }
+
+    /// The other spelling a protected path or a secret the caller named,
+    /// already [`firm`](Self::firm), is looked up by: for one under `/tmp`,
+    /// `/var` or `/etc`, the other side of the link a Mac makes from the root
+    /// into `/private` (`/tmp/x` and `/private/tmp/x` are one file there).
+    /// Each spelling is an entry of its own, so a path is judged as spelled,
+    /// and a pattern can pick either (`/private/*/x`, `/priv*/tmp/x`). Only
+    /// those lookups read it, where matching too much fails closed; core's
+    /// own secrets are listed under both spellings, and a workspace or a
+    /// temporary folder keeps its own. `None` for any other path.
+    fn other_spelling(&self) -> Option<Self> {
+        if !matches!(self.root, Root::Unix) {
+            return None;
+        }
+        let linked = |name: &String| {
+            name.len() == 3
+                && ["tmp", "var", "etc"]
+                    .iter()
+                    .any(|linked| name.eq_ignore_ascii_case(linked))
+        };
+        match self.parts.as_slice() {
+            [private, under, ..] if linked(under) && same_fold(private, "private") => Some(Self {
+                root: Root::Unix,
+                parts: self.parts[1..].to_vec(),
+            }),
+            [under, ..] if linked(under) => {
+                let mut parts = Vec::with_capacity(self.parts.len() + 1);
+                parts.push("private".to_string());
+                parts.extend(self.parts.iter().cloned());
+                Some(Self {
+                    root: Root::Unix,
+                    parts,
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A part of a Windows path as Windows names it. `.` and `..` are read
@@ -1004,6 +1041,18 @@ struct Workspace {
     holds_sensitive: bool,
 }
 
+/// Whether a path written from the working directory can be a secret (see
+/// [`Resolver::cwd_is_clear`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CwdClear {
+    /// No: the workspace it is in holds no secret.
+    Clear,
+    /// Only one the caller named: it holds no secret of core's own.
+    ButForNamed,
+    /// It may be any.
+    No,
+}
+
 /// Judges paths against the caller's directories.
 #[derive(Debug, Clone)]
 pub struct Resolver {
@@ -1024,10 +1073,19 @@ pub struct Resolver {
     root_homes: Vec<Loc>,
     /// Each protected path, its words, and whether it is a folder.
     protected: Vec<(Loc, &'static str, bool)>,
+    /// Each path the caller named a secret (`Paths::secrets`), its words, and
+    /// whether it is a folder.
+    secrets: Vec<(Loc, &'static str, bool)>,
     system: Vec<Loc>,
     /// Whether the working directory is in a workspace folder that holds no
-    /// sensitive place, and is not the kernel's: see [`Resolver::cwd_is_clear`].
-    cwd_clear: bool,
+    /// sensitive place, and is not the kernel's: see [`Resolver::cwd_is_clear`]
+    /// and [`Resolver::cwd_is_clear_but_for_named`].
+    cwd_clear: CwdClear,
+    /// Whether a protected or a named path has a `[`, a `*` or a `?` in it,
+    /// which a pattern part spelled out may be (see [`named_matches`]);
+    /// without one a part is read as a pattern only, which gives the same
+    /// answer.
+    wild_names: bool,
 }
 
 impl Resolver {
@@ -1145,8 +1203,10 @@ impl Resolver {
             neighbours,
             root_homes,
             protected: Vec::new(),
+            secrets: Vec::new(),
             system: Vec::new(),
-            cwd_clear: false,
+            cwd_clear: CwdClear::No,
+            wild_names: false,
         };
         let workspaces: Vec<Workspace> = workspaces
             .into_iter()
@@ -1156,29 +1216,61 @@ impl Resolver {
                 loc,
             })
             .collect();
-        let protected = paths
-            .protected
+        // Each named path once for each spelling it is looked up by.
+        let mut wild_names = false;
+        let mut named = |entries: &mut Vec<(Loc, &'static str, bool)>,
+                         path: &std::path::Path,
+                         words: &'static str,
+                         kind: ProtectedKind| {
+            let folder = kind == ProtectedKind::Folder;
+            let text = path.to_string_lossy();
+            wild_names |= text.contains('[') || text.contains('*') || text.contains('?');
+            let loc = Loc::absolute(&text).firm();
+            if let Some(other) = loc.other_spelling() {
+                entries.push((other, words, folder));
+            }
+            entries.push((loc, words, folder));
+        };
+        let mut protected = Vec::with_capacity(paths.protected.len());
+        for entry in &paths.protected {
+            named(&mut protected, &entry.path, entry.words, entry.kind);
+        }
+        let mut secrets = Vec::with_capacity(paths.secrets.len());
+        for entry in &paths.secrets {
+            named(&mut secrets, &entry.path, entry.words, entry.kind);
+        }
+        resolver.wild_names = wild_names;
+        // A workspace that holds a secret the caller named, or is under one,
+        // is not clear: a plain name there may be the secret.
+        let own = |workspace: &Workspace| {
+            !workspace.holds_sensitive && workspace.loc.holds(&resolver.cwd)
+        };
+        let named_in = |workspace: &Workspace| {
+            let folder = workspace.loc.clone().firm();
+            secrets
+                .iter()
+                .any(|(secret, ..)| above(&folder, secret) || below(&folder, secret))
+        };
+        let kernel = matches!(resolver.cwd.root, Root::Unix)
+            && resolver
+                .cwd
+                .parts
+                .first()
+                .is_some_and(|top| same_fold(top, "dev") || same_fold(top, "proc"));
+        resolver.cwd_clear = if kernel || !workspaces.iter().any(own) {
+            CwdClear::No
+        } else if workspaces
             .iter()
-            .map(|entry| {
-                (
-                    Loc::absolute(&entry.path.to_string_lossy()).firm(),
-                    entry.words,
-                    entry.kind == ProtectedKind::Folder,
-                )
-            })
-            .collect();
-        resolver.cwd_clear = workspaces
-            .iter()
-            .any(|workspace| !workspace.holds_sensitive && workspace.loc.holds(&resolver.cwd))
-            && !(matches!(resolver.cwd.root, Root::Unix)
-                && resolver
-                    .cwd
-                    .parts
-                    .first()
-                    .is_some_and(|top| same_fold(top, "dev") || same_fold(top, "proc")));
+            .any(|workspace| own(workspace) && !named_in(workspace))
+        {
+            CwdClear::Clear
+        } else {
+            CwdClear::ButForNamed
+        };
         resolver.workspaces = workspaces;
         resolver.temps = temps;
         resolver.protected = protected;
+        resolver.secrets = secrets;
         resolver.system = system;
         resolver
     }
@@ -1261,6 +1353,170 @@ impl Resolver {
     #[must_use]
     pub fn any_protected(&self) -> Option<&'static str> {
         self.protected.first().map(|(_, words, _)| *words)
+    }
+
+    /// The caller's words for a protected path that `path`, read literally
+    /// as [`named_secret`](Self::named_secret) reads it, is or is under: a
+    /// file API takes one literal path, so `app/[id]/x.json` is the protected
+    /// file of that name, which [`place`](Self::place) reads as a pattern.
+    /// `None` for a path no protected path is at, a device and a path known
+    /// only when it runs.
+    ///
+    /// ```
+    /// use milo_guards_core::{Flavour, Paths, Protected, Resolver, Spelling};
+    ///
+    /// let paths = Paths::new("/home/me/work/app", "/home/me", ["/home/me/work/app"])
+    ///     .with_protected([Protected::file("/home/me/work/app/app/[id]/x.json", "the routes")]);
+    /// let resolver = Resolver::new(&paths);
+    /// let at = |path| resolver.named_protected(Spelling::Plain(path), Flavour::Posix);
+    /// assert_eq!(at("app/[id]/x.json"), Some("the routes"));
+    /// assert_eq!(at("app/i/x.json"), None);
+    /// ```
+    #[must_use]
+    pub fn named_protected(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        if self.protected.is_empty() {
+            return None;
+        }
+        let loc = self.literal(path, flavour)?;
+        self.protected
+            .iter()
+            .find(|(protected, ..)| below(&loc, protected))
+            .map(|(_, words, _)| *words)
+    }
+
+    /// The location `path` names read literally, a wildcard a character of
+    /// the name; `None` for a device and a path known only when it runs.
+    fn literal(&self, path: Spelling<'_>, flavour: Flavour) -> Option<Loc> {
+        if matches!(path, Spelling::Plain(text) if device(text, flavour).is_some()) {
+            return None;
+        }
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return None;
+        }
+        Some(self.locate(path, flavour))
+    }
+
+    /// [`named_secret`](Self::named_secret), for a pattern too.
+    fn named_literally(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        if self.secrets.is_empty() {
+            return None;
+        }
+        self.named_at(&self.literal(path, flavour)?)
+    }
+
+    /// The caller's words for a secret it named (`Paths::secrets`) that
+    /// `path` is, or is under, whatever [`place`](Self::place) answers for
+    /// it. `place` answers `Sensitive` with [`Sensitivity::Secret`] for such
+    /// a path, unless the caller also named it protected: then it answers
+    /// `Protected`, so a write or a delete keeps the protected finding, and a
+    /// guard that judges a read asks this where `place` is `Protected`, so
+    /// the read keeps the secret's. A guard may also ask it first, to give a
+    /// read the caller's words where it has words of its own (a name that
+    /// looks like a secret).
+    ///
+    /// The path is read literally: a wildcard is a character of the name, so
+    /// `app/[id]/secret.json` is the secret named at that path, and `.e*` is
+    /// a file named `.e*`, not the `.env` it can pick (what a pattern can
+    /// pick is [`picks_secret`](Self::picks_secret)'s). `None` for a path the
+    /// caller named no secret at, a device and a path known only when it
+    /// runs.
+    ///
+    /// ```
+    /// use milo_guards_core::{Flavour, Paths, Place, Protected, Resolver, Secret, Spelling};
+    ///
+    /// let paths = Paths::new("/home/me/work/app", "/home/me", ["/home/me/work/app"])
+    ///     .with_protected([Protected::file("/home/me/work/app/.env", "the agent's settings")])
+    ///     .with_secrets([Secret::file("/home/me/work/app/.env", "the project's environment file")]);
+    /// let resolver = Resolver::new(&paths);
+    /// let env = Spelling::Plain(".env");
+    /// assert_eq!(resolver.place(env, Flavour::Posix), Place::Protected("the agent's settings"));
+    /// assert_eq!(
+    ///     resolver.named_secret(env, Flavour::Posix),
+    ///     Some("the project's environment file")
+    /// );
+    /// assert_eq!(resolver.named_secret(Spelling::Plain("src/main.rs"), Flavour::Posix), None);
+    /// ```
+    #[must_use]
+    pub fn named_secret(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        self.named_literally(path, flavour)
+    }
+
+    /// The caller's words for a secret it named that `rest`, a relative path
+    /// written from a folder only known when it runs (after `cd "$x"`), can
+    /// name: one whose last names `rest` spells or, for a pattern, can pick,
+    /// part for part (`token.json` and `deploy/token.json` for
+    /// `/home/me/work/repo/deploy/token.json`), and a named folder `rest`
+    /// goes below (`keys/signing.pem` for a folder `keys`). The folder may
+    /// be anywhere, so the name is not read from it. A name that does not
+    /// spell the named path's own last name (`signing.pem` alone, for a
+    /// folder `keys`) is not counted: the folder would have to be that
+    /// folder, which every name could be. `.` and `..` are applied first, and
+    /// a `..` above the first name is dropped, the folder it climbs to being
+    /// one only known when it runs too. `None` for a path with a root, a
+    /// drive or a `~`, and when no secret is named.
+    ///
+    /// ```
+    /// use milo_guards_core::{Flavour, Paths, Resolver, Secret};
+    ///
+    /// let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
+    ///     .with_secrets([Secret::file("/home/me/work/repo/deploy/token.json", "the deploy token")]);
+    /// let resolver = Resolver::new(&paths);
+    /// let named = |rest| resolver.named_secret_in_unknown_folder(rest, Flavour::Posix, false);
+    /// assert_eq!(named("token.json"), Some("the deploy token"));
+    /// assert_eq!(named("deploy/tok*"), Some("the deploy token"));
+    /// assert_eq!(named("deploy/other.json"), None);
+    /// ```
+    #[must_use]
+    pub fn named_secret_in_unknown_folder(
+        &self,
+        rest: &str,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Option<&'static str> {
+        if self.secrets.is_empty()
+            || rest.is_empty()
+            || rest.starts_with(flavour.separators())
+            || rest.starts_with('~')
+            || (flavour == Flavour::Windows && drive(rest).is_some())
+        {
+            return None;
+        }
+        // `.` and `..` applied; a `..` above the first name climbs out of a
+        // folder only known when it runs, into another one.
+        let written: Vec<&str> = rest.split(flavour.separators()).collect();
+        let mut names: Vec<&str> = Vec::new();
+        for (at, part) in written.iter().enumerate() {
+            let part = match flavour {
+                Flavour::Windows => windows_name(part, at + 1 == written.len()),
+                Flavour::Posix => part,
+            };
+            match part {
+                "" | "." => {}
+                ".." => {
+                    names.pop();
+                }
+                part => names.push(part),
+            }
+        }
+        if names.is_empty() {
+            return None;
+        }
+        let hidden = hidden || flavour == Flavour::Windows;
+        self.secrets.iter().find_map(|(entry, words, is_folder)| {
+            let windows = entry.windows();
+            let spells = |k: usize| {
+                let ends = &entry.parts[entry.parts.len() - k..];
+                names[..k]
+                    .iter()
+                    .zip(ends)
+                    .all(|(part, name)| named_matches(part, name, flavour, hidden, windows))
+            };
+            (1..=names.len().min(entry.parts.len()))
+                .any(|k| (k == names.len() || *is_folder) && spells(k))
+                .then_some(*words)
+        })
     }
 
     /// The workspace folder `path` is in, or is, the deepest when folders
@@ -1389,8 +1645,9 @@ impl Resolver {
                 };
                 let names = &protected.parts[folder.parts.len()..];
                 let windows = protected.windows();
+                let matches = self.matcher();
                 picks(tail, names, false, *is_folder, &|part, name| {
-                    pattern_matches(part, name, flavour, hidden, windows)
+                    matches(part, name, flavour, hidden, windows)
                 })
                 .then_some(*words)
             })
@@ -1502,7 +1759,13 @@ impl Resolver {
             let strip = stripped.as_ref().unwrap_or(&loc);
             match self.picks_protected(strip, tail.as_deref(), flavour, hidden, place, holding) {
                 Some(words) => Place::Protected(words),
-                None => place,
+                // A pattern that spells a secret the caller named out (`rm
+                // 'app/[id]/secret.json'`) is that secret: a shell hands it
+                // on as written when it matches nothing, and a quoted word is
+                // that name.
+                None => self
+                    .named_literally(path, flavour)
+                    .map_or(place, |words| Place::Sensitive(words, Sensitivity::Secret)),
             }
         } else {
             place
@@ -1568,9 +1831,11 @@ impl Resolver {
     /// A part is matched against the names of each secret place one for one,
     /// as for the protected paths; a pattern that stops at a folder that only
     /// holds a secret picks no secret, since it reads that folder's name.
-    /// What counts as a secret is the same as for `place`: this home
-    /// directory's, another user's (`/home/*/.ssh`), the root user's, and the
-    /// system's own.
+    /// What counts as a secret is the same as for `place`: the ones the
+    /// caller named (`Paths::secrets`, whose words come first, and of which
+    /// only a folder has something below its name), this home directory's,
+    /// another user's (`/home/*/.ssh`), the root user's, and the system's
+    /// own.
     #[must_use]
     pub fn picks_secret(
         &self,
@@ -1620,6 +1885,30 @@ impl Resolver {
         let first = *tail.first()?;
         let starts = |name: &str| is_globstar(first) || matches(first, name);
         let reaches = |names: &[String]| picks(&tail, names, true, true, &matches);
+        // The secrets the caller named, read as a protected path is: only a
+        // folder has something below its name for the pattern to go into,
+        // and a part also picks the name spelled out (see `named_matches`).
+        if !self.secrets.is_empty() {
+            let named =
+                |part: &str, name: &str| named_matches(part, name, flavour, hidden, windows);
+            for (entry, words, is_folder) in &self.secrets {
+                if !above(folder, entry) {
+                    continue;
+                }
+                let names = &entry.parts[folder.parts.len()..];
+                // The cheap test core's own table has: the first part must
+                // pick the first name.
+                if names
+                    .first()
+                    .is_some_and(|name| !is_globstar(first) && !named(first, name))
+                {
+                    continue;
+                }
+                if picks(&tail, names, true, *is_folder, &named) {
+                    return Some(words);
+                }
+            }
+        }
         // This home directory's and the system's own, by their full place.
         for (entry, words, kind) in &self.sensitive {
             if *kind != Sensitivity::Secret || !above(folder, entry) {
@@ -1868,11 +2157,33 @@ impl Resolver {
         self.cwd.clone().walk_dots(text, flavour, keep)
     }
 
+    /// How a pattern part is matched against a protected or a named path's
+    /// name: as [`named_matches`] where one may be a pattern spelled out, and
+    /// as [`pattern_matches`] otherwise, which gives the same answer.
+    fn matcher(&self) -> fn(&str, &str, Flavour, bool, bool) -> bool {
+        if self.wild_names {
+            named_matches
+        } else {
+            pattern_matches
+        }
+    }
+
+    /// The caller's words for the secret it named that `loc` (read as
+    /// [`Loc::other_spelling`] spells it too) is, or is under.
+    fn named_at(&self, loc: &Loc) -> Option<&'static str> {
+        self.secrets
+            .iter()
+            .find(|(secret, ..)| below(loc, secret))
+            .map(|(_, words, _)| *words)
+    }
+
     /// Where a path lands. A protected path, or one under it, is `Protected`
-    /// before anything else but the home directory itself. A verdict that
-    /// would otherwise be harmless is `Protected` too when the path holds a
-    /// protected one (`holding`), so a delete of the folder is a delete of
-    /// it; a verdict that is already risky keeps its own place and words.
+    /// before anything else but the home directory itself, and a secret the
+    /// caller named, or a path under it, is `Sensitive` as a key is, right
+    /// after it. A verdict that would otherwise be harmless is `Protected`
+    /// too when the path holds a protected one (`holding`), so a delete of
+    /// the folder is a delete of it; a verdict that is already risky keeps
+    /// its own place and words.
     fn judge(&self, loc: &Loc, flavour: Flavour, holding: bool) -> Place {
         if loc.parts.is_empty() {
             return Place::Top("the root of the disk");
@@ -1892,6 +2203,11 @@ impl Resolver {
         }
         if let Some((_, words, _)) = self.protected.iter().find(|(file, ..)| below(strip, file)) {
             return Place::Protected(words);
+        }
+        // A secret the caller named wins over the workspace, a temporary
+        // folder and the places core knows, as a protected path does.
+        if let Some(words) = self.named_at(strip) {
+            return Place::Sensitive(words, Sensitivity::Secret);
         }
         let place = self.judge_plain(loc, strip, flavour);
         if holding && place.harmless() {
@@ -2056,7 +2372,18 @@ impl Resolver {
     /// guard that asks of many paths may skip resolving it.
     #[must_use]
     pub fn cwd_is_clear(&self) -> bool {
-        self.cwd_clear
+        self.cwd_clear == CwdClear::Clear
+    }
+
+    /// As [`cwd_is_clear`](Self::cwd_is_clear) with no secret named in
+    /// `Paths::secrets`: whether a plain path from the working directory can
+    /// land on no key of core's own, so the secrets the caller names are the
+    /// only ones it can be. A guard that skips resolving such a path when the
+    /// working directory is clear looks it up among the named ones instead
+    /// when only this is true.
+    #[must_use]
+    pub fn cwd_is_clear_but_for_named(&self) -> bool {
+        self.cwd_clear != CwdClear::No
     }
 
     /// How `path`s are spelled on the machine these directories describe:
@@ -2127,9 +2454,11 @@ impl Resolver {
 
 impl Resolver {
     /// Whether reading what `path` names can reach a secret
-    /// ([`Sensitivity::Secret`] place) below it, that [`place`](Self::place)
-    /// does not say. A path that is itself a secret, or inside one, is
-    /// `place`'s to say; this is for a folder read whole, and for a pattern.
+    /// ([`Sensitivity::Secret`] place, core's own or one the caller named in
+    /// `Paths::secrets`) below it, that [`place`](Self::place) does not say.
+    /// A path that is itself a secret, or inside one, is `place`'s to say;
+    /// this is for a folder read whole, and for a pattern. Only a folder the
+    /// caller named has something below its name for a pattern to go into.
     ///
     /// With `deep`, what the path names is read with everything below it (a
     /// recursive search, a listing of every name), so a folder holding a
@@ -2180,31 +2509,38 @@ impl Resolver {
         }
         let stripped = loc.stripped();
         let folder = stripped.as_ref().unwrap_or(&loc);
+        // Each secret, the folder it is looked up from, and whether it is a
+        // folder: core's own are read as folders, the caller's as it says.
         let secrets = || {
-            self.sensitive
+            self.secrets
                 .iter()
-                .filter(|(_, _, kind)| *kind == Sensitivity::Secret)
+                .map(|(entry, _, is_folder)| (entry, folder, *is_folder))
+                .chain(
+                    self.sensitive
+                        .iter()
+                        .filter(|(_, _, kind)| *kind == Sensitivity::Secret)
+                        .map(|(entry, ..)| (entry, folder, true)),
+                )
         };
-        if secrets().any(|(entry, ..)| below(folder, entry)) {
+        if secrets().any(|(entry, from, _)| below(from, entry)) {
             return true;
         }
         let holds_homes = deep && self.holds_homes(folder);
         if tail.is_empty() {
-            return holds_homes || (deep && secrets().any(|(entry, ..)| above(folder, entry)));
+            return holds_homes || (deep && secrets().any(|(entry, from, _)| above(from, entry)));
         }
         let windows = folder.windows();
         let hidden = hidden || flavour == Flavour::Windows;
         let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
         holds_homes
-            || secrets().any(|(entry, ..)| {
-                above(folder, entry)
-                    && picks(
-                        &tail,
-                        &entry.parts[folder.parts.len()..],
-                        !deep,
-                        true,
-                        &|part, name| pattern_matches(part, name, flavour, hidden, windows),
-                    )
+            || secrets().any(|(entry, from, is_folder)| {
+                above(from, entry) && {
+                    let names = &entry.parts[from.parts.len()..];
+                    let matches = self.matcher();
+                    picks(&tail, names, !deep, is_folder, &|part, name| {
+                        matches(part, name, flavour, hidden, windows)
+                    })
+                }
             })
     }
 
@@ -2263,10 +2599,11 @@ impl Resolver {
             }
             let names = &path.parts[folder.parts.len()..];
             let windows = path.windows();
+            let matches = self.matcher();
             let reach = |whole: bool| {
                 let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
                 picks(&tail, names, whole, *is_folder, &|part, name| {
-                    pattern_matches(part, name, flavour, hidden, windows)
+                    matches(part, name, flavour, hidden, windows)
                 })
             };
             (reach(true) || (folders && reach(false))).then_some(*words)
@@ -2418,6 +2755,27 @@ fn lead(spelled: &Loc, protected: &Loc) -> bool {
             .iter()
             .zip(&protected.parts)
             .all(|(spelled, name)| same_name(spelled, name, windows))
+}
+
+/// Whether a pattern part can pick `name`, the name of a protected path or
+/// of a secret the caller named: as [`pattern_matches`], or as the name
+/// itself, spelled out. A shell that finds no match for a pattern hands it on
+/// as written (`cat app/[id]/x.json` opens `app/[id]/x.json` when `[id]`
+/// matches no `i` or `d`), and a word the line quotes, escapes or gives a
+/// literal path parameter is that name, so a bracket or a star there may be a
+/// character of the name. Matching it too fails closed.
+fn named_matches(part: &str, name: &str, flavour: Flavour, hidden: bool, windows: bool) -> bool {
+    pattern_matches(part, name, flavour, hidden, windows)
+        // Only a name with a wildcard character in it can be a pattern part
+        // spelled out that the pattern does not match; any other is read as
+        // the pattern reads it already.
+        || (has_wild_character(name) && same_name(part, name, windows))
+}
+
+/// Whether a name holds a character a pattern reads as a wildcard.
+fn has_wild_character(name: &str) -> bool {
+    name.bytes()
+        .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']' | b'`'))
 }
 
 /// Whether a pattern part can pick `name`, or on Windows its short name,

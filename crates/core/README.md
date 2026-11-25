@@ -13,7 +13,8 @@ not depend on what is being read:
   target it is about, and where there is one, what to do instead.
 - **The directories everything is judged against.** `Paths`: the working
   directory, the home directory and the workspace folders, with the files
-  the caller gates (`Protected`).
+  the caller gates (`Protected`) and the ones it knows hold a secret
+  (`Secret`).
 - **The path model.** `Resolver` says where a path spelled out as text lands
   (`Place`), by its spelling alone, for POSIX and Windows (`Flavour`), on
   whatever host it runs.
