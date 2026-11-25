@@ -309,7 +309,22 @@ fn a_paths_declaration_names_the_paths_a_case_is_judged_on() {
         "paths agent base=posix workspace=/home/me/other folder=/home/me/.agent words=\"the agent's settings\" file=/home/me/x.yaml words=\"the agent's rules\" secret_file=/home/me/work/repo/.env words=\"the project's environment file\" secret_folder=/home/me/.vault words=\"your password vault\"\n",
         "posix@home place=inside | x\n",
         "posix@agent place=inside | x\n",
+        "paths wsl base=posix drive_mount=/mnt drive_mount=/ windows_home=C:\\\\Users\\\\me\n",
+        "posix@wsl place=inside | x\n",
     ));
+    let wsl = &cases[2].paths;
+    assert_eq!(
+        wsl.drive_mounts,
+        [
+            std::path::PathBuf::from("/mnt"),
+            std::path::PathBuf::from("/")
+        ]
+    );
+    assert_eq!(
+        wsl.windows_home,
+        Some(std::path::PathBuf::from(r"C:\Users\me"))
+    );
+    assert!(cases[0].paths.drive_mounts.is_empty() && cases[0].paths.windows_home.is_none());
     let home = &cases[0].paths;
     assert_eq!(
         (home.cwd.to_str(), home.home.to_str()),
@@ -393,6 +408,10 @@ fn a_malformed_case_is_refused() {
             "`words` must follow its `folder` or `file` (or `secret_folder` or `secret_file`)",
         ),
         ("paths x base=posix extra\n", "an unknown word"),
+        (
+            "paths x base=posix windows_home=C:\\\\a windows_home=C:\\\\b\n",
+            "`windows_home` twice",
+        ),
     ] {
         let got = refused_case(source);
         assert!(got.contains(why), "{source:?}: wanted {why:?}, got {got:?}");

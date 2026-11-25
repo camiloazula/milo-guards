@@ -1,0 +1,26 @@
+# How the machine spells another system's drives (`Paths::drive_mounts`):
+# code on WSL that opens `/mnt/c/...` opens the Windows drive, judged where
+# the drive's path lands once the caller names the mount, with the Windows
+# home it names (`Paths::with_windows_home`) a home directory. Without the
+# mount, the same code is what it was.
+
+paths wsl base=posix drive_mount=/mnt windows_home=C:\\Users\\me
+paths wsl_work cwd=/mnt/c/Users/me/repo home=/home/me workspace=/mnt/c/Users/me/repo drive_mount=/mnt windows_home=C:\\Users\\me
+
+python@wsl finds=read_secret reason="reads your SSH keys" | print(open('/mnt/c/Users/me/.ssh/id_rsa').read())
+javascript@wsl finds=read_secret reason="reads your SSH keys" | require('fs').readFileSync('/mnt/c/Users/me/.ssh/id_rsa')
+python@wsl finds=read_secret reason="reads the Windows account database" | print(open('/mnt/c/Windows/System32/config/SAM', 'rb').read())
+python@wsl finds=delete reason="deletes your home directory" | import shutil\nshutil.rmtree('/mnt/c/Users/me')
+python@wsl finds=overwrite reason="writes to a system folder" | open('/mnt/c/Windows/x.dll', 'w')
+# The path is judged as spelled too: a folder of this machine's there.
+python@wsl finds=overwrite | open('/mnt/c/Windows/Temp/x', 'w')
+python@wsl_work safe | open('src/out.txt', 'w')
+python@wsl_work finds=read_secret reason="reads your SSH keys" | print(open('../.ssh/id_rsa').read())
+python@wsl_work finds=delete reason="deletes your home directory" | import shutil\nshutil.rmtree('..')
+# Without the mount, `/mnt/c` is a folder of this machine's.
+python safe | print(open('/mnt/c/Users/me/.ssh/id_rsa').read())
+# A mount's own folder, copied whole, holds every drive in it.
+python@wsl finds=read_secret reason="reads the root of the disk, and the keys in it" | import shutil\nshutil.copytree('/mnt', '/tmp/x')
+python@wsl finds=read_secret reason="reads the root of the disk, and the keys in it" | import shutil\nshutil.copytree('/mnt/c', '/tmp/x')
+python@wsl finds=delete reason="deletes the root of the disk" | import shutil\nshutil.rmtree('/mnt')
+python lacks=read_secret | import shutil\nshutil.copytree('/mnt', '/tmp/x')

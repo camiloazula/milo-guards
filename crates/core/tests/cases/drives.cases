@@ -1,0 +1,203 @@
+# How a machine spells another system's drives (`Paths::drive_mounts`): WSL
+# shows `C:\` as `/mnt/c`, Git Bash and MSYS2 as `/c`, Cygwin as
+# `/cygdrive/c`. With the mount named, a POSIX path through it is placed
+# where the drive's path lands; without it, every path is placed as it is
+# spelled, as before. On WSL the Windows home is the caller's to name
+# (`Paths::with_windows_home`); without it the drive is `C:`, and the
+# folders under `C:\Users` are homes, as on Windows, so a key in any of them
+# is one, but no folder is the user's own home.
+
+paths wsl base=posix drive_mount=/mnt
+paths wsl_home base=posix drive_mount=/mnt windows_home=C:\\Users\\me
+paths wsl_mounted_home base=posix drive_mount=/mnt windows_home=/mnt/c/Users/me
+paths wsl_root base=posix drive_mount=/
+paths wsl_d base=posix drive_mount=/mnt windows_home=D:\\Users\\me
+paths wsl_work cwd=/mnt/c/Users/me/repo home=/home/me workspace=/mnt/c/Users/me/repo drive_mount=/mnt windows_home=C:\\Users\\me
+paths windows_home_only base=posix windows_home=C:\\Users\\me
+paths gitbash base=windows drive_mount=/
+paths cygwin base=windows drive_mount=/cygdrive
+paths both_mounts base=windows drive_mount=/ drive_mount=/cygdrive
+paths wsl_guarded base=posix drive_mount=/mnt file=/mnt/c/Users/me/agent.yaml words="the agent's rules"
+paths wsl_in_mount cwd=/mnt/repo home=/home/me workspace=/mnt drive_mount=/mnt
+paths wsl_nested base=posix drive_mount=/mnt drive_mount=/mnt/c
+paths wsl_spelled base=posix drive_mount=//mnt/./
+paths wsl_none base=posix drive_mount=mnt drive_mount=~/mnt drive_mount=C:\\mnt drive_mount=
+paths gitbash_spelled cwd=/c/Users/me/dev/repo home=/c/Users/me workspace=/c/Users/me/dev/repo drive_mount=/
+
+# WSL: without the mount, `/mnt/c` is a folder of this machine's.
+posix place=outside | /mnt/c/Users/me/.ssh/id_rsa
+posix place=outside | /mnt/c/Windows/System32/config/SAM
+posix place=outside | /mnt/c
+# With it, a key under any user's folder of the drive is a key.
+posix@wsl place="secret:your SSH keys" | /mnt/c/Users/me/.ssh/id_rsa
+posix@wsl place="secret:your SSH keys" | /mnt/c/Users/other/.ssh/id_rsa
+posix@wsl place="secret:your AWS credentials" | /mnt/c/Users/me/.aws/credentials
+posix@wsl place="secret:the Windows account database" | /mnt/c/Windows/System32/config/SAM
+posix@wsl place="top:a system folder" | /mnt/c/Windows
+posix@wsl place="top:a system folder" | /mnt/c/Program\sFiles/x
+posix@wsl place=in_temp | /mnt/c/Windows/Temp/x
+# The drive's root is a disk's root, and above it is the mount's folder.
+posix@wsl place="top:the root of the disk" | /mnt/c
+posix@wsl place="top:the root of the disk" | /mnt/c/
+posix@wsl place="top:the root of the disk" | /mnt/c/Users/..
+# The mount's own folder holds every drive in it, so it is a disk's root
+# to what reads or changes it whole.
+posix@wsl place="top:the root of the disk" | /mnt
+posix@wsl place="top:the root of the disk" | /mnt/c/..
+posix place="top:a top-level folder" | /mnt
+posix@wsl place="secret:the system's password hashes" | /mnt/c/../../etc/shadow
+posix@wsl place=outside | /mnt/c/../../home/x
+# A drive is a folder of one letter, in any case; Windows names compare
+# without case.
+posix@wsl place="secret:your SSH keys" | /mnt/C/Users/me/.ssh/id_rsa
+posix@wsl place="secret:your SSH keys" | /mnt/c/users/ME/.SSH/id_rsa
+posix@wsl place=outside | /mnt/cc/Users/me/.ssh/id_rsa
+posix@wsl place=outside | /mnt/c:/Users/me/.ssh/id_rsa
+# Without the Windows home, the drive is `C:`: another drive's users are no
+# homes, and the user's own folder is no home directory.
+posix@wsl place=outside | /mnt/d/Users/me/.ssh/id_rsa
+posix@wsl place=outside | /mnt/c/Users/me
+posix@wsl place="top:a top-level folder" | /mnt/c/Users
+posix@wsl place=outside | /mnt/c/Users/me/AppData/Local/Temp/x
+# Every spelling that gets there: relative, from `~`, with `..`.
+posix@wsl place="secret:your SSH keys" | ../../../../mnt/c/Users/me/.ssh/id_rsa
+posix@wsl home place="secret:your SSH keys" | ../../mnt/c/Users/me/.ssh/id_rsa
+posix@wsl place="secret:your SSH keys" | /mnt/./c//Users/me/.ssh/id_rsa
+posix@wsl place="secret:your SSH keys" | /mnt/x/../c/Users/me/.ssh/id_rsa
+# This machine's own paths stay its own.
+posix@wsl place=inside | src/main.rs
+posix@wsl home place="secret:your SSH keys" | .ssh/id_rsa
+posix@wsl place=home | /home/me
+posix@wsl place=outside | /mnt/data/x
+# A pattern through the mount is read as each drive core knows of.
+posix@wsl picks="your SSH keys" | /mnt/c/Users/*/.ssh/id_rsa
+posix@wsl picks="your SSH keys" | /mnt/*/Users/me/.ssh/id_rsa
+posix@wsl place="secret:your SSH keys" | /mnt/*/Users/me/.ssh/id_rsa
+posix@wsl picks="your SSH keys" | /mnt/[cd]/Users/me/.ssh/id_rsa
+posix@wsl picks=none | /mnt/[de]/Users/me/.ssh/id_rsa
+posix picks=none | /mnt/*/Users/me/.ssh/id_rsa
+posix@wsl deep reaches=yes | /mnt/c/Users
+posix@wsl deep reaches=yes | /mnt/c
+posix@wsl reaches=yes | /mnt/*/Users/me/.ssh/id_rsa
+posix@wsl reaches=no | /mnt/c/Users/me/src
+# A folder read all the way down that holds the mount's folder reads each
+# drive in it.
+posix@wsl deep reaches=yes | /mnt
+posix@wsl deep reaches=yes | /
+posix@wsl deep reaches=no | /home/me/work
+posix deep reaches=no | /mnt
+# A spelling is placed by where it lands, and written as it is spelled.
+posix@wsl absolute=/mnt/c/Users/me/x | /mnt/c/Users/me/x
+posix@wsl opened=/mnt/c/../x | /mnt/c/../x
+
+# With the Windows home named, the folder is the home directory, its keys
+# are keys and its temporary folder is one.
+posix@wsl_home place=home | /mnt/c/Users/me
+posix@wsl_home place=holds_home | /mnt/c/Users
+posix@wsl_home place="secret:your SSH keys" | /mnt/c/Users/me/.ssh/id_rsa
+posix@wsl_home place="startup:your PowerShell profile" | /mnt/c/Users/me/Documents/PowerShell/Microsoft.PowerShell_profile.ps1
+posix@wsl_home place=in_temp | /mnt/c/Users/me/AppData/Local/Temp/x
+posix@wsl_home place=outside | /mnt/c/Users/me/Downloads/x
+posix@wsl_mounted_home place=home | /mnt/c/Users/me
+posix@wsl_mounted_home place="secret:your SSH keys" | /mnt/c/Users/me/.ssh/id_rsa
+# Its own drive's users are homes too.
+posix@wsl_d place=home | /mnt/d/Users/me
+posix@wsl_d place="secret:your SSH keys" | /mnt/d/Users/other/.ssh/id_rsa
+posix@wsl_d place="secret:your SSH keys" | /mnt/c/Users/other/.ssh/id_rsa
+posix@wsl_d place="secret:the Windows account database" | /mnt/d/Windows/System32/config/SAM
+# The Windows home alone places a Windows spelling, and no mount.
+posix@windows_home_only place=outside | /mnt/c/Users/me/.ssh/id_rsa
+windows@windows_home_only place="secret:your SSH keys" | C:\\Users\\me\\.ssh\\id_rsa
+windows@windows_home_only place=home | C:\\Users\\me
+windows@posix place=outside | C:\\Users\\me\\.ssh\\id_rsa
+# A workspace in a mounted drive: a path from it, through the mount, or as
+# Windows spells it is the same place.
+posix@wsl_work place=inside | src/main.rs
+posix@wsl_work place=inside | /mnt/c/Users/me/repo/src/main.rs
+windows@wsl_work place=inside | C:\\Users\\me\\repo\\src\\main.rs
+posix@wsl_work place=workspace | .
+posix@wsl_work place=home | ..
+posix@wsl_work place="secret:your SSH keys" | ../.ssh/id_rsa
+posix@wsl_work place="history:the repository's history" | .git/config
+posix@wsl_work place=inside | /mnt/c/users/me/repo/src/main.rs
+posix@wsl_work home place="secret:your SSH keys" | .ssh/id_rsa
+
+# A protected path named through the mount is protected however it is
+# spelled, and a folder or a pattern that holds it holds it.
+posix@wsl_guarded place="protected:the agent's rules" | /mnt/c/Users/me/agent.yaml
+posix@wsl_guarded place="protected:the agent's rules" | /mnt/C/users/ME/agent.yaml
+windows@wsl_guarded place="protected:the agent's rules" | C:\\Users\\me\\agent.yaml
+posix@wsl_guarded holds="the agent's rules" | /mnt/c/Users
+posix@wsl_guarded holds="the agent's rules" | /mnt/*/Users/me/agent.yaml
+posix@wsl_guarded holds="the agent's rules" | /mnt/?/Users/*
+posix@wsl_guarded holds=none | /mnt/d/Users
+
+# A workspace that holds the mount's folder: a plain name in it may be a
+# drive, so the working directory is not clear.
+posix@wsl_in_mount place="secret:your SSH keys" | ../c/Users/me/.ssh/id_rsa
+posix@wsl_in_mount place="top:the root of the disk" | ../c
+posix@wsl_in_mount place=inside | x
+
+# WSL with its mounts at the root (`automount.root = /`).
+posix@wsl_root place="secret:your SSH keys" | /c/Users/me/.ssh/id_rsa
+posix@wsl_root place="top:the root of the disk" | /c
+posix@wsl_root place=home | /home/me
+posix@wsl_root place="secret:the system's password hashes" | /c/../etc/shadow
+
+# Git Bash on Windows: without the mount, `/c` is a folder of the drive.
+posix@windows place=outside | /c/Users/me/.ssh/id_rsa
+# With it, a POSIX path from `/` through it is the drive's.
+posix@gitbash place="secret:your SSH keys" | /c/Users/me/.ssh/id_rsa
+posix@gitbash place="secret:your SSH keys" | /C/Users/me/.ssh/id_rsa
+posix@gitbash place=home | /c/Users/me
+posix@gitbash place=inside | /c/Users/me/dev/repo/src/main.rs
+posix@gitbash place="top:the root of the disk" | /c
+posix@gitbash place="top:the root of the disk" | /c/..
+posix@gitbash place="top:a top-level folder" | /d/x
+posix@gitbash place=outside | /etc/x/y
+posix@windows place=outside | /etc/x/y
+# A relative path is from the working directory, where no mount is.
+posix@gitbash place=inside | c/Users
+# A Windows spelling has no mount: `\c` is a folder of the drive.
+windows@gitbash place=outside | /c/Users/me/.ssh/id_rsa
+windows@gitbash place=outside | \\c\\Users\\me\\.ssh\\id_rsa
+# Cygwin's mount, and both.
+posix@cygwin place="secret:your SSH keys" | /cygdrive/c/Users/me/.ssh/id_rsa
+posix@cygwin place=outside | /c/Users/me/.ssh/id_rsa
+posix@cygwin place="top:the root of the disk" | /cygdrive/c/..
+posix@both_mounts place="secret:your SSH keys" | /cygdrive/c/Users/me/.ssh/id_rsa
+posix@both_mounts place="secret:your SSH keys" | /c/Users/me/.ssh/id_rsa
+# A relative POSIX path that climbs above its drive's root is in the
+# mount's folder, where a letter is a drive again: Git Bash's `..` from
+# `/c` is `/`.
+posix@gitbash place="secret:your SSH keys" | ../../../../../c/Users/me/.ssh/id_rsa
+posix@gitbash place="secret:your SSH keys" | ../../../../../../c/Users/me/.ssh/id_rsa
+posix@cygwin place="secret:your SSH keys" | ../../../../../c/Users/me/.ssh/id_rsa
+posix@windows place=outside | ../../../../../c/Users/me/.ssh/id_rsa
+
+# A mount below another: a folder of one letter in the first is its drive
+# and the way to the second, and each is read.
+posix@wsl_nested place="secret:your SSH keys" | /mnt/c/c/Users/me/.ssh/id_rsa
+posix@wsl_nested place="secret:your SSH keys" | /mnt/c/Users/me/.ssh/id_rsa
+# A mount is an absolute POSIX path, its `.` and doubled separators
+# dropped; a relative one, one from `~`, a Windows one and an empty one name
+# no mount.
+posix@wsl_spelled place="secret:your SSH keys" | /mnt/c/Users/me/.ssh/id_rsa
+posix@wsl_none place=outside | /mnt/c/Users/me/.ssh/id_rsa
+
+# Git Bash with the directories spelled as Git Bash spells them, and its
+# mount `/`: the workspace is the agent's, and the drive's keys, home
+# directory and system folders are what they are on Windows.
+posix@gitbash_spelled place=inside | src/main.rs
+posix@gitbash_spelled place=inside | /c/Users/me/dev/repo/src/main.rs
+posix@gitbash_spelled place=workspace | .
+posix@gitbash_spelled place="secret:your SSH keys" | /c/Users/me/.ssh/id_rsa
+posix@gitbash_spelled home place="secret:your SSH keys" | .ssh/id_rsa
+posix@gitbash_spelled place=home | /c/Users/me
+posix@gitbash_spelled place="top:a system folder" | /c/Windows
+# Of two readings that weigh the same, the disk's root a mount reaches is
+# the answer: `/mnt/*` picks the drives, `/mnt/c/d` is `D:` through `/mnt/c`.
+posix@wsl place="top:the root of the disk" | /mnt/*
+posix@wsl place="top:the root of the disk" | /mnt/?
+posix place="top:a top-level folder" | /mnt/*
+posix@wsl_nested place="top:the root of the disk" | /mnt/c/d

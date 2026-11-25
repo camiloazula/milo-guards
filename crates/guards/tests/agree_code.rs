@@ -14,8 +14,9 @@
 //!   case names, and when that is a sample machine, on the other two too;
 //! - code made here: each act on files after one or two `chdir`s to places
 //!   risky and harmless from the start, reads and writes of what the kernel
-//!   serves, and every act on paths the caller protects, names as a secret,
-//!   or both.
+//!   serves, every act on paths the caller protects, names as a secret, or
+//!   both, and every act on paths through the drives the caller says WSL
+//!   mounts, from a workspace on either side.
 //!
 //! For each, the whole answers are compared, every rule with its reason and
 //! what it says to do instead (the targets are the guards' own: a path as
@@ -309,6 +310,10 @@ fn declared(words: &[Word], machines: &HashMap<String, Paths>) -> Result<(String
             (true, false) => paths.with_secrets([Secret::file(named.path, named.words)]),
         };
     }
+    paths = paths.with_drive_mounts(declared.drive_mounts);
+    if let Some(home) = declared.windows_home {
+        paths = paths.with_windows_home(home);
+    }
     Ok((declared.name, paths))
 }
 
@@ -553,6 +558,65 @@ fn made_cases() -> Vec<Code> {
                 code,
                 paths: named.clone(),
             });
+        }
+    }
+    // How the caller says WSL spells the Windows drives: under `/mnt`, with
+    // the Windows home, from a workspace on this machine's side and from one
+    // on a mounted drive.
+    let wsl = posix()
+        .with_protected([Protected::file(
+            "/mnt/c/Users/me/agent.yaml",
+            "the agent's rules",
+        )])
+        .with_drive_mounts(["/mnt"])
+        .with_windows_home(r"C:\Users\me");
+    let mounted = Paths::new("/mnt/c/Users/me/repo", "/home/me", ["/mnt/c/Users/me/repo"])
+        .with_drive_mounts(["/mnt"])
+        .with_windows_home(r"C:\Users\me");
+    for (machine, paths) in [("wsl", &wsl), ("mounted", &mounted)] {
+        for path in [
+            "src/main.rs",
+            "../.ssh/id_rsa",
+            "../agent.yaml",
+            "/mnt/c/Users/me/.ssh/id_rsa",
+            "/mnt/C/users/ME/.ssh/id_rsa",
+            "/mnt/c/Users/me",
+            "/mnt/c/Users/me/agent.yaml",
+            "/mnt/c/Users/other/.aws/credentials",
+            "/mnt/c/Windows/System32/config/SAM",
+            "/mnt/c/Windows/Temp/x",
+            "/mnt/c/../../etc/shadow",
+            "/mnt/d/x",
+        ] {
+            for (language, code) in [
+                (Language::Python, format!("print(open('{path}').read())")),
+                (Language::Python, format!("open('{path}', 'w')")),
+                (Language::Python, format!("import os\nos.remove('{path}')")),
+                (
+                    Language::Python,
+                    format!("import shutil\nshutil.rmtree('{path}')"),
+                ),
+                (
+                    Language::Python,
+                    format!("import os\nos.chdir('/mnt/c/Users')\nprint(open('{path}').read())"),
+                ),
+                (
+                    Language::JavaScript,
+                    format!("console.log(require('fs').readFileSync('{path}'))"),
+                ),
+                (
+                    Language::JavaScript,
+                    format!("require('fs').writeFileSync('{path}', 'x')"),
+                ),
+            ] {
+                found.push(Code {
+                    at: machine.to_string(),
+                    machine: machine.to_string(),
+                    language,
+                    code,
+                    paths: paths.clone(),
+                });
+            }
         }
     }
     found

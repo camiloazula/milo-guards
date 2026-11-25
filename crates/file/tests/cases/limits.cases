@@ -14,10 +14,13 @@ read safe | /dev/stdin
 read safe | .env
 read safe | config/secrets.yml
 read safe | ~/.mozilla/firefox/x/cookies.sqlite
-read safe | /mnt/c/Users/me/.ssh/id_rsa
 
-# A path as another system spells it is read as this one does: Git Bash's
-# `/c/Users/...` is `C:\c\Users\...` to Windows itself.
+# A path as another system spells it is read as this one does until the
+# caller names the mount (`Paths::with_drive_mounts`, in `drives.cases`):
+# WSL's `/mnt/c` is a folder of this machine's. A file API on Windows
+# reads Git Bash's `/c/Users/...` as `C:\c\Users\...`, as Windows itself
+# does, mount or not.
+read safe | /mnt/c/Users/me/.ssh/id_rsa
 read@windows safe | /c/Users/me/.ssh/id_rsa
 read@windows safe | /cygdrive/c/Users/me/.ssh/id_rsa
 

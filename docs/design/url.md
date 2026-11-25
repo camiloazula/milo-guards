@@ -183,9 +183,14 @@ the caller's words, and so does a secret the caller names (`Paths::secrets`:
 the secret's words where the path is also protected, since a fetch reads it
 (core's `Resolver::named_secret`); one the resolver cannot place reads `a path
 only known when it runs`. A Windows machine (the home directory has a drive) reads
-`/C:/Users` as `C:/Users`. A `file:` URL with a host names a file on another
-machine, which a Windows client reaches over the network: `reads a file from
-another machine`, and the host is judged too.
+`/C:/Users` as `C:/Users`. A drive mount the caller names
+(`Paths::drive_mounts`) is read as core reads it
+([Core](core.md#drive-mounts)): on WSL with `/mnt` named,
+`file:///mnt/c/Users/me/.ssh/id_rsa` `reads your SSH keys`. The path is
+placed as spelled too, and the more telling words are kept: a key's, then
+those of any place that is not the agent's own. A `file:` URL with a host
+names a file on another machine, which a Windows client reaches over the
+network: `reads a file from another machine`, and the host is judged too.
 
 ## Spelling
 

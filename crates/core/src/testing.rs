@@ -8,7 +8,20 @@
 //! milo-guards-core = { workspace = true, features = ["testing"] }
 //! ```
 
-use crate::{Assessment, Paths, RuleName};
+use crate::{Assessment, Flavour, Paths, Place, Resolver, RuleName, Spelling};
+
+/// The counted work one resolver may spend walking paths through drive
+/// mounts.
+pub const MOST_WORK: usize = crate::resolve::MOST_WORK;
+
+/// The counted work placing `path`, spelled for `flavour`, spends on a
+/// fresh resolver for `paths` (each part a walk through a drive mount read,
+/// each name a pattern was matched against), the same on every machine, for
+/// a test that holds it to a bound; and the place.
+#[must_use]
+pub fn mount_work(paths: &Paths, path: &str, flavour: Flavour) -> (usize, Place) {
+    Resolver::mount_work(paths, Spelling::Plain(path), flavour)
+}
 
 /// A POSIX machine: the workspace in the home directory.
 #[must_use]
