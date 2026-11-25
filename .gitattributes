@@ -1,0 +1,7 @@
+# Every text file is checked out with LF line endings, on every system. The
+# tests read the case files, the sources, the justfile and the workflows as
+# text: a carriage return that a Windows checkout adds (Git for Windows sets
+# `core.autocrlf`) makes every case file refused, since a case line holds no
+# raw control character, and the CI job on Windows checks the repository out
+# that way. Binary files are found by their content and left as they are.
+* text=auto eol=lf

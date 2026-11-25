@@ -22,6 +22,19 @@ print the version in `rust-toolchain.toml`. A Homebrew-installed Rust earlier on
 `PATH` ignores that pin, uses its own clippy, and has no `llvm-tools-preview`.
 Put `~/.cargo/bin` before Homebrew on `PATH`, or remove the Homebrew Rust.
 
+The grammars are C, compiled by the system's C compiler: the Xcode command
+line tools on macOS, a C compiler on Linux, and MSVC (Visual Studio's C++
+build tools, which rustup's MSVC toolchain needs anyway) on Windows. On
+Windows, `just` runs a recipe's lines with `sh`, as everywhere: Git for
+Windows has one, in its `bin` folder, which must be on `PATH`. A clone
+made since `.gitattributes` came in has every text file with LF line
+endings, on Windows too: the tests read the case files and the sources as
+text. A clone made before it, with `core.autocrlf=true` (Git for Windows'
+default), keeps the CRLF files it has, and `git status` still shows them
+clean; clone again, or rewrite them from the index with
+`git rm --cached -r . && git reset --hard` (which drops any uncommitted
+change).
+
 ## The gates
 
 `just verify` is the gate: the only check that decides whether a change can
@@ -54,7 +67,27 @@ whose `verify` job is red, or has not finished, cannot merge. The `timing`
 job runs `just timing` alone. For now it is advisory: its rows are being
 measured on GitHub's runner, and a red `timing` run there is a time to look
 at, not a change that cannot merge.
-Locally, `just verify` still runs both.
+Locally, `just verify` still runs both. Those two jobs run on Linux (x86_64).
+
+The `test` job runs `just test` on Windows and on macOS, with the pinned
+Rust and without coverage: `windows-latest` (x86_64, MSVC) and
+`macos-latest` (arm64), one job for each, and one failing does not stop
+the other. The crates have no platform code of their own, but the grammars
+are C, built by each system's compiler, and a caller on Windows or a Mac
+builds them there; this job builds and tests them there first. `just test`
+reads no clock (a debug build ignores the timing tests), so a slow runner
+cannot fail it. It is advisory for now: the ruleset on `main` does not
+require it, and a red run is a time to look, not a change that cannot
+merge. Once it has passed on `main` steadily and its time on these runners
+is known, its two checks, `test (windows-latest)` and `test (macos-latest)`,
+are added to the ruleset's required checks beside `verify`. Then the
+systems are pinned to the runner labels of that day's images (such as
+`windows-2025` and `macos-26`), and the checks' names with them: a
+`-latest` label moves to a new system without a commit here, and a
+required check should not.
+`crates/guards/tests/ci_jobs.rs` holds each job to its recipes: `verify` to
+every recipe of `just verify` but `timing`, `timing` to `just timing`, and
+`test` to `just test` alone, on those two systems.
 
 A timing test lives in its crate's `tests/timing.rs`, and only there. It
 reads the clock in an optimized build only, with
@@ -188,7 +221,8 @@ command line, and it may hold anything, a ` | ` included.
   character, non-ASCII included, is written as it is.
 
 A case file is refused, every bad line named by its file and line, for a
-raw tab, carriage return or other control character, a space at the start or
+raw tab, carriage return (`.gitattributes` keeps a Windows checkout from
+adding one) or other control character, a space at the start or
 end of a line or of a command line (write `\s`), an unknown escape, an unknown
 word, field, shell, rule, effect or paths name, an answer that is not whole
 (no answer, `safe` with a rule, `reason` or `instead` without its one rule,
