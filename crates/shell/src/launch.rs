@@ -10,6 +10,7 @@ use crate::detect::STARTS_NOTHING;
 use crate::dotglob;
 use crate::extended;
 use crate::inline::{self, Code, Language};
+use crate::located::Source;
 use crate::powershell::Params;
 use crate::said::Said;
 use crate::startup;
@@ -66,11 +67,12 @@ pub(super) enum Launch {
     },
     /// It runs another unit, built from its own parameters.
     Replace(Box<Unit>),
-    /// It runs `script` in `shell`.
-    Script(Shell, Arg),
+    /// It runs `script` in `shell`; the [`Source`] says which of its
+    /// arguments the script is, for the ranges of the line's findings.
+    Script(Shell, Arg, Source),
     /// It runs `script` in `shell`, in a folder of its own choosing that
     /// the line does not say (`git submodule foreach`).
-    Elsewhere(Shell, Arg),
+    Elsewhere(Shell, Arg, Source),
     /// It runs a script given encoded.
     Encoded,
     /// It reads its commands from its input.
@@ -316,7 +318,7 @@ fn add_launched(
         // for the unit however many ways it reads.
         if given.is_none() && unit.shell != Shell::Cmd {
             for output in tools::outputs(&key, &unit.args) {
-                output_of(split, unit.shell, output, depth);
+                output_of(split, &unit, output, depth);
             }
         }
         // `repeat 3; do rm -rf build; done`: the `do` the walk read as the
@@ -327,7 +329,7 @@ fn add_launched(
         let launched = given.take().unwrap_or_else(|| launch(&key, &unit, input));
         // The command `npm_config_call` sets runs once for each `npx`: its
         // readings are bounded as a line's own text is.
-        if let Launch::Script(_, script) = &launched {
+        if let Launch::Script(_, script, _) = &launched {
             if runs_variable(&key, &unit, script) && !unit::read_from_variable(split, script.text())
             {
                 split.push(unit);
@@ -443,8 +445,8 @@ fn add_launched(
                 }
                 unit = *replacement;
             }
-            Launch::Script(shell, script) | Launch::Elsewhere(shell, script) => {
-                add_script(split, unit, &key, shell, script, elsewhere, depth);
+            Launch::Script(shell, script, source) | Launch::Elsewhere(shell, script, source) => {
+                add_script(split, unit, &key, shell, (script, source), elsewhere, depth);
                 return;
             }
             Launch::Commands {
@@ -469,8 +471,10 @@ fn add_launched(
                     split.push(unit);
                     return;
                 }
+                let at = split.units.len();
                 split.push(unit);
-                inline::apply_all(split, language, &code, depth + 1);
+                inline::apply_all(split, at, language, &code, depth + 1);
+                split.launch_done();
                 return;
             }
             Launch::Encoded => {
@@ -656,7 +660,7 @@ fn add_script(
     unit: Unit,
     key: &str,
     shell: Shell,
-    script: Arg,
+    (script, source_of): (Arg, Source),
     elsewhere: bool,
     depth: usize,
 ) {
@@ -760,7 +764,9 @@ fn add_script(
             if key == "alias" {
                 define_aliases(split, shell_at, shell, depth);
             } else {
+                split.launch(shell_at, source_of);
                 unit::script_in(split, &text, shell, depth + 1, here);
+                split.launch_done();
             }
             if let Some(place) = outer_dir {
                 split.restore_dir(place);
@@ -790,6 +796,10 @@ fn add_script(
     }
 }
 
+/// An alias's name and value, and the argument of the `alias` the value is
+/// in, with where in it the value starts.
+type Definition = (String, String, Option<(usize, usize)>);
+
 /// Read each `NAME=VALUE` of the `alias` at `shell_at` as a body of its
 /// own. A use of the name runs the value in this shell, where the line is
 /// then, as a call runs a function's body: it is read as one (see
@@ -798,17 +808,27 @@ fn add_script(
 /// deepest walk of a nested line.
 #[inline(never)]
 fn define_aliases(split: &mut Split, shell_at: usize, shell: Shell, depth: usize) {
-    let definitions: Vec<(String, String)> = split
+    // Each name and value, and where the value is: the argument it is a
+    // part of, by where it is in memory, and from where in it.
+    let definitions: Vec<Definition> = split
         .units
         .get(shell_at)
         .map(|alias| {
             aliases(&alias.args)
                 .into_iter()
-                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .map(|(name, value)| {
+                    let within = alias.args.iter().enumerate().find_map(|(at, arg)| {
+                        let word = arg.known()?;
+                        let offset =
+                            (value.as_ptr() as usize).checked_sub(word.as_ptr() as usize)?;
+                        (offset + value.len() <= word.len()).then_some((at, offset))
+                    });
+                    (name.to_string(), value.to_string(), within)
+                })
                 .collect()
         })
         .unwrap_or_default();
-    for (name, value) in definitions {
+    for (name, value, within) in definitions {
         // One the line surely runs, in this shell, takes the place of those
         // before it.
         let replaces = split.branches == 0 && split.repeats == 0 && split.apart == 0;
@@ -818,7 +838,11 @@ fn define_aliases(split: &mut Split, shell_at: usize, shell: Shell, depth: usize
         split.repeats += 1;
         split.begin_body();
         split.last_read = 0..0;
+        if let Some((at, offset)) = within {
+            split.launch_at(shell_at, at, offset);
+        }
         unit::script_in(split, &value, shell, depth + 1, true);
+        split.launch_done();
         let command = std::mem::take(&mut split.last_read);
         split.alias_command(&name, command, replaces);
         split.end_body(Some(&name));
@@ -973,10 +997,14 @@ fn add_aliased(split: &mut Split, unit: &mut Unit, depth: usize, wrappers: usize
 /// file is written as a redirect writes it, from where the wrapper runs, and
 /// a command it pipes the output to is a script of its own for a POSIX
 /// shell.
-fn output_of(split: &mut Split, shell: Shell, output: tools::Output, depth: usize) {
+fn output_of(split: &mut Split, unit: &Unit, output: tools::Output, depth: usize) {
+    let shell = unit.shell;
     match output {
         tools::Output::File(file) => split.write(shell, file),
         tools::Output::Command(Arg::Known(command)) => {
+            // Placed at the command: what it pipes to is no argument of
+            // its own.
+            split.launch_done();
             unit::script_in(split, &command, Shell::Posix, depth + 1, false);
         }
         tools::Output::Command(command) => split.problem(
@@ -1038,6 +1066,9 @@ fn run_commands(
             split.move_unknown("the folder it runs in");
         }
         let first = split.units.len();
+        // Placed at the command: the archiver's arguments say what it
+        // runs, not where in them it is.
+        split.launch_done();
         unit::script_in(split, &text, shell, depth + 1, false);
         if let Some(place) = outer_dir {
             split.restore_dir(place);
@@ -1337,7 +1368,7 @@ fn fzf(args: &[Arg]) -> Launch {
         return Launch::Opaque("runs the commands its key bindings name");
     }
     option_value(args, "--preview", "--preview").map_or(Launch::Itself, |preview| {
-        Launch::Script(Shell::Posix, preview)
+        Launch::Script(Shell::Posix, preview, Source::NONE)
     })
 }
 
@@ -1383,8 +1414,16 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         startup,
         depth,
         names,
+        place,
+        words,
         ..
     } = unit;
+    // What is left keeps its words; what the wrapper hands it after them
+    // has none.
+    let mut words = words.after(start);
+    if matches!(hands, Hands::After) {
+        words.push(None);
+    }
     let mut rest = args.into_iter().skip(start);
     let program = rest.next().unwrap_or(Arg::Unknown(String::new()));
     let mut args: Vec<Arg> = rest.collect();
@@ -1430,6 +1469,8 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         argument_variables: Rc::default(),
         depth,
         names,
+        place,
+        words,
     }
 }
 
@@ -1489,10 +1530,10 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         ),
         // `rsync -e CMD` runs CMD here to reach the other side.
         "rsync" if posix => rsh(args).map_or(Launch::Itself, |command| {
-            Launch::Script(Shell::Posix, command)
+            Launch::Script(Shell::Posix, command, Source::NONE)
         }),
         "su" => option_value(args, "-c", "--command").map_or(Launch::Itself, |script| {
-            Launch::Script(Shell::Posix, script)
+            Launch::Script(Shell::Posix, script, Source::NONE)
         }),
         "env" if posix => env(unit),
         "nice" if posix => runs(args, after_options(args, &["-n", "--adjustment"])),
@@ -1571,7 +1612,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // what it runs.
         "alias" if unit.shell == Shell::Posix => {
             let known = aliases(args).first().map_or(Launch::Itself, |(_, value)| {
-                Launch::Script(Shell::Posix, Arg::Known((*value).to_string()))
+                Launch::Script(Shell::Posix, Arg::Known((*value).to_string()), Source::NONE)
             });
             match (unread_alias(args), known) {
                 (Some(word), Launch::Itself) => Launch::Unread(word.clone()),
@@ -1641,7 +1682,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
                         .map(|file| file + 1),
                 )
             },
-            |script| Launch::Script(Shell::Posix, script),
+            |script| Launch::Script(Shell::Posix, script, Source::NONE),
         ),
         "taskset" if posix => runs(
             args,
@@ -1700,7 +1741,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         "entr" if posix => match after_options(args, &[]) {
             Some(start) if has_flag(args, Some('s'), None) => {
                 args.get(start).map_or(Launch::Itself, |script| {
-                    Launch::Script(Shell::Posix, script.clone())
+                    Launch::Script(Shell::Posix, script.clone(), Source::arg(script))
                 })
             }
             start => runs(args, start),
@@ -1708,7 +1749,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // `man -P CMD` and fzf's `--preview CMD` hand a command to a shell.
         "man" if posix => man_commands(args)
             .into_iter()
-            .map(|command| Launch::Script(Shell::Posix, command))
+            .map(|command| Launch::Script(Shell::Posix, command, Source::NONE))
             .reduce(|first, second| Launch::Either(Box::new(first), Box::new(second)))
             .unwrap_or(Launch::Itself),
         "fzf" if posix => fzf(args),
@@ -1727,16 +1768,22 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
             let start = after_options(args, &["-n", "--interval"]);
             match start {
                 Some(start) if has_flag(args, Some('x'), Some("exec")) => Launch::Runs(start),
-                Some(start) => Launch::Script(Shell::Posix, join(&args[start..])),
+                Some(start) => Launch::Script(
+                    Shell::Posix,
+                    join(&args[start..]),
+                    Source::joined(&args[start..]),
+                ),
                 None => Launch::Itself,
             }
         }
-        "eval" if unit.shell == Shell::Posix => Launch::Script(Shell::Posix, join(args)),
+        "eval" if unit.shell == Shell::Posix => {
+            Launch::Script(Shell::Posix, join(args), Source::joined(args))
+        }
         "trap" if unit.shell == Shell::Posix => trap(args),
         "source" | "." if unit.shell == Shell::Posix => match args.first() {
             Some(Arg::Known(script)) if is_stdin(script) => Launch::Reads(Reads::Shell),
             Some(Arg::Known(_)) | None => Launch::Itself,
-            Some(script) => Launch::Script(Shell::Posix, script.clone()),
+            Some(script) => Launch::Script(Shell::Posix, script.clone(), Source::arg(script)),
         },
         // Package runners start the program they name.
         "npx" | "npm" | "pnpm" | "pnpx" | "pnx" | "yarn" | "bunx" | "uvx" | "uv" | "pipx" => {
@@ -1784,7 +1831,9 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
                 .first()
                 .or(params.positional.first())
             {
-                Some(script) => Launch::Script(Shell::PowerShell, (*script).clone()),
+                Some(script) => {
+                    Launch::Script(Shell::PowerShell, (*script).clone(), Source::arg(script))
+                }
                 None => Launch::Reads(Reads::Shell),
             }
         }
@@ -1800,7 +1849,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         "start-process" if unit.shell == Shell::PowerShell => start_process(unit),
         "start" if unit.shell == Shell::Cmd => start(args),
         "runas" => match unit::plain(args).last() {
-            Some(program) => Launch::Script(Shell::Cmd, (*program).clone()),
+            Some(program) => Launch::Script(Shell::Cmd, (*program).clone(), Source::arg(program)),
             None => Launch::Itself,
         },
         _ => Launch::Itself,

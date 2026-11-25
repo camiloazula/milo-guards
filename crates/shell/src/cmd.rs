@@ -14,25 +14,48 @@ use crate::{Rule, Shell};
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     // The grammar ends every statement at a line break.
-    let text = if text.ends_with('\n') {
+    let ended = if text.ends_with('\n') {
         text.to_string()
     } else {
         format!("{text}\n")
     };
+    if split.placing.is_some() {
+        split.begin_text(text, &[(&ended, ended_at(text, &ended))]);
+    }
+    read(split, &ended, depth);
+    split.end_text();
+}
+
+/// The edit that put a line break at the end of `text`, to make `ended`.
+fn ended_at(text: &str, ended: &str) -> Vec<crate::located::Edit> {
+    if ended.len() > text.len() {
+        vec![crate::located::Edit {
+            old: text.len()..text.len(),
+            new: text.len()..ended.len(),
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Read `text`, a cmd line that ends with a line break, into `split`.
+fn read(split: &mut Split, text: &str, depth: usize) {
     let language = tree_sitter_batch::LANGUAGE.into();
-    let Some(tree) = unit::parse(split, &text, &language, unit::Recovery::Cheap) else {
+    let Some(tree) = unit::parse(split, text, &language, unit::Recovery::Cheap) else {
         return;
     };
     split.note_grammar(depth, &tree);
-    assigned(split, tree.root_node(), &text);
+    split.text_read(!tree.root_node().has_error());
+    assigned(split, tree.root_node(), text);
     let mut walker = Walker {
-        source: &text,
+        source: text,
         depth,
         input: false,
         tail: false,
         blocks: 0,
         block_head: None,
         loops: Vec::new(),
+        redirected: None,
         split,
     };
     walker.walk(tree.root_node(), None, 0);
@@ -77,6 +100,10 @@ struct Walker<'a> {
     /// block only: the one statement in a block that no line of the block
     /// comes before (see [`Walker::label`]).
     block_head: Option<usize>,
+    /// The command a statement with redirects runs (`ssh host < .env`), by
+    /// its node id, and where the statement is: for the ranges of the
+    /// line's findings, the command is the statement, redirects and all.
+    redirected: Option<(usize, Range<usize>)>,
     split: &'a mut Split,
 }
 
@@ -144,10 +171,16 @@ impl Walker<'_> {
     /// which nests as deep as the tree.
     #[inline(never)]
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        let range = match &self.redirected {
+            Some((id, range)) if *id == node.id() => range.clone(),
+            _ => node.byte_range(),
+        };
+        self.split.enter_command(range);
         if !self.statement(node, stage, level) {
             self.command(node, stage);
             self.children(node, None, level);
         }
+        self.split.leave_command();
     }
 
     /// Commands joined by `&&` and `||`. An arm of [`Self::walk`], kept out of
@@ -203,6 +236,18 @@ impl Walker<'_> {
         let mut inputs = Vec::new();
         let mut own: Option<Range<usize>> = None;
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        // The one command the statement runs is the statement, for the
+        // ranges of the line's findings.
+        let mut commands = children
+            .iter()
+            .filter(|child| child.kind() != "redirection");
+        let outer_redirected = self.redirected.take();
+        if let (Some(only), None) = (commands.next(), commands.next()) {
+            if matches!(only.kind(), "cmd" | "call_stmt") {
+                self.redirected = Some((only.id(), node.byte_range()));
+            }
+        }
+        self.split.enter_command(node.byte_range());
         // What the commands read from their input is the file: an
         // interpreter runs it (`python < x.py`).
         let outer = self.input;
@@ -234,10 +279,12 @@ impl Walker<'_> {
         }
         self.split.open_from(before);
         if let Some(own) = own {
-            for target in inputs {
-                self.split.redirect(own.clone(), target, true);
+            for (target, file) in inputs {
+                self.split.redirect_at(own.clone(), target, true, file);
             }
         }
+        self.split.leave_command();
+        self.redirected = outer_redirected;
     }
 
     /// A `for` loop. An arm of [`Self::walk`], kept out of its frame, which
@@ -340,6 +387,11 @@ impl Walker<'_> {
             return false;
         }
         let from = if call { range.start } else { node.start_byte() };
+        // The text as written, when it is that: what is read again is then
+        // placed byte for byte.
+        let written = (!spelled)
+            .then(|| self.source.get(from..node.end_byte()))
+            .flatten();
         let text = if spelled {
             let before = self.source.get(from..range.start).unwrap_or_default();
             let after = self
@@ -356,14 +408,22 @@ impl Walker<'_> {
             let command = self.source.get(from..node.end_byte()).unwrap_or_default();
             format!("{command}\n")
         };
-        self.read_again(node, &text, stage, level);
+        self.read_again(node, &text, written, stage, level);
         true
     }
 
     /// Split `text`, the text of `node` as cmd reads it, again on its own,
     /// as the rest of the statement `node` ends. The text split again
-    /// counts against the line's budget of nested text.
-    fn read_again(&mut self, node: Node<'_>, text: &str, stage: Option<Stage>, level: usize) {
+    /// counts against the line's budget of nested text. `written` is the
+    /// part of the source it is with a line break after, when it is one.
+    fn read_again(
+        &mut self,
+        node: Node<'_>,
+        text: &str,
+        written: Option<&str>,
+        stage: Option<Stage>,
+        level: usize,
+    ) {
         if !unit::read_again(
             self.split,
             text,
@@ -371,8 +431,26 @@ impl Walker<'_> {
         ) {
             return;
         }
+        // What is not the source as written is placed at the node.
+        self.split.enter_command(node.byte_range());
+        if self.split.placing.is_some() {
+            match written {
+                Some(written) => self
+                    .split
+                    .begin_text(written, &[(text, ended_at(written, text))]),
+                None => self.split.begin_text(text, &[]),
+            }
+        }
+        self.read_text(node, text, stage, level);
+        self.split.end_text();
+        self.split.leave_command();
+    }
+
+    /// [`Self::read_again`], once the text is let be read.
+    fn read_text(&mut self, node: Node<'_>, text: &str, stage: Option<Stage>, level: usize) {
         let language = tree_sitter_batch::LANGUAGE.into();
         if let Some(tree) = unit::parse(self.split, text, &language, unit::Recovery::Cheap) {
+            self.split.text_read(!tree.root_node().has_error());
             assigned(self.split, tree.root_node(), text);
             let mut walker = Walker {
                 source: text,
@@ -382,6 +460,7 @@ impl Walker<'_> {
                 blocks: self.blocks,
                 block_head: None,
                 loops: Vec::new(),
+                redirected: None,
                 split: self.split,
             };
             walker.walk(tree.root_node(), stage, level + 1);
@@ -500,7 +579,7 @@ impl Walker<'_> {
             return;
         }
         match vbs_read(text) {
-            Some(again) => self.read_again(node, &format!("{again}\n"), None, level),
+            Some(again) => self.read_again(node, &format!("{again}\n"), None, None, level),
             None => self
                 .split
                 .problem(Rule::Unreadable, "cannot be read in full", None),
@@ -557,6 +636,11 @@ impl Walker<'_> {
         };
         let (args, spans) = self.args(&after);
         let mut readings = self.word(&word);
+        let recorded = if self.split.placing.is_some() {
+            self.spots(&word, &readings, &args, &spans)
+        } else {
+            None
+        };
         // `call.bat`, `for.exe`: the built-in cmd may read before the dot.
         let mut called = Vec::new();
         readings.retain(|reading| {
@@ -603,13 +687,98 @@ impl Walker<'_> {
         let mut units = Vec::new();
         for reading in readings {
             let raw = raw_arguments(&reading, &after).and_then(|range| self.source.get(range));
+            // The words of the reading they were kept for.
+            let words = recorded.as_ref().filter(|recorded| {
+                recorded.program == reading.program && recorded.first == reading.first.len()
+            });
             let mut unit = self.unit(reading, args.clone(), spans.clone(), &after, stage);
+            if let Some(words) = words {
+                unit.words = self.unit_words(&unit, words, &args, &after);
+            }
             if let Some(raw) = raw {
+                // Only a unit with words kept for its ranges (see
+                // `crate::located`) is compared.
+                let before = unit.words.0.is_some().then(|| unit.args.clone());
                 self.own_split(&mut unit, raw);
+                // The program split its words again: they are not the
+                // grammar's.
+                if before.is_some_and(|before| unit.args != before) {
+                    unit.words = crate::located::Worded::default();
+                }
             }
             units.push(unit);
         }
         launch::add_readings(self.split, units, self.depth);
+    }
+
+    /// Keep the word at `range`, read as `arg`, for the ranges of the
+    /// line's findings (see [`crate::located`]).
+    fn spot(&mut self, range: Range<usize>, arg: &Arg, whole: bool) -> Option<usize> {
+        if self.split.placing.is_some() {
+            let written = self.source.get(range.clone()).unwrap_or_default();
+            self.split.spot(range, arg, written, whole)
+        } else {
+            None
+        }
+    }
+
+    /// Keep the words of a command: its first word, `word`, as the program
+    /// of its first reading (the word is the program alone when the
+    /// reading leaves nothing of it as an argument), what that reading
+    /// leaves of it, and its arguments, `args` at `spans`.
+    fn spots(
+        &mut self,
+        word: &[Node<'_>],
+        readings: &[Reading],
+        args: &[Arg],
+        spans: &[Range<usize>],
+    ) -> Option<Recorded> {
+        let (range, reading) = (span(word)?, readings.first()?);
+        let program = self.spot(range, &reading.program, reading.first.is_empty());
+        let mut words: Vec<Option<usize>> = reading
+            .first
+            .clone()
+            .into_iter()
+            .map(|(arg, range)| self.spot(range, &arg, true))
+            .collect();
+        if args.len() != spans.len() {
+            return None;
+        }
+        for (arg, range) in args.iter().zip(spans) {
+            words.push(self.spot(range.clone(), arg, true));
+        }
+        Some(Recorded {
+            program: reading.program.clone(),
+            first: reading.first.len(),
+            word: program,
+            words,
+        })
+    }
+
+    /// The words of `unit`, made of the reading `recorded` was kept for and
+    /// `args`, the arguments after its word, made of `pieces`: in step with
+    /// its arguments when [`Self::unit`] only put the rest of the word in
+    /// front of them, or took a `start` title off.
+    fn unit_words(
+        &self,
+        unit: &Unit,
+        recorded: &Recorded,
+        args: &[Arg],
+        pieces: &[Node<'_>],
+    ) -> crate::located::Worded {
+        let mut words = recorded.words.clone();
+        let title = recorded.first == 0
+            && pieces.first().is_some_and(|first| first.kind() == "string")
+            && unit.args.len() + 1 == words.len()
+            && unit.args.get(..) == args.get(1..);
+        if title {
+            words.remove(0);
+        }
+        if words.len() == unit.args.len() {
+            crate::located::Worded::new(recorded.word, words)
+        } else {
+            crate::located::Worded::default()
+        }
     }
 
     /// What a `call` that cmd may read before a `.`, `\` or `:` of its
@@ -1085,7 +1254,7 @@ impl Walker<'_> {
 
     /// A redirect that writes to a file: `>`, `>>`, `2>`. A duplication
     /// (`2>&1`) writes nothing. Returns the files it reads (`<`), and notes each read.
-    fn redirect(&mut self, node: Node<'_>) -> Vec<Arg> {
+    fn redirect(&mut self, node: Node<'_>) -> Vec<(Arg, Option<usize>)> {
         let mut cursor = node.walk();
         let mut operator = None;
         let mut inputs = Vec::new();
@@ -1097,16 +1266,29 @@ impl Walker<'_> {
                     let duplicates = operator.is_some_and(|op| op.ends_with('&'));
                     let writes = operator.is_some_and(|op| op.contains('>') && !duplicates);
                     if writes && !target_text.starts_with('&') {
-                        self.split.write(Shell::Cmd, self.value(&[child]));
+                        let file = self.value(&[child]);
+                        let written = unit::text(&child, self.source);
+                        let whole = unquoted(written) == Some(file.text());
+                        let word = self.spot(child.byte_range(), &file, whole);
+                        self.split.write_at(Shell::Cmd, file, word);
                     }
                     // `<` and `0<`.
                     if operator.is_some_and(|op| {
                         op.trim_start_matches(|c: char| c.is_ascii_digit()) == "<"
                     }) {
-                        self.split.read(Shell::Cmd, self.quoted_value(child));
+                        let file = self.quoted_value(child);
+                        // The value may run past the grammar's word (a
+                        // space in its quotes).
+                        let written = unit::text(&child, self.source);
+                        let whole = unquoted(written) == Some(file.text());
+                        let word = self.spot(child.byte_range(), &file, whole);
+                        self.split.read_at(Shell::Cmd, file, word);
                     }
                     if !duplicates && operator.is_some_and(|op| op.contains('<')) {
-                        inputs.push(self.value(&[child]));
+                        let file = self.value(&[child]);
+                        let written = unit::text(&child, self.source);
+                        let word = self.spot(child.byte_range(), &file, written == file.text());
+                        inputs.push((file, word));
                     }
                 }
                 _ => {}
@@ -1402,6 +1584,26 @@ fn vbs_read(text: &str) -> Option<String> {
 type Placed = (Arg, Range<usize>);
 
 /// One way cmd may read a command's first word (see [`Walker::word`]).
+/// `written`, a word as written, without the double quotes around it, when
+/// it is one plain word or one in a pair of quotes; `None` for a quote left
+/// open.
+fn unquoted(written: &str) -> Option<&str> {
+    match written.strip_prefix('"') {
+        Some(rest) => rest.strip_suffix('"'),
+        None => (!written.contains('"')).then_some(written),
+    }
+}
+
+/// The words [`Walker::spots`] kept for a command's first reading: its
+/// program and how much of its word it leaves as arguments, and the words
+/// of its program and of each argument.
+struct Recorded {
+    program: Arg,
+    first: usize,
+    word: Option<usize>,
+    words: Vec<Option<usize>>,
+}
+
 struct Reading {
     /// The program it names.
     program: Arg,

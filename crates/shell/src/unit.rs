@@ -11,6 +11,7 @@ use crate::dotglob;
 use crate::effect::Kind;
 use crate::extended::{self, AUTO_CD, EXTENDED_GLOB};
 use crate::inline;
+use crate::located::{Placed, Placing, Worded};
 use crate::said::Said;
 use crate::startup::{self, Startup};
 use crate::{Finding, Rule, Shell};
@@ -204,6 +205,14 @@ pub(crate) struct Unit {
     /// of another shell, or one the guard makes up for a .NET call, whose
     /// variables are read from its arguments' text (see [`Unit::variables`]).
     pub(crate) names: Option<Vec<String>>,
+    /// Where in the caller's line it was read, when the line is read for
+    /// its ranges (see [`crate::located`]); it takes no part in what the
+    /// unit is.
+    pub(crate) place: Placed,
+    /// The words its program and arguments were read from, when the line
+    /// is read for its ranges (see [`crate::located::Words`]); it takes no
+    /// part in what the unit is.
+    pub(crate) words: Worded,
 }
 
 /// A `Get-Process` written inside an argument: its own arguments, and what
@@ -292,6 +301,8 @@ impl Unit {
             argument_variables: Rc::default(),
             depth: 0,
             names: None,
+            place: Placed::default(),
+            words: Worded::default(),
         }
     }
 
@@ -611,6 +622,11 @@ pub(crate) struct Write {
     pub(crate) dir: Option<Arg>,
     /// As [`Unit::hidden`].
     pub(crate) hidden: bool,
+    /// As [`Unit::place`]: the command it is on.
+    pub(crate) place: Placed,
+    /// The word of its file, when the line is read for its ranges: by its
+    /// place in [`crate::located::Placing::spots`].
+    pub(crate) spot: Option<usize>,
     /// Whether `dir` is one of the other folders the line may be in (see
     /// [`Unit::others`]), not where the walk has it: the write is judged
     /// from there, but a later run of a file the line wrote has its own
@@ -753,6 +769,9 @@ pub(crate) struct Redirect {
     /// Whether the target is the text fed, a here-string or a
     /// here-document, and not a file.
     pub(crate) text: bool,
+    /// The word of its file, when the line is read for its ranges (see
+    /// [`Write::spot`]).
+    pub(crate) spot: Option<usize>,
 }
 
 /// Units a command is handed the result of: what runs in its `$(…)` and
@@ -1493,6 +1512,10 @@ pub(crate) struct Split {
     /// What only `effect` needs of the line, kept only when it is read for
     /// `effect`, so `classify` costs what it did.
     pub(crate) kept: Kept,
+    /// What the walk keeps for the ranges of the line's findings, when
+    /// [`crate::locate`] asks for them; `None` otherwise, when it keeps
+    /// nothing (see [`crate::located`]).
+    pub(crate) placing: Option<Box<Placing>>,
     /// The aliases and functions a PowerShell line sets, which a command of
     /// that name may run (see [`crate::powershell::Aliases`]).
     pub(crate) powershell_aliases: crate::powershell::Aliases,
@@ -1607,6 +1630,10 @@ pub(crate) struct Read {
     pub(crate) dir: Option<Arg>,
     /// As [`Unit::hidden`].
     pub(crate) hidden: bool,
+    /// As [`Write::place`].
+    pub(crate) place: Placed,
+    /// As [`Write::spot`].
+    pub(crate) spot: Option<usize>,
 }
 
 /// Inline Python read whole that imports a module (see
@@ -1620,6 +1647,8 @@ pub(crate) struct Importing {
     pub(crate) repeated: bool,
     /// What it comes to when that folder is not the workspace's.
     pub(crate) finding: Finding,
+    /// As [`Unit::place`]: the code.
+    pub(crate) place: Placed,
 }
 
 /// Where the walk was when an action that runs later began.
@@ -1946,6 +1975,9 @@ impl Split {
 
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
     pub(crate) fn push(&mut self, mut unit: Unit) {
+        if unit.place.0.is_none() && self.placing.is_some() {
+            unit.place = self.placed_here();
+        }
         self.fold_shell = Some(unit.shell);
         unit.dir.clone_from(&self.dir);
         unit.elsewhere.clone_from(&self.elsewhere);
@@ -2386,6 +2418,8 @@ impl Split {
                         target,
                         dir: unit.dir.clone(),
                         hidden: unit.hidden,
+                        place: unit.place.clone(),
+                        spot: None,
                         also: false,
                     }),
             );
@@ -2489,22 +2523,37 @@ impl Split {
 
     /// Note that the file `target` is redirected onto `units`.
     pub(crate) fn redirect(&mut self, units: Range<usize>, target: Arg, input: bool) {
+        self.redirect_at(units, target, input, None);
+    }
+
+    /// [`Self::redirect`], of a file the walk kept as `spot`.
+    pub(crate) fn redirect_at(
+        &mut self,
+        units: Range<usize>,
+        target: Arg,
+        input: bool,
+        spot: Option<usize>,
+    ) {
+        self.hold_redirect(units.clone());
         self.redirects.push(Redirect {
             units,
             target,
             input,
             text: false,
+            spot,
         });
     }
 
     /// Note that the text `target` (a here-string, a here-document) is fed
     /// to `units`.
     pub(crate) fn feed(&mut self, units: Range<usize>, target: Arg) {
+        self.hold_redirect(units.clone());
         self.redirects.push(Redirect {
             units,
             target,
             input: true,
             text: true,
+            spot: None,
         });
     }
 
@@ -3402,7 +3451,14 @@ impl Split {
     /// Add a redirect's write, made where the line has moved to, or from
     /// where the unit it is on started (see [`Self::open_from`]).
     pub(crate) fn write(&mut self, shell: Shell, target: Arg) {
+        self.write_at(shell, target, None);
+    }
+
+    /// [`Self::write`], of a redirect whose file the walk kept as `spot`
+    /// (see [`crate::located`]).
+    pub(crate) fn write_at(&mut self, shell: Shell, target: Arg, spot: Option<usize>) {
         let hidden = self.hidden();
+        let place = self.placed_here();
         for (dir, also) in self.redirect_dirs() {
             if self.bodies > 0 {
                 self.write_in_body.push(self.writes.len());
@@ -3412,6 +3468,8 @@ impl Split {
                 target: target.clone(),
                 dir,
                 hidden,
+                place: place.clone(),
+                spot,
                 also,
             });
         }
@@ -3430,6 +3488,8 @@ impl Split {
                 target,
                 dir: self.dir.clone(),
                 hidden,
+                place,
+                spot,
                 also: false,
             });
         }
@@ -3449,7 +3509,13 @@ impl Split {
     /// Add a redirect's read, made where the line has moved to, or from
     /// where the unit it is on started (see [`Self::open_from`]).
     pub(crate) fn read(&mut self, shell: Shell, target: Arg) {
+        self.read_at(shell, target, None);
+    }
+
+    /// [`Self::read`], of a redirect whose file the walk kept as `spot`.
+    pub(crate) fn read_at(&mut self, shell: Shell, target: Arg, spot: Option<usize>) {
         let hidden = self.hidden();
+        let place = self.placed_here();
         for (dir, _) in self.redirect_dirs() {
             if self.bodies > 0 {
                 self.read_in_body.push(self.reads.len());
@@ -3459,6 +3525,8 @@ impl Split {
                 target: target.clone(),
                 dir,
                 hidden,
+                place: place.clone(),
+                spot,
             });
         }
     }
@@ -4665,6 +4733,7 @@ impl Split {
     /// whole: the line is `unknown` unless it has a finding of its own.
     pub(crate) fn unread_code(&mut self, code: &str) {
         if self.unread.is_empty() {
+            self.place_unread();
             self.unread.push(Self::unread_finding(code));
         }
     }
@@ -4686,10 +4755,12 @@ impl Split {
         allow(dead_code, reason = "only the reader of inline code notes an import")
     )]
     pub(crate) fn imports(&mut self, code: &str) {
+        let place = self.placed_here();
         self.importing.push(Importing {
             dir: self.dir.clone(),
             repeated: self.repeats > 0,
             finding: Self::unread_finding(code),
+            place,
         });
     }
 
@@ -4701,8 +4772,22 @@ impl Split {
 
     /// Note a finding of `rule` about `target`, as [`Said`] says it.
     pub(crate) fn problem(&mut self, rule: Rule, said: impl Into<Said>, target: Option<&str>) {
+        self.place_finding(target);
         self.findings
             .push(said.into().finding(rule, target.map(str::to_string)));
+    }
+
+    /// Add `finding` to what splitting found, placed where the walk is.
+    #[cfg_attr(
+        not(feature = "inline"),
+        allow(
+            dead_code,
+            reason = "only the reader of inline code adds a finding whole"
+        )
+    )]
+    pub(crate) fn add_finding(&mut self, finding: Finding) {
+        self.place_finding(None);
+        self.findings.push(finding);
     }
 }
 
@@ -5495,14 +5580,19 @@ pub(crate) const MAX_ALIAS_WORDS: usize = MAX_LEN / 2;
 const MAX_BODIES: usize = 4;
 
 /// Split `command`, started on the drive `drive` with home on `home_drive`;
-/// `effect` says it is also read for [`crate::effect`].
+/// `effect` says it is also read for [`crate::effect`], and `places` that it
+/// keeps where each part of it is, for [`crate::locate`].
 pub(crate) fn split(
     command: &str,
     shell: Shell,
     (drive, home_drive): (Option<char>, Option<char>),
     effect: bool,
+    places: bool,
 ) -> Split {
     let mut split = Split::default();
+    if places {
+        split.placing = Some(Box::new(Placing::new(command.len())));
+    }
     start(&mut split, false, (drive, home_drive));
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
@@ -5578,10 +5668,15 @@ impl Split {
 /// the walk of a deeply nested line needs all of it.
 #[inline(never)]
 fn start(split: &mut Split, psdrive: bool, (drive, home_drive): (Option<char>, Option<char>)) {
+    let placing = split
+        .placing
+        .as_deref()
+        .map(|placing| Box::new(placing.again()));
     *split = Split {
         drive,
         home_drive,
         psdrive,
+        placing,
         ..Split::default()
     };
 }
@@ -5603,8 +5698,13 @@ fn start_again_extended(split: &mut Split) {
         ..Split::default()
     };
     let effect = split.kept.on;
+    let placing = split
+        .placing
+        .as_deref()
+        .map(|placing| Box::new(placing.again()));
     *split = fresh;
     split.kept.on = effect;
+    split.placing = placing;
 }
 
 /// Whether `text`, a script or inline code `depth` levels deep, may be read:

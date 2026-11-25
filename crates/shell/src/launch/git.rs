@@ -2,6 +2,7 @@
 //! `git submodule foreach` runs in each submodule.
 
 use super::{Launch, Word};
+use crate::located::Source;
 use crate::unit::Arg;
 use crate::Shell;
 
@@ -162,7 +163,7 @@ pub(super) fn launch(args: &[Arg]) -> Launch {
     let command = after.get(start..).unwrap_or_default();
     match command {
         [] => Launch::Itself,
-        [line] => Launch::Elsewhere(Shell::Posix, line.clone()),
+        [line] => Launch::Elsewhere(Shell::Posix, line.clone(), Source::arg(line)),
         [first, words @ ..] => {
             let mut line = first.text().to_string();
             for word in words {
@@ -177,7 +178,7 @@ pub(super) fn launch(args: &[Arg]) -> Launch {
             } else {
                 Arg::Unknown(line)
             };
-            Launch::Elsewhere(Shell::Posix, line)
+            Launch::Elsewhere(Shell::Posix, line, Source::NONE)
         }
     }
 }

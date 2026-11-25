@@ -27,6 +27,37 @@ caller compiles against or a guard answers changed.
   because a new Rust is out, and a raise is a minor bump
   ([Versions](README.md#versions)).
 
+The shell guard says where in the line each finding is (#307): a new
+function and two new types, which is a minor bump.
+
+- `locate(line, shell, &paths) -> Vec<Located>` gives `classify`'s
+  findings, in the same order, from the same reading of the line, each with
+  its `range`, the bytes of the line as the caller passed it that the
+  finding is about, and `covers`, what that range is: `Covers::Target`, the
+  word the rule that made the finding judged, as written (an operand, a
+  flag, a program, a redirect's file, with its quotes, escapes, tilde,
+  braces or variable), told by which argument the rule was handed and never
+  by searching for a word that reads the same; `Covers::Part`, the command
+  it was found in, or the word that holds the script or code it was found
+  in, where no word is known to be what the rule judged (a finding with no
+  target, a target the rule made, inline code); or `Covers::Line`, the
+  whole line. `Located` and `Covers` are `#[non_exhaustive]`. `Finding` is
+  unchanged.
+- A finding of a script the line runs (`bash -c '…'`, `powershell -Command
+  "…"`, a script block, cmd's `set X=1 && …`) points into the outer line:
+  byte for byte where the script is the line's own bytes, and at the word or
+  command that holds it where it is not (an escape, a here-document,
+  `eval`'s words joined, an encoded script); inline Python and JavaScript at
+  the word that holds the code. Every range is inside the line and on its
+  character boundaries, in the line's own bytes across the
+  backslash-newlines the guard joins and the spaces, quotes and dashes it
+  writes again for PowerShell.
+- `classify`, `effect`, `effect_paths` and `explain` give what they gave
+  (every case line, and tens of thousands of generated lines of the three
+  shells, empty and quoted-empty arguments among them, were compared with
+  their answers before this change), and build nothing for the ranges when
+  they are not asked for. `explain` gives no ranges.
+
 A caller names the files it knows hold a secret, and a read of one is a
 finding: a new type and a new field on `Paths`, which is a minor bump.
 

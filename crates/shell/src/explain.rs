@@ -182,6 +182,7 @@ pub(crate) fn explanation(command: &str, shell: Shell, reading: &Reading) -> Exp
         line,
         units,
         writes,
+        ..
     } = judged;
     // Arguments run from the same folder land in the same place: each word
     // is placed once for each folder (a runner read many ways hands

@@ -815,7 +815,7 @@ fn given_programs(acts: &mut Reading, unit: &Unit, programs: &[Option<Arg>], lan
 /// command line split by the POSIX grammar, or a program and its words.
 fn program_split(program: &Program) -> crate::unit::Split {
     match program {
-        Program::Line(line) => crate::unit::split(line, Shell::Posix, (None, None), false),
+        Program::Line(line) => crate::unit::split(line, Shell::Posix, (None, None), false, false),
         Program::Words(words) => {
             let mut split = crate::unit::Split::default();
             if let Some((first, rest)) = words.split_first() {
@@ -3033,7 +3033,7 @@ impl Checker<'_> {
                     self.add(Rule::Unknown, BEHIND, words.first());
                     return;
                 }
-                let split = crate::unit::split(&line, Shell::Posix, (None, None), false);
+                let split = crate::unit::split(&line, Shell::Posix, (None, None), false, false);
                 self.judge_behind(at, &split);
             }
             // A word only known when it runs is part of the code the remote

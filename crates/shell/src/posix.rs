@@ -16,8 +16,27 @@ mod fork_bomb;
 mod values;
 
 pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
-    let (text, marks, near, open) = join_continuations(text);
-    let text = text.as_str();
+    let joined = join_continuations(text, split.placing.is_some());
+    let edits = if split.placing.is_some() {
+        joined.edits(text)
+    } else {
+        Vec::new()
+    };
+    split.begin_text(text, &[(&joined.text, edits)]);
+    read(split, &joined, depth);
+    split.end_text();
+}
+
+/// Read `joined`, a line with its backslash-newlines joined, into `split`.
+fn read(split: &mut Split, joined: &Joined, depth: usize) {
+    let Joined {
+        text,
+        marks,
+        near,
+        open,
+        ..
+    } = joined;
+    let (text, near, open) = (text.as_str(), *near, *open);
     // The grammar ends such a here-document at the near line, where the shell
     // does not: what the program reads is not what the guard reads.
     if near {
@@ -32,6 +51,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         return;
     };
     split.note_grammar(depth, &tree);
+    split.text_read(!tree.root_node().has_error());
     // The grammar may read quotes that never close, and then says so; if it
     // does not, the scan above has misread the text, and what follows its
     // stopping place was not joined.
@@ -44,7 +64,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     }
     let mut walker = Walker {
         source: text,
-        marks: &marks,
+        marks,
         depth,
         split,
         redirected: None,
@@ -61,6 +81,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
         chain: None,
         contexts: Vec::new(),
         awaiting: false,
+        files: std::collections::HashMap::new(),
     };
     // One walk of the tree finds the variables the line sets and the values
     // it gives them.
@@ -178,10 +199,14 @@ impl Word {
 /// It also takes out zsh's `(D)` glob qualifier (see [`qualifier`]), which
 /// the grammar cannot read: `rm -rf *git(D)` becomes `rm -rf *git`. Each is
 /// given back as the offset in the new text where it was, the end of its
-/// word, for [`Walker::qualified`].
-fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
+/// word, for [`Walker::qualified`]. `keep` says what it took out is kept
+/// too ([`Joined::cuts`]), for the ranges of the line's findings.
+fn join_continuations(text: &str, keep: bool) -> Joined {
     let chars: Vec<char> = text.chars().collect();
     let mut marks = Vec::new();
+    // What was taken out, as where in `joined` and which characters of
+    // `text` (see [`Joined::cuts`]).
+    let mut cuts: Vec<(usize, Range<usize>)> = Vec::new();
     // Whether a body has a line only near its delimiter (see
     // [`near_delimiter`]).
     let mut near = false;
@@ -189,6 +214,8 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
     // text, so the scan has misread it, and what follows was not joined.
     let mut open = false;
     let mut joined = String::with_capacity(text.len());
+    // The cuts of the bodies of here-documents, as they are read.
+    let mut all = Vec::new();
     let (mut single, mut double) = (false, false);
     // Whether the open single quotes are `$'…'`, where a backslash escapes the
     // next character, so `\'` does not end them.
@@ -223,6 +250,9 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
         if c == '(' && !double {
             let rest = chars.get(at..).unwrap_or_default();
             if let Some(length) = qualifier(|| word.of(&joined), rest) {
+                if keep {
+                    cuts.push((joined.len(), at - 1..at + length));
+                }
                 at += length;
                 marks.push(joined.len());
                 continue;
@@ -230,7 +260,12 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
         }
         match c {
             '\\' => match chars.get(at) {
-                Some('\n') => at += 1,
+                Some('\n') => {
+                    if keep {
+                        cuts.push((joined.len(), at - 1..at + 1));
+                    }
+                    at += 1;
+                }
                 Some(&next) => {
                     joined.push(c);
                     joined.push(next);
@@ -412,6 +447,8 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
                         // Where in `line` each backslash-newline was taken
                         // out: the pieces of the physical lines.
                         let mut cuts: Vec<usize> = Vec::new();
+                        // The same, for the line's [`Joined::cuts`].
+                        let mut taken = Vec::new();
                         while let Some(&c) = chars.get(at).filter(|c| **c != '\n') {
                             at += 1;
                             if c != '\\' || quoted {
@@ -425,6 +462,9 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
                                 at += 1;
                                 if next == '\n' {
                                     cuts.push(line.len());
+                                    if keep {
+                                        taken.push((joined.len() + line.len(), at - 2..at));
+                                    }
                                 } else {
                                     line.push(c);
                                     line.push(next);
@@ -434,6 +474,7 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
                             }
                         }
                         joined.push_str(&line);
+                        all.extend(taken);
                         if at < chars.len() {
                             joined.push('\n');
                             at += 1;
@@ -471,7 +512,53 @@ fn join_continuations(text: &str) -> (String, Vec<usize>, bool, bool) {
         }
     }
     open |= single || double || !subs.is_empty();
-    (joined, marks, near, open)
+    cuts.extend(all);
+    cuts.sort_by_key(|(at, _)| *at);
+    Joined {
+        text: joined,
+        marks,
+        near,
+        open,
+        cuts,
+    }
+}
+
+/// A line with its backslash-newlines joined (see [`join_continuations`]).
+struct Joined {
+    text: String,
+    /// Where a `(D)` glob qualifier was taken out.
+    marks: Vec<usize>,
+    /// Whether a here-document has a line only near its delimiter.
+    near: bool,
+    /// Whether quotes or a substitution never close.
+    open: bool,
+    /// What was taken out, in order: where in `text` (the bytes before it),
+    /// and which characters of the line it was given.
+    cuts: Vec<(usize, Range<usize>)>,
+}
+
+impl Joined {
+    /// The cuts as edits of `line`, the text it was made of, in bytes.
+    fn edits(&self, line: &str) -> Vec<crate::located::Edit> {
+        if self.cuts.is_empty() {
+            return Vec::new();
+        }
+        // The byte each character of the line starts at, and its end.
+        let starts: Vec<usize> = line
+            .char_indices()
+            .map(|(at, _)| at)
+            .chain(std::iter::once(line.len()))
+            .collect();
+        let edits: Vec<crate::located::Edit> = self
+            .cuts
+            .iter()
+            .filter_map(|(at, chars)| {
+                let old = *starts.get(chars.start)?..*starts.get(chars.end)?;
+                Some(crate::located::Edit { old, new: *at..*at })
+            })
+            .collect();
+        crate::located::verified(line, &self.text, edits)
+    }
 }
 
 /// An open `$(…)`, `$((…))` or `((…))` (with the depth of the parentheses in
@@ -1237,6 +1324,9 @@ struct Walker<'a> {
     /// Whether a zsh `repeat N` with nothing after its count was read last:
     /// the next statement is its body (see [`Walker::repeat_body`]).
     awaiting: bool,
+    /// The word kept for the file of each redirect read, by the node id of
+    /// its destination, when the line is read for its ranges.
+    files: std::collections::HashMap<usize, usize>,
 }
 
 /// The state just before the last command of a list: a redirect on a list
@@ -1284,6 +1374,8 @@ struct Lost {
     /// The node ids of the redirects the words were taken from.
     redirects: Vec<usize>,
     words: Vec<Arg>,
+    /// Where each of `words` is in the text.
+    ranges: Vec<Range<usize>>,
     /// Whether one of the words had a `(D)` glob qualifier.
     qualified: bool,
 }
@@ -1294,9 +1386,28 @@ struct Redirected {
     body: usize,
     inputs: Vec<Option<Arg>>,
     from: usize,
+    /// Where the statement is: its command's words, with the redirects.
+    range: Range<usize>,
 }
 
 impl Walker<'_> {
+    /// Keep the word at `range`, read as `arg`, for the ranges of the
+    /// line's findings (see [`crate::located`]).
+    fn spot(&mut self, range: Range<usize>, arg: &Arg, whole: bool) -> Option<usize> {
+        if self.split.placing.is_some() {
+            let written = self.source.get(range.clone()).unwrap_or_default();
+            let end = range.end;
+            let at = self.split.spot(range, arg, written, whole);
+            // A `(D)` taken out after the word is the word's.
+            if self.marks.contains(&end) {
+                self.split.spot_past_cut(at, end);
+            }
+            at
+        } else {
+            None
+        }
+    }
+
     /// Whether `node` is, or ends with, a word that had a `(D)` glob
     /// qualifier: its wildcards can match a leading dot.
     fn qualified(&self, node: Node<'_>) -> bool {
@@ -1851,7 +1962,12 @@ impl Walker<'_> {
         let outer_lost = self.lost.take();
         self.redirected = self.redirects(node);
         self.lost = self.lost_words(node);
+        // A statement's redirects are read in it: a write is placed at the
+        // statement, and the commands it redirects hold it (see
+        // `Split::hold_redirect`).
+        self.split.enter_command(node.byte_range());
         self.redirected(node, stage, level);
+        self.split.leave_command();
         self.redirected = outer;
         self.lost = outer_lost;
     }
@@ -2369,6 +2485,11 @@ impl Walker<'_> {
         } else {
             self.arg(name)
         };
+        let program_word = self.spot(name.byte_range(), &program, true);
+        // The word of each argument, in step with `args`, when the line is
+        // read for its ranges.
+        let keep = self.split.placing.is_some();
+        let mut words: Vec<Option<usize>> = Vec::new();
         let mut cursor = node.walk();
         let mut nodes: Vec<Node<'_>> = node
             .children_by_field_name("argument", &mut cursor)
@@ -2436,10 +2557,16 @@ impl Walker<'_> {
                     .source
                     .get(arg.start_byte()..string.end_byte())
                     .unwrap_or_default();
-                args.push(Arg::Unknown(word.to_string()));
+                let word = Arg::Unknown(word.to_string());
+                let at = self.spot(arg.start_byte()..string.end_byte(), &word, true);
+                if keep {
+                    words.push(at);
+                }
+                args.push(word);
             } else if let (true, Some(next)) = (opening, nodes.peek().copied()) {
                 nodes.next();
                 let braces = unit::text(&arg, self.source).matches('{').count();
+                let from = args.len();
                 args.extend((1..braces).map(|_| Arg::Known("{".to_string())));
                 args.push(match self.arg(next) {
                     Arg::Known(text) => Arg::Known(format!("{{{text}")),
@@ -2450,11 +2577,23 @@ impl Walker<'_> {
                             .to_string(),
                     ),
                 });
+                // Words the shell reads apart from what the grammar read:
+                // each is in the two, not one of them as written.
+                if self.split.placing.is_some() {
+                    for word in args.get(from..).unwrap_or_default().to_vec() {
+                        words.push(self.spot(arg.start_byte()..next.end_byte(), &word, false));
+                    }
+                }
             } else {
                 if let Some(reading) = self.zsh_reading(arg) {
                     readings.push((args.len(), reading));
                 }
-                args.push(self.arg(arg));
+                let word = self.arg(arg);
+                let at = self.spot(arg.byte_range(), &word, true);
+                if keep {
+                    words.push(at);
+                }
+                args.push(word);
             }
         }
         // `rm 2>/dev/null -rf ~`: the words the grammar took for more files
@@ -2462,6 +2601,17 @@ impl Walker<'_> {
         if let Some(lost) = self.lost.as_ref().filter(|lost| lost.command == node.id()) {
             args.extend(lost.words.iter().cloned());
             qualified |= lost.qualified;
+            if self.split.placing.is_some() {
+                let lost_words: Vec<(Range<usize>, Arg)> = lost
+                    .ranges
+                    .iter()
+                    .cloned()
+                    .zip(lost.words.iter().cloned())
+                    .collect();
+                for (range, word) in lost_words {
+                    words.push(self.spot(range, &word, true));
+                }
+            }
         }
         // The grammar leaves a `-` that is the last word before a
         // here-document out of the tree (`cat a - <<EOF` has the argument
@@ -2570,10 +2720,17 @@ impl Walker<'_> {
         let environed = assignments.len();
         self.split.environment += environed;
         for assignment in assignments {
+            self.value_spot(assignment);
             self.node_options(assignment);
         }
         let before = self.split.qualify(qualified);
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
+        if self.split.placing.is_some() {
+            // The arguments the grammar left out of the tree (a `-`) have
+            // no word of their own.
+            words.resize(unit.args.len(), None);
+            unit.words = crate::located::Worded::new(program_word, words);
+        }
         unit.stdin = stdin;
         unit.startup = startup;
         // Kept out of `add_readings` when there are none: its frame is not
@@ -2764,6 +2921,7 @@ impl Walker<'_> {
             body: body.id(),
             inputs,
             from,
+            range: statement.byte_range(),
         })
     }
 
@@ -2819,6 +2977,7 @@ impl Walker<'_> {
         nodes.sort_by_key(Node::start_byte);
         let qualified = nodes.iter().any(|word| self.qualified(*word));
         let words = nodes.iter().map(|word| self.arg(*word)).collect();
+        let ranges = nodes.iter().map(Node::byte_range).collect();
         let body = statement.child_by_field_name("body")?;
         let command = if body.kind() == "command" {
             body
@@ -2829,6 +2988,7 @@ impl Walker<'_> {
             command: command.id(),
             redirects,
             words,
+            ranges,
             qualified,
         })
     }
@@ -3037,6 +3197,7 @@ impl Walker<'_> {
     }
 
     fn assignment(&mut self, node: Node<'_>) {
+        self.value_spot(node);
         if self.sets_hiding(node) {
             self.split.hide();
         }
@@ -3053,6 +3214,17 @@ impl Walker<'_> {
         // file every shell started from here on runs.
         if let Some(file) = self.startup(node) {
             self.split.add_startup(file);
+        }
+    }
+
+    /// Keep the value `assignment` gives its variable, for the ranges of the
+    /// line's findings (see [`crate::located`]).
+    fn value_spot(&mut self, assignment: Node<'_>) {
+        if self.split.placing.is_some() {
+            if let Some(value) = assignment.child_by_field_name("value") {
+                let arg = self.arg(value);
+                self.spot(value.byte_range(), &arg, true);
+            }
         }
     }
 
@@ -3181,6 +3353,7 @@ impl Walker<'_> {
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let first = self.split.units.len();
         let repeats = self.split.repeats_open();
+        self.enter_command(node);
         self.command(node, stage);
         // `repeat 3` alone: the statement after it is its body. A `do` the
         // walk read as the list of one runs what comes after it only here.
@@ -3205,7 +3378,8 @@ impl Walker<'_> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if let Some((target, input)) = self.file_redirect(child) {
-                self.split.redirect(own.clone(), target, input);
+                let file = self.file_word(child);
+                self.split.redirect_at(own.clone(), target, input, file);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }
@@ -3215,6 +3389,23 @@ impl Walker<'_> {
         }
         self.split.end_repeats(repeats, self.chain);
         self.awaiting |= alone;
+        self.split.leave_command();
+    }
+
+    /// Begin reading the command at `node`, for the ranges of the line's
+    /// findings: a command with redirects is its statement, the redirects
+    /// and the words after them included. Kept out of the frame of
+    /// [`Self::command_node`], which the walk recurses through.
+    #[inline(never)]
+    fn enter_command(&mut self, node: Node<'_>) {
+        if self.split.placing.is_some() {
+            let range = self
+                .redirected
+                .as_ref()
+                .filter(|redirected| redirected.body == node.id())
+                .map_or_else(|| node.byte_range(), |redirected| redirected.range.clone());
+            self.split.enter_command(range);
+        }
     }
 
     /// Walk `redirect`, a redirect of a file on a command whose own units are
@@ -3539,7 +3730,9 @@ impl Walker<'_> {
             .map_or_else(|| own.clone(), |tail| tail.first..own.end);
         for (child, inside) in after {
             if let Some((target, input)) = self.file_redirect(child) {
-                self.split.redirect(redirected.clone(), target, input);
+                let file = self.file_word(child);
+                self.split
+                    .redirect_at(redirected.clone(), target, input, file);
             } else if let Some(text) = self.fed_text(child) {
                 self.split.feed(own.clone(), text);
             }
@@ -3596,8 +3789,17 @@ impl Walker<'_> {
         for child in node.named_children(&mut cursor) {
             if let Some((target, true)) = self.file_redirect(child) {
                 let cat = Arg::Known("cat".to_string());
-                self.split
-                    .push(Unit::new(Shell::Posix, cat, vec![target], None));
+                let file = child
+                    .child_by_field_name("destination")
+                    .and_then(|destination| self.spot(destination.byte_range(), &target, true));
+                // Placed at the substitution, with the word of its file.
+                self.split.enter_command(node.byte_range());
+                let mut unit = Unit::new(Shell::Posix, cat, vec![target], None);
+                if self.split.placing.is_some() {
+                    unit.words = crate::located::Worded::new(None, vec![file]);
+                }
+                self.split.push(unit);
+                self.split.leave_command();
             }
         }
     }
@@ -3633,6 +3835,12 @@ impl Walker<'_> {
             }
         }
         false
+    }
+
+    /// The word kept for the file of `redirect` (see [`Walker::files`]).
+    fn file_word(&self, redirect: Node<'_>) -> Option<usize> {
+        let destination = redirect.child_by_field_name("destination")?;
+        self.files.get(&destination.id()).copied()
     }
 
     /// The file a redirect names, and whether it feeds input (`<`) rather
@@ -3750,6 +3958,10 @@ impl Walker<'_> {
             return;
         };
         let target = self.arg(destination);
+        let file = self.spot(destination.byte_range(), &target, true);
+        if let Some(file) = file {
+            self.files.insert(destination.id(), file);
+        }
         let before = self.split.qualify(self.qualified(destination));
         // `effect` judges where a read comes from: bash opens
         // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
@@ -3757,7 +3969,7 @@ impl Walker<'_> {
         // matches; bash, the word as written: both are judged.
         let reading = self.zsh_reading(destination).unwrap_or_default();
         if operator == Some("<") {
-            self.split.read(Shell::Posix, target.clone());
+            self.split.read_at(Shell::Posix, target.clone(), file);
             for reading in &reading {
                 self.split.read(Shell::Posix, reading.clone());
             }
@@ -3770,7 +3982,7 @@ impl Walker<'_> {
             _ => false,
         };
         if writes {
-            self.split.write(Shell::Posix, target);
+            self.split.write_at(Shell::Posix, target, file);
             for reading in reading {
                 self.split.write(Shell::Posix, reading);
             }

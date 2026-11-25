@@ -36,6 +36,11 @@
 //! lands, the folder it runs from) and what each found, with a `Display` that
 //! draws it as a short tree for a person to read.
 //!
+//! [`locate`] gives [`classify`]'s findings with where in the line each is:
+//! the byte range of the line, as given, that the finding is about, the
+//! word as written or the part of the line that holds it ([`Located`],
+//! [`Covers`]).
+//!
 //! What cannot be read is risky: a program or a script known only when it
 //! runs, a line the grammar cannot parse, shells nested past a limit.
 //! Nothing here touches the file system or the environment: paths are
@@ -51,6 +56,7 @@ mod explain;
 mod extended;
 mod inline;
 mod launch;
+mod located;
 mod path;
 mod posix;
 mod powershell;
@@ -68,6 +74,7 @@ pub use effect::{Effect, How, Reach, ReadPath};
 pub use explain::{
     ArgExplanation, ArgKind, Explanation, PipelineStage, RedirectExplanation, UnitExplanation,
 };
+pub use located::Covers;
 pub use milo_guards_core::{Paths, Protected, ProtectedKind, Secret};
 
 /// The shell that runs the line, whose grammar splits it.
@@ -292,7 +299,10 @@ impl Reading {
         })
     }
 
-    fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
+    /// `effect` says the line is also read for [`effect`], and `places` that
+    /// the walk keeps where each part of the line is, for [`locate`]: what
+    /// is found is the same either way.
+    fn new(command: &str, shell: Shell, paths: &Paths, effect: bool, places: bool) -> Self {
         let split = unit::split(
             command,
             shell,
@@ -301,6 +311,7 @@ impl Reading {
                 path::drive_of(&paths.home.to_string_lossy()),
             ),
             effect,
+            places,
         );
         let mut resolver = path::Resolver::new(paths);
         resolver.made(&split.drives);
@@ -336,7 +347,77 @@ impl Reading {
 /// Judge `command`, run by `shell` with the directories in `paths`.
 #[must_use = "the assessment is the answer: it says whether the line is safe"]
 pub fn classify(command: &str, shell: Shell, paths: &Paths) -> Assessment {
-    assessed(Reading::new(command, shell, paths, false).judged.found)
+    assessed(
+        Reading::new(command, shell, paths, false, false)
+            .judged
+            .found,
+    )
+}
+
+/// A finding of [`locate`], and where in the line it is.
+///
+/// `#[non_exhaustive]`: fields may be added.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Located {
+    /// The finding, as [`classify`] gives it.
+    pub finding: Finding,
+    /// The bytes of the line, as the caller passed it, that the finding is
+    /// about: `&line[range]` never panics. Never empty unless the line is.
+    pub range: std::ops::Range<usize>,
+    /// What `range` covers: the finding's target as written, a part of the
+    /// line that holds what it is about, or the whole line. A finding with
+    /// no target and one whose target has no word of its own both cover a
+    /// part.
+    pub covers: Covers,
+}
+
+/// Judge `command` as [`classify`] does, and say where in it each finding
+/// is: the byte range of the line, as given, that the finding is about.
+///
+/// It gives [`classify`]'s findings, in the same order, from the same
+/// reading of the line: [`classify`] is this without the ranges, and a test
+/// holds the two equal for every case the guard is tested with. A caller
+/// that only wants the answer calls [`classify`], which keeps nothing the
+/// ranges need.
+///
+/// A range covers the finding's target ([`Covers::Target`]) where the rule
+/// that made the finding judged a word of the line that is the target: the
+/// operand, flag, program or redirect's file as written, its quotes,
+/// escapes, tilde, braces or variable included, so reading that word as the
+/// guard reads one gives the target. The word is the one the rule was
+/// handed, never one found because it reads the same: of two equal words
+/// (`grep "~/.ssh/id_rsa" ~/.ssh/id_rsa`), the one judged. Where no word is
+/// known to be what the rule judged (a finding with no target, a target the
+/// rule made, inline code), the range covers the part of the line that holds
+/// what the finding is about ([`Covers::Part`]): its command, or the word
+/// that holds the script or code it was found in. A finding of nested code
+/// (`bash -c '…'`, a script block) points into the words of the outer line
+/// that hold it, byte for byte where the nested text is the line's own bytes
+/// (single quotes), and the whole word or command that holds it where it is
+/// not (escapes, a decoded or joined script). A finding about the whole line
+/// (too long, or not read at all) covers the whole line ([`Covers::Line`]).
+/// Every range is inside the line and on its character boundaries.
+///
+/// ```
+/// use milo_guards_shell::{locate, Covers, Paths, Shell};
+///
+/// let paths = Paths::new("/work/app", "/home/me", ["/work/app"]);
+/// let line = r#"echo "~" && bash -c 'rm -rf ~'"#;
+/// let found = locate(line, Shell::Posix, &paths);
+/// let delete = &found[0];
+/// assert_eq!(delete.finding.target.as_deref(), Some("~"));
+/// assert_eq!(delete.covers, Covers::Target);
+/// // The `~` the nested `rm` is given, not the one `echo` prints.
+/// assert_eq!(delete.range, 28..29);
+/// // Underline it under the line.
+/// let under = format!("{}{}", " ".repeat(delete.range.start), "^".repeat(delete.range.len()));
+/// assert_eq!(under, "                            ^");
+/// ```
+#[must_use = "the findings are the answer: they say what is risky and where"]
+pub fn locate(command: &str, shell: Shell, paths: &Paths) -> Vec<Located> {
+    let reading = Reading::new(command, shell, paths, false, true);
+    located::locate(command, &reading)
 }
 
 /// The answer [`classify`] gives for a line it found `findings` in: safe
@@ -381,7 +462,7 @@ fn assessed(findings: Vec<Finding>) -> Assessment {
 /// ```
 #[must_use = "the effect is the answer: it says whether the line only reads"]
 pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
-    Reading::new(command, shell, paths, true).effect()
+    Reading::new(command, shell, paths, true, false).effect()
 }
 
 /// Show how `command`, run by `shell` with the directories in `paths`, was
@@ -410,7 +491,7 @@ pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
 /// ```
 #[must_use = "the explanation is the answer: it shows how the line was read"]
 pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
-    let reading = Reading::new(command, shell, paths, false);
+    let reading = Reading::new(command, shell, paths, false, false);
     explain::explanation(command, shell, &reading)
 }
 
@@ -525,7 +606,7 @@ pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
 /// ```
 #[must_use = "the paths are the answer: they are what the line reads"]
 pub fn effect_paths(command: &str, shell: Shell, paths: &Paths) -> Option<Vec<ReadPath>> {
-    let reading = Reading::new(command, shell, paths, true);
+    let reading = Reading::new(command, shell, paths, true, false);
     if !matches!(reading.effect(), Effect::ReadsOnly(_)) {
         return None;
     }

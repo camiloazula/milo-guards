@@ -15,6 +15,7 @@
 use milo_guards_code::{is_data_url, is_foreign_module};
 
 use crate::launch;
+use crate::located::Source;
 use crate::unit::Arg;
 
 #[cfg(feature = "inline")]
@@ -78,6 +79,9 @@ pub(crate) struct Code {
     /// Every piece of code the options name: `node -e A -e B` runs both, the
     /// second after the first, so each is read.
     pub(crate) pieces: Vec<Arg>,
+    /// Where each piece is among the interpreter's arguments (see
+    /// [`Source`]), for the ranges of what it does.
+    pub(crate) sources: Vec<Source>,
     /// The directory the interpreter is told to work from first
     /// (`bun --cwd DIR`), which the code's relative paths are read from.
     pub(crate) dir: Option<Arg>,
@@ -95,6 +99,14 @@ pub(crate) struct Code {
     /// built in: every other module, `time` and `itertools` too, is a file
     /// the working folder is searched for first.
     pub(crate) python2: bool,
+}
+
+impl Code {
+    /// Add `piece`, which `source` says where it is.
+    fn add(&mut self, piece: Arg, source: Source) {
+        self.pieces.push(piece);
+        self.sources.push(source);
+    }
 }
 
 /// The inline code an interpreter's own arguments hold, when they say where
@@ -152,10 +164,12 @@ fn python_code(args: &[Arg]) -> Option<Code> {
                 'c' if rest.is_empty() => {
                     return iter
                         .next()
-                        .cloned()
-                        .map(|piece| code_of(piece, interactive));
+                        .map(|piece| code_of(piece.clone(), Source::arg(piece), interactive));
                 }
-                'c' => return Some(code_of(Arg::Known(rest.to_string()), interactive)),
+                'c' => {
+                    let source = Source::part(arg, rest);
+                    return Some(code_of(Arg::Known(rest.to_string()), source, interactive));
+                }
                 'i' => interactive = true,
                 'm' => return None,
                 'W' | 'X' | 'Q' => {
@@ -171,9 +185,10 @@ fn python_code(args: &[Arg]) -> Option<Code> {
     None
 }
 
-fn code_of(piece: Arg, input: bool) -> Code {
+fn code_of(piece: Arg, source: Source, input: bool) -> Code {
     Code {
         pieces: vec![piece],
+        sources: vec![source],
         dir: None,
         input,
         plain: false,
@@ -224,7 +239,7 @@ fn script_code(args: &[Arg], node: bool) -> Option<Code> {
             let name = name.replace('_', "-");
             match (name.as_str(), value) {
                 ("eval" | "print", Some(value)) => {
-                    found.pieces.push(Arg::Known(value.to_string()));
+                    found.add(Arg::Known(value.to_string()), Source::part(arg, value));
                 }
                 ("interactive", _) => found.input |= node,
                 ("eval", None) => takes = Some(true),
@@ -245,14 +260,19 @@ fn script_code(args: &[Arg], node: bool) -> Option<Code> {
         }
         match takes {
             // `-e CODE`, whatever the code starts with.
-            Some(true) => found.pieces.push(iter.next()?.clone()),
+            Some(true) => {
+                let piece = iter.next()?;
+                found.add(piece.clone(), Source::arg(piece));
+            }
             // `-p CODE`, but `-p -e CODE` is a flag and then the next option.
             Some(false)
                 if iter.peek().is_some_and(|next| {
                     !next.known().is_some_and(|text| text.starts_with('-'))
                 }) =>
             {
-                found.pieces.extend(iter.next().cloned());
+                if let Some(piece) = iter.next() {
+                    found.add(piece.clone(), Source::arg(piece));
+                }
             }
             Some(false) | None => {}
         }
@@ -433,7 +453,7 @@ fn deno_code(args: &[Arg]) -> Option<Code> {
         // before it could be anything.
         let Some(text) = arg.known() else {
             if evals {
-                found.pieces.push(arg.clone());
+                found.add(arg.clone(), Source::arg(arg));
                 continue;
             }
             return None;
@@ -443,7 +463,7 @@ fn deno_code(args: &[Arg]) -> Option<Code> {
         } else if options && text.starts_with('-') {
             continue;
         } else if evals {
-            found.pieces.push(arg.clone());
+            found.add(arg.clone(), Source::arg(arg));
         } else if text == "eval" {
             evals = true;
         } else {
