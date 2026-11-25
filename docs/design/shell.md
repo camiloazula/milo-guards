@@ -7603,7 +7603,13 @@ the answer it must get: safe, or the rules it must find. A new rule comes with
 cases of both kinds, and a fix adds cases to the file of what it checks. The everyday lines that must stay safe go through
 the front door: `crates/guards/tests/everyday.rs` reads them from its
 `tests/cases/everyday.cases` with this guard's runner, which holds each of
-them to the same agreement checks.
+them to the same agreement checks. A few thousand more, which templates in
+`crates/guards/tests/cases/everyday_answers.templates` make, are held to the
+answer each gets today, safe or not, in the record beside them
+(`everyday_answers.cases`, read by the same runner): the share of them this
+guard finds anything in is its false-alarm share, and `just everyday`
+prints it for each shell and each rule, with every answer that moved
+([CONTRIBUTING.md](../../CONTRIBUTING.md#the-everyday-answers)).
 
 `tests/cases/inline.cases` is the same for inline Python and JavaScript, with
 the lines that are safe, what each rule finds and what stays `unknown`; the
