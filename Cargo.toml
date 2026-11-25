@@ -58,7 +58,8 @@ resolver = "2"
 # `crates/core` is what every guard builds on, one crate per guard beside it,
 # and `crates/guards` is the one crate a caller depends on: it re-exports
 # each guard behind a feature. `crates/code` reads the code of other
-# languages, for the shell guard and for any guard that gets code to judge.
+# languages, for the shell guard and for the script guard, which judges the
+# code an agent runs directly.
 # Package names carry the `milo-guards-` prefix; folders drop it.
 members = [
     "crates/core",
@@ -67,6 +68,7 @@ members = [
     "crates/file",
     "crates/url",
     "crates/secrets",
+    "crates/script",
     "crates/guards",
 ]
 
@@ -95,6 +97,7 @@ milo-guards-shell = { path = "crates/shell", version = "0.1.4" }
 milo-guards-file  = { path = "crates/file", version = "0.1.4" }
 milo-guards-url   = { path = "crates/url", version = "0.1.4" }
 milo-guards-secrets = { path = "crates/secrets", version = "0.1.4" }
+milo-guards-script = { path = "crates/script", version = "0.1.4" }
 
 # tree-sitter's `links` key allows one version of the runtime in a whole
 # lockfile, ours and every caller's. Callers that also parse with

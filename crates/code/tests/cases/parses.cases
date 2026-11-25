@@ -1,0 +1,28 @@
+# Which code parses whole (`parses`): its grammar reads it with no error, as
+# `read` reads it. Code that does not parse is still read for what it does;
+# a caller asks this to tell it from code it parses but does not follow.
+
+# Code that parses, whatever it does.
+python parses=yes | print(1)
+python parses=yes | import shutil\nshutil.rmtree('/home/me')
+python parses=yes | exec(input())
+python parses=yes |
+python parses=yes | # only a comment
+python parses=yes | x = 1\r\nprint(x)
+javascript parses=yes | console.log(1)
+javascript parses=yes | require('fs').rmSync('/home/me', {recursive: true})
+javascript parses=yes |
+javascript parses=yes | #!/usr/bin/env node\nconsole.log(1)
+javascript parses=yes | eval(process.argv[1])
+# The grammar reads an empty block, which Python refuses: such code parses,
+# and `understand` says it is not understood.
+python parses=yes | if 1:
+
+# Code that does not parse.
+python parses=no | print(
+python parses=no | import shutil; shutil.rmtree('/home/me'); if 1:
+python parses=no | def f(:\n    pass
+javascript parses=no | if (
+javascript parses=no | console.log(1
+javascript parses=no | function f( {}
+javascript parses=no | require('fs').rmSync('/home/me'); }

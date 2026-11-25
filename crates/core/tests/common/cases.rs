@@ -273,6 +273,21 @@ fn invisible(c: char) -> bool {
     )
 }
 
+/// The first word of a case, `KIND[@PATHS]`, as its two parts: what the case
+/// is (a shell, an access, a language) and the name of the paths it is judged
+/// on, `None` when it names none. `None` for a case whose first word is a
+/// field, or whose `@` has nothing on one side of it.
+pub fn head(words: &[Word]) -> Option<(&str, Option<&str>)> {
+    let Some(Word::Bare(first)) = words.first() else {
+        return None;
+    };
+    match first.split_once('@') {
+        Some((kind, machine)) if kind.is_empty() || machine.is_empty() => None,
+        Some((kind, machine)) => Some((kind, Some(machine))),
+        None => Some((first.as_str(), None)),
+    }
+}
+
 /// What a `paths` line declares, as its words say it: each guard's runner
 /// makes its `Paths` of it, from `base` (looked up among the paths it knows)
 /// or from `cwd` and `home`, with the workspaces added and each named path

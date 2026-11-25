@@ -213,6 +213,25 @@ fn a_repeated_key_is_named_with_the_first() {
     );
 }
 
+#[test]
+fn the_first_word_says_what_the_case_is_and_the_paths_it_names() {
+    let head = |line: &str| {
+        let record = one(line);
+        format::head(&record.words)
+            .map(|(kind, machine)| (kind.to_string(), machine.map(str::to_string)))
+    };
+    assert_eq!(head("python safe | x"), Some(("python".to_string(), None)));
+    assert_eq!(
+        head("javascript@windows safe | x"),
+        Some(("javascript".to_string(), Some("windows".to_string())))
+    );
+    // Nothing on one side of the `@`, or a field first, is no first word.
+    assert_eq!(head("@windows safe | x"), None);
+    assert_eq!(head("python@ safe | x"), None);
+    assert_eq!(head("finds=delete | x"), None);
+    assert_eq!(format::head(&[]), None);
+}
+
 /// The path model's cases of `source`, which must be read.
 fn cases_of(source: &str) -> Vec<Case> {
     let cases = runner::parse("t.cases", source);

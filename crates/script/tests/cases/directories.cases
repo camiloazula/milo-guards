@@ -1,0 +1,26 @@
+# The directory the code moves to (`os.chdir`, `process.chdir`, a program's
+# `cwd`) is where the paths after it are read from. Where the code may be in
+# more than one place, each act is judged from each; where it may be
+# anywhere, a relative path is only known when it runs.
+
+python finds=delete reason="deletes a path outside the workspace" | import os\nos.chdir('/home/me')\nos.remove('notes.txt')
+python finds=delete reason="deletes your SSH keys" | import os, shutil\nos.chdir('/home/me')\nshutil.rmtree('.ssh')
+python finds=read_secret reason="reads your SSH keys" | import os\nos.chdir('/home/me/.ssh')\nprint(open('id_rsa').read())
+python rules=unknown | import os\nos.chdir('/tmp')\nos.remove('x')
+python rules=unknown | import os\nos.chdir('sub')\nos.remove('x')
+javascript finds=delete reason="deletes a path outside the workspace" | process.chdir('/home/me'); require('fs').rmSync('x')
+javascript rules=unknown | process.chdir('/tmp'); require('fs').rmSync('x')
+# Up from where the code is, then further: anywhere.
+python finds=delete reason="deletes a path only known when it runs" | import os\nos.chdir('..')\nos.chdir('..')\nos.remove('x')
+python finds=read_secret reason="reads your SSH keys" | import os\nos.chdir('..')\nos.chdir('..')\nprint(open('.ssh/id_rsa').read())
+# A directory only known when it runs.
+python finds=delete reason="deletes a path only known when it runs" | import os, sys\nos.chdir(sys.argv[1])\nos.remove('x')
+python finds=unknown reason="opens a file from a directory only known when the code runs" | import os, sys\nos.chdir(sys.argv[1])\nprint(open('notes.txt').read())
+python finds=unknown reason="runs from a directory only known when the code runs" | import os, sys\nos.chdir(sys.argv[1])\nos.system('ls')
+# An absolute path is the same wherever the code is.
+python finds=delete reason="deletes your home directory" | import os, shutil, sys\nos.chdir(sys.argv[1])\nshutil.rmtree('/home/me')
+# Past eight folders a move that may have failed left the code in, it may
+# be anywhere, as the shell guard has it.
+python finds=delete reason="deletes a path only known when it runs if a cd before it failed or did not run" | import os\nos.chdir('a')\nos.chdir('b')\nos.chdir('c')\nos.chdir('d')\nos.remove('x')
+python finds=overwrite reason="writes to a file only known when it runs if a cd before it failed or did not run" | import os\nfor d in ['.github', 'a', 'b', 'c', 'workflows']:\n    pass\ntry:\n    os.chdir('.github')\nexcept OSError:\n    pass\ntry:\n    os.chdir('a')\nexcept OSError:\n    pass\ntry:\n    os.chdir('b')\nexcept OSError:\n    pass\ntry:\n    os.chdir('c')\nexcept OSError:\n    pass\ntry:\n    os.chdir('workflows')\nexcept OSError:\n    pass\nopen('ci.yml', 'w').write('x')
+python finds=overwrite reason="writes to a file a tool runs on its own" | import os\ntry:\n    os.chdir('.github')\nexcept OSError:\n    pass\ntry:\n    os.chdir('workflows')\nexcept OSError:\n    pass\nopen('ci.yml', 'w').write('x')

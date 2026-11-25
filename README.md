@@ -11,8 +11,8 @@
 
 ## Introduction
 
-An AI agent on your machine runs shell commands, reads and writes files and
-fetches pages. Most of that is fine. Some of it is not: a `rm -rf` one folder
+An AI agent on your machine runs shell commands and code, reads and writes
+files and fetches pages. Most of that is fine. Some of it is not: a `rm -rf` one folder
 too high, a `cat` of your SSH key, a fetch of the cloud metadata service.
 Something has to say which is which before it happens, and fast enough that
 the agent does not stall on every step.
@@ -48,16 +48,16 @@ answer for the same input on every machine.
 
 milo-guards is a Rust library on crates.io. The one crate a caller depends on
 is `milo-guards`; the guards are crates of their own behind it
-(`milo-guards-shell`, `-file`, `-url`, `-secrets`, with `-core` and the
-`-code` reader), published together at one version.
+(`milo-guards-shell`, `-file`, `-url`, `-script`, `-secrets`, with `-core` and
+the `-code` reader), published together at one version.
 
 ```toml
 [dependencies]
 milo-guards = "0.1"
 ```
 
-Each guard sits behind a cargo feature. `shell`, `file`, `url` and `code` are
-on by default; `secrets` is opt in, because most callers want the others and
+Each guard sits behind a cargo feature. `shell`, `file`, `url`, `script` and
+`code` are on by default; `secrets` is opt in, because most callers want the others and
 not a table of credential patterns in their binary.
 
 ```toml
@@ -96,7 +96,7 @@ links the crate.
 
 ## Features
 
-Four guards and a reader. Each guard takes one thing the agent is about to do
+Five guards and a reader. Each guard takes one thing the agent is about to do
 and the `Paths` it works in, and returns an `Assessment`: `Safe`, or `Risky`
 with a `Finding` for each reason.
 
@@ -105,6 +105,7 @@ with a `Finding` for each reason.
 | **shell** | one shell line: POSIX shell, PowerShell or cmd | `rm -rf ~` (`delete`) | `ls src` | `shell`, on by default |
 | **file** | one read or write of one path through a file API | reading `~/.ssh/id_ed25519` (`read_secret`) | writing `src/main.rs` | `file`, on by default |
 | **url** | one URL the agent is about to fetch | `http://2130706433/`, which is `127.0.0.1` (`local_address`) | `https://docs.rs/url` | `url`, on by default |
+| **script** | Python or JavaScript code the agent runs directly, with no shell line around it | `shutil.rmtree('/home/me')` (`delete`) | `print(1)` | `script`, on by default |
 | **secrets** | a text, for the credentials and personal data in it | `postgres://app:fakePass0word1@db/app` (`connection_string`) | a commit SHA | `secrets`, opt in |
 
 The **code** reader is not a guard. It reads Python and JavaScript (Node, Bun
@@ -112,8 +113,14 @@ and Deno) and says what the code is certain to do: the files it deletes,
 writes, reads and moves, and the programs it starts. The shell guard uses it
 for the code a line hands to an interpreter, so `python3 -c "import shutil;
 shutil.rmtree('/home/me')"` is judged as the delete it is, and
-`python3 -c 'print(1)'` is safe. Code the reader does not understand in full is
-never taken for harmless.
+`python3 -c 'print(1)'` is safe. The script guard uses it for the code an
+agent runs through a code tool (a Python tool, a notebook, a JavaScript
+sandbox), with the shell guard's rules and reasons for the same act; a program
+the code starts is `run_program`, with its command line (for cmd on Windows,
+for a POSIX shell elsewhere) for you to ask the shell guard about and add to
+the answer. Code the reader does not understand in full is never taken for
+harmless, and code that starts a program never is: it is `unknown` too,
+whatever the shell guard says of the program.
 
 What sets the guards apart:
 
@@ -161,11 +168,13 @@ What sets the guards apart:
 | shell | `delete`, `wipe_disk`, `overwrite`, `git_discard`, `git_remote`, `git_history`, `permissions`, `system_settings`, `read_secret`, `elevated`, `run_downloaded`, `run_input`, `stop_system`, `stop_unknown`, `send_secret`, `drop_data`, `destroy_resources`, `unknown`, `unreadable` |
 | file | `read_secret`, `write_outside`, `write_sensitive`, `write_protected`, `network_share`, `unreadable` |
 | url | `local_address`, `metadata`, `credentials`, `local_file`, `scheme`, `unreadable` |
+| script | `delete`, `wipe_disk`, `overwrite`, `permissions`, `read_secret`, `run_downloaded`, `run_program`, `unknown`, `unreadable` |
 | secrets | `private_key`, `cloud_key`, `api_key`, `jwt`, `basic_auth`, `bearer_token`, `connection_string`, `url_credentials`, `generic_secret`, `credit_card`, `government_id`, `email`, `phone`, `public_ip` |
 
 What each rule covers is documented on the guard's `Rule` enum, and in depth
 on its design page: [shell](docs/design/shell.md), [file](docs/design/file.md),
-[url](docs/design/url.md) and [secrets](docs/design/secrets.md).
+[url](docs/design/url.md), [script](docs/design/script.md) and
+[secrets](docs/design/secrets.md).
 
 ### The promises
 
@@ -192,6 +201,7 @@ current as the code.
 
 ```rust
 use milo_guards::file::{judge, Access};
+use milo_guards::script::{self, Language};
 use milo_guards::shell::{classify, effect, Effect, Reach, Shell};
 use milo_guards::{Paths, Protected, Secret};
 
@@ -224,6 +234,18 @@ assert_eq!(effect("./script.sh", Shell::Posix, &paths), Effect::Unknown);
 assert!(judge(Access::Write, "src/main.rs", &paths).is_safe());
 let verdict = judge(Access::Read, "~/.ssh/id_ed25519", &paths);
 assert_eq!(verdict.findings()[0].reason, "reads your SSH keys");
+
+// Code a tool runs directly, judged as the same code on a shell line is.
+assert!(script::judge(Language::Python, "print(1)", &paths).is_safe());
+let verdict = script::judge(Language::Python, "import shutil; shutil.rmtree('/home/me')", &paths);
+assert_eq!(verdict.findings()[0].reason, "deletes your home directory");
+
+// A program it starts is the shell guard's to judge: ask it about the line.
+// The code stays `unknown` (it is not read whole), whatever the program is.
+let verdict = script::judge(Language::Python, "import subprocess; subprocess.run(['true'])", &paths);
+let line = verdict.findings()[0].target.as_deref().unwrap_or_default();
+assert!(classify(line, Shell::Posix, &paths).is_safe());
+assert!(!verdict.is_safe());
 
 // The files you know hold a secret, which the guards' own table does not list.
 let paths = paths.with_secrets([Secret::file("/home/me/work/app/.env", "the project's environment file")]);

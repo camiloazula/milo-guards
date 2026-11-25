@@ -3,9 +3,10 @@
 `milo-guards-code` reads code of another language and says what it is
 certain to do. It holds the readers of Python and JavaScript (Node, Bun and
 Deno) that the shell guard uses for `python3 -c`, `node -e` and a
-here-document fed to an interpreter, as a crate of its own: a guard of the
-files an agent writes could judge a `.py` or `.js` file the same way, and a
-tool that runs a snippet directly could ask without a shell line.
+here-document fed to an interpreter, as a crate of its own: the script guard
+([Script](script.md)) judges with it the code a tool runs directly, with no
+shell line around it, and a guard of the files an agent writes could judge a
+`.py` or `.js` file the same way.
 
 It is a reader, not a guard. It judges nothing: it has no `Rule`, no
 `Assessment`, no `Paths`. A caller turns what it finds into what it already
@@ -48,7 +49,34 @@ in that folder can stand in for: `import json` is not understood, since it
 runs `./json.py` when there is one. Understood JavaScript has no import at
 all.
 
-Three more functions are for what a caller meets next to the code:
+Six more functions are for what a caller meets next to the code:
+
+- `parses(language, code)`: whether the code parses whole, its grammar reading
+  it with no error, as `read` reads it. Code that does not parse is still read
+  for what it does (`read` gives an `Unread` for it first); a caller asks this
+  to tell such code from code it parses but does not follow, as the script
+  guard does to call it `unreadable`. Python's grammar reads an empty block
+  (`if 1:`) with no error, which Python refuses: it parses, and is not
+  understood.
+- `gives_input(language, code)`: whether the code may give a program it starts
+  something to read on its input, which `read` does not give with the
+  program: in Python a keyword argument `input` or `stdin`, or a `communicate`
+  or `stdin` member; in JavaScript an option `input`, `stdin` or `stdio`, or
+  a `stdin` member, a `popen` given more than its command (`os.popen('sh',
+  'w')`), a `['stdin']` subscript, and a `stdin` taken apart (`const { stdin:
+  s } = spawn(…)`). It is read loosely, by name, on any call, and code that
+  does not parse may: the script guard asks it of code that starts a program.
+- `gives_shell_a_list(language, code)`: whether code may hand a shell a list
+  of words. It answers "may". In Python, a call whose first argument (or
+  `args=`) is a list or a tuple and that is given `shell=` with anything but
+  `False`, or arguments that may carry it (`**kw`, `*rest`, positional
+  arguments past the list); in JavaScript, a call given an array of words and
+  options that are not an object written out without a spread (a name, a
+  call, `{ ...o }`), or any call with a spread among its arguments. On POSIX
+  the shell runs the first word as the line and the rest as its arguments,
+  which `read` gives as the script; on Windows the words are joined into the
+  line, which no act gives. An object written out with `shell: true` is read
+  where the call is: its words are joined into the script `read` gives.
 
 - `declares_other_encoding(code)`: Python code given as bytes (a
   here-document, the bytes literal of `exec`) honours a coding declaration in
@@ -229,7 +257,9 @@ an unknown path, never a known one: no limit makes code understood.
 file of its name. `acts.cases` has code and the acts it must give, for each
 language. `understand.cases` has a case for every way out of the strict
 subset, and the code that stays inside it, for Python, JavaScript and
-Python 2. `modules.cases` holds the module specifiers and coding
+Python 2. `parses.cases` holds the code that parses and the code that
+does not, `input.cases` the code that may give a program input, and
+`shell_list.cases` the code that hands a shell a list. `modules.cases` holds the module specifiers and coding
 declarations; `modules.rs` keeps the shape of an argument and the limits.
 `cases.rs` tests the runner and dumps every case. `robust.rs` runs seeded noise
 through both grammars (no panic, the same answer twice, understood code only

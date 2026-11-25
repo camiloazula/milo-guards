@@ -1,0 +1,22 @@
+# A change of permissions or owner beyond the workspace or of a sensitive
+# file is `permissions`, and so is opening a file to everyone, as the shell
+# guard judges `chmod` and `chown`.
+
+python finds=permissions reason="changes permissions of your SSH keys" | import os\nos.chmod('/home/me/.ssh/id_rsa', 0o600)
+python finds=permissions reason="changes permissions of a system folder" | import os\nos.chmod('/etc/passwd', 0o644)
+python finds=permissions reason="changes permissions of a path outside the workspace" | import os\nos.chmod('/home/me/x', 0o700)
+python finds=permissions reason="changes permissions of your home directory" | import os\nos.chmod('/home/me', 0o755)
+python finds=permissions reason="changes the owner of a system folder" | import os\nos.chown('/etc/hosts', 0, 0)
+python first=permissions reason="lets everyone change it" target="run.sh" | import os\nos.chmod('run.sh', 0o777)
+python finds=permissions reason="lets everyone change it" | import os\nos.chmod('data.txt', 0o666)
+python finds=permissions reason="changes permissions of a path only known when it runs" | import os, sys\nos.chmod(sys.argv[1], 0o755)
+# In the workspace: the agent's own work, and the code is not read whole.
+python rules=unknown | import os\nos.chmod('run.sh', 0o755)
+python rules=unknown | import shutil\nshutil.copymode('a', 'b')
+
+javascript finds=permissions reason="changes permissions of your SSH keys" | require('fs').chmodSync('/home/me/.ssh/id_rsa', 0o644)
+javascript rules=permissions,permissions first=permissions reason="lets everyone change it" | require('fs').chmodSync('/etc/sudoers', 0o777)
+javascript finds=permissions reason="lets everyone change it" | require('fs').chmodSync('run.sh', 0o777)
+javascript finds=permissions reason="changes the owner of a path outside the workspace" | require('fs').chownSync('/home/me/x', 0, 0)
+javascript finds=permissions reason="changes permissions of a path outside the workspace" | Deno.chmod('/home/me/x', 0o700)
+javascript rules=unknown | require('fs').chmodSync('run.sh', 0o755)

@@ -132,7 +132,7 @@ the same name, `tests/<what-it-checks>.rs`, which checks them all with one
 call: `common::cases::check("<what-it-checks>")`. What is not a plain case
 stays in that Rust file: cases made in a loop, long or nested input, timing,
 tests of the API itself, and tests that check a structure (the paths a line
-lists, the tree `explain` draws). The shell, file, URL and secrets guards,
+lists, the tree `explain` draws). The shell, file, URL, secrets and script guards,
 the path model in `core` and the `code` reader read case files; the secrets
 guard's cases hold no value shaped like a real key, which its tests build in
 Rust so that none sits in the repository. The front door's
@@ -240,6 +240,21 @@ rules=generic_secret span="F4kePass9" | password=F4kePass9&x=1
 covers="F4kePassw0rdZ" | machine api.fake.test login fakeuser password F4kePassw0rdZ
 ```
 
+The script guard's case is `LANGUAGE[@PATHS] ANSWER... | CODE`: `LANGUAGE`
+is `python` or `javascript`, a case without `@PATHS` is judged on `posix`,
+there is no `effect=`, `target="..."` sits beside `reason=` as for the URL
+guard and `instead="..."` (or `instead=none`) as for the shell guard, and
+the text is the code. Every case is also held to reasons that are each one
+plain sentence with no trailing period, and to the same answer twice. Its
+dump is the same command with `-p milo-guards-script`.
+
+```text
+python finds=delete reason="deletes your home directory" | import shutil; shutil.rmtree('/home/me')
+paths env base=posix secret_file=/home/me/work/repo/.env words="the project's environment file"
+python@env finds=read_secret reason="reads the project's environment file" | print(open('.env').read())
+javascript finds=run_program target="git status" | require('child_process').spawnSync('git', ['status'])
+```
+
 The path model's case is `FLAVOUR[@PATHS] [home] [hidden] [deep]
 ANSWER... | PATH`: `FLAVOUR` is `posix` or `windows`, how the path is
 spelled, judged on `posix` or `windows` without `@PATHS` (declared as the
@@ -258,7 +273,9 @@ and `network=` give `yes` or `no`. The code reader's case is `WHAT ANSWER... | C
 `python`, `javascript`, `python2` (`understand_python2`) or `module` (a
 module specifier), and the answer is `acts="..."` (the acts `read` finds,
 as `tests/common` spells them),
-`understand=yes|importing|no`, `other_encoding=yes|no` (Python), and
+`understand=yes|importing|no`, `other_encoding=yes|no` (Python), `parses=yes|no`
+`input=yes|no` (`gives_input`) and `shell_list=yes|no` (`gives_shell_a_list`;
+Python and JavaScript), and
 `data_url=yes|no` and `foreign=yes|no` (a module). Their dumps are the same
 command with `-p milo-guards-core` and `-p milo-guards-code`.
 
@@ -270,7 +287,9 @@ python acts="remove /home/me" understand=no | import shutil\nshutil.rmtree('/hom
 ```
 
 The reading of the format is shared, in `crates/core/tests/common/cases.rs`
-(tested by `crates/core/tests/cases.rs`); what the words mean for a guard,
+(tested by `crates/core/tests/cases.rs`), the first word of a case too
+(`head`: `KIND[@PATHS]` as its two parts, which the script guard's runner
+reads its language and paths with); what the words mean for a guard,
 and the runner, are in its `tests/common/cases.rs` (for the path model,
 `crates/core/tests/common/runner.rs`, which its tests call
 `common::cases`).
@@ -327,7 +346,8 @@ its path. A release is:
    on `main`; a tag pushed right after the merge waits for that job. Then
    it runs `just package`, and `just publish --no-verify`:
    `cargo publish --workspace`, which uploads the crates in dependency
-   order (`core`, `code`, `shell`, `file`, `url`, `secrets`, `milo-guards`).
+   order (`core`, `code`, `shell`, `file`, `url`, `secrets`, `script`,
+   `milo-guards`).
 
 Those checks are shell inside the workflow's steps, the one exception to
 "Rust only" in [GUIDELINES.md](GUIDELINES.md): a Rust tool would be compiled

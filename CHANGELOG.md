@@ -82,6 +82,66 @@ finding: a new type and a new field on `Paths`, which is a minor bump.
   literally, and `Resolver::cwd_is_clear_but_for_named` says the working
   directory holds no key of core's own, only named secrets.
 
+A guard for the Python and JavaScript an agent runs directly, through a code
+tool with no shell line around it (#304): a new crate with a new `Rule` enum,
+which is a minor bump.
+
+- `milo-guards-script`, re-exported as `milo_guards::script` behind the
+  `script` feature, on by default: `judge(Language, code, &Paths)`. It reads
+  the code with the code reader and judges each act it is certain to do as
+  the shell guard judges the same code after `python3 -c` or `node -e`,
+  with the shell guard's wire names and reasons: `delete`, `wipe_disk`,
+  `overwrite`, `permissions`, `read_secret`, `run_downloaded`, `unknown` and
+  `unreadable`, `instead` included, and `… if a cd before it failed or did
+  not run` after a `chdir`. Protected paths and named secrets are honoured as
+  in a shell line, another user's keys (`~alice/.ssh/id_rsa`) are read where
+  systems keep them, and on Windows a stream, a part ending in a space or a
+  dot and the `\??\` prefix are read for the file they name; a read of a
+  path that cannot be placed is `unknown`. Code read whole that does nothing
+  risky is safe (`print(1)`); code not read whole is `unknown`, never safe;
+  Python that declares another encoding is `unknown`, as it runs from a file
+  or its input; code too long, too deep or that does not parse is
+  `unreadable`.
+- `run_program` is the new guard's own rule: code that starts a program or
+  runs a command in a shell. The guard does not judge the program, which is
+  the shell guard's; the finding's target is the command as a line of the
+  machine's shell: for `Shell::Posix` (`git push --force`, `cd -- /tmp && ls`
+  for a program run from another directory, a word only known when the code
+  runs written `"$UNKNOWN"`, a reserved word quoted), and on a Windows
+  machine for `Shell::Cmd`, which `os.system` runs there (`rd /s /q
+  C:\Users\me`, `cd /d DIR && …`). On Windows a target is
+  only ever words that cmd and the C runtime both read as themselves, bare
+  or in plain double quotes for a space: a program with a word that holds a
+  character cmd reads as its own (`& | < > ( ) ^ % ! "`), whatever the
+  program is, a word only known when the code runs, a line that starts with
+  a quote, code that may hand a shell a list (also in nested code, and
+  `shell` by `**`, `*` or position), and a directory read as a switch or
+  only known when it runs give no target, and an `unknown` says so. `target_shell(&paths)` says which shell a target is for
+  (`TargetShell::Posix` or `TargetShell::Cmd`). Code that starts a
+  program is never read whole, so it is always `unknown` too: a safe answer
+  for the program never makes the code safe. Input the code gives a program
+  is an `unknown` of its own.
+- The code reader has `parses(language, code)`, whether the code's grammar
+  reads it with no error, `gives_input(language, code)`, whether the code
+  may give a program it starts input, and `gives_shell_a_list(language,
+  code)`, whether it may hand a shell a list of words.
+- No answer of another guard changed. A front-door test
+  (`crates/guards/tests/agree_code.rs`) holds the new guard's whole answer,
+  combined with the shell guard's for each program, to the shell guard's for
+  the same code after `python3 -c` or `node -e`, rule, reason and `instead`:
+  for every case of the code reader's and the shell guard's inline case files
+  on a POSIX machine, a Mac and a Windows one, and for code made there
+  (one to eight `chdir`s, the kernel's files, protected and named secret
+  paths); a program on a Windows machine is held to every file act the shell
+  guard finds in the code, through cmd's reading of its target. Where
+  the two differ by design, the script guard saying more and never less (a
+  coding declaration, input to a program, a read of a path that cannot be
+  placed, a Windows path on a Windows machine, which the shell guard's inline
+  reading reads as POSIX) the test says why; what still differs otherwise is
+  listed with both answers: code that writes a script and runs it, and a
+  nested `python3 -c` on Windows that the shell guard's cmd reading only
+  calls `unknown`.
+
 ## 0.1.4 (2026-11-22)
 
 What the URL guard answers for a few `file:` URLs and odd spellings, nothing

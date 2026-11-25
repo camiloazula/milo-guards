@@ -1,0 +1,22 @@
+# Python's `open` reads or writes by its mode, and so do JavaScript's flags:
+# a mode with `w`, `a`, `x` or `+`, or one only known when it runs, writes.
+
+python safe | print(open('/home/me/.bashrc').read())
+python safe | print(open('/home/me/.bashrc', 'r').read())
+python safe | print(open('/home/me/.bashrc', 'rb').read())
+python finds=overwrite reason="writes to a shell startup file" | open('/home/me/.bashrc', 'w')
+python finds=overwrite reason="writes to a shell startup file" | open('/home/me/.bashrc', 'a')
+python finds=overwrite reason="writes to a shell startup file" | open('/home/me/.bashrc', 'x')
+python finds=overwrite reason="writes to a shell startup file" | open('/home/me/.bashrc', 'r+')
+python finds=overwrite reason="writes to a shell startup file" | open('/home/me/.bashrc', mode='wb')
+python finds=overwrite reason="writes to a shell startup file" | import sys\nopen('/home/me/.bashrc', sys.argv[1])
+python finds=overwrite reason="writes to your SSH keys" | open('/home/me/.ssh/id_rsa', 'r+')
+# In the workspace, every mode is the agent's own.
+python safe | open('out.txt', 'w')
+python safe | open('out.txt', 'x')
+python safe | open('out.txt', 'r+')
+
+javascript finds=overwrite reason="writes to a shell startup file" | require('fs').openSync('/home/me/.bashrc', 'w')
+javascript finds=overwrite reason="writes to a shell startup file" | require('fs').openSync('/home/me/.bashrc', 'a+')
+javascript finds=overwrite reason="writes to a shell startup file" | require('fs').createWriteStream('/home/me/.bashrc')
+javascript rules=unknown | require('fs').openSync('/home/me/.bashrc', 'r')

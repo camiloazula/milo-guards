@@ -1,0 +1,24 @@
+# Whether code may hand a program it starts something to read on its input
+# (`gives_input`), which `read` does not give with the program. It is read by
+# name, on any call; code that does not parse may.
+
+python input=yes | import subprocess\nsubprocess.run(['sh'], input=b'rm -rf ~')
+python input=yes | import subprocess\nsubprocess.run(['sh'], stdin=open('x'))
+python input=yes | import subprocess\np = subprocess.Popen(['sh'], stdin=subprocess.PIPE)\np.communicate(b'x')
+python input=yes | import subprocess\np = subprocess.Popen(['sh'])\np.stdin.write(b'x')
+python input=yes | import subprocess\nsubprocess.run(['sh'],
+python input=no | import subprocess\nsubprocess.run(['ls', '-l'])
+python input=no | print(input)
+javascript input=yes | require('child_process').execSync('sh', {input: 'rm -rf ~'})
+javascript input=yes | require('child_process').spawnSync('sh', [], {'input': 'x'})
+javascript input=yes | const input = 'x'; require('child_process').execSync('sh', {input})
+javascript input=yes | require('child_process').spawn('sh', [], {stdio: 'inherit'})
+javascript input=yes | const c = require('child_process').spawn('sh'); c.stdin.write('x')
+javascript input=yes | require('child_process').execSync('sh', {input:
+javascript input=no | require('child_process').execSync('ls')
+javascript input=no | console.log('input')
+python input=yes | import os\nos.popen('sh', 'w').write('rm -rf ~')
+python input=yes | import subprocess\np = subprocess.Popen(['sh'])\np['stdin']
+javascript input=yes | const {stdin: s} = require('child_process').spawn('sh'); s.write('x')
+javascript input=yes | const c = require('child_process').spawn('sh'); c['stdin'].write('x')
+python input=no | import os\nos.popen('ls')
