@@ -29,13 +29,49 @@ field added later does not break a caller. The fields stay public to read.
   `home` is not one (WSL), spelled `C:\Users\me` or `/mnt/c/Users/me`.
   `None` from `Paths::new`; set it with `Paths::with_windows_home`.
 
-The last two say how this machine spells another system's drives, which
-the guard cannot read from the disk (see [Drive mounts](#drive-mounts)). A
-caller that knows nothing of them passes nothing, and every answer is what
-it was. `Paths::as_spelled` gives the same directories without them
-(`None` when neither is named): every guard judges its input on both and
-keeps every finding of each, so naming them never makes an answer less
-serious.
+- `links`: the links the caller has resolved, a `Links`: the list of each
+  `Link`, shared by every copy of the `Paths`, and the tree of their names
+  a guard builds from it (see [Links](#links)). Empty from `Paths::new`;
+  add to it with `Paths::with_links`.
+
+`drive_mounts` and `windows_home` say how this machine spells another
+system's drives, which the guard cannot read from the disk (see [Drive
+mounts](#drive-mounts)), and `links` what the disk's links point to (see
+[Links](#links)). A caller that knows nothing of them passes nothing, and
+every answer is what it was. `Paths::as_spelled` gives the same directories
+without any of them (`None` when none is named), and
+`Paths::mounts_alone` the same with the links dropped and the mounts and
+the Windows home kept (`None` unless links and one of those are named);
+`Paths::also_judged_on` lists the two that are named. Every guard judges its
+input on the given directories and on each of those, and keeps every
+finding of each, so naming them never makes an answer less serious, and a
+link never takes away what a mount says.
+
+**`Link`** is a link and where it points: a plain struct `{ path, target }`,
+built with `Link::new(path, target)`, or `Link::unknown(path)` for a link the
+caller found and could not read (`target` is `None`). `path` is spelled the
+way the workspace folders are; one that starts with `~` is read from the home
+directory, any other relative one from the first workspace folder (the home
+directory when there is none), never from the working directory, which a
+caller may change from call to call. An empty `path` names nothing. `target`
+is the text the link holds, absolute or relative to the folder the link is in
+(`../../.ssh`), spelled as the machine spells paths: a POSIX path on a POSIX
+machine, a link on a drive WSL mounts included (a Windows path with its drive
+is read too there, as a link Windows made holds), and a Windows path on
+Windows, where the raw forms a junction holds (`\??\C:\x`, `\\?\C:\x`) are
+read. It has no kind: a link to a file and a link to a folder are followed
+the same way.
+
+**`Links`** is the list and the tree, opaque but for the list (`as_slice`,
+`iter`, `len`, `is_empty`). The tree is built the first time a guard judges
+with the directories, and kept with the list for every later call and every
+copy; it is built for every field of `Paths` but the working directory, so a
+caller that changes `cwd` from call to call reads the same tree. A builder
+(`with_protected`, `with_secrets`, `with_drive_mounts`, `with_windows_home`,
+`with_links`) builds it again on first use; a guard handed `Paths` whose
+other fields were set by hand since builds its own for each call. Naming
+links one at a time (`with_links([link])` in a loop) costs what naming them
+in one call does.
 
 **`Protected`** is a path, the words a reason calls it by, and whether it is a
 file or a folder (`kind`, a `ProtectedKind`): a plain struct
@@ -589,12 +625,13 @@ itself.
   device.
 - Nothing reads the file system. A symlink is judged by its own name, and a
   POSIX spelling of another system's drive as a folder of this machine's,
-  unless the caller names the mount (below).
+  unless the caller names the link or the mount (below).
 
 Core never answers `Registry` or `Session`. A path spelled out as text is a file path. A
 guard that reads the syntax around it says when a path is not one. Core
 answers `Unknown` for the Windows spellings it cannot read to a name, listed
-under "What core judges", and for a path whose walk through a mount goes
+under "What core judges", for a path through more links than any system
+follows or through a link it cannot place, and for a path whose walk goes
 past the work a resolver may spend (below).
 
 ### Drive mounts
@@ -711,6 +748,130 @@ directory as Windows spells it, and no drive through a mount reaches it
 looked up by its folder as the caller spells it and where it lands as
 spelled: on a Mac, a mount spelled `/Volumes/x` is not found through
 `/System/Volumes/Data/Volumes/x`.
+
+### Links
+
+A link is a name the system follows to another place, which only the disk
+can say. Core reads no disk; the caller can, and names the links it found
+in `Paths` (`links`). **Naming one never makes an answer less serious**:
+every guard judges its input on the `Paths` it is given and on each of
+`Paths::also_judged_on` (without links or mounts, and without links but with
+the mounts), and keeps every finding of each. In core, every place a path
+may land is read, and the most serious wins:
+
+- **Each walk.** A path is walked part by part from its root. A link is
+  replaced, where the path reaches it, by its target, whose parts are walked
+  next; a relative target is read from the folder the link is in. A `..`
+  after a link is read three ways, because the guard does not know which a
+  program does: as the system climbs it, from where the link points (what
+  `open` does, and a shell's `cd -P`); with every `..` applied to the text
+  first (as Windows applies it, and a shell's `cd` goes); and, for each `..`
+  after the first link, with the `..` before it applied to the text and the
+  rest walked (a `cd` the shell went to by the text, then a path the system
+  opened from there: `cd p/lnk/../.. && cat p/lnk/../id_rsa` reads
+  `p/lnk/../id_rsa` from the workspace, through the link). The working
+  directory is walked the same way, so one that is itself through a link
+  (`repo/p/lnk`) climbs from where the link points too. Through a drive
+  mount, the walk reads a drive as `Drive mounts` says, and a mount's folder
+  is also where it lands through the links (`/mnt` a link to `/media`
+  mounts the drives at `/media` too).
+- **Each name.** The path as it reads at each link it goes through, the
+  rest applied by its spelling, is a name of the same file, and so is the
+  name each link that lands at or above where it lands lends it
+  (`dotfiles/ssh/id_rsa` is `~/.ssh/id_rsa` when `~/.ssh` is a link to
+  `dotfiles/ssh`). A name a link lends counts only for what it means by
+  itself: a key or another sensitive place, a protected path, a file that
+  runs on its own, the repository's history. It never makes a path beyond
+  the workspace, a system folder or a share: with `~/current` a link to the
+  workspace, the workspace's own files stay the agent's.
+- **A path that ends at a link** is also judged as the link itself, where
+  it is: a read or a write opens what the link points to, a delete or a
+  rename acts on the link.
+- **A pattern** is cut, as always, at its first wildcard part, and the
+  folder before it lands through the links. A wildcard part that can pick a
+  link below that folder (or a drive under a mount) is also read through it,
+  its parts matched to the link's names one for one and `**` to any number
+  of them; what is left of the pattern is read again for the links below
+  where it lands. Once a link's name holds a wildcard character (`[x]`,
+  `a*b`, `{a,b}`), a pattern is also read as the path its text spells.
+- **A folder that holds a link** holds what the link lands on only for a
+  tool that follows the links it meets: `linked_holder` says what (a key, a
+  protected path, the home directory or a folder holding it, the root of a
+  disk, a place only known when it runs, or a place that, read all the way
+  down, reaches a key), and a guard asks it for such a tool only (`grep -R`,
+  `find -L`, `cp -L`, `rsync -L`, `-k` and `-K`, `tar -h`, `scp -r`, `zip
+  -r`, `chown -RL`, `shutil.copytree`, and `cp -r`, which follows them on
+  macOS and the BSDs and is read so on every POSIX line, a false alarm for
+  GNU's). `place_name`, which a guard asks of what acts on the name itself
+  (POSIX `rm`, `unlink` and `mv`, cmd's `rd`, and the script guard's
+  deletes and moves), reads a path that ends at a link as the link, and
+  the links a pattern can pick as names. `place`, `holds_protected` and `reaches_secret` read
+  the links below a folder as links: `rm -rf .venv` with a link inside it to
+  `/usr/bin/python3` deletes the link, not the system folder.
+- **The workspace** is the workspace by both names when a workspace folder
+  is itself a link, and a working directory in a workspace with a link in
+  it, or one a link lands in or above (through other links or not: a stow
+  layout, `~/.config` a link to the `dotfiles/config` the workspace is in),
+  is not one whose plain names are all the agent's (`cwd_is_clear`).
+
+**What cannot be placed.** A path through more links than any system
+follows (Windows follows 63, the most of any; Linux 40, macOS 32), through a
+link that cannot be read (`Link::unknown`, an empty target, a target longer
+than the 4,096 bytes any system keeps, a volume or a device name, a drive's
+own working directory, a link named twice with two targets), through a link
+the build could not place, or past the work one resolver may spend, is
+`Unknown`: never a place. `Resolver::lost` says so, and a guard that lets a
+read of an unknown place through says such a read is not safe.
+
+**The tree.** The links are a tree of names, so a part of a path is one
+lookup in it, whatever the number of links. It is built once (see `Links`
+above), in rounds: each round places every link from the tree of the round
+before, all at once, so the answer is the same in every order of the list;
+a link named below another is placed one level deeper each round
+(`MOST_ROUNDS`, 8, places nine levels of nesting), and a link still moving
+after the last is lost where it is named and where it would go next. What
+each folder holds through the links at or below it is worked out in the
+same build, for `linked_holder`, so asking it costs a lookup for each part
+of a path; a link that lands somewhere harmless and reaches no key costs
+nothing there, and a pattern that can pick it does not read through it
+again (`cat node_modules/*/package.json` over a package manager's links
+into its store costs the match alone). The build has a budget of counted
+work of its own, `MOST_BUILD` (33,554,432), and holds at most `MOST_LINKS`
+(262,144) links, of at most `MOST_LINK_PARTS` (1,048,576) parts of their
+names and targets in all, a part counting once more for each 64 bytes in
+it, counted as the list is read: past any, no link is held, and every path
+is only known when it runs, whatever the order of the list. The work bounds
+the time of a build, and the parts what it keeps: the tree and the lent
+names grow with the parts, not the links (links 60 folders deep, each in
+folders of its own, kept 17 KB each). The tree keeps about 1.1 KB for each
+package manager's link (`node_modules/pkg` to its store, six parts and a
+target of four); its build takes about 3 KB and 7 to 10 microseconds for
+each, in time linear in the parts. At the bound, 104,000 such links take
+0.75 seconds and 285 MB at the most while it runs; the dearest
+measured, links 60 folders deep in folders of their own, is 1 second and
+440 MB (265 MB kept), where 262,144 of them took 13 seconds and 9 GB
+before the bound. A caller that starts a process for each tool call builds
+it on every call.
+
+**Names.** A link's name compares as the system it is on compares names:
+without case on Windows (a drive or a share), by its 8.3 short name there
+too (`MYSECR~1` for `mysecretkeys`), and on a Mac (by the widest fold and in
+either canonical spelling, and through the Mac's own links,
+`/System/Volumes/Data` and both sides of `/tmp` and `/private/tmp`); with
+case elsewhere. A volume set the other way (a case-sensitive one on a Mac, a
+case-insensitive folder on Linux) is not known to the guard: a caller with
+one names the link by the spelling the paths will use, or by each. On a
+machine with drive mounts, a link on a drive is also under each mount's
+folder, and one under a mount's folder also on the drive.
+
+`tests/link_work.rs` holds each bound to the number it writes down (the
+call's budget, the 63 links, the 4,096 bytes, the build's budget, the most
+links and the rounds), the work of a path to the same count whatever the
+number of links named, a long honest list to the same answers in any order,
+a list past the build's budget or the most links to no link held in any
+order, and links nested deeper than the rounds to a path only known when it
+runs, in any order. Without a link named, nothing of this runs, and every
+answer is what it was. The cases are in `tests/cases/resolved_links.cases`.
 
 ### What the guard keeps
 
@@ -907,6 +1068,21 @@ path made absolute, with the working directory and `~` applied.
   `opened` leaves it to a caller that can look at the disk. A `..` with nothing
   above it (`/..`) is dropped, as the system does. It is `None` in the same
   cases as `absolute`.
+- `lost(path, flavour)` says a path goes through more links than any system
+  follows, through a link that cannot be read or placed, or past the work
+  one resolver may spend (see [Links](#links)); a guard that lets a read of
+  an unknown place through does not let this one.
+- `lands_on_share(path, flavour)` says a link the caller named takes a path
+  to another machine, where the path lands (never a name a link lends it),
+  which its spelling does not show; a guard reports it as it reports a share
+  spelled out.
+- `linked_holder(path, flavour)` is the words of what a named link at or
+  below a folder lands on, for a tool that follows the links it meets (see
+  [Links](#links)).
+- `through_link(path, flavour)` says a path read literally goes through a
+  named link, so a file API's path with a bracket that spells a link's name
+  is one path; `wild_links()` says a link's name holds a wildcard or a
+  brace, so a word that spells one is that name.
 The root holds only `Paths`, the verdict types, `Place`, and the resolver with
 its `Flavour` and `Spelling`.
 
@@ -949,13 +1125,20 @@ drive-relative paths and a Mac's links), `startup.cases` (`startup`,
 `reaches_secret` and `named_secret`, a path both protected and secret, and
 the same paths with none named), `drives.cases` (WSL's, Git Bash's and
 Cygwin's mounts, with and without the mount and the Windows home),
+`resolved_links.cases` (the links a caller names: a link to a folder and to
+a file, below a link and to a link, a `..` after a link and a `cd` before
+one, a loop, a link at a mount's folder and into the workspace, case, a
+pattern, what a folder holds through them),
 `absolute.cases` and `opened.cases`. A case asks the `Resolver` one or more
 questions of one path, on one machine, and gives each answer. What is made
 in a loop or asks the API itself stays in Rust: the folds NTFS does not make and the flavour in
 `sensitive.rs`, that applying the `..` of what is opened gives the
 absolute path in `opened.rs`, and in `named_secrets.rs` that each
 `with_secrets` adds, that none named changes nothing and when the working
-directory is clear; and in `mount_work.rs` the work of the walk through
-the mounts, held to a count. `tests/cases.rs` tests the shared reading of
+directory is clear; in `mount_work.rs` the work of the walk through the
+mounts, held to a count; in `resolved_links.rs` that each `with_links`
+adds and what is handed back spelled; and in `link_work.rs` the work and
+the bounds of the links, held to counts. `resolved_links.cases` asks
+`linked` (`linked_holder`) and `lost` too. `tests/cases.rs` tests the shared reading of
 the format and core's runner (`tests/common/runner.rs`), and dumps every
 case.

@@ -157,6 +157,11 @@ pub(crate) struct Unit {
     /// runs (`& $b`, `. $b`) may hold a `cd`, and the session has one
     /// location, whatever scope the block runs in.
     pub(crate) relocates: bool,
+    /// Whether it is run for each file a `find` that follows the places it
+    /// searches finds (`find -L data -exec rm -rf {} +`): a link among them
+    /// is gone through, so a program that acts on a link it is given acts
+    /// on what the link points to.
+    pub(crate) followed: bool,
     /// Whether it is a POSIX command of one word, no builtin, run after the
     /// line may have turned zsh's `autocd` on: zsh runs it as a `cd` to the
     /// word when that names a folder (see [`Split::autocd`]).
@@ -292,6 +297,7 @@ impl Unit {
             repeated: false,
             downloaded: false,
             relocates: false,
+            followed: false,
             autocd: false,
             aliased: false,
             listings: Vec::new(),

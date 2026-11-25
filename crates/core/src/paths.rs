@@ -1,23 +1,30 @@
 //! The directories a guard judges paths against.
 
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+
+use crate::resolve::Prepared;
 
 /// The directories a path is judged against.
 ///
 /// Build one with [`Paths::new`], add what the caller gates with through
 /// [`Paths::with_protected`], and the files it knows hold secrets through
-/// [`Paths::with_secrets`]. How this machine spells another system's drives
-/// the caller says too ([`Paths::with_drive_mounts`], and on WSL
-/// [`Paths::with_windows_home`]). The struct is `#[non_exhaustive]`, so a
-/// field added later does not break a caller; the fields stay public to read
-/// and to set.
+/// [`Paths::with_secrets`]. What only the disk can say, the caller says too:
+/// how this machine spells another system's drives
+/// ([`Paths::with_drive_mounts`], and on WSL [`Paths::with_windows_home`]),
+/// and the links it has resolved ([`Paths::with_links`]). The struct is
+/// `#[non_exhaustive]`, so a field added later does not break a caller; the
+/// fields stay public to read and to set.
 ///
 /// Paths are judged by their spelling alone, so these must be spelled the
 /// way the paths being judged will resolve: absolute, and either all
 /// canonical or all as the user wrote them. A relative `cwd` puts every
 /// relative path outside the workspace, and so does a `cwd` read through a
 /// symlink (`/private/tmp/…`) when the workspace is spelled without it
-/// (`/tmp/…`). With no workspace at all, every path is outside.
+/// (`/tmp/…`). Naming that link does not change it: a guard judges a path
+/// as spelled too, where the two spellings differ, and keeps that answer.
+/// The caller names the workspace by the path the agent's `cwd` uses. With
+/// no workspace at all, every path is outside.
 ///
 /// ```
 /// use milo_guards_core::Paths;
@@ -61,6 +68,192 @@ pub struct Paths {
     /// Windows home. `None` from [`Paths::new`]: set it with
     /// [`Paths::with_windows_home`].
     pub windows_home: Option<PathBuf>,
+    /// The links the caller has resolved, each a link and where it points: a
+    /// path through one is placed where it lands. See [`Links`] and [`Link`].
+    pub links: Links,
+}
+
+/// A link the caller found, and where it points: a symbolic link, a
+/// junction, or any other name the system follows to another place.
+///
+/// The guard reads no disk, so it cannot tell a link from a folder; a caller
+/// that can names the links it found in the workspace folders, and a path
+/// through one is placed where it lands. A write through a link into a
+/// protected or a sensitive place is judged as a write there, and a read
+/// through one to a key as a read of the key. A guard judges a path both as
+/// it is spelled and where it lands, and keeps every finding of both, so
+/// naming a link never takes a finding away.
+///
+/// `path` is spelled the way the workspace folders are: absolute, and
+/// canonical or as the user wrote it, like the rest of [`Paths`]. One that
+/// starts with `~` is read from the home directory, and any other relative
+/// one from the first workspace folder (from the home directory when there
+/// is none), never from the working directory, which a caller may change
+/// from one call to the next. An empty `path` names nothing. A link below
+/// another may be named through the first link or where that one lands.
+/// The struct is `#[non_exhaustive]`, so a field added later (whether the
+/// link is to a file or a folder) does not break a caller: build one with
+/// [`Link::new`] or [`Link::unknown`]. `target` is the link's own text,
+/// absolute or relative to the folder the link is in (`../../.ssh`),
+/// spelled as the machine spells paths: a POSIX path on a POSIX machine
+/// (WSL's links on a mounted drive included), a Windows one on Windows, where the raw forms a junction holds are read
+/// too (`\??\C:\x`, `\\?\C:\x`, a share). A target the guard cannot place
+/// (empty, longer than any system keeps, a volume or a device name), a link
+/// the caller could not read ([`Link::unknown`]), a link named twice with
+/// two targets, and a link the guard cannot place among the others (see
+/// [`Links`]) make every path through it one only known when it runs.
+///
+/// ```
+/// use milo_guards_core::{Link, Paths};
+///
+/// let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
+///     .with_links([Link::new("/home/me/work/repo/keys", "/home/me/.ssh")]);
+/// let link = &paths.links.as_slice()[0];
+/// assert_eq!(link.target.as_deref().and_then(|t| t.to_str()), Some("/home/me/.ssh"));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Link {
+    /// The link itself, spelled like the workspace folders.
+    pub path: PathBuf,
+    /// Where it points, as the link holds it: absolute, or from the folder
+    /// the link is in. `None` for a link the caller found and could not read.
+    pub target: Option<PathBuf>,
+}
+
+impl Link {
+    /// A link at `path` that points to `target`.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, target: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            target: Some(target.into()),
+        }
+    }
+
+    /// A link at `path` whose target the caller could not read: every path
+    /// through it is only known when it runs, which no guard calls safe to
+    /// read, write or delete.
+    #[must_use]
+    pub fn unknown(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            target: None,
+        }
+    }
+}
+
+/// The links the caller has resolved.
+///
+/// The list is kept as given, and shared by every copy of the [`Paths`]. The
+/// guards read it as a tree of names, which is built the first time a guard
+/// judges with these directories, once, and kept with the list for every
+/// later call and every copy: a guard's call then costs a few lookups for
+/// each part of a path, however many links are named. The tree is built for
+/// every field of the [`Paths`] but the working directory, which a caller
+/// may change from call to call at no cost; a builder (`with_...`) builds it
+/// again on first use, and a guard handed [`Paths`] whose other fields were
+/// set by hand since builds its own for each call. Naming links one at a
+/// time (`with_links([link])` in a loop) costs the same as naming them in
+/// one call.
+///
+/// The tree keeps about 1.1 KB of memory for each link (measured for
+/// package-manager links of six parts each and targets of four), and its
+/// build takes about 3 KB and 7 to 10 microseconds for each while it runs,
+/// in time linear in the parts of the links' names and targets, and a
+/// counted amount of work for each: a caller that starts a process for each
+/// tool call builds it on every call. Past [`MOST_LINKS`] links, past
+/// [`MOST_LINK_PARTS`] parts of their names and targets, or past the work
+/// the build may spend, the guard holds none of them, and every path is
+/// only known when it runs. At the bound of parts a build takes about a
+/// second and 440 MB at the most (links 60 folders deep, each in folders of
+/// its own), and 0.75 seconds and 285 MB for 104,000 package-manager links; a link it cannot place
+/// among the others (one named through more than eight links named through
+/// links, or through a link it cannot place) makes the paths through it so,
+/// whatever the order of the list.
+#[derive(Debug, Clone, Default)]
+pub struct Links {
+    /// Shared, so that copying the directories copies no link.
+    named: Arc<Vec<Link>>,
+    /// The tree, once a guard has built it, shared by every copy.
+    prepared: Arc<OnceLock<Arc<Prepared>>>,
+}
+
+/// The most links the guards hold: past it, every path is only known when
+/// it runs.
+pub const MOST_LINKS: usize = crate::resolve::MOST_LINKS;
+
+/// The most parts the names and targets of the links the guards hold may
+/// have, all together, a part counting once more for each 64 bytes in it:
+/// past it, every path is only known when it runs. A package manager's link
+/// (`/home/me/work/repo/node_modules/pkg` to
+/// `.pnpm/pkg@1.0.0/node_modules/pkg`) has ten.
+pub const MOST_LINK_PARTS: usize = crate::resolve::MOST_PARTS;
+
+impl Links {
+    /// The links, in the order they were named.
+    #[must_use]
+    pub fn as_slice(&self) -> &[Link] {
+        &self.named
+    }
+
+    /// How many links are named.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.named.len()
+    }
+
+    /// Whether no link is named.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.named.is_empty()
+    }
+
+    /// Each link, in the order they were named.
+    pub fn iter(&self) -> std::slice::Iter<'_, Link> {
+        self.named.iter()
+    }
+
+    /// The tree for `paths`: the one kept, when it was built for them; else
+    /// one built now, kept when none was.
+    pub(crate) fn prepared(&self, paths: &Paths) -> Arc<Prepared> {
+        let kept = self.prepared.get_or_init(|| Arc::new(Prepared::new(paths)));
+        if kept.is_for(paths) {
+            Arc::clone(kept)
+        } else {
+            Arc::new(Prepared::new(paths))
+        }
+    }
+
+    /// Whether the tree was built and kept, for a test of when it is.
+    #[cfg(any(feature = "testing", test))]
+    pub(crate) fn kept(&self) -> Option<&Arc<Prepared>> {
+        self.prepared.get()
+    }
+
+    /// Forget the tree: the directories it was built for changed.
+    fn forget(&mut self) {
+        if self.prepared.get().is_some() {
+            self.prepared = Arc::new(OnceLock::new());
+        }
+    }
+}
+
+impl PartialEq for Links {
+    fn eq(&self, other: &Self) -> bool {
+        self.named == other.named
+    }
+}
+
+impl Eq for Links {}
+
+impl<'a> IntoIterator for &'a Links {
+    type Item = &'a Link;
+    type IntoIter = std::slice::Iter<'a, Link>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.named.iter()
+    }
 }
 
 /// A file or folder the caller gates with, and what a reason calls it.
@@ -255,6 +448,7 @@ impl Paths {
             secrets: Vec::new(),
             drive_mounts: Vec::new(),
             windows_home: None,
+            links: Links::default(),
         }
     }
 
@@ -263,6 +457,7 @@ impl Paths {
     #[must_use]
     pub fn with_protected(mut self, protected: impl IntoIterator<Item = Protected>) -> Self {
         self.protected.extend(protected);
+        self.links.forget();
         self
     }
 
@@ -271,6 +466,7 @@ impl Paths {
     #[must_use]
     pub fn with_secrets(mut self, secrets: impl IntoIterator<Item = Secret>) -> Self {
         self.secrets.extend(secrets);
+        self.links.forget();
         self
     }
 
@@ -327,6 +523,7 @@ impl Paths {
         mounts: impl IntoIterator<Item = M>,
     ) -> Self {
         self.drive_mounts.extend(mounts.into_iter().map(Into::into));
+        self.links.forget();
         self
     }
 
@@ -336,23 +533,67 @@ impl Paths {
     #[must_use]
     pub fn with_windows_home(mut self, home: impl Into<PathBuf>) -> Self {
         self.windows_home = Some(home.into());
+        self.links.forget();
         self
     }
 
-    /// These directories as they are spelled: the same, with no drive mount
-    /// and no Windows home; `None` when neither is named. A guard judges its
-    /// input on both and keeps every finding of each, so naming how this
-    /// machine spells another system's drives never makes an answer less
+    /// These directories with `links` added to the links the caller has
+    /// resolved (see [`Links`]). Each call adds to the list; the tree of them
+    /// is built when a guard first judges with these directories, so a loop
+    /// of calls costs what one call does.
+    #[must_use]
+    pub fn with_links(mut self, links: impl IntoIterator<Item = Link>) -> Self {
+        Arc::make_mut(&mut self.links.named).extend(links);
+        self.links.prepared = Arc::new(OnceLock::new());
+        self
+    }
+
+    /// These directories as they are spelled: the same, with no link, no
+    /// drive mount and no Windows home; `None` when none is named. A guard
+    /// judges its input on the directories it is given, on these, and on
+    /// [`mounts_alone`](Self::mounts_alone), and keeps every finding of
+    /// each, so naming what only the disk can say never makes an answer less
     /// serious. [`Resolver`](crate::Resolver) answers where a path lands on
     /// the directories it is given (`/mnt/c/Windows/Temp/x` is a temporary
     /// folder through the mount): a caller of it that wants the same must
     /// ask it of these too, and keep the more serious answer.
     #[must_use]
     pub fn as_spelled(&self) -> Option<Self> {
-        (!self.drive_mounts.is_empty() || self.windows_home.is_some()).then(|| Self {
-            drive_mounts: Vec::new(),
-            windows_home: None,
-            ..self.clone()
-        })
+        (!self.links.is_empty() || !self.drive_mounts.is_empty() || self.windows_home.is_some())
+            .then(|| Self {
+                cwd: self.cwd.clone(),
+                home: self.home.clone(),
+                workspaces: self.workspaces.clone(),
+                protected: self.protected.clone(),
+                secrets: self.secrets.clone(),
+                drive_mounts: Vec::new(),
+                windows_home: None,
+                links: Links::default(),
+            })
+    }
+
+    /// These directories with the links dropped and the drive mounts and the
+    /// Windows home kept; `None` unless both links and one of those are
+    /// named (otherwise it is these directories or
+    /// [`as_spelled`](Self::as_spelled)). A guard judges on it too, so a link
+    /// never takes away what a mount says.
+    #[must_use]
+    pub fn mounts_alone(&self) -> Option<Self> {
+        (!self.links.is_empty() && (!self.drive_mounts.is_empty() || self.windows_home.is_some()))
+            .then(|| Self {
+                links: Links::default(),
+                ..self.clone()
+            })
+    }
+
+    /// Every other set of these directories a guard judges its input on,
+    /// keeping every finding of each: [`as_spelled`](Self::as_spelled) and
+    /// [`mounts_alone`](Self::mounts_alone), those that are named.
+    #[must_use]
+    pub fn also_judged_on(&self) -> Vec<Self> {
+        self.as_spelled()
+            .into_iter()
+            .chain(self.mounts_alone())
+            .collect()
     }
 }

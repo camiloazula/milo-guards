@@ -42,6 +42,7 @@ pub(super) fn find_exec(split: &mut Split, unit: &Unit, depth: usize) {
 /// [`find_exec`], once it is known how deep it is.
 fn run_each(split: &mut Split, unit: &Unit, depth: usize) {
     let targets = find_targets(&unit.args);
+    let follows = follows_starts(&unit.args);
     let mut iter = unit.args.iter();
     while let Some(arg) = iter.next() {
         if !matches!(arg.known(), Some("-exec" | "-execdir" | "-ok" | "-okdir")) {
@@ -92,6 +93,7 @@ fn run_each(split: &mut Split, unit: &Unit, depth: usize) {
             }
             let mut found = Unit::new(Shell::Posix, (*program).clone(), args, None);
             found.wrappers.push("find".to_string());
+            found.followed = follows;
             found.startup = Rc::clone(&unit.startup);
             add(split, found, depth);
         }
@@ -301,6 +303,22 @@ fn options_end(args: &[Arg]) -> usize {
         }
     }
     at
+}
+
+/// Whether `find` follows a link among the places it searches: the last
+/// of its own `-H`, `-L` and `-P` is `-H` or `-L`, or its expression holds
+/// `-follow` or an argument only known when it runs, which may be either.
+fn follows_starts(args: &[Arg]) -> bool {
+    let options = &args[..options_end(args).min(args.len())];
+    let last = options.iter().rev().find_map(|arg| match arg.known() {
+        Some("-H" | "-L") => Some(true),
+        Some("-P") => Some(false),
+        _ => None,
+    });
+    last.unwrap_or(false)
+        || expression(args)
+            .iter()
+            .any(|arg| matches!(arg.known(), Some("-follow") | None))
 }
 
 /// `find`'s expression: its arguments after the places it searches.

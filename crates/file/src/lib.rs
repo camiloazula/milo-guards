@@ -11,11 +11,11 @@
 //! the working directory, `~` as the home directory, `..` applied, and the
 //! Windows spellings (drives, shares, long paths, short names, any case)
 //! read as Windows reads them, whatever host the guard runs on. Nothing is
-//! read from the disk, so a symlink is judged by its own name, and a POSIX
-//! spelling of a Windows drive (WSL's `/mnt/c`) as a folder of this
-//! machine's, unless the caller names the mount with
-//! [`Paths::with_drive_mounts`]: then a path through it is judged where it
-//! lands, and as spelled.
+//! read from the disk, so a symlink is judged by its own name, unless the
+//! caller names it with [`Paths::with_links`], and a POSIX spelling of a
+//! Windows drive (WSL's `/mnt/c`) as a folder of this machine's, unless the
+//! caller names the mount with [`Paths::with_drive_mounts`]: then a path
+//! through it is judged where it lands.
 //!
 //! - A **read** is safe wherever it lands, except a key or a credential, or
 //!   a file the caller named as one with [`Paths::with_secrets`]
@@ -65,7 +65,7 @@
 use milo_guards_core::spelling::{glob, network, verbatim};
 use milo_guards_core::{Flavour, Place, Resolver, Sensitivity, Spelling};
 
-pub use milo_guards_core::{Paths, Protected, ProtectedKind, Secret};
+pub use milo_guards_core::{Link, Links, Paths, Protected, ProtectedKind, Secret};
 
 /// What a file API call does to the path.
 ///
@@ -173,18 +173,21 @@ pub const MAX_PATH_LEN: usize = 4096;
 #[must_use = "the assessment is the answer: it says whether the access is safe"]
 pub fn judge(access: Access, path: &str, paths: &Paths) -> Assessment {
     let found = judge_on(access, path, paths);
-    // With a drive mount or a Windows home named, the path is also judged
-    // as spelled, and every finding of either is kept: naming how this
-    // machine spells another system's drives never makes an answer less
-    // serious.
-    let Some(spelled) = paths.as_spelled() else {
+    // With a link, a drive mount or a Windows home named, the path is also
+    // judged on each other set of the paths (`Paths::also_judged_on`), and
+    // every finding of each is kept: naming what only the disk can say never
+    // makes an answer less serious.
+    let others = paths.also_judged_on();
+    if others.is_empty() {
         return found;
-    };
+    }
     // One finding to a rule, as in each judging: the path's own first.
     let mut findings = found.findings().to_vec();
-    for finding in judge_on(access, path, &spelled).findings() {
-        if !findings.iter().any(|known| known.rule == finding.rule) {
-            findings.push(finding.clone());
+    for other in &others {
+        for finding in judge_on(access, path, other).findings() {
+            if !findings.iter().any(|known| known.rule == finding.rule) {
+                findings.push(finding.clone());
+            }
         }
     }
     risky(findings)
@@ -194,7 +197,7 @@ pub fn judge(access: Access, path: &str, paths: &Paths) -> Assessment {
 fn judge_on(access: Access, path: &str, paths: &Paths) -> Assessment {
     let resolver = Resolver::new(paths);
     let flavour = resolver.flavour();
-    let share = network(path, flavour);
+    let mut share = network(path, flavour);
     let mut findings = Vec::new();
     let target = (path.len() <= MAX_PATH_LEN).then(|| path.to_string());
     let mut add = |rule: Rule, reason: String| {
@@ -225,6 +228,8 @@ fn judge_on(access: Access, path: &str, paths: &Paths) -> Assessment {
     let mut inside = false;
     for (at, reading) in readings.iter().enumerate() {
         let place = resolver.place_hidden(*reading, flavour, true);
+        // A link the caller named may land on a share.
+        share |= resolver.lands_on_share(*reading, flavour);
         // The plain spelling is the last reading.
         inside |= at + 1 == readings.len() && is_the_callers(place);
         // A secret the caller named, read as the one literal path a file API
@@ -244,8 +249,10 @@ fn judge_on(access: Access, path: &str, paths: &Paths) -> Assessment {
         // A bracket in a named or a protected path's own name is that path,
         // judged as the literal path it is (a read of a protected one is
         // safe, a write `write_protected`), not as a pattern.
-        let literal =
-            named.is_some() || (class && resolver.named_protected(*reading, flavour).is_some());
+        let literal = named.is_some()
+            || (class
+                && (resolver.named_protected(*reading, flavour).is_some()
+                    || resolver.through_link(*reading, flavour)));
         if class && !place.harmless() && !literal {
             add(
                 Rule::Unreadable,

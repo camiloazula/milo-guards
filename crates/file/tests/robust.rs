@@ -4,7 +4,7 @@
 mod common;
 
 use common::{posix, windows};
-use milo_guards_file::{judge, Access, Paths, Protected, Rule, Secret, MAX_PATH_LEN};
+use milo_guards_file::{judge, Access, Link, Paths, Protected, Rule, Secret, MAX_PATH_LEN};
 
 /// Pieces of paths, joined at random into texts no file API expects.
 const PIECES: [&str; 44] = [
@@ -273,6 +273,114 @@ fn random_paths_with_hostile_mounts_never_panic() {
     // each.
     let long = format!("/mnt/c/{}", "d/".repeat(MAX_PATH_LEN / 2 - 4));
     let climbing = format!("/mnt/c/{}", "../".repeat(1_000));
+    for paths in &machines {
+        let _ = judge(Access::Read, &long, paths);
+        let _ = judge(Access::Write, &climbing, paths);
+    }
+}
+
+/// Machines that name links and drive mounts the caller may get wrong: a
+/// link at the root of the disk, an empty one, a relative one, a link to
+/// itself, to its own folder, to the root and to nothing, links that loop,
+/// a mount at the root, an empty mount and a relative one, a Windows home
+/// that is no Windows path, and all of them at once.
+fn hostile_links() -> Vec<Paths> {
+    let mut machines = Vec::new();
+    for (paths, root, at) in [
+        (posix(), "/", "/home/me/work/repo"),
+        (windows(), "C:\\", r"C:\Users\me\dev\repo"),
+    ] {
+        let separator = if root == "/" { "/" } else { "\\" };
+        let link = |name: &str| format!("{at}{separator}{name}");
+        let links = [
+            Link::new(root, "/tmp"),
+            Link::new("", ""),
+            Link::new("repo/x", "y"),
+            Link::new(link("self"), "self"),
+            Link::new(link("up"), ".."),
+            Link::new(link("top"), root),
+            Link::new(link("none"), ""),
+            Link::new(link("a"), "b"),
+            Link::new(link("b"), link("a")),
+            Link::new(link("grow"), format!("grow{separator}grow")),
+            Link::new(link("*"), "/home/me/.ssh"),
+            Link::new(link("keys"), "/home/me/.ssh"),
+        ];
+        machines.extend(
+            links
+                .iter()
+                .map(|link| paths.clone().with_links([link.clone()])),
+        );
+        for mount in ["/", "", "mnt", "/mnt", r"C:\mnt"] {
+            machines.push(paths.clone().with_drive_mounts([mount]));
+        }
+        machines.push(paths.clone().with_windows_home("/home/me"));
+        machines.push(
+            paths
+                .with_links(links)
+                .with_drive_mounts(["/", "/mnt", "/cygdrive"])
+                .with_windows_home(r"C:\Users\me"),
+        );
+    }
+    machines
+}
+
+#[test]
+fn random_paths_with_hostile_links_never_panic() {
+    let machines = hostile_links();
+    let mut random = Lcg(13);
+    for _ in 0..300 {
+        let length = random.next() % 14;
+        let path: Vec<&str> = (0..length)
+            .map(|_| {
+                let pieces = ["self", "up", "top", "a", "b", "grow", "keys", "mnt", "c"];
+                if random.next().is_multiple_of(3) {
+                    pieces[random.next() % pieces.len()]
+                } else {
+                    PIECES[random.next() % PIECES.len()]
+                }
+            })
+            .collect();
+        let path = path.join(if random.next().is_multiple_of(2) {
+            ""
+        } else {
+            "/"
+        });
+        for paths in &machines {
+            for access in [Access::Read, Access::Write] {
+                let assessment = judge(access, &path, paths);
+                assert_eq!(assessment, judge(access, &path, paths), "{path:?}");
+                assert_eq!(assessment.is_safe(), assessment.findings().is_empty());
+                let unreadable = path.is_empty()
+                    || path.contains(['\0', '\n', '*', '`'])
+                    || path.starts_with(' ');
+                if unreadable {
+                    assert!(
+                        assessment
+                            .findings()
+                            .iter()
+                            .any(|finding| finding.rule == Rule::Unreadable),
+                        "{access:?} {path:?}: {assessment:?}"
+                    );
+                }
+            }
+        }
+    }
+    // A path through the links that loop, or that grow, is not safe.
+    let all = &machines[machines.len() / 2 - 1];
+    for path in ["a/x", "b", "self", "grow/x"] {
+        let assessment = judge(Access::Write, path, all);
+        assert!(
+            assessment
+                .findings()
+                .iter()
+                .any(|finding| finding.rule == Rule::Unreadable),
+            "{path}: {assessment:?}"
+        );
+    }
+    // A long path, and a thousand `..` after a link, return on each.
+    let long = "keys/".repeat(MAX_PATH_LEN / 5);
+    let climbing = format!("keys/{}", "../".repeat(1_000));
     for paths in &machines {
         let _ = judge(Access::Read, &long, paths);
         let _ = judge(Access::Write, &climbing, paths);

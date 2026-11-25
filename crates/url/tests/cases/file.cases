@@ -112,3 +112,32 @@ rules=local_file first=local_file reason="reads a top-level folder" | file:///mn
 paths home_mount base=posix drive_mount=/home
 @home_mount rules=local_file first=local_file reason="reads a shell startup file" | file:///home/d/.bashrc/x
 rules=local_file first=local_file reason="reads a shell startup file" | file:///home/d/.bashrc/x
+
+# A link the caller has resolved (`Paths::links`) is followed: the path is
+# placed where it lands, and the target is the path as the URL spells it.
+paths keys base=posix link=/home/me/work/repo/keys to=/home/me/.ssh
+paths linked_env base=posix secret_file=/data/app/.env words="the app's environment file" link=/home/me/work/repo/app to=/data/app
+@keys rules=local_file first=local_file reason="reads your SSH keys" target="/home/me/work/repo/keys/id_rsa" | file:///home/me/work/repo/keys/id_rsa
+# A URL's dot segments are read by the URL parser, before any link is:
+# the URL a fetch opens has none left.
+@keys rules=local_file first=local_file reason="reads the whole workspace" target="/home/me/work/repo/" | file:///home/me/work/repo/keys/..
+@keys rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/work/repo/keys/%69d_rsa
+@linked_env rules=local_file first=local_file reason="reads the app's environment file" | file:///home/me/work/repo/app/.env
+rules=local_file first=local_file reason="reads a path inside the workspace" | file:///home/me/work/repo/keys/id_rsa
+# A link at a sensitive name that lands somewhere harmless: the path is
+# placed as spelled too, and the more telling words are kept.
+paths dotfiles base=posix link=/home/me/.ssh to=/home/me/work/repo/dotfiles/ssh
+@dotfiles rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.ssh/id_rsa
+@dotfiles rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/work/repo/dotfiles/ssh/id_rsa
+# A link whose name has a bracket, and one that lands on a share.
+paths wild_names base=posix link=/home/me/work/repo/[x] to=/home/me/.ssh
+@wild_names rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/work/repo/[x]/id_rsa
+paths windows_share base=windows link=C:\\Users\\me\\dev\\repo\\j4 to=\\\\server\\share\\x
+@windows_share rules=local_file first=local_file reason="reads a file from another machine" | file:///C:/Users/me/dev/repo/j4/y
+# A link into the workspace keeps the workspace's own words; one from a
+# share into the home directory makes nothing there a share.
+paths current base=posix link=/home/me/current to=/home/me/work/repo
+paths share_home base=windows link=\\\\server\\share\\x to=C:\\Users\\me
+@current rules=local_file first=local_file reason="reads a path inside the workspace" | file:///home/me/work/repo/README.md
+@share_home rules=local_file first=local_file reason="reads your SSH keys" | file:///C:/Users/me/.ssh/id_rsa
+@share_home rules=local_file first=local_file reason="reads a path inside the workspace" | file:///C:/Users/me/dev/repo/README.md

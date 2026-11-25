@@ -15,8 +15,8 @@
 //! - code made here: each act on files after one or two `chdir`s to places
 //!   risky and harmless from the start, reads and writes of what the kernel
 //!   serves, every act on paths the caller protects, names as a secret, or
-//!   both, and every act on paths through the drives the caller says WSL
-//!   mounts, from a workspace on either side.
+//!   both, and every act on paths through the links the caller resolves and
+//!   the drives it says WSL mounts, from a workspace on either side.
 //!
 //! For each, the whole answers are compared, every rule with its reason and
 //! what it says to do instead (the targets are the guards' own: a path as
@@ -51,7 +51,7 @@ use format::Word;
 use milo_guards::code::declares_other_encoding;
 use milo_guards::script::{self, Language};
 use milo_guards::shell::{self, Shell};
-use milo_guards::{Assessment, Finding, Paths, Protected, RuleName, Secret};
+use milo_guards::{Assessment, Finding, Link, Paths, Protected, RuleName, Secret};
 
 /// A finding as the two answers are compared: its rule's wire name, its
 /// reason and what it says to do instead.
@@ -310,7 +310,12 @@ fn declared(words: &[Word], machines: &HashMap<String, Paths>) -> Result<(String
             (true, false) => paths.with_secrets([Secret::file(named.path, named.words)]),
         };
     }
-    paths = paths.with_drive_mounts(declared.drive_mounts);
+    paths = paths.with_drive_mounts(declared.drive_mounts).with_links(
+        declared
+            .links
+            .into_iter()
+            .map(|(path, to)| Link::new(path, to)),
+    );
     if let Some(home) = declared.windows_home {
         paths = paths.with_windows_home(home);
     }
@@ -599,6 +604,66 @@ fn made_cases() -> Vec<Code> {
                 (
                     Language::Python,
                     format!("import os\nos.chdir('/mnt/c/Users')\nprint(open('{path}').read())"),
+                ),
+                (
+                    Language::JavaScript,
+                    format!("console.log(require('fs').readFileSync('{path}'))"),
+                ),
+                (
+                    Language::JavaScript,
+                    format!("require('fs').writeFileSync('{path}', 'x')"),
+                ),
+            ] {
+                found.push(Code {
+                    at: machine.to_string(),
+                    machine: machine.to_string(),
+                    language,
+                    code,
+                    paths: paths.clone(),
+                });
+            }
+        }
+    }
+    // The links the caller has resolved, on this machine's side and on a
+    // mounted drive.
+    let linked = posix()
+        .with_protected([Protected::folder("/home/me/.agent", "the agent's settings")])
+        .with_links([
+            Link::new("/home/me/work/repo/keys", "/home/me/.ssh"),
+            Link::new("/home/me/work/repo/data", "/data/x"),
+            Link::new("/home/me/work/repo/agent", "/home/me/.agent"),
+            Link::new("/home/me/work/repo/rc", "../../.bashrc"),
+            Link::new("/home/me/work/repo/a", "b"),
+            Link::new("/home/me/work/repo/b", "a"),
+        ]);
+    let linked_mount = Paths::new("/mnt/c/Users/me/repo", "/home/me", ["/mnt/c/Users/me/repo"])
+        .with_drive_mounts(["/mnt"])
+        .with_windows_home(r"C:\Users\me")
+        .with_links([Link::new("/mnt/c/Users/me/repo/keys", "../.ssh")]);
+    for (machine, paths) in [("linked", &linked), ("linked_mount", &linked_mount)] {
+        for path in [
+            "keys/id_rsa",
+            "keys/../.ssh/id_rsa",
+            "keys/../keys.txt",
+            "data/y",
+            "agent/config.json",
+            "rc",
+            "a/x",
+            "src/main.rs",
+            "../.ssh/id_rsa",
+            "/mnt/c/Users/me/.ssh/id_rsa",
+        ] {
+            for (language, code) in [
+                (Language::Python, format!("print(open('{path}').read())")),
+                (Language::Python, format!("open('{path}', 'w')")),
+                (Language::Python, format!("import os\nos.remove('{path}')")),
+                (
+                    Language::Python,
+                    format!("import shutil\nshutil.rmtree('{path}')"),
+                ),
+                (
+                    Language::Python,
+                    format!("import os\nos.chdir('keys')\nprint(open('{path}').read())"),
                 ),
                 (
                     Language::JavaScript,

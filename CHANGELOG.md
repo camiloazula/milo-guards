@@ -300,6 +300,104 @@ bump.
   and the shell guards to one answer for code acting through the mounts.
 - The case files' `paths` line reads `drive_mount=` and `windows_home=`.
 
+A caller names the links it has resolved, and a path through one lands
+where it points, the second part of #306: a new type (`Links`, with `Link`)
+and a new field on
+`Paths`, which is a minor bump.
+
+- `Paths::with_links([Link::new(path, target)])` names a link the caller
+  found and what it holds (absolute, or relative to the link's folder, as
+  the system hands it over: a POSIX path on a POSIX machine, a Windows one
+  on Windows, a junction's `\??\C:\x` included); `Link::unknown(path)` a
+  link it could not read. A relative `path` is read from the first
+  workspace folder (a `~` one from the home directory), never from the
+  working directory; an empty one names nothing. A path through a link is
+  placed where it lands, by every guard: with `keys` a link to `~/.ssh`, a
+  read of `keys/id_rsa` is `read_secret`, and a write through a link into a
+  protected path, a startup file or out of the workspace is the finding a
+  write there is.
+- **Naming them never makes an answer less serious.** Every guard judges
+  its input on the `Paths` it is given and on each of
+  `Paths::also_judged_on`: `Paths::as_spelled` (no link, mount or Windows
+  home) and `Paths::mounts_alone` (the links dropped, the mounts kept), and
+  keeps every finding of each; the shell guard's `effect` is the most
+  cautious of what each judging says on its own and together, and a `file:`
+  URL keeps the more telling words. So a link never takes away what a mount
+  says.
+- A `..` after a link is read as the text spells it, as a POSIX system
+  climbs it, and, for each `..` after the first link, with the `..` before
+  it applied to the text and the rest walked: a `cd` goes by the text, the
+  path after it is opened by the system, and each combination is read
+  (`cd p/lnk/../.. && cat p/lnk/../id_rsa`, `cd -P`, `pushd`, a subshell, a
+  working directory through a link). A mount's folder is also where it lands
+  through the links (`/mnt` a link to `/media`).
+- A name a link lends what it lands on (`dotfiles/ssh/id_rsa` for
+  `~/.ssh/id_rsa`) counts for what it means by itself: a key, a protected
+  path, a startup file, the repository's history; never a place beyond the
+  workspace, a system folder or a share, so a link into the workspace
+  (`~/current`, a web server's folder, a share's) makes none of it beyond.
+  A link named where another link lands lends the other's name too
+  (`s/keys` is `~/.ssh/keys` when `~/.ssh` is a link to `s`), and a
+  workspace a link lands in or above (a stow layout, `~/.config` a link to
+  the `dotfiles/config` it is in), through other links or not, is one whose
+  plain names are looked up in full.
+- A folder holds what a link below it lands on only for a tool that follows
+  the links it meets (`grep -R`, `find -L`, `cp -L`, `rsync -L`, `-k`,
+  `-K` and `--copy-unsafe-links`, `tar -h`, `scp -r`, `zip -r`,
+  `chown -RL`, `shutil.copytree`, and `cp -r`, which follows them on macOS
+  and the BSDs, FreeBSD's even after `-P`, and is read so on every POSIX
+  line unless a `-P` comes after it, a false alarm for GNU's); `rm -rf`,
+  `mv`, `chown -R`, `find -delete` and `shutil.rmtree` act on the links.
+  POSIX `rm`, `unlink` and `mv`, and cmd's `rd`, of a path that is itself
+  a link act on the link (a trailing `/` goes through it), and a pattern
+  they are given reads the links it can pick as names; every other delete
+  or move goes through it: `shred` and `srm` overwrite what it points to,
+  `del` of a folder empties it, `Remove-Item` may follow a junction
+  (Windows PowerShell 5.1 does), `rsync --delete` deletes in it, and a
+  `find -L` or `-H` hands on what is below it. What each folder holds is worked out when the tree is built, so
+  asking costs a lookup for each part of a path, whatever the number of
+  links, and a pattern does not read again through a link that lands on
+  nothing serious (a package manager's links into its store).
+- The tree of the links is built the first time a guard judges with the
+  directories, for every field but the working directory, and kept with the
+  list for every later call and copy; naming links one at a time costs what
+  naming them at once does. A link named below another is placed through it,
+  in rounds, the same in any order; one named more than nine levels deep
+  is lost, every path through it only known when it runs. Past the build's
+  own counted budget (33,554,432), past 262,144 links, or past 1,048,576
+  parts of their names and targets in all (`MOST_LINK_PARTS`, a part
+  counting once more for each 64 bytes in it), no link is held and every
+  path is only known when it runs, whatever the order. The tree keeps about
+  1.1 KB for each package manager's link, and its build takes about 3 KB
+  and 7 to 10 microseconds for each, in time linear in the parts: at the
+  bound, about 0.75 seconds and 285 MB at the most for 104,000 such links,
+  and 1 second and 440 MB for links 60 folders deep in folders of their
+  own, the dearest measured: a caller that starts a process for each
+  tool call pays it on every call.
+- A path through more links than any system follows (63, Windows's), a
+  link that cannot be read or placed, or past the counted work one resolver
+  may spend (1,048,576) is only known when it runs: `unreadable` to the
+  file guard, and to the shell and the script guards a read or a send of it
+  is `unknown`, `reads a path only known when it runs`. A link that lands on
+  a share adds the file guard's `network_share`, and the URL guard's `file:`
+  URL says it reads a file from another machine.
+- New `Resolver` questions: `lost`, `lands_on_share`, `linked_holder`,
+  `through_link` and `wild_links`. `cwd_is_clear` is false for a workspace
+  with a named link in it; a workspace folder that is itself a link is the
+  workspace by both names.
+- No rule is new and no `Rule` enum changes. With no link named, every
+  answer is what it was: no case line of the suite changed its answer but
+  those that name a link. A front-door test
+  (`crates/guards/tests/never_less_serious.rs`) holds every case of every
+  guard's case files, and a generated set of paths read, written, deleted
+  and sent, to keep every rule it finds with nothing named once hostile
+  links are named, and every rule it finds with mounts named once links are
+  named beside them, the shell's effect to be no less cautious, and a
+  `file:` URL whose reason names a sensitive place to name one still.
+- The case files' `paths` line reads `link=` followed by its `to=` (an empty
+  `to=` is a target the guard cannot place); core's case files ask `linked`
+  and `lost` too.
+
 ## 0.1.4 (2026-11-22)
 
 What the URL guard answers for a few `file:` URLs and odd spellings, nothing

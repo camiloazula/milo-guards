@@ -26,6 +26,10 @@
 //!   another system's drives the caller says too: the folders it mounts
 //!   them in ([`Paths::with_drive_mounts`], WSL's `/mnt`) and, on WSL, the
 //!   Windows home ([`Paths::with_windows_home`]).
+//! - [`Link`]: a link the caller has resolved and where it points, added
+//!   through [`Paths::with_links`]: a path through one is judged where it
+//!   lands. A guard reads no disk; the caller that can names the links it
+//!   finds, as it names the drive mounts.
 //! - [`Assessment`]: [`Safe`](Assessment::Safe), or
 //!   [`Risky`](Assessment::Risky) with a [`Finding`] for each reason.
 //! - [`Finding`]: the rule that found it, a reason a prompt can show, what
@@ -292,7 +296,7 @@
 //! ```
 
 pub use milo_guards_core::{
-    Assessment, Finding, Paths, Protected, ProtectedKind, RuleName, Secret,
+    Assessment, Finding, Link, Links, Paths, Protected, ProtectedKind, RuleName, Secret,
 };
 
 #[cfg(feature = "shell")]

@@ -47,7 +47,7 @@ use std::path::PathBuf;
 use format::{Record, Word};
 use milo_guards_core::RuleName;
 use milo_guards_shell::{
-    classify, effect, locate, Covers, Effect, Paths, Protected, Reach, Rule, Secret, Shell,
+    classify, effect, locate, Covers, Effect, Link, Paths, Protected, Reach, Rule, Secret, Shell,
 };
 
 use super::{disagreements, macos, posix, windows};
@@ -450,7 +450,12 @@ fn declaration(
             (true, false) => paths.with_secrets([Secret::file(named.path, named.words)]),
         };
     }
-    paths = paths.with_drive_mounts(declared.drive_mounts);
+    paths = paths.with_drive_mounts(declared.drive_mounts).with_links(
+        declared
+            .links
+            .into_iter()
+            .map(|(path, to)| Link::new(path, to)),
+    );
     if let Some(home) = declared.windows_home {
         paths = paths.with_windows_home(home);
     }

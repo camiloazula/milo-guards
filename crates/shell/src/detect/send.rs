@@ -283,6 +283,10 @@ const MAX_PASSES: usize = 4;
 /// lists: past this, the value is read as written.
 const MAX_CURL_GLOB: usize = 256;
 
+/// What a send of a path only known when it runs, on its way through a
+/// link, is called.
+const LOST: &str = "a path only known when it runs";
+
 /// A secret found, as a reason says it and as the line wrote it.
 #[derive(Debug, Clone)]
 struct Hit {
@@ -1234,8 +1238,14 @@ impl Checker<'_> {
         if named.is_none() && letter {
             return None;
         }
+        // Through more links than any system follows, a link the caller
+        // could not read, or past the work a line may spend: what is sent is
+        // only known when it runs.
+        let lost = named.is_none() && self.resolver.lost(unit.dir.as_ref(), arg, unit.shell);
         let words = if let Some(words) = named {
             Some(words)
+        } else if lost {
+            Some(LOST)
         } else if is_environ(text) {
             Some(ENVIRONMENT)
         } else if let Some(words) = secret_name(text, unit.shell, unit.hidden, glob) {
@@ -1268,6 +1278,17 @@ impl Checker<'_> {
                     }),
             }
         };
+        // A folder copied whole by a tool that follows the links it meets
+        // (`scp -r`, `rsync -L`) holds what the links below it land on.
+        let words = words.or_else(|| {
+            let follows = home
+                && unit
+                    .key()
+                    .is_some_and(|key| crate::effect::follows_links(unit, &key));
+            follows
+                .then(|| self.resolver.linked(unit.dir.as_ref(), arg, unit.shell))
+                .flatten()
+        });
         let words = words.or_else(|| {
             if written.is_empty() {
                 return None;

@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{fold, is_globstar, short_name, Loc, Root};
 use crate::canonical;
@@ -27,23 +27,32 @@ pub(crate) const MOST_WORK: usize = 1 << 20;
 #[derive(Debug)]
 pub(super) struct Budget {
     left: AtomicUsize,
+    /// Whether a spend was refused.
+    out: AtomicBool,
 }
 
 impl Budget {
     pub(super) fn new(work: usize) -> Self {
         Self {
             left: AtomicUsize::new(work),
+            out: AtomicBool::new(false),
         }
     }
 
     /// Spend `work`: `false`, spending nothing, when not that much is left.
-    fn spend(&self, work: usize) -> bool {
+    pub(super) fn spend(&self, work: usize) -> bool {
         let left = self.left.load(Ordering::Relaxed);
         let Some(rest) = left.checked_sub(work) else {
+            self.out.store(true, Ordering::Relaxed);
             return false;
         };
         self.left.store(rest, Ordering::Relaxed);
         true
+    }
+
+    /// Whether a spend was refused: some walk was not finished.
+    pub(super) fn spent(&self) -> bool {
+        self.out.load(Ordering::Relaxed)
     }
 
     /// How much is left.
@@ -55,7 +64,9 @@ impl Budget {
 
 impl Clone for Budget {
     fn clone(&self) -> Self {
-        Self::new(self.left.load(Ordering::Relaxed))
+        let budget = Self::new(self.left.load(Ordering::Relaxed));
+        budget.out.store(self.spent(), Ordering::Relaxed);
+        budget
     }
 }
 
@@ -85,6 +96,8 @@ struct Node {
 pub(super) struct Mounts {
     nodes: Vec<Node>,
     roots: Vec<(Root, usize)>,
+    /// Each mount's folder, on the POSIX root.
+    folders: Vec<Loc>,
     /// Whether names on a POSIX root compare without case: a Mac's.
     mac: bool,
 }
@@ -102,6 +115,7 @@ impl Mounts {
             let Some(loc) = self::folder(&folder.to_string_lossy()) else {
                 continue;
             };
+            mounts.folders.push(loc.clone());
             for root in [Root::Unix, slash.clone()] {
                 let node = mounts.insert(&Loc {
                     root,
@@ -117,6 +131,56 @@ impl Mounts {
     /// spelling says.
     pub(super) fn any(&self) -> bool {
         !self.roots.is_empty()
+    }
+
+    /// The folder `loc` as one more mount's folder: where a mount's folder
+    /// lands through the links the caller names, on each root a POSIX `/` is
+    /// read on.
+    pub(super) fn add(&mut self, loc: &Loc, slash: &Root) {
+        self.folders.push(loc.clone());
+        for root in [Root::Unix, slash.clone()] {
+            let node = self.insert(&Loc {
+                root,
+                parts: loc.parts.clone(),
+            });
+            self.nodes[node].mount = true;
+        }
+    }
+
+    /// Each mount's folder, on the POSIX root.
+    pub(super) fn folders(&self) -> &[Loc] {
+        &self.folders
+    }
+
+    /// The node of `root`, for a walk that follows the tree itself (see
+    /// `land`).
+    pub(super) fn root_node(&self, root: &Root) -> Option<usize> {
+        self.root(root)
+    }
+
+    /// The node below `node` that `name` is, on `root`.
+    pub(super) fn child_node(
+        &self,
+        node: usize,
+        name: &str,
+        root: &Root,
+        budget: &Budget,
+    ) -> Option<usize> {
+        self.child(node, name, root, budget)
+    }
+
+    /// Whether a drive is a folder of `node`, named for its letter.
+    pub(super) fn is_mount(&self, node: usize) -> bool {
+        self.nodes[node].mount
+    }
+
+    /// The name of each node below `node`, and the node, for a walk that
+    /// matches a pattern against the tree itself.
+    pub(super) fn children_of(&self, node: usize) -> impl Iterator<Item = (&str, usize)> + '_ {
+        self.nodes[node]
+            .children
+            .values()
+            .map(|&child| (self.nodes[child].name.as_str(), child))
     }
 
     /// Whether `folder` is, or holds, a mount's folder: every name in the
@@ -462,7 +526,7 @@ pub(super) fn folder(text: &str) -> Option<Loc> {
 }
 
 /// The drive a folder name of one letter is, in capitals.
-fn letter(part: &str) -> Option<char> {
+pub(super) fn letter(part: &str) -> Option<char> {
     let mut chars = part.chars();
     let letter = chars.next().filter(char::is_ascii_alphabetic)?;
     chars.next().is_none().then(|| letter.to_ascii_uppercase())
