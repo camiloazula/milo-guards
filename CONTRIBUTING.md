@@ -70,7 +70,7 @@ while it fails. It runs, in order, over the whole workspace:
 | `just format-check` | `cargo fmt --all --check` |
 | `just lint` | clippy, `--all-targets --all-features`, zero warnings (`cargo lint` runs the same) |
 | `just coverage` | every unit and integration test, `--all-features --locked`, run once in an instrumented build, and line coverage against the floor in the `justfile` (`--fail-under-lines`); raise it as coverage lands, never lower it to pass |
-| `just timing` | the timing tests, and nothing else, in an optimized build: `cargo test --release --locked --all-features -p <crate> --test timing` for each crate with a `tests/timing.rs` (the shell guard and the secrets guard). Every test that reads the clock is in one of those files, and no other test does; they compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here |
+| `just timing` | the timing tests, and nothing else, in an optimized build: `cargo test --release --locked --all-features -p <crate> --test timing -- --show-output` for each crate with a `tests/timing.rs` (the shell guard and the secrets guard). Every test that reads the clock is in one of those files, and no other test does; they compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here |
 | `just doc-test` | every doctest, README example included (`cargo test --doc --workspace --all-features --locked`), which coverage does not run |
 | `just doc` | rustdoc on the workspace with warnings denied, so a broken intra-doc link fails (`--all-features --no-deps --locked`) |
 | `just no-inline` | the shell guard without its `inline` feature (no readers of Python and JavaScript, no grammars): clippy on all its targets with zero warnings, and `tests/inline_off.rs`, which holds every inline line to `unknown`; `--all-features` never builds it that way |
@@ -88,10 +88,21 @@ CI runs the gate in two jobs. The `verify` job runs every recipe above but
 `just timing`, in the same order: it reads no clock, so it gives the same
 answer on any machine. The ruleset on `main` requires it: a pull request
 whose `verify` job is red, or has not finished, cannot merge. The `timing`
-job runs `just timing` alone. For now it is advisory: its rows are being
-measured on GitHub's runner, and a red `timing` run there is a time to look
-at, not a change that cannot merge.
-Locally, `just verify` still runs both. Those two jobs run on Linux (x86_64).
+job runs `just timing` alone, and it is required too: a guard that hangs on
+a crafted line is a vulnerability ([SECURITY.md](SECURITY.md)), so a red
+`timing` run is a change that cannot merge, as a red `verify` run is. Each
+timed row prints how near it came to its bound (`timing: 41.0% <the row>`),
+and `just timing` shows it for a test that passes too, so the job's log
+holds every row's margin on the runner: a row past half of its bound there
+is held to how its time grows or to a count of work, not given a wider
+bound (below). Locally, `just verify` still runs both. Those two jobs run
+on Linux (x86_64).
+
+For the owner: the ruleset on `main` requires two checks, `verify` and
+`timing`. `timing` is added beside `verify` in its required status checks
+(Settings, Rules, the `main` ruleset, "Require status checks to pass", add
+the check `timing` from GitHub Actions) once the job has passed on 10 runs
+on `main` in a row.
 
 The `test` job runs `just test` on Windows and on macOS, with the pinned
 Rust and without coverage: `windows-latest` (x86_64, MSVC) and
@@ -140,14 +151,22 @@ a line of 16 KB with one of 64 KB (`assert_linear` in the shell guard's
 line with a fixed limit. A shape the guard reads only to a count, and stops
 past it, can make the longer line the quicker one, so two lengths do not
 show how it grows: `assert_linear` fails when the longer takes less than
-half the time of the shorter, and such a shape holds each of several
-lengths, up to and past the count, to a fixed limit instead
-(`assert_within`). Where it holds a line to a fixed limit, the limit leaves
-room for a machine several times slower and busy with another gate: about
-ten times what an optimized build takes here, and never less than four times
-what it takes with another gate running beside it. A row that comes nearer
-its bound is not given a wider one: it is held to how its time grows
-instead, or made quicker.
+half the time of the shorter, and such a shape is held at each of several
+lengths, below and past the count, to the line four times as long taking
+at most ten times as long instead (`steady_by` in the shell guard's
+`tests/common`, the rows of `Stops` in its `tests/timing.rs`), which a
+machine's speed cancels out of as well. Where it holds a line to a fixed
+limit, the limit leaves room for a machine several times slower and busy
+with another gate: about ten times what an optimized build takes here, and
+never less than four times what it takes with another gate running beside
+it. A row that comes nearer its bound, past half of it on GitHub's runner,
+or that ever failed there, is not given a wider one: it is held to how its
+time grows instead, or to a count of work, or made quicker. Each timed row
+prints its share of its bound (`report` and `under` in the shell guard's
+`tests/common`, `under` in the secrets guard's `tests/timing.rs`), and
+`just timing` passes `--show-output`, so the timing job's log shows every
+row's share, the ones that pass too: `grep 'timing: '` in it, sorted,
+gives the rows nearest their bounds.
 
 A shape cmd's grammar reads in quadratic time below the budget of what its
 lexer is handed (`MAX_LEXED` in the shell guard's `src/unit.rs`), which stops
@@ -623,7 +642,7 @@ report's first line (the false-alarm share) before and after.
 - `main` takes pull requests only. The commits that set the repository up are
   the one exception. A ruleset on `main` refuses a direct push, a force-push
   and a deletion, so a pull request is the only way in, and it merges only
-  once CI's `verify` job has passed on it; the release tags
+  once CI's `verify` and `timing` jobs have passed on it; the release tags
   (`v*`) are created, moved or deleted by the owner only.
 - Commit messages describe the change and why. No tool trailers (no
   `Co-Authored-By` or "Generated with" lines) on commits or pull request

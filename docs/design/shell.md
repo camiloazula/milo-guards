@@ -7951,11 +7951,17 @@ line past a limit is unreadable there as well;
   machine, which slows both, does not fail it. A shape read only to a count,
   such as `pwsh -wd:x …` or a stage that feeds many clients, comes back early
   past the count, so its longer line may be the quicker; `assert_linear`
-  fails on that, and the shape holds each of several lengths up to and past
-  the count to a fixed bound instead (`assert_within`). A fixed bound keeps
+  fails on that, and the shape is held instead at each of several lengths,
+  below and past the count, to the line four times as long taking at most
+  ten times as long (`steady_by`), which a machine's speed cancels out of
+  too; a stage that feeds many clients is held to a fixed bound at each
+  length (`assert_within`). A fixed bound keeps
   at least four times room over what an optimized build takes here with
-  another gate running beside it; a row that comes nearer its bound is held
-  to how its time grows instead, never given a wider bound. The worst of the
+  another gate running beside it; a row that comes past half of its bound on
+  GitHub's runner, or ever failed there, is held to how its time grows or to
+  a count of work instead, never given a wider bound. Each timed row prints
+  its share of its bound, and `just timing` shows it, so the timing job's log
+  holds every row's margin on the runner. The worst of the
   random lines classifies within 500 ms. A line at the length limit in each
   of twenty shapes in each shell (a chain, a pipeline and a conjunction with
   each shell's own separator: `;` is no separator in cmd, `&` is), and the
@@ -7963,15 +7969,16 @@ line past a limit is unreadable there as well;
   the same shape a quarter as long (with `classify` and `effect` together
   for the first); the ones PowerShell or a grammar's log reads only to a
   count (brackets left open, the noise it recovers from at every token) are
-  held to 250 ms at each of seven lengths from 1 KB to the limit. At the
+  held to how their time grows at each of five lengths from 1 KB, each
+  against the line four times as long (`Stops`). At the
   length limit the slowest, `Set-Content @p` after a table it binds, takes
   most of a second in an optimized build on a busy machine, and most are far
   quicker. The lines `tests/robust.rs` judges are timed with `explain` and the
   drawing of its tree too, each held to the bound: for a shape that grows to
   fill the line, a line of 64 KB against one of 16 KB; for a line whose time
-  its length does not set (traps nested 26 deep, redirects over many units,
-  wrappers read only to a count), a fixed bound with at least four times
-  room. Lines that made `find -exec` build
+  its length does not set (traps nested 26 deep, redirects over many units),
+  a fixed bound with at least four times room; for wrappers read only to a
+  count, `steady_by`. Lines that made `find -exec` build
   gigabytes (a place of 25,000 bytes and an argument of 17,000 `{}`), and
   ones of several levels, are held to 2 s at the length limit, which an
   optimized build here takes a tenth of or less, as are `parallel` lines that

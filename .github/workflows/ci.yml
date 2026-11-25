@@ -4,8 +4,11 @@
 # its inline reader, and the dependency gates for bans, licences and sources),
 # over the whole workspace: none of them reads a clock, so its answer is the
 # same on every machine. The `timing` job runs `just timing` alone, the tests
-# that read the clock, on a runner of its own; it is advisory for now, while
-# its rows are measured on GitHub's runner. Those two run on Linux. The
+# that read the clock, on a runner of its own. Both are required checks of the
+# ruleset on `main`: a guard that hangs on a crafted line is a vulnerability
+# (SECURITY.md), so a red `timing` run cannot merge, and each timed row prints
+# its share of its bound to the log, so its margin on this runner is known
+# (CONTRIBUTING.md). Those two run on Linux. The
 # crates are Rust with no platform code of their own, but the grammars are C,
 # compiled by each system's C compiler (MSVC on Windows, Apple's clang on
 # macOS), and a caller builds them on its own system: the `test` job runs
@@ -87,6 +90,11 @@ jobs:
       - run: just format-check lint coverage doc-test doc no-inline deny
         timeout-minutes: 50
 
+  # `just timing` alone, in an optimized build. Required: the ruleset on
+  # `main` requires its check, `timing`, beside `verify`, so a red run here
+  # is a change that cannot merge. Each timed row prints its share of its
+  # bound (`timing: 41.0% <the row>`), so this log holds every row's margin
+  # on this runner.
   timing:
     name: timing
     runs-on: ubuntu-latest

@@ -46,8 +46,25 @@ fn a_megabyte_of_one_character_and_of_nested_quotes_is_read_in_a_bound() {
     ] {
         let text = hostile(name, 1 << 20);
         let took = timed(&text, 1);
-        assert!(took < LIMIT, "{name} took {took:?}");
+        assert!(under(name, took, LIMIT), "{name} took {took:?}");
     }
+}
+
+/// Whether `took` is under `bound`, saying on standard output how near it
+/// came, as `timing: 41.0% <the row>`: `just timing` shows what each test
+/// that passes printed (`--show-output`), so the timing job's log holds
+/// every row's time on the runner (CONTRIBUTING.md).
+#[allow(
+    clippy::disallowed_macros,
+    reason = "a timing test prints each row's time, for the timing job's log"
+)]
+fn under(what: &str, took: Duration, bound: Duration) -> bool {
+    let share = took.as_secs_f64() / bound.as_secs_f64();
+    println!(
+        "timing: {:5.1}% {took:.1?} of {bound:?}: {what}",
+        share * 100.0
+    );
+    took < bound
 }
 
 /// Far above what a read of this size takes (under a second in a build with
@@ -63,7 +80,7 @@ fn every_hostile_text_is_read_in_a_bound() {
     for name in HOSTILE {
         let text = hostile(name, 128 << 10);
         let took = timed(&text, 1);
-        assert!(took < LIMIT, "{name} took {took:?}");
+        assert!(under(name, took, LIMIT), "{name} took {took:?}");
     }
 }
 
@@ -81,7 +98,11 @@ fn reading_takes_time_in_proportion_to_the_text() {
         let small = timed(&hostile(name, 32 << 10), 2);
         let large = timed(&hostile(name, 128 << 10), 2);
         assert!(
-            large < small.max(floor) * 10,
+            under(
+                &format!("{name}, 128 KiB against 32 KiB"),
+                large,
+                small.max(floor) * 10
+            ),
             "{name}: {small:?} for 32 KiB, {large:?} for 128 KiB"
         );
     }
@@ -131,7 +152,11 @@ fn a_long_line_of_hits_costs_the_same_per_hit_as_a_short_one() {
             };
             let (a, b) = (time(&small), time(&large));
             assert!(
-                b < a.max(Duration::from_millis(25)) * 10,
+                under(
+                    &format!("{name} by {label}, 1 MiB against 256 KiB"),
+                    b,
+                    a.max(Duration::from_millis(25)) * 10
+                ),
                 "{name} by {label}: {a:?} for 256 KiB, {b:?} for 1 MiB"
             );
         }

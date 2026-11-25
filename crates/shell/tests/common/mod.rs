@@ -452,6 +452,11 @@ pub fn linear_by(
         let capped = small > floor && big * 2 < small;
         big <= 10 * small.max(floor) && !capped
     });
+    let ratio = last.1.as_secs_f64() / last.0.max(floor).as_secs_f64();
+    report(
+        &format!("64 KB {ratio:.1} times 16 KB, of 10: {what}"),
+        ratio / 10.0,
+    );
     if linear {
         Ok(())
     } else {
@@ -493,6 +498,7 @@ pub fn within(
     took: impl Fn(&str) -> Duration,
     line: impl Fn(usize) -> String,
 ) -> Result<(), String> {
+    let mut slowest = (Duration::ZERO, 0);
     for size in sizes {
         let line = line(size * 1024);
         if line.len() > 64 * 1024 {
@@ -508,11 +514,112 @@ pub fn within(
                 break;
             }
         }
+        slowest = slowest.max((quickest, *size));
         if quickest >= bound {
-            return Err(format!("{what}: {size} KB took {quickest:?}"));
+            break;
         }
     }
-    Ok(())
+    let (time, size) = slowest;
+    if under(&format!("{what}, at {size} KB"), time, bound) {
+        Ok(())
+    } else {
+        Err(format!("{what}: {size} KB took {time:?}"))
+    }
+}
+
+/// The sizes, in KB, from which [`steady_by`] holds a shape read only to a
+/// count to how its time grows: each with the line four times as long, so
+/// from 1 KB against 4 KB to 16 KB against the length limit.
+pub const STEADY_SIZES: [usize; 5] = [1, 2, 4, 8, 16];
+
+/// For a shape the guard reads only to a count, past which it stops: two
+/// sizes cannot show how its time grows below the count, and a fixed bound
+/// measures the machine (on GitHub's runner one such row went past one, and
+/// others come within half of it on a runner a few times slower). So at each
+/// of `sizes`, in KB, below and past the count, the line four times as long
+/// takes at most ten times as long as it, `took` timing each: linear below
+/// the count it takes four, flat past it one, and a quadratic read sixteen.
+/// A time under 5 ms counts as 5 ms, so a fast machine's noise is no ratio.
+/// A slow or busy machine slows both lines of a pair alike, so its speed
+/// cancels out. A pair over the ratio is timed again, up to three times in
+/// all, and the lowest ratio counts, so a `took` of one run is enough.
+pub fn steady_by(
+    what: &str,
+    sizes: &[usize],
+    took: impl Fn(&str) -> Duration,
+    line: impl Fn(usize) -> String,
+) -> Result<(), String> {
+    let floor = Duration::from_millis(5);
+    // The pair that grew most: its ratio, its size, and the times of both.
+    let mut worst = (0.0, 0, Duration::ZERO, Duration::ZERO);
+    for &size in sizes {
+        let (short, long) = (line(size * 1024), line(4 * size * 1024));
+        if long.len() > 64 * 1024 {
+            return Err(format!(
+                "{what}: {} bytes, past the length limit",
+                long.len()
+            ));
+        }
+        let mut lowest = (f64::MAX, Duration::ZERO, Duration::ZERO);
+        for _ in 0..3 {
+            let (a, b) = (took(&short), took(&long));
+            let ratio = b.as_secs_f64() / a.max(floor).as_secs_f64();
+            if ratio < lowest.0 {
+                lowest = (ratio, a, b);
+            }
+            if lowest.0 <= 10.0 {
+                break;
+            }
+        }
+        if lowest.0 > worst.0 {
+            worst = (lowest.0, size, lowest.1, lowest.2);
+        }
+        if lowest.0 > 10.0 {
+            break;
+        }
+    }
+    let (ratio, size, a, b) = worst;
+    report(
+        &format!("{} KB {ratio:.1} times {size} KB, of 10: {what}", 4 * size),
+        ratio / 10.0,
+    );
+    if ratio <= 10.0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}: {size} KB took {a:?}, {} KB took {b:?}, {ratio:.1} times",
+            4 * size
+        ))
+    }
+}
+
+/// The first 40 characters of `line`, to name a row by.
+pub fn head(line: &str) -> String {
+    line.chars().take(40).collect()
+}
+
+/// Whether `took` is under `bound`, saying on standard output how near it
+/// came ([`report`]).
+pub fn under(what: &str, took: Duration, bound: Duration) -> bool {
+    report(
+        &format!("{took:.1?} of {bound:?}: {what}"),
+        took.as_secs_f64() / bound.as_secs_f64(),
+    );
+    took < bound
+}
+
+/// Says on standard output how near a timed row came to its bound, `share`
+/// of it, as `timing: 41.0% <the row>`. `just timing` shows what each test
+/// that passes printed (`--show-output`), so the timing job's log holds
+/// every row's time on the runner, not only a failing row's: the margin a
+/// row has there is read from it, and a row within half of its bound is held
+/// to how its time grows or to a count instead (CONTRIBUTING.md).
+#[allow(
+    clippy::disallowed_macros,
+    reason = "a timing test prints each row's time, for the timing job's log"
+)]
+pub fn report(what: &str, share: f64) {
+    println!("timing: {:5.1}% {what}", share * 100.0);
 }
 
 /// What makes a line of about a size, for [`assert_linear_by`].
