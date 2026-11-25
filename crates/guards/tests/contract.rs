@@ -9,6 +9,11 @@
 //!
 //! This is a text scan, a backstop for the `disallowed-*` lists in
 //! `clippy.toml`, which refuse the same calls by what they resolve to.
+//!
+//! A tool of the repository (`tools/`) may start processes, so it is held to
+//! the other side of the line: a package of its own that the workspace
+//! excludes, never published, built on by no crate, with the workspace's
+//! lints and the versions of the workspace's lockfile.
 
 #![allow(
     clippy::disallowed_methods,
@@ -688,6 +693,303 @@ fn a_guard_builds_on_the_core_and_never_on_another_guard() -> Result<(), String>
     );
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     Ok(())
+}
+
+// ---- the tools ----
+
+/// The tools of the repository, by folder: programs that start processes or
+/// read the disk, which no crate under `crates/` may, so they live outside
+/// it. Each is a package of its own, which the workspace excludes, never
+/// published (`tools/grammar-check` starts the real shells).
+const TOOLS: [&str; 1] = ["tools/grammar-check"];
+
+/// The strings of the list `key = [...]` in `manifest`'s `[workspace]`.
+fn workspace_list(manifest: &str, key: &str) -> Vec<String> {
+    let mut in_workspace = false;
+    let mut found = Vec::new();
+    let mut lines = manifest.lines();
+    while let Some(line) = lines.next() {
+        let line = strip_comment(line).trim();
+        if line.starts_with('[') {
+            in_workspace = line == "[workspace]";
+            continue;
+        }
+        let Some(rest) = line.strip_prefix(key).map(str::trim_start) else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        if !in_workspace {
+            continue;
+        }
+        let mut list = rest.to_string();
+        while !list.contains(']') {
+            match lines.next() {
+                Some(more) => list.push_str(strip_comment(more)),
+                None => break,
+            }
+        }
+        found.extend(
+            list.split([',', '[', ']'])
+                .filter_map(unquote)
+                .filter(|item| !item.is_empty()),
+        );
+    }
+    found
+}
+
+/// The text of the tables of lints under `prefix` (`[workspace.lints` or
+/// `[lints`), from the first to the end of the last, with each header written
+/// without the prefix's `workspace.`.
+fn lints_of(manifest: &str, prefix: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in manifest.lines() {
+        if line.starts_with('[') {
+            inside = line.starts_with(prefix);
+        }
+        if inside {
+            out.push_str(&line.replacen("[workspace.lints", "[lints", 1));
+            out.push('\n');
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Every `(name, version, source)` a `Cargo.lock` holds.
+fn locked(lock: &str) -> Vec<(String, String, Option<String>)> {
+    let mut found = Vec::new();
+    for package in lock.split("[[package]]").skip(1) {
+        let field = |key: &str| {
+            package.lines().find_map(|line| {
+                line.strip_prefix(key)
+                    .and_then(|rest| rest.trim_start().strip_prefix('='))
+                    .and_then(unquote)
+            })
+        };
+        if let (Some(name), Some(version)) = (field("name"), field("version")) {
+            found.push((name, version, field("source")));
+        }
+    }
+    found
+}
+
+/// The value of `key = "…"` in the table `table` of `manifest`.
+fn table_value(manifest: &str, table: &str, key: &str) -> Option<String> {
+    let mut inside = false;
+    for line in manifest.lines() {
+        let line = strip_comment(line).trim();
+        if line.starts_with('[') {
+            inside = line == table;
+            continue;
+        }
+        if inside {
+            if let Some((name, value)) = line.split_once('=') {
+                if name.trim() == key {
+                    return unquote(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn a_tool_is_a_package_of_its_own_that_nothing_ships() -> Result<(), String> {
+    let read = |path: PathBuf| {
+        fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))
+    };
+    let root_manifest = read(root().join("Cargo.toml"))?;
+    // Every member is a crate under `crates/`, and every tool is excluded:
+    // no gate, no `just package` and no release builds a tool.
+    let members = workspace_list(&root_manifest, "members");
+    assert!(!members.is_empty(), "the workspace lists no members");
+    for member in &members {
+        assert!(
+            member.starts_with("crates/"),
+            "`{member}` is a member of the workspace: a member is a crate under `crates/`, \
+             and a tool is a package of its own the workspace excludes"
+        );
+    }
+    let mut excluded = workspace_list(&root_manifest, "exclude");
+    excluded.sort();
+    assert_eq!(excluded, TOOLS, "the workspace excludes exactly the tools");
+    // A folder under `tools/` with a manifest is one of them.
+    let mut folders: Vec<String> = fs::read_dir(root().join("tools"))
+        .map_err(|e| format!("cannot list tools: {e}"))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().join("Cargo.toml").is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .map(|name| format!("tools/{name}"))
+        .collect();
+    folders.sort();
+    assert_eq!(
+        folders, TOOLS,
+        "every package under `tools/` is listed in TOOLS"
+    );
+    let root_lock = locked(&read(root().join("Cargo.lock"))?);
+    let root_lints = lints_of(&root_manifest, "[workspace.lints");
+    assert!(root_lints.contains("unsafe_code"), "{root_lints}");
+    for tool in TOOLS {
+        let manifest = read(root().join(tool).join("Cargo.toml"))?;
+        let has = |line: &str| manifest.lines().any(|l| strip_comment(l).trim() == line);
+        assert!(has("publish = false"), "{tool} is never published");
+        // The workspace's Rust: the edition and the oldest Rust it builds
+        // with are read from the root manifest, never written twice.
+        for key in ["edition", "rust-version"] {
+            assert_eq!(
+                table_value(&manifest, "[package]", key),
+                table_value(&root_manifest, "[workspace.package]", key),
+                "{tool} has the workspace's `{key}`"
+            );
+        }
+        assert!(has("[workspace]"), "{tool} is a workspace of its own");
+        assert_eq!(
+            lints_of(&manifest, "[lints"),
+            root_lints,
+            "{tool} has the workspace's lints, word for word"
+        );
+        // Every package its lockfile names but its own is at the version, and
+        // from the source, the workspace's lockfile holds it at: what it
+        // builds is what the gates build and what `just advisories` audits.
+        // Every package its lockfile holds is in the workspace's, at the same
+        // version and from the same source, and the recipe builds it
+        // `--locked`, so it builds what the gates build and `just
+        // advisories` audits. (Not the reverse: the workspace's lockfile also
+        // holds its members' dev-dependencies, which the tool does not build.)
+        let tool_lock = read(root().join(tool).join("Cargo.lock"))?;
+        for package in locked(&tool_lock) {
+            // The tool itself, named as its folder is.
+            if tool.rsplit('/').next() == Some(package.0.as_str()) {
+                continue;
+            }
+            assert!(
+                root_lock.contains(&package),
+                "{tool}/Cargo.lock holds {} {} ({:?}), which Cargo.lock does not: \
+                 copy Cargo.lock over it and let cargo prune it (CONTRIBUTING.md)",
+                package.0,
+                package.1,
+                package.2
+            );
+        }
+    }
+    // In a tool, one file starts processes, `src/room.rs` with its layers,
+    // and the program its tests start, named: no other Rust file of it
+    // names `process` at all, however it is imported, and it has no target
+    // outside `src/` and `tests/` and no build script.
+    for tool in TOOLS {
+        let folder = root().join(tool);
+        let mut files = Vec::new();
+        for part in ["src", "tests", "examples", "benches"] {
+            if folder.join(part).is_dir() {
+                sources(&folder.join(part), &mut files)?;
+            }
+        }
+        assert!(
+            !folder.join("build.rs").exists(),
+            "{tool} has a build script"
+        );
+        for file in files {
+            let allowed = file.ends_with("src/room.rs")
+                || file.ends_with(Path::new("tests/fixtures/hold_output_open.rs"));
+            assert!(
+                allowed || !names_process(&read(file.clone())?),
+                "{} names `process`: in {tool} only src/room.rs starts a process",
+                file.display()
+            );
+        }
+        let manifest = read(folder.join("Cargo.toml"))?;
+        for line in manifest.lines() {
+            let line = strip_comment(line).trim();
+            assert!(
+                !line.starts_with("build"),
+                "{tool} names a build script: {line}"
+            );
+            if let Some(path) = line
+                .strip_prefix("path")
+                .and_then(|rest| rest.trim_start().strip_prefix('='))
+                .and_then(unquote)
+            {
+                if !path.starts_with("../") {
+                    assert!(
+                        path.starts_with("src/") || path.starts_with("tests/"),
+                        "{tool} has a target outside src/ and tests/: {path}"
+                    );
+                }
+            }
+        }
+    }
+    // No crate builds on a tool.
+    for name in crates()? {
+        let manifest = read(root().join("crates").join(&name).join("Cargo.toml"))?;
+        for dep in dependencies(&manifest) {
+            let names = [Some(dep.name.as_str()), dep.package.as_deref()];
+            let tool = TOOLS.iter().find(|tool| {
+                names.iter().flatten().any(|n| tool.ends_with(n))
+                    || dep
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| path.contains("tools/"))
+            });
+            assert!(tool.is_none(), "crates/{name} depends on the tool {tool:?}");
+        }
+    }
+    Ok(())
+}
+
+/// Whether `source` names `process` in its code, as the tool check reads it.
+fn names_process(source: &str) -> bool {
+    tokens(&code_of(source))
+        .iter()
+        .any(|token| *token == Token::Name("process".to_string()))
+}
+
+#[test]
+fn every_way_of_naming_process_is_found() {
+    for source in [
+        "use std::process; fn f() { process::Command::new(\"x\"); }",
+        "use std::process as pr;",
+        "use std::process::*;",
+        "use std::{process, fs};",
+        "let _ = std::process::id();",
+        "use ::std::{fs, process::{Command}};",
+    ] {
+        assert!(names_process(source), "{source}");
+    }
+    for source in [
+        "// std::process::Command",
+        "let a = \"process substitution\";",
+        "let processes = 1;",
+    ] {
+        assert!(!names_process(source), "{source}");
+    }
+}
+
+#[test]
+fn a_workspace_list_and_a_lockfile_are_read() {
+    let manifest = "[package]\nmembers = [\"no\"]\n[workspace]\nmembers = [\n    \"crates/a\", # one\n    \"crates/b\",\n]\nexclude = [\"tools/x\"]\n[workspace.lints.rust]\nx = 1\n[workspace.lints.clippy]\ny = 2\n[workspace.package]\nz = 3\n";
+    assert_eq!(
+        workspace_list(manifest, "members"),
+        ["crates/a", "crates/b"]
+    );
+    assert_eq!(workspace_list(manifest, "exclude"), ["tools/x"]);
+    assert_eq!(
+        lints_of(manifest, "[workspace.lints"),
+        "[lints.rust]\nx = 1\n[lints.clippy]\ny = 2"
+    );
+    let lock = "version = 4\n\n[[package]]\nname = \"a\"\nversion = \"1.0.0\"\nsource = \"registry+x\"\n\n[[package]]\nname = \"b\"\nversion = \"0.1.4\"\ndependencies = [\n \"a\",\n]\n";
+    assert_eq!(
+        locked(lock),
+        [
+            (
+                "a".to_string(),
+                "1.0.0".to_string(),
+                Some("registry+x".to_string())
+            ),
+            ("b".to_string(), "0.1.4".to_string(), None),
+        ]
+    );
 }
 
 // ---- the checker checks itself ----

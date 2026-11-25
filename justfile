@@ -135,3 +135,26 @@ deny:
 # Dependency advisories (deny.toml): RustSec and yanked crates.
 advisories:
     cargo deny check advisories
+
+# On macOS, where `just grammars` runs: the tool's tests and the tool itself
+# run under `sandbox-exec`, through cargo's runner, with the profile the tool
+# prints (`--sandbox-profile`): no network, no read under /Users but of this
+# checkout, no write but to the temporary folder and /dev. Elsewhere there is
+# no sandbox: only the layers of the tool's rooms (CONTRIBUTING.md).
+grammars_sandbox := if os() == "macos" { "--config \"target.'cfg(target_os = \\\"macos\\\")'.runner=['/usr/bin/sandbox-exec','-f','" + justfile_directory() + "/target/grammar-check/sandbox.sb']\"" } else { "" }
+grammars_sandboxed := if os() == "macos" { "1" } else { "" }
+
+# The tool in `tools/grammar-check`, a package of its own the workspace
+# excludes: formatted, linted and tested first, its tests the canaries that
+# show no line runs, then run, with `flags` (`--private`, `--with pwsh`,
+# `--require bash`, `--entries`). It starts bash, only parsing, and
+# PowerShell only with `--with pwsh`, and its answer depends on which are
+# installed and at what version, so `just verify` does not run it; CI runs
+# it as its own job, which is not a required check (CONTRIBUTING.md).
+# The shell guard's grammars beside how bash parses every line of the case files.
+grammars *flags:
+    cargo fmt --manifest-path tools/grammar-check/Cargo.toml --check
+    cargo clippy --manifest-path tools/grammar-check/Cargo.toml --target-dir target/grammar-check --all-targets --locked -- -D warnings
+    cargo run --manifest-path tools/grammar-check/Cargo.toml --target-dir target/grammar-check --locked --quiet -- --sandbox-profile target/grammar-check/sandbox.sb
+    GRAMMAR_CHECK_SANDBOXED={{grammars_sandboxed}} cargo test --manifest-path tools/grammar-check/Cargo.toml --target-dir target/grammar-check --locked {{grammars_sandbox}}
+    cargo run --manifest-path tools/grammar-check/Cargo.toml --target-dir target/grammar-check --locked {{grammars_sandbox}} -- {{flags}}

@@ -71,6 +71,11 @@ members = [
     "crates/script",
     "crates/guards",
 ]
+# A tool of the repository, never published, and a package of its own with
+# its own lockfile: it holds the shell guard's grammars to the real shells
+# and starts them, so no gate of the workspace builds it and no release
+# lists it (`just grammars`, CONTRIBUTING.md).
+exclude = ["tools/grammar-check"]
 
 [workspace.package]
 version = "0.1.4"

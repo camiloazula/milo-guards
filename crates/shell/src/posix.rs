@@ -31,6 +31,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let Some(tree) = unit::parse(split, text, &language, unit::Recovery::Counted) else {
         return;
     };
+    split.note_grammar(depth, &tree);
     // The grammar may read quotes that never close, and then says so; if it
     // does not, the scan above has misread the text, and what follows its
     // stopping place was not joined.

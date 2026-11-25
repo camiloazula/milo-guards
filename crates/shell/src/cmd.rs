@@ -23,6 +23,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let Some(tree) = unit::parse(split, &text, &language, unit::Recovery::Cheap) else {
         return;
     };
+    split.note_grammar(depth, &tree);
     assigned(split, tree.root_node(), &text);
     let mut walker = Walker {
         source: &text,
