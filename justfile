@@ -129,6 +129,7 @@ coverage:
 timing:
     cargo test --release --locked --all-features -p milo-guards-shell --test timing -- --show-output
     cargo test --release --locked --all-features -p milo-guards-secrets --test timing -- --show-output
+    cargo test --release --locked --all-features -p milo-guards-code --test timing -- --show-output
     cargo test --release --locked --all-features -p milo-guards-code -p milo-guards-script -p milo-guards-shell --test stack
 
 # The examples in the documentation and the README, compiled and run.
@@ -142,7 +143,7 @@ doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 
 # `--all-features` never builds the shell guard without its `inline` feature,
-# which pulls in the readers of Python and JavaScript and their grammars. Off,
+# which pulls in the readers of Python, JavaScript and Ruby and their grammars. Off,
 # every inline line is `unknown` and the guard must still build and lint clean;
 # `tests/inline_off.rs` is the one test target that is only compiled there (the
 # others test the reader).
@@ -177,7 +178,7 @@ advisories:
 # when the Unreleased section is. That check is one-sided, and accepted so:
 # `minor` set beside entries that break nothing passes it, and keeps the
 # semver job green for the rest of the cycle.
-next_bump := ""
+next_bump := "minor"
 
 # Needs the network (crates.io), so `just verify` does not run it; CI runs
 # it as its own job, advisory, and a release runs it by hand after its

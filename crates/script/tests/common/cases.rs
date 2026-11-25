@@ -5,7 +5,7 @@
 //!
 //! A case is `LANGUAGE[@PATHS] ANSWER... | CODE`:
 //!
-//! - `LANGUAGE` is `python` or `javascript` (read by [`format::head`]);
+//! - `LANGUAGE` is `python`, `javascript` or `ruby` (read by [`format::head`]);
 //! - `PATHS` names the machine the code is judged on: `posix`, `macos`,
 //!   `windows`, or a `paths` declaration earlier in the file. Without it, the
 //!   code is judged on `posix`;
@@ -95,6 +95,7 @@ pub fn language_name(language: Language) -> &'static str {
     match language {
         Language::Python => "python",
         Language::JavaScript => "javascript",
+        Language::Ruby => "ruby",
     }
 }
 
@@ -391,6 +392,7 @@ fn case(
     let language = match language {
         "python" => Language::Python,
         "javascript" => Language::JavaScript,
+        "ruby" => Language::Ruby,
         other => return Err(vec![format!("an unknown language `{other}`")]),
     };
     let machine = machine.unwrap_or("posix");

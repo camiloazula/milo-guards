@@ -6,6 +6,158 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+Ruby is read (#305): the code reader reads it, the shell guard reads `ruby
+-e` and Ruby handed to `ruby` or `irb` on its input, and the script guard
+judges it. `Language` has a new variant, `Ruby`, which breaks a caller's
+exhaustive `match`: a minor bump, so this ships as 0.3.0.
+
+- `milo_guards_code::Language::Ruby`, read with tree-sitter-ruby behind the
+  reader's `ruby` feature, on by default; the shell guard's and the script
+  guard's `ruby` features, on by default, turn it on. Without it the variant
+  is still there and no Ruby is read: `unknown`.
+- `read` finds Ruby's deletes, writes, reads, moves, links, permissions,
+  programs and command lines (`system`, `exec`, `spawn`, backticks,
+  `IO.popen`, `Open3`, `Kernel#open("|…")`), kills, `Dir.chdir` and writes to
+  `ENV`; `eval` of a literal is read again, of code fetched from the network
+  is `run_downloaded`, and `require`, `load` and the calls that call a
+  method by a name are code not read. `understand` holds Ruby to a strict
+  subset of its own (`docs/design/code.md`).
+- Ruby is held to what Python and JavaScript are held to in 0.2.0: code of
+  at most 3 KiB (`MAX_LEN`; longer Ruby is `unreadable` to the script guard
+  and `unknown` to the shell guard), one budget of work for every reading of
+  a call, a line or a piece of code, and no Ruby read through a syntax
+  error. Before it is parsed, the raw text is held to what
+  tree-sitter-ruby's scanner can keep (a heredoc's word, the `#{` and the
+  heredocs of the whole text, a `%` literal's nesting), wherever they stand:
+  code past one is `unreadable` or `unknown`, not read, where the grammar
+  would otherwise have aborted the process. An embedded document the
+  grammar ends at a line Ruby does not (`=endx`, `  =end`, `*=end`) is code
+  not read, where the code after it is a string to the grammar and Ruby's
+  to run; a first line `#!` with switches, or without `ruby`, is not
+  understood and not read whole, as Ruby applies it when it runs a file; a
+  backslash before a line's end in a string is dropped as Ruby drops it. A
+  `\c`, `\C-` or `\M-` takes the next character in Ruby, a quote too, and
+  two in the grammar: such an escape is not understood, and the text with
+  one that is not followed by a letter or a digit is not read.
+- `ruby`, `jruby` and `truffleruby` read their code whole only in the
+  workspace's folder (JRuby reads `.jrubyrc` and `.jruby.java_opts` there,
+  and `ruby` may be JRuby), `mruby` and `mirb` are interpreters whose code
+  is `unknown`, and a project a runner sets up from where the line runs is
+  judged like one from a file outside (every `bundle` subcommand but
+  `version`, `help`, `config` and `init`, and `uv run`): `cd /tmp && bundle
+  exec rake`, `cd /tmp && uv run pytest`, `bundle install --gemfile
+  /tmp/Gemfile` are `unknown`.
+- rake's options are read as OptionParser reads them: `rake -qe CODE`,
+  `--execute-p CODE` and any other start of a long option are read as
+  `-e` and `--execute-print`, an option the guard cannot place is `unknown`,
+  and so are `rake -r` and `RAKEOPT`. `rubyw`, `ruby-3.3` and `jirb` are
+  read as `ruby` and `irb`; `rvm VERSION do`, `chruby-exec VERSION --` and
+  `asdf exec` are runners as `rbenv exec` is; `rails runner`, `rails
+  console` and `pry` run code the guard does not read. `RUBYOPT`, `RUBYLIB`,
+  `GEM_HOME`, `GEM_PATH`, `BUNDLE_PATH`, `BUNDLE_APP_CONFIG` and
+  `BUNDLE_SETTINGS` set on a line in front of a Ruby tool are `unknown`, as
+  is `ruby -r PATH` outside the workspace, `bundle config --global`,
+  `bundle plugin install` and `bundle init --gemspec` outside it.
+- `bundle exec 'rm -rf ~'` (a word of white space or shell characters) is
+  judged as the shell line it is, `ruby -S NAME` as `NAME`, and `rails` hands
+  what is not its own command to rake, whose options (`-e`, `-f`, `-C`, `-R`,
+  `-I`, `-r`) are judged where they stand; the Ruby loader variables are
+  judged for any program, by the paths they name; `bundle config` written
+  without `--local`, `asdf plugin add`, `gem install -g FILE`, `gem build`,
+  and `rails new -m` are judged as downloaded or outside code; `asdf env`,
+  `rvm-exec`, `rvm-shell`, `rvm-auto-ruby` and `rvm VERSION ruby` are read;
+  a library or load path given as `~`, a drive or a share is judged as the
+  path it is, for `irb`, `erb` and `pry` too.
+- `milo_guards_code::refusal(language, code)` says, in words, why the reader
+  refuses code before it parses it (a Ruby heredoc word, an embedded document
+  or an escape the grammar reads otherwise than Ruby, more than the grammar's
+  scanner holds); the script guard gives it as the reason of `unreadable`.
+  Ruby's switches that take digits or a character (`-W0`, `-0777`, `-T3`,
+  `-Ku`) leave the letters after them in the word to be read (`-We` is `-W`
+  and `-e`); `ruby -S` is judged as the program it names only when its other
+  options load or move nothing, `-I` takes a list of folders, a path only
+  known when it runs is `unknown` where a library or a file of rake is
+  loaded, `RUBYOPT` is read as the switches it holds, `bundle console` reads
+  its input, and the commands of `bundle` and `gem` are read by the start of
+  their name that only they have (`bundle conf set`, `gem inst -g`).
+- `ruby -S PATH`, `ruby -C DIR` and `-X`/`-x` are judged by where the file or
+  folder is, `gem install -g` and `gem build -C` are read as their parsers
+  read them, and `-I` lists split at `;` on a Windows machine.
+- `ruby -e 'puts 1+1'` is safe; `ruby -e 'FileUtils.rm_rf(Dir.home)'` is
+  `delete`; `ruby -r lib`, `-I`, `-x`, `-S`, an encoding option, `RUBYOPT`
+  and any Ruby not read whole stay `unknown`. `irb` and `erb` reading their
+  input are interpreters that read it (`erb x.erb` is a file of the
+  workspace's own), and `bundle exec CMD` (`bundler`, `bundle _2.4.0_
+  exec`), `rbenv exec CMD` and `gem exec PROGRAM` are runners that judge
+  what they run. `rake -e CODE` is read as Ruby; `ruby3.3`, `jruby` and
+  `truffleruby` are read as `ruby` is. A project a runner sets up from a
+  file outside the workspace (`bundle exec --gemfile`, `BUNDLE_GEMFILE`,
+  `uv run --project`, `uv --directory`) is `unknown`: the runner runs that
+  file's code.
+- A Ruby that requires `bundler` (`-rbundler/setup`, `--require`, or in
+  `RUBYOPT`; any case, the name's `.` and `..` resolved as Ruby expands a
+  path, one that still holds `..` or a short name of Windows taken for it)
+  evaluates
+  the Gemfile `BUNDLE_GEMFILE` or `RUBYGEMS_GEMDEPS` names (`-`: the one found
+  from the folder Ruby runs in), or the one in the folder the line runs in
+  after every `-C` and `-X` has moved it, and is judged as a project there;
+  a relative `-r`, `-I` and Gemfile are from that folder. `BUNDLE_GEMFILE` is
+  judged for every program. A folder a Ruby tool is handed (load paths, `-C`, `-X`,
+  `-x`, rake's `-R`, `-I` and `-C`, `GEM_HOME`, `GEM_PATH`, `BUNDLE_PATH`)
+  must be in the workspace or the workspace itself: a folder that holds the
+  workspace (`..`) is `unknown`. `rake -R` and `RAKELIBDIR` are lists split
+  at the path separator, `gem -C DIR` moves first, `gem` reads a
+  `--config-file FILE` anywhere among its arguments (also `gem3.3`) as
+  `GEMRC` is, each `-C` and `-X` of a Ruby is judged from where the one
+  before it landed and its script from where the last did, a line of more
+  libraries and load paths than are looked up one by one (or more than 32
+  folders) is `unknown` for them, a variable given in several spellings on a
+  Windows machine is judged in each, `ruby -e CODE ARGS` is read whole as
+  `ruby -e CODE` is when every word of ARGS is a plain one (known, no brace
+  list or wildcard that could become an option, none a dash but a leading
+  `--`), a `File.read`, `readlines`, `write`, `exist?` or `file?` of code is
+  read whole when it names its file by a string written whole that does not
+  start with `|` and gives a read, past its path, only literals (a length, an
+  offset, a separator) and a literal pair or hash of `chomp`, `encoding`,
+  `external_encoding` or `binmode`; `File.read`, `readlines` and `foreach`
+  with a mode that writes (`mode:`, a number, `flags:`, `open_args:`), or
+  given a value that is no literal (a local, a call, a conditional, which may
+  be the hash of a mode), write the file, and a path that
+  starts with `|` is a program, as `IO.read`'s is; `gem-3.3`, `gem3.3` and
+  `jgem` are `gem` wherever the guard knows it, any word of an `rvm` line
+  known only when it runs is unread, `ruby -S -NAME` is refused, a `=begin`
+  that does not start its line is code not read, `irb -v` and `pry -v` are
+  safe, and the loader variables are matched without regard to case on a
+  Windows shell and on a Windows machine, as written on a POSIX one.
+  Inline code in a loop, a function or a trap, of Python and JavaScript too,
+  is read whole only when the line sets no variable anywhere (it runs after
+  what follows it: a loop's variable and an assignment in front of a call to a
+  function the line defines, or defines further on, count, a zsh modifier or
+  wrapper before the function too), where code outside them is judged by what
+  comes before it. `JRUBY_OPTS` and `TRUFFLERUBYOPT` are read as `RUBYOPT` is
+  (a `-J…` word is unknown), `LOCATION` of the environment is the template
+  `rails app:template` and `rake rails:template` run, and `ruby bin/rails`,
+  `ruby bin/rake`, `spring rails` and `spring rake` are read as `rails` and
+  `rake` are (a word of `spring` only known when it runs is unread, a rake
+  task given arguments, `app:template[x]`, is the task, and the `LOCATION` of
+  the environment is read wherever they start, a task by its scope
+  `rake:app:template` or `^app:template` too, and `RAKEOPT` for each of them,
+  in any case on Windows); every value of `BUNDLE_GEMFILE`, `RUBYGEMS_GEMDEPS`
+  and the loaders a line sets is judged, however it sets it (`… || export …`,
+  a group, a function), up to 12 values, 512 bytes and 32 parts in all, and 16 parts a value (the
+  words of options and the parts of a list, split at `:` or `;`, the larger
+  count; the names in another case, which only a Windows machine reads, have
+  limits of their own), and a line that sets more is `unknown` for them; one
+  kept for the commands after it with the folder the line is in (`$PWD`,
+  `~+`, `$(pwd)`, `%CD%`) is `unknown` when the line moves its folder
+  anywhere (a `cd` before or after it, in a loop, a function or a script,
+  `ruby -C`, `env -C`, `find -execdir`); every value `LOCATION` is given is judged, the
+  riskiest counts; `time` and `repeat` in front of an assignment, and any number of
+  zsh modifiers before the function, `coproc` and a `repeat` list too, and
+  an assignment in front of `eval` when the line defines a function, are
+  read as the call it is.
+- Perl, PHP and Lua given inline are still `unknown`.
+
 ## 0.2.2 (2026-11-28)
 
 A patch release with security fixes. What the shell guard and the core's

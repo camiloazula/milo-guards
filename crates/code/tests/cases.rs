@@ -120,7 +120,7 @@ fn a_malformed_case_is_refused() {
 #[test]
 fn an_unknown_kind_field_or_word_is_refused() {
     for (source, why) in [
-        ("ruby understand=no | x\n", "an unknown kind of code `ruby`"),
+        ("perl understand=no | x\n", "an unknown kind of code `perl`"),
         (
             "python colour=red | x\n",
             "an unknown field `colour` for `python`",

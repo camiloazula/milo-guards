@@ -89,7 +89,9 @@ pub(crate) fn apply_all(
             };
             match understood {
                 reader::Understanding::NotUnderstood => None,
-                reader::Understanding::Understood { imports } => Some(imports),
+                reader::Understanding::Understood { imports } => {
+                    Some(imports || code.folder_config)
+                }
             }
         }
         _ => None,
@@ -98,12 +100,13 @@ pub(crate) fn apply_all(
     split.launch(unit, code.sources.first().copied().unwrap_or_default());
     match read {
         None => split.unread_code(code.pieces.first().map_or("", Arg::text)),
+        // JRuby reads the settings of the folder it runs in the same way.
         // Python code looks in the folder it runs in first (an import, but
         // also a traceback or a codec), so it is only read whole there when
         // that folder is the workspace's, which is judged with the
         // directories.
         Some(true) => split.imports(code.pieces.first().map_or("", Arg::text)),
-        Some(false) => {}
+        Some(false) => split.reads_later(code.pieces.first().map_or("", Arg::text)),
     }
     split.restore_dir(outer);
 }

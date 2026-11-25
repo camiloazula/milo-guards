@@ -26,7 +26,7 @@ mod common;
 
 use common::shown;
 use milo_guards_code::testing::{self, Work};
-use milo_guards_code::Language::{self, JavaScript, Python};
+use milo_guards_code::Language::{self, JavaScript, Python, Ruby};
 use milo_guards_code::{Budget, Understanding, MAX_TREE_DEPTH};
 
 /// The longest code read here: the reader reads no code longer than its
@@ -197,7 +197,7 @@ fn code_with_an_error_is_not_read_through_it() {
     // is an `Unread` alone at every size, after the reports that led to it.
     let js_prefix = "/* ' */a=.c(e t...{{:o+a;,||#,0x]/";
     let py_prefix = "[...if*+(p*{a,a\n# \n~if 1if p%n e None\neval with*";
-    let rows: [(Language, &str, &str, &str); 13] = [
+    let rows: [(Language, &str, &str, &str); 18] = [
         (JavaScript, ROUND, "x", ""),
         (JavaScript, "", "x;\n", ROUND),
         (JavaScript, "function f() {\n", "x;\n", ROUND),
@@ -211,6 +211,11 @@ fn code_with_an_error_is_not_read_through_it() {
         (Python, py_prefix, "x = 1\n", ""),
         (Python, "!=]0x ]", "\n#", ""),
         (JavaScript, "/*xfrom  @catch", "@/*== ", ""),
+        (Ruby, "", "a ?b :c;", ""),
+        (Ruby, "", "a *b ", ""),
+        (Ruby, "", "a /a ", ""),
+        (Ruby, "", "`", ""),
+        (Ruby, "[", "a b c;", ""),
     ];
     for (language, head, unit, tail) in rows {
         for kb in SIZES {
@@ -509,7 +514,7 @@ fn code_nested_past_the_walk_s_depth_is_not_read() {
     // unclosed, by recursion: past the depth the reader walks, code is not
     // read, before it is parsed, by bracket, a format string's field and a
     // template's field alike; within it, it is read.
-    let rows: [(Language, &str, &str, &str); 8] = [
+    let rows: [(Language, &str, &str, &str); 14] = [
         (Python, "(", "a", ")"),
         (Python, "[", "a", "]"),
         (Python, "{1:", "a", "}"),
@@ -518,12 +523,19 @@ fn code_nested_past_the_walk_s_depth_is_not_read() {
         (JavaScript, "[", "a", "]"),
         (JavaScript, "{a:", "a", "}"),
         (JavaScript, "`${", "a", "}`"),
+        (Ruby, "(", "a", ")"),
+        (Ruby, "[", "a", "]"),
+        (Ruby, "{a=>", "a", "}"),
+        (Ruby, "begin ", "a", " end"),
+        (Ruby, "a do ", "a", " end"),
+        (Ruby, "-> { ", "a", " }"),
     ];
     for (language, open, middle, close) in rows {
         let levels = testing::scan(language, open).0;
         let (head, tail) = match language {
             Python => ("x = ", "\nimport shutil\nshutil.rmtree('/home/me')\n"),
             JavaScript => ("x = ", ";\nrequire('fs').rmSync('/home/me');\n"),
+            Ruby => ("x = ", "\nFile.delete('/home/me')\n"),
         };
         let nested = |depth: usize| {
             let count = depth / levels;
@@ -552,6 +564,7 @@ fn code_past_the_length_limit_is_not_read() {
         (JavaScript, "(await /"),
         (JavaScript, "x = 1;\n"),
         (Python, "x = 1\n"),
+        (Ruby, "x = 1\n"),
     ] {
         let code = fit("", unit, "", 4 * MAX_LEN);
         not_parsed(language, &code, unit);
@@ -596,6 +609,7 @@ fn code_with_spaces_only_its_grammar_passes_over_is_not_read() {
         let tail = |language| match language {
             Python => "import shutil\nshutil.rmtree('/home/me')\n",
             JavaScript => "require('fs').rmSync('/home/me');\n",
+            Ruby => "File.delete('/home/me')\n",
         };
         for language in [Python, JavaScript] {
             let line = format!("x = 1 +{space}2\n");
@@ -720,6 +734,7 @@ fn literal(
             "\nfs.rmSync('/home/me', {recursive: true});\n",
         ),
         Python => ("import shutil\n", "\nshutil.rmtree('/home/me')\n"),
+        Ruby => ("", "\nFile.delete('/home/me')\n"),
     };
     let elements: Vec<String> = (0..count).map(element).collect();
     format!("{head}{open}{}{close}{tail}", elements.join(", "))
@@ -1320,4 +1335,167 @@ fn a_budget_shows_what_it_spent_and_never_the_code() {
     let most = Budget::new(MAX_LEN);
     let _ = most.read(JavaScript, code);
     assert_eq!(testing::spent(&most), testing::spent(&budget));
+}
+
+#[test]
+fn ruby_past_what_tree_sitter_ruby_s_scanner_holds_is_not_read() {
+    // tree-sitter-ruby's scanner keeps the literals open at once and the
+    // heredocs with their words in a state of 1 KB, and a `%` literal's
+    // nesting of its delimiter and a heredoc word's length in a byte: past
+    // what it holds it keeps nothing and reads what follows otherwise than
+    // Ruby does, or, for a word longer than it holds, fails an assertion
+    // that aborts the process. A word it reads by its bytes and compares by
+    // its characters (`<<"É"`) it never finds again, so the rest of the code
+    // is the heredoc's text, where Ruby runs it. Code past the scan's bounds
+    // is not read, before it is parsed; at them, it is read whole.
+    let delete = "\nFile.delete('/home/me')\n";
+    let literals = |n: usize| format!("x = {}a{}{delete}", "\"#{".repeat(n), "}\"".repeat(n));
+    let nesting = |n: usize| format!("x = %q({}a{}){delete}", "(".repeat(n), ")".repeat(n));
+    let word = |n: usize| {
+        let word = "A".repeat(n);
+        format!("x = <<~{word}\n  a\n{word}{delete}")
+    };
+    let quoted = |word: &str| format!("x = <<~\"{word}\"\n  a\n{word}{delete}");
+    let heredocs = |n: usize| {
+        format!(
+            "x = [{}]\n{}{delete}",
+            vec!["<<A"; n].join(", "),
+            "a\nA\n".repeat(n)
+        )
+    };
+    for (at, within, past) in [
+        ("literals", literals(64), literals(65)),
+        ("a delimiter's nesting", nesting(200), nesting(201)),
+        ("a heredoc's word", word(64), word(65)),
+        ("heredocs", heredocs(8), heredocs(9)),
+    ] {
+        let (reading, work) = testing::read(Ruby, &within);
+        within_len(&within, work, at);
+        assert_eq!(shown(&reading.acts), "remove /home/me", "{at}: {work:?}");
+        assert_eq!((work.marks, work.errors), (0, 0), "{at}: {work:?}");
+        let work = not_parsed(Ruby, &past, at);
+        assert!(work.marks > 0, "{at}: {work:?}");
+    }
+    for (at, code) in [
+        ("a word the grammar aborts on", word(300)),
+        ("a quoted word it aborts on", quoted(&"B".repeat(300))),
+        ("a word not in ASCII", quoted("É")),
+        ("a bare word not in ASCII", format!("x = <<É\nÉ{delete}")),
+        (
+            "a quoted word a line's end cuts",
+            format!("x = <<\"A\nA\"\nA{delete}"),
+        ),
+        ("an empty quoted word", format!("x = <<\"\"\n{delete}")),
+    ] {
+        // Code not in ASCII is not understood before it is parsed.
+        let (reading, work) = testing::read(Ruby, &code);
+        assert_eq!(shown(&reading.acts), "unread", "{at}");
+        assert!(
+            work.stopped && work.reports == 0 && work.marks > 0,
+            "{at}: {work:?}"
+        );
+        assert_eq!(
+            milo_guards_code::understand(Ruby, &code),
+            Understanding::NotUnderstood,
+            "{at}"
+        );
+    }
+}
+
+/// [`within`] for `code`.
+fn within_len(code: &str, work: Work, at: &str) {
+    within(code.len(), work, at);
+}
+
+/// Ruby that took tree-sitter-ruby's scanner to the assertion that aborts the
+/// process (a heredoc's word longer than it holds), each past a context the scan
+/// before a parse once misread: a `%` literal, `__dir__`, `__END__`,
+/// `=begin`, a `/` after a value, a quoted word, and white space or a
+/// character Ruby or the grammar reads otherwise (a no-break space, U+3000,
+/// a zero-width space, U+FEFF, U+2028, an em space, `\v`, `\f`, `\r`). The
+/// raw text alone refuses each.
+fn ruby_crashes() -> Vec<String> {
+    let word = "A".repeat(300);
+    let plain = [
+        "y = <<W\nW\n",
+        "x%(\")\ny = <<W\nW\n\"\n",
+        "%\u{1}\ny = <<W\nW\n\u{1}\n",
+        "x = 1 %q\u{1}\ny = <<W\nW\n\u{1}\n",
+        "__dir__ <<W\nW\n",
+        "x = (\n__END__\n<<W\nW\n)\n",
+        "=begin\n=end\u{b}\ny = <<W\nW\n=end\n",
+        "@x /2; y = <<W\nW\n#/\n",
+        "x = {} /2; y = <<W\nW\n#/\n",
+        "y = <<\"W\"\nW\n",
+        // Right after a quote or a method's `.`, where Ruby starts no
+        // heredoc but the grammar, at an error, may.
+        "x = ''<<`W`\n",
+        "x = a.<<\"W\"\n",
+        "x = \"<<`W`\"\n",
+    ];
+    let around = [
+        "x = 1S<<W\nW\n",
+        "y = 1\nS=begin\n=end\n<<W\nW\n",
+        "=begin\n=endS\nx = <<W\nW\n=end\n",
+        "x = 1 #S\ny = <<W\nW\n",
+        "x = yS/2; z = <<W\nW\n#/\n",
+        "x = 'S'; z = <<W\nW\n",
+        "p :aS?b; z = <<W\nW\n",
+        "x = 1\nS__END__\ny = <<W\nW\n",
+    ];
+    let spaces = [
+        "\u{a0}", "\u{3000}", "\u{200b}", "\u{feff}", "\u{2028}", "\u{2003}", "\u{b}", "\u{c}",
+        "\r",
+    ];
+    let mut shapes: Vec<String> = plain
+        .iter()
+        .map(|shape| shape.replace('W', &word))
+        .collect();
+    for shape in around {
+        for space in spaces {
+            shapes.push(shape.replace('S', space).replace('W', &word));
+        }
+    }
+    shapes
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    reason = "the readings run on a thread of 1 MiB"
+)]
+fn ruby_that_took_the_grammar_s_scanner_to_its_abort_is_not_read() {
+    // Each is refused by its raw text before any scan of its context, on a
+    // thread of 1 MiB: not read, not understood, not parsed, and the
+    // process goes on.
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            for code in ruby_crashes() {
+                let at = format!("{:?}", &code[..code.len().min(24)]);
+                let (reading, work) = testing::read(Ruby, &code);
+                assert_eq!(shown(&reading.acts), "unread", "{at}");
+                assert!(
+                    work.stopped && work.reports == 0 && work.marks > 0,
+                    "{at}: {work:?}"
+                );
+                // A document ended at `=end` and a space only the grammar
+                // reads as one is the document's mismatch first.
+                let raw = testing::ruby_raw(&code);
+                assert!(
+                    raw == Some("heredoc word") || raw == Some("embedded document"),
+                    "{at}: {raw:?}"
+                );
+                assert_eq!(
+                    milo_guards_code::understand(Ruby, &code),
+                    Understanding::NotUnderstood,
+                    "{at}"
+                );
+                assert!(!milo_guards_code::parses(Ruby, &code), "{at}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

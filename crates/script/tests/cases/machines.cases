@@ -49,6 +49,7 @@ javascript@windows finds=unknown reason="opens a file on a network share" | requ
 python@windows finds=read_secret reason="reads your SSH keys" | print(open('\\\\\\\\localhost\\\\C$\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
 python@windows finds=overwrite | open('\\\\\\\\server\\\\share\\\\x', 'w')
 python safe | print(open('//server/share/x').read())
+ruby@windows finds=unknown reason="opens a file on a network share" | puts File.read('//server/share/x')
 python@windows finds=wipe_disk | open('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me\\\\.ssh\\\\id_rsa', 'w')
 python@windows finds=read_secret | print(open('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
 python@windows finds=wipe_disk | import shutil\nshutil.rmtree('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me')

@@ -161,3 +161,167 @@ python2 understand=no | import json
 python2 understand=no | print(time.time())
 python2 understand=no | time = 1
 python2 understand=no | import sys\nsys.exit(0)
+
+# Ruby that computes and prints is understood, and loads nothing when it
+# runs: Ruby looks in no folder of the code's own for a library it loads
+# by itself.
+ruby understand=yes acts="" | puts 1 + 1
+ruby understand=yes | puts 'hi'
+ruby understand=yes | print "a", "b"
+ruby understand=yes | p [1, 2], {a: 1}
+ruby understand=yes | x = 1\nx += 2\nputs x
+ruby understand=yes | a, b = 1, 2\nputs a + b
+ruby understand=yes | x = 1\nif x > 0 then puts x elsif x < 0 then puts 0 else puts 1 end
+ruby understand=yes | x = 1\nputs x unless x.zero?
+ruby understand=yes | x = 2\nputs(x.even? ? 'even' : 'odd')
+ruby understand=yes | puts "a-b".split('-').join(',').upcase
+ruby understand=yes | x = 'b'\nputs "a#{x}c".length
+ruby understand=yes | puts format('%05d', 42)
+ruby understand=yes | puts Integer('12') * 2
+ruby understand=yes | puts Math.sqrt(2) + Math::PI
+ruby understand=yes | puts [3, 1, 2].sort.first
+ruby understand=yes | puts :sym
+ruby understand=yes | x = [1, 2]\nputs x[0]
+ruby understand=yes | # a comment\nputs 1
+
+# Ruby outside the subset is not understood. It does not parse, or holds
+# no statement.
+ruby understand=no | puts(
+ruby understand=no |
+ruby understand=no | # only a comment
+ruby understand=no | =begin\nonly a comment\n=end
+# A name before the code sets it is a call of a method of that name.
+ruby understand=no | puts x
+ruby understand=no | puts x\nx = 1
+ruby understand=no | exit
+ruby understand=no | fork
+ruby understand=no | gets
+# A call off the list, of a name or a method; a name on the list set.
+ruby understand=no | system('ls')
+ruby understand=no | exec 'ls'
+ruby understand=yes | File.write('out.txt', 'x')
+ruby understand=yes | puts File.read('README.md')
+ruby understand=yes | puts File.readlines('x').length
+ruby understand=yes | puts File.exist?('x')
+ruby understand=no | File.open('x', 'w')
+ruby understand=no | File.new('x')
+ruby understand=no | File.foreach('x') { |l| puts l }
+ruby understand=no | File.delete('x')
+ruby understand=no | File.popen('ls')
+ruby understand=no | IO.read('|id')
+ruby understand=no | File.read('x') { 1 }
+ruby understand=no | x = File\nputs x.read('a')
+ruby understand=no | require 'json'
+ruby understand=no | eval('1')
+ruby understand=no | puts 1.send(:+, 2)
+ruby understand=no | 'x'.instance_eval('1')
+ruby understand=no | puts 'x'.method(:upcase)
+ruby understand=no | puts = 1
+ruby understand=no | puts = 1\nputs 2
+ruby understand=no | p = 1
+ruby understand=no | puts Math.send(:sqrt, 2)
+ruby understand=no | puts Kernel.puts(1)
+ruby understand=no | Math::sqrt(2)
+# No constant but `Math`, no global, instance or class variable, no `self`.
+ruby understand=no | puts ENV['HOME']
+ruby understand=no | puts ARGV[0]
+ruby understand=no | puts File
+ruby understand=no | puts Object.new
+ruby understand=no | puts $stdout
+ruby understand=no | $stdout = 1
+ruby understand=no | @x = 1
+ruby understand=no | puts __FILE__
+ruby understand=no | puts self
+ruby understand=no | x = 1\nputs x.frozen?.class
+# No block, function, class, loop, `begin`, `case` or jump.
+ruby understand=no | [1].each { |x| puts x }
+ruby understand=no | 3.times do puts 1 end
+ruby understand=no | f = -> { 1 }
+ruby understand=no | def f; 1; end
+ruby understand=no | class A; end
+ruby understand=no | while false do end
+ruby understand=no | begin\n  puts 1\nrescue\nend
+ruby understand=no | case 1 when 1 then puts 1 end
+ruby understand=no | return
+ruby understand=no | BEGIN { puts 1 }
+ruby understand=no | alias s puts
+ruby understand=no | puts(*[1])
+ruby understand=no | puts(**{})
+ruby understand=no | puts(&:x)
+ruby understand=no | defined?(x)
+# No literal the grammar reads otherwise than Ruby may, nor one that runs:
+# a heredoc, a `%` literal, a regular expression, a command string, a
+# character, a symbol with `#{…}`.
+ruby understand=no | puts <<~A\n  x\nA
+ruby understand=no | puts %w(a b)
+ruby understand=no | puts %q(x)
+ruby understand=no | puts 'a' =~ /a/
+ruby understand=no | puts `ls`
+ruby understand=no | puts ?a
+ruby understand=no | puts :"a#{1}"
+ruby understand=no | puts 'a' + "#{`ls`}"
+# Code with a control character other than a newline or a tab, or text not
+# in ASCII, which another encoding may read otherwise.
+ruby understand=no | puts 1\u{0}
+ruby understand=no | puts 1\rputs 2
+ruby understand=no | puts 'é'
+ruby understand=no | __END__\nputs 1
+# A key alone (`{exit:}`) is the value of the name: a call of the method of
+# that name when no local holds it.
+ruby understand=no | p({exit:})
+ruby understand=no | puts(fork:)
+ruby understand=yes | p({a: 1}, b: 2)
+ruby understand=no | puts 1\n__END__\nx
+ruby understand=no | puts 1\n__END__ x
+# A document the grammar ends where Ruby does not is not read whole, and a
+# plain one is.
+ruby understand=no | =begin\n=endx\ny = "\n=end\nputs 1 #"\nputs y
+ruby understand=no | =begin\n=end=\ny = "\n=end\nputs 1 #"\nputs y
+ruby understand=no | =begin\n=end#\ny = "\n=end\nputs 1 #"\nputs y
+ruby understand=no | =begin\n  =end\ny = "\n=end\nputs 1 #"\nputs y
+ruby understand=no | =begin\n\t=end\ny = "\n=end\nputs 1 #"\nputs y
+ruby understand=no | =begin\n*=end\ny = "\n=end\nputs 1 #"\nputs y
+ruby understand=yes | =begin\nnotes\n=end\nputs 1
+ruby understand=yes | #!/usr/bin/env ruby\nputs 1
+ruby understand=no | #!ruby -r/tmp/evil\nputs 1
+ruby understand=no | #!/usr/bin/env ruby -I/tmp -rjson\nputs 1
+ruby understand=no | #!/usr/bin/env ruby -w\nputs 1
+ruby understand=no | #!/bin/sh\nputs 1
+# Escapes in a string are read whole only when the code and the grammar agree
+# on their length: a letter of the short list, an escaped line end, octal,
+# `\x` and `\u` with their digits. A control or meta escape takes a
+# character more in Ruby, a quote too.
+ruby understand=no | x = "\\c"; y = "; puts 1; z = "; w = 1 #"
+ruby understand=no | x = "\\C-"; y = "; puts 1; z = "; w = 1 #"
+ruby understand=no | x = "\\M-"; y = "; puts 1; z = "; w = 1 #"
+ruby understand=no | x = "\\M-\\C-"; y = "; puts 1; z = "; w = 1 #"
+ruby understand=no | x = "\\c\\M-"; y = "; puts 1; z = "; w = 1 #"
+ruby understand=no | puts "\\z"
+ruby understand=no | puts "\\u{41}"
+ruby understand=no | puts "\\8"
+ruby understand=yes | puts "a\\tb\\n\\x41\\u0041\\101\\"\\#\\\\"
+ruby understand=yes | puts "a\\\nb"
+ruby understand=no | x = "#$\\\\c"; y = "; puts 1; z = "; w = 1 #"
+
+# `File.read` and the like open one file, by a mode that only reads: a path
+# that starts with `|` runs a command in some Rubies, and a mode may write.
+ruby understand=yes | puts File.read('x', encoding: 'utf-8')
+ruby understand=yes | puts File.readlines('x', chomp: true).length
+ruby understand=yes | File.write('out.txt', 'x', mode: 'a')
+ruby understand=no | File.read('x', mode: 'w')
+ruby understand=no | File.read('x', {mode: 'w'})
+ruby understand=no | File.read('x', open_args: ['w'])
+ruby understand=no | File.readlines('x', flags: 513)
+ruby understand=no | File.read('x', **{})
+ruby understand=no | File.read('|id')
+ruby understand=no | File.write('|id', 'x')
+ruby understand=no | x = '|id'\nFile.read(x)
+ruby understand=no | File.read("a#{1}")
+ruby understand=no | File.read("\\x7cid")
+ruby understand=no | opts = {}\nFile.read('x', opts)
+ruby understand=no | File.read('x', ({}))
+ruby understand=no | File.read('x', {}.freeze)
+ruby understand=no | File.read('x', true ? {} : nil)
+ruby understand=no | a = [1]\nFile.read('x', a[0])
+ruby understand=yes | puts File.read('x', 10, 0)
+ruby understand=yes | puts File.read('x', nil, 0)

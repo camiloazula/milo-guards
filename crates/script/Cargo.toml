@@ -1,6 +1,6 @@
 [package]
 name = "milo-guards-script"
-description = "Judges Python or JavaScript code an agent runs directly and says whether it is safe without asking, or risky and why."
+description = "Judges Python, JavaScript or Ruby code an agent runs directly and says whether it is safe without asking, or risky and why."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -19,6 +19,10 @@ exclude = ["tests/cases/"]
 workspace = true
 
 [features]
+default = ["ruby"]
+# Judges Ruby too, with the reader's `ruby` feature. Off, Ruby code is not
+# read: it is `unreadable`, and the Ruby grammar is not built.
+ruby = ["milo-guards-code/ruby"]
 # What only the guard's own tests read: the count of what judging a piece of
 # code costs (the acts judged, the places built, and the reader's work, by
 # the reader's own `testing` feature). Its tests turn it on, through the
@@ -28,7 +32,7 @@ testing = ["milo-guards-code/testing"]
 
 [dependencies]
 milo-guards-core.workspace = true
-# The reader of Python and JavaScript: a reader, not a guard, which a guard
+# The reader of Python, JavaScript and Ruby: a reader, not a guard, which a guard
 # may build on as on a parser (docs/design/architecture.md).
 milo-guards-code.workspace = true
 

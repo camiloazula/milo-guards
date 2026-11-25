@@ -1470,6 +1470,9 @@ impl Walker<'_> {
             None
         };
         let value = value.map_or_else(|| Arg::Unknown(source.to_string()), Arg::Known);
+        if let Some(name) = &terraform {
+            self.split.note_ruby_pwd(name, source);
+        }
         // `set BASH_ENV=x.sh`: a bash the line starts runs the file first.
         if startup {
             startup::environment(self.split, Some(written_name), value);

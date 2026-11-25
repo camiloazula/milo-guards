@@ -183,17 +183,23 @@ pub fn access_choice(write: bool, index: u8) -> u8 {
     u8::from(write) | (index << 1)
 }
 
-/// The choice of code in `language` on the machine `index`.
+/// The choice of code in `language` on the machine `index`: the language in
+/// its two low bits, the machine above them.
 pub fn language_choice(language: Language, index: u8) -> u8 {
-    u8::from(language == Language::JavaScript) | (index << 1)
+    let language = match language {
+        Language::Python => 0,
+        Language::JavaScript => 1,
+        Language::Ruby => 2,
+    };
+    language | (index << 2)
 }
 
 /// The language a choice names.
 fn language_of(choice: u8) -> Language {
-    if choice & 1 == 0 {
-        Language::Python
-    } else {
-        Language::JavaScript
+    match choice & 3 {
+        0 => Language::Python,
+        1 => Language::JavaScript,
+        _ => Language::Ruby,
     }
 }
 
@@ -216,7 +222,7 @@ pub fn check(target: Target, data: &[u8]) {
         Target::UrlAddress => address(&text),
         Target::Secrets => secrets(&text),
         Target::Code => code(language_of(choice), &text),
-        Target::Script => script(language_of(choice), &text, &machine(choice >> 1)),
+        Target::Script => script(language_of(choice), &text, &machine(choice >> 2)),
     }
 }
 
@@ -627,11 +633,19 @@ pub fn script(language: Language, code: &str, paths: &Paths) {
         "judge twice: {what}"
     );
     says_why(&assessment, &what);
-    assert_eq!(
-        script::testing::work(language, code, paths).answer,
-        assessment,
-        "its work and judge: {what}"
-    );
+    // The work is one judging; the answer adds what each other set of paths
+    // finds (`Paths::also_judged_on`), and never takes a finding away.
+    let worked = script::testing::work(language, code, paths).answer;
+    if paths.also_judged_on().is_empty() {
+        assert_eq!(worked, assessment, "its work and judge: {what}");
+    } else {
+        for finding in worked.findings() {
+            assert!(
+                assessment.findings().contains(finding),
+                "its work and judge: {what}"
+            );
+        }
+    }
     for finding in assessment.findings() {
         assert!(
             !finding.reason.is_empty(),

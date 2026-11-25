@@ -1888,7 +1888,7 @@ impl Walker<'_> {
             // `GLOBIGNORE=x` on a line of its own, or after `export`: the
             // shell has it from here on.
             "variable_assignment" => {
-                self.split.assigned_earlier = true;
+                self.split.note_assigned(true);
                 self.assignment(node);
                 self.assigned(node, level);
             }
@@ -1943,7 +1943,7 @@ impl Walker<'_> {
     /// `unset`, kept out of `node`, which the walk recurses through.
     #[inline(never)]
     fn unset_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
-        self.split.assigned_earlier = true;
+        self.split.note_assigned(true);
         let mut cursor = node.walk();
         let names: Vec<&str> = node
             .named_children(&mut cursor)
@@ -2013,7 +2013,8 @@ impl Walker<'_> {
         }
         // `((PATH=1))` sets a variable the interpreter after it may
         // be given.
-        self.split.assigned_earlier |= assigns && self.in_arithmetic(node);
+        let assigned = assigns && self.in_arithmetic(node);
+        self.split.note_assigned(assigned);
         self.children(node, stage, level);
     }
 
@@ -2023,7 +2024,8 @@ impl Walker<'_> {
         if self.assigns_ignore(node) {
             self.split.hide();
         }
-        self.split.assigned_earlier |= self.assigns_default(node);
+        let assigned = self.assigns_default(node);
+        self.split.note_assigned(assigned);
         self.children(node, stage, level);
     }
 
@@ -2036,7 +2038,8 @@ impl Walker<'_> {
         if bare.len() < text.len() && bare.trim() == dotglob::GLOBIGNORE {
             self.split.hide();
         }
-        self.split.assigned_earlier |= bare.len() < text.len() && self.in_arithmetic(node);
+        let assigned = bare.len() < text.len() && self.in_arithmetic(node);
+        self.split.note_assigned(assigned);
         self.children(node, stage, level);
     }
 
@@ -2072,7 +2075,7 @@ impl Walker<'_> {
         let taken = self.always_taken(node);
         // The variable of `for` and `select` is set for the body
         // (`for PATH in /x; do …`).
-        self.split.assigned_earlier |= node.kind() == "for_statement";
+        self.split.note_assigned(node.kind() == "for_statement");
         self.split.branches += 1;
         self.split.taken += usize::from(taken);
         self.split.bodies += usize::from(body);
@@ -3041,6 +3044,8 @@ impl Walker<'_> {
                     alts.extend(alt);
                 }
                 let value = self.arg(arg);
+                self.split
+                    .note_ruby_pwd_word(&value, unit::text(&arg, self.source));
                 if let Some(reading) = self.zsh_reading(arg) {
                     readings.push((args.len(), reading));
                 } else if let Some(literal) = literal_tilde(&value, arg, self.source) {
@@ -3229,6 +3234,18 @@ impl Walker<'_> {
             .children(&mut cursor)
             .filter(|child| child.kind() == "variable_assignment")
             .collect();
+        // In front of a call to a function the line defines (now or further
+        // on), a variable is set while its body runs, which may hold inline
+        // code: a variable the line sets, whatever its name.
+        if !assignments.is_empty() {
+            let words: Vec<&str> = program
+                .known()
+                .into_iter()
+                .chain(args.iter().filter_map(Arg::known))
+                .take(32)
+                .collect();
+            self.split.note_prefixed(&words);
+        }
         // Inline code is not read whole by a program given an environment.
         let environed = assignments.len();
         self.split.environment += environed;
@@ -3737,6 +3754,9 @@ impl Walker<'_> {
                 return;
             }
             if unit::read_as_arguments(&name) {
+                // A value of a variable Ruby reads, written with the folder
+                // the line is in, is judged against every move of the line.
+                self.split.note_ruby_pwd(&name, source);
                 self.split.note_argument_variable(name, value);
                 return;
             }
@@ -3834,6 +3854,12 @@ impl Walker<'_> {
         }
         let right = assignment.child_by_field_name("value");
         let value = right.map_or_else(|| Arg::Known(String::new()), |value| self.arg(value));
+        // A value of a variable Ruby reads, written with the folder the line
+        // is in, is judged against every move of the line, once it is read.
+        if terraform {
+            let written = unit::text(&assignment, self.source);
+            self.split.note_ruby_pwd(name, written);
+        }
         if terraform {
             self.split.note_argument_variable(name.to_string(), value);
         } else if name == "PYTHONPATH" {

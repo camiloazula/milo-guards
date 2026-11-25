@@ -83,10 +83,15 @@ pub(crate) fn is_shell(key: &str) -> bool {
 /// [`is_interpreter`]) and node, the Python launcher `py`, `pypy`, `ipython`,
 /// the TypeScript runners `tsx` and `ts-node`, which take node's options,
 /// and `xonsh`, a shell whose language is Python and its own, so that what
-/// it runs is code the guard does not read, as another interpreter's is.
-pub(crate) const INTERPRETERS: [&str; 18] = [
-    "python", "python2", "python3", "py", "pypy", "pypy3", "ipython", "perl", "ruby", "node",
-    "nodejs", "tsx", "ts-node", "php", "lua", "bun", "deno", "xonsh",
+/// it runs is code the guard does not read, as another interpreter's is;
+/// and Ruby's REPL `irb` and `erb`, which runs the Ruby of the template it
+/// reads; and `mruby` and `mirb`, the embedded Ruby, whose code is not read
+/// as Ruby (it is not `CRuby`: another standard library); and `pry`, a REPL
+/// that runs the Ruby it is given (`-e`) or reads, with a `.pryrc` first.
+pub(crate) const INTERPRETERS: [&str; 24] = [
+    "python", "python2", "python3", "py", "pypy", "pypy3", "ipython", "perl", "ruby", "irb", "erb",
+    "node", "nodejs", "tsx", "ts-node", "php", "lua", "bun", "deno", "xonsh", "mruby", "mirb",
+    "jirb", "pry",
 ];
 
 /// Whether `key` is the interpreter named in [`INTERPRETERS`] or one of its
@@ -95,6 +100,7 @@ pub(crate) const INTERPRETERS: [&str; 18] = [
 /// (`ts-node-esm`, `ts-node-script`).
 pub(crate) fn is_interpreter(key: &str) -> bool {
     INTERPRETERS.contains(&key)
+        || is_ruby(key)
         || ["python", "pypy", "ipython", "graalpy", "micropython"]
             .iter()
             .any(|name| versioned(key, name))
@@ -109,6 +115,38 @@ fn versioned(key: &str, name: &str) -> bool {
             || (version.starts_with(|c: char| c.is_ascii_digit())
                 && version.chars().all(|c| c.is_ascii_digit() || c == '.'))
     })
+}
+
+/// Whether `key` is the `gem` of `RubyGems`, or one of a version (`gem3.3`,
+/// `gem-3.3`), or `jgem`, `JRuby`'s.
+pub(crate) fn is_gem(key: &str) -> bool {
+    key == "jgem" || versioned(key, "gem") || versioned(key, "gem-")
+}
+
+/// Whether `key` is `JRuby` or `TruffleRuby`, which read `-X` as an option of
+/// their own and not as a folder to move to.
+pub(crate) fn is_jruby(key: &str) -> bool {
+    matches!(key, "jruby" | "truffleruby")
+}
+
+/// Whether the interpreter `key` is `CRuby` or one that reads its options and
+/// runs its code: `ruby` and a `ruby` of a version (`ruby3.3`, `ruby-3.3`),
+/// `rubyw` (Windows' without a console), `jruby`, `truffleruby`.
+pub(crate) fn is_ruby(key: &str) -> bool {
+    matches!(key, "jruby" | "truffleruby" | "rubyw" | "rvm-auto-ruby")
+        || versioned(key, "ruby")
+        || versioned(key, "ruby-")
+}
+
+/// Whether `key` loads Ruby libraries by `-r` and `-I`: ruby and its REPLs and
+/// templates.
+pub(crate) fn loads_ruby_libraries(key: &str) -> bool {
+    is_ruby(key) || is_irb(key) || matches!(key, "erb" | "pry")
+}
+
+/// Whether `key` is Ruby's REPL: `irb`, and `jirb`, `JRuby`'s.
+pub(crate) fn is_irb(key: &str) -> bool {
+    matches!(key, "irb" | "jirb")
 }
 
 /// Whether the interpreter `key` runs Python, and reads python's options.
@@ -932,7 +970,10 @@ pub(crate) fn code_options(key: &str) -> (&'static [char], &'static [&'static st
     }
     match key {
         "perl" => (&['e', 'E'], &[]),
-        "ruby" => (&['e'], &["--eval"]),
+        key if is_ruby(key) => (&['e'], &["--eval"]),
+        // Neither takes code on its line: `irb` reads it from its input or
+        // a file, `erb` a template.
+        "irb" | "jirb" | "erb" => (&[], &[]),
         "php" => (&['r', 'R', 'F'], &[]),
         "lua" => (&['e'], &[]),
         "xonsh" => (&['c'], &[]),
@@ -949,7 +990,13 @@ pub(crate) fn valued_options(key: &str) -> &'static [char] {
     }
     match key {
         "perl" => &['I', 'M', 'm'],
-        "ruby" => &['I', 'r', 'C', 'E', 'K'],
+        // `-X` is `JRuby`'s and `TruffleRuby`'s own option, which takes the rest
+        // of its word; `CRuby`'s moves to a folder.
+        key if is_jruby(key) => &['I', 'r', 'C', 'E'],
+        key if is_ruby(key) => &['I', 'r', 'C', 'X', 'E'],
+        "irb" | "jirb" => &['I', 'r', 'E'],
+        "erb" => &['r', 'I', 'S', 'E', 'T'],
+        "pry" => &['r', 'I'],
         // `-P tsconfig.json`, `-O '{…}'`, `-C ttypescript`, `-I`, `-D`.
         key if is_ts_node(key) => &['r', 'C', 'P', 'O', 'I', 'D'],
         "node" | "nodejs" | "tsx" => &['r', 'C'],
@@ -1175,9 +1222,10 @@ fn table(key: &str) -> Table {
             attached: &['0', 'l', 'i', 'x', 'd', 'D', 'C', 'F', 'V'],
             ..plain
         },
-        "ruby" => Table {
-            attached: &['0', 'i', 'W', 'x', 'T', 'F'],
+        key if is_jruby(key) => Table {
+            attached: &['i', 'x', 'F', 'X'],
             long_values: &[
+                "require",
                 "enable",
                 "disable",
                 "encoding",
@@ -1188,6 +1236,33 @@ fn table(key: &str) -> Table {
                 "crash-report",
                 "parser",
             ],
+            ..plain
+        },
+        key if is_ruby(key) => Table {
+            attached: &['i', 'x', 'F'],
+            long_values: &[
+                "require",
+                "enable",
+                "disable",
+                "encoding",
+                "external-encoding",
+                "internal-encoding",
+                "dump",
+                "backtrace-limit",
+                "crash-report",
+                "parser",
+            ],
+            ..plain
+        },
+        // irb's options that take the next word; it knows more than the
+        // table, so one it does not know may take one too.
+        "irb" | "jirb" => Table {
+            long_values: &["context-mode", "prompt", "prompt-mode", "back-trace-limit"],
+            strict: false,
+            ..plain
+        },
+        "erb" => Table {
+            strict: false,
             ..plain
         },
         "php" => Table {
@@ -1232,6 +1307,10 @@ fn table(key: &str) -> Table {
 /// options that take a value: the word after one is its value, never the
 /// script.
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag says one thing the options show, and none follows from another"
+)]
 pub(crate) struct Options {
     /// Where the script is: the first word that is not an option, or the
     /// value of php's `-f`. A word only known when it runs there may be an
@@ -1263,6 +1342,14 @@ pub(crate) struct Options {
     /// The folders ruby's and perl's `-I` put first where a library is
     /// looked up.
     pub(crate) includes: Vec<Arg>,
+    /// Whether ruby's `-S` stands among the options: the script is then a
+    /// program looked up in `PATH`, which `script` is the name of.
+    pub(crate) searches: bool,
+    /// Whether ruby's options load code or move it: `-r`, `-I`, `-C`, `-X`,
+    /// `-x` and `-i`.
+    pub(crate) loads: bool,
+    /// The folders ruby's `-C`, `-X` and `-x` move to.
+    pub(crate) dirs: Vec<Arg>,
 }
 
 impl Options {
@@ -1272,8 +1359,11 @@ impl Options {
     fn short_value(&mut self, key: &str, letter: char, value: Arg) {
         match (key, letter) {
             (key, 'r') if is_node(key) => self.preloads.push(value),
-            ("ruby", 'r') | ("perl", 'M' | 'm') => self.requires.push(value),
-            ("ruby" | "perl", 'I') => self.includes.push(value),
+            (key, 'r') if loads_ruby_libraries(key) => self.requires.push(value),
+            ("perl", 'M' | 'm') => self.requires.push(value),
+            (key, 'I') if key == "perl" || loads_ruby_libraries(key) => self.includes.push(value),
+            (key, 'C') if is_ruby(key) => self.dirs.push(value),
+            (key, 'X') if is_ruby(key) && !is_jruby(key) => self.dirs.push(value),
             ("php", 'd') => self.php_setting(&value),
             _ => {}
         }
@@ -1365,6 +1455,10 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
                 if node && preloads(&name) {
                     found.preloads.extend(args.get(at + 1).cloned());
                 }
+                if loads_ruby_libraries(key) && name == "require" {
+                    found.requires.extend(args.get(at + 1).cloned());
+                    found.loads = true;
+                }
                 if key == "php" && name == "define" {
                     if let Some(next) = args.get(at + 1) {
                         found.php_setting(next);
@@ -1377,6 +1471,11 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
                 at += 1;
             } else if let (true, Some(value)) = (node && preloads(&name), value) {
                 found.preloads.push(Arg::Known(value.to_string()));
+            } else if let (true, Some(value)) =
+                (loads_ruby_libraries(key) && name == "require", value)
+            {
+                found.requires.push(Arg::Known(value.to_string()));
+                found.loads = true;
             } else if let (true, Some(value)) = (key == "php" && name == "define", value) {
                 found.php_setting(&Arg::Known(value.to_string()));
             } else {
@@ -1397,10 +1496,44 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
         };
         unknown_before = false;
         let mut skip = 0;
+        let mut next = 0;
         for (index, letter) in bundle.char_indices() {
+            if index < next {
+                continue;
+            }
             let rest = &bundle[index + letter.len_utf8()..];
+            // Ruby's `-0`, `-T`, `-W` and `-K` take digits, a level or a
+            // character, and the bundle goes on.
+            if is_ruby(key) {
+                if let Some(taken) = ruby_tail(letter, rest) {
+                    next = index + letter.len_utf8() + taken;
+                    continue;
+                }
+            }
             if code_short.contains(&letter) {
                 return found;
+            }
+            if is_ruby(key) {
+                match letter {
+                    'S' => found.searches = true,
+                    // `JRuby`'s `-Xname=value` is an option of its own; one
+                    // with no name is not placed: it may move the folder.
+                    // `TruffleRuby`'s is not known to be one or the other,
+                    // so no `-X` of it is placed.
+                    'X' if is_jruby(key) => {
+                        if rest.is_empty() || key == "truffleruby" {
+                            found.loads = true;
+                            found
+                                .dirs
+                                .push(Arg::Unknown(format!("where {key} moves to")));
+                        }
+                    }
+                    'r' | 'I' | 'C' | 'X' | 'x' | 'i' => found.loads = true,
+                    _ => {}
+                }
+                if letter == 'x' && !rest.is_empty() {
+                    found.dirs.push(Arg::Known(rest.to_string()));
+                }
             }
             if table.interactive == Some(letter) {
                 found.interactive = true;
@@ -1439,6 +1572,48 @@ pub(crate) fn options(key: &str, args: &[Arg]) -> Options {
         at += 1 + skip;
     }
     found
+}
+
+/// What ruby's `-0`, `-T`, `-W` and `-K` take of the rest of their word
+/// (`-0777`, `-T3`, `-W2`, `-W:no-deprecated`, `-Ku`), in bytes: `None` for
+/// any other letter. `CRuby` reads the switches after them in the word, so
+/// the bundle goes on past what they take (`-We`, `-0r./x`).
+pub(crate) fn ruby_tail(letter: char, rest: &str) -> Option<usize> {
+    let digits = || rest.bytes().take_while(u8::is_ascii_digit).count();
+    match letter {
+        '0' | 'T' => Some(digits()),
+        'W' if rest.starts_with(':') => Some(rest.len()),
+        'W' => Some(digits()),
+        'K' => Some(rest.chars().next().map_or(0, char::len_utf8)),
+        _ => None,
+    }
+}
+
+/// Whether the bundle of short options `bundle` of `key` holds one that
+/// carries code (`short`), up to the first that takes the rest of its word.
+fn bundle_has_code(key: &str, bundle: &str, short: &[char]) -> bool {
+    let mut next = 0;
+    for (index, letter) in bundle.char_indices() {
+        if index < next {
+            continue;
+        }
+        let rest = &bundle[index + letter.len_utf8()..];
+        if is_ruby(key) {
+            if let Some(taken) = ruby_tail(letter, rest) {
+                next = index + letter.len_utf8() + taken;
+                continue;
+            }
+        }
+        if short.contains(&letter) {
+            return true;
+        }
+        if valued_options(key).contains(&letter)
+            || (is_ruby(key) && table(key).attached.contains(&letter))
+        {
+            return false;
+        }
+    }
+    false
 }
 
 /// Whether node's long option `name` loads a module before the script.
@@ -1481,6 +1656,28 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
     let args = own_args(key, args);
     let (short, long) = code_options(key);
     let read = options(key, args);
+    // `ruby -S NAME …` runs the program NAME of `PATH` with the rest.
+    if read.searches {
+        if let Some(at) = read.script.filter(|_| is_ruby(key)) {
+            // A name that is a path (`-S ~/x.rb`, `-S /dev/stdin`) is run as
+            // the file it names, as `ruby PATH` runs it: it is judged as a
+            // script below. Only a plain name is a program of `PATH`.
+            // A name that starts with a dash is no program of `PATH`.
+            if args[at].known().is_some_and(|name| name.starts_with('-')) {
+                return Launch::Reads(Reads::Interpreter);
+            }
+            let plain = args[at].known().is_some_and(|name| {
+                name != "-" && !name.contains(['/', '\\']) && crate::path::drive_of(name).is_none()
+            });
+            if plain {
+                // Options that load code or move it are not read.
+                if read.loads {
+                    return Launch::Reads(Reads::Interpreter);
+                }
+                return Launch::Runs(at);
+            }
+        }
+    }
     // CPython's words after the script or the module are its own
     // arguments, not the interpreter's: `python3 -m zipfile -c a.zip src`
     // makes an archive. Its table names every option that takes a value,
@@ -1498,7 +1695,9 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
         arg.known()
             .is_some_and(|text| match text.strip_prefix('-') {
                 Some(bundle) if !bundle.is_empty() && !bundle.starts_with('-') => {
-                    bundle.chars().any(|letter| short.contains(&letter))
+                    // A letter that takes the rest of the word as its value
+                    // (`-Itest`, `-rbenchmark`) ends the bundle.
+                    bundle_has_code(key, bundle, short)
                 }
                 _ => long.contains(&text),
             })
@@ -1509,7 +1708,7 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
     let code = code || read.runs_code;
     let file = read.script.is_some() || read.module.is_some();
     let stdin = args.iter().any(|arg| arg.known().is_some_and(is_stdin));
-    // Inline Python and JavaScript are read, not left to the caller.
+    // Inline Python, JavaScript and Ruby are read, not left to the caller.
     if let (Some(language), Some(source)) = (inline::language(key), inline::code(key, args)) {
         return Launch::Inline(language, source);
     }
@@ -1553,6 +1752,54 @@ pub(super) fn interpreter(key: &str, args: &[Arg], posix: bool, input: bool) -> 
         Launch::Reads(Reads::Interpreter)
     } else {
         Launch::Itself
+    }
+}
+
+/// The `rails` or `rake` that `key` and `args` start, with the arguments it is
+/// given: `rails` and `rake` themselves, `spring rails …` and `spring rake …`
+/// (a word of `spring` only known when it runs may be either, `Err`), and a
+/// Ruby that runs their file (`ruby bin/rails …`).
+pub(crate) fn rails_or_rake<'a>(
+    key: &str,
+    args: &'a [Arg],
+) -> Option<Result<(bool, &'a [Arg]), &'a Arg>> {
+    match key {
+        "rails" => Some(Ok((true, args))),
+        "rake" => Some(Ok((false, args))),
+        "spring" => {
+            let (first, rest) = args.split_first()?;
+            match first.known() {
+                Some("rails") => Some(Ok((true, rest))),
+                Some("rake") => Some(Ok((false, rest))),
+                Some(_) => None,
+                None => Some(Err(first)),
+            }
+        }
+        key if is_ruby(key) => {
+            let read = options(key, own_args(key, args));
+            let at = read.script.filter(|_| !read.searches)?;
+            let name = args.get(at)?.known()?;
+            let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+            // Where it is looked up is not told, and Windows and macOS read a
+            // file's name in any case.
+            let name = name.to_ascii_lowercase();
+            match name.as_str() {
+                "rails" => Some(Ok((true, args.get(at + 1..)?))),
+                "rake" => Some(Ok((false, args.get(at + 1..)?))),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether the program `key` runs `rake` with `args`: `rake`, `spring rake`,
+/// `ruby bin/rake`, and `rails` for a command it hands to rake.
+pub(crate) fn runs_rake(key: &str, args: &[Arg]) -> bool {
+    match rails_or_rake(key, args) {
+        Some(Ok((false, _))) => true,
+        Some(Ok((true, rest))) => !rails_own(rest),
+        _ => false,
     }
 }
 
@@ -2178,4 +2425,373 @@ fn fetched(spec: &str) -> bool {
         .split_once(':')
         .map(|(scheme, _)| scheme.to_ascii_lowercase());
     matches!(scheme.as_deref(), Some("http" | "https" | "jsr"))
+}
+
+/// rake's long options, by what they take: the code they run, a value that
+/// is not code, a value only given joined (`--jobs=4`), or nothing.
+const RAKE_CODE: [&str; 3] = ["execute", "execute-print", "execute-continue"];
+const RAKE_VALUE: [&str; 5] = [
+    "libdir",
+    "rakelibdir",
+    "rakelib",
+    "require",
+    "suppress-backtrace",
+];
+const RAKE_OPTIONAL: [&str; 9] = [
+    "describe",
+    "directory",
+    "jobs",
+    "job-stats",
+    "rakefile",
+    "tasks",
+    "where",
+    "backtrace",
+    "trace",
+];
+const RAKE_FLAG: [&str; 18] = [
+    "all",
+    "build-all",
+    "comments",
+    "dry-run",
+    "multitask",
+    "no-search",
+    "nosearch",
+    "prereqs",
+    "quiet",
+    "rules",
+    "silent",
+    "system",
+    "no-system",
+    "nosystem",
+    "verbose",
+    "version",
+    "no-deprecation-warnings",
+    "help",
+];
+
+/// The long option of rake that `name`, as written or by the start of its
+/// name only one option has, stands for (`--execute-p` is `--execute-print`,
+/// as `OptionParser` reads it); `None` for a name that no option or more than
+/// one starts with.
+fn rake_long(name: &str) -> Option<&'static str> {
+    let all = || {
+        RAKE_CODE
+            .iter()
+            .chain(&RAKE_VALUE)
+            .chain(&RAKE_OPTIONAL)
+            .chain(&RAKE_FLAG)
+            .copied()
+    };
+    if let Some(exact) = all().find(|known| *known == name) {
+        return Some(exact);
+    }
+    let mut starts = all().filter(|known| !name.is_empty() && known.starts_with(name));
+    let first = starts.next()?;
+    starts.next().is_none().then_some(first)
+}
+
+/// What rake's options say: the code `-e` and its kin run, the files,
+/// folders and libraries its options name (`-f`, `-C`, `-R`, `-I`), and
+/// whether the line has an option the guard cannot place, a word only known
+/// when it runs, or a library to load (`-r`).
+#[derive(Default)]
+pub(crate) struct RakeOptions {
+    pub(crate) pieces: Vec<Arg>,
+    pub(crate) paths: Vec<Arg>,
+    /// The values of `-R` and `--rakelibdir`, lists of folders.
+    pub(crate) lists: Vec<Arg>,
+    pub(crate) unplaced: bool,
+}
+
+/// Read the options of rake in `args`. They are read as `OptionParser` reads
+/// them: a short one in a bundle (`-qe CODE`), taking the rest of its word,
+/// or the next word, as its value when it needs one (`e`, `p`, `E`, `I`,
+/// `R`, `r`); one that may have a value (`D`, `C`, `j`, `f`, `T`, `W`, and
+/// `--describe`, `--directory`, `--jobs`, `--job-stats`, `--rakefile`,
+/// `--tasks`, `--where`: those written `-f [FILE]`) takes the rest of its
+/// word, or the next word when that does not start with a dash, while
+/// `--trace=[OUT]` and `--backtrace=[OUT]` take only what follows an `=`; a
+/// long one is read by any start of its name only it has.
+pub(crate) fn rake_options(args: &[Arg]) -> RakeOptions {
+    let mut found = RakeOptions::default();
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else {
+            found.unplaced = true;
+            return found;
+        };
+        if text == "--" {
+            break;
+        }
+        // The value an option that may have one takes: the next word, when it
+        // does not start with a dash.
+        let placed = |iter: &mut std::iter::Peekable<std::slice::Iter<'_, Arg>>| match iter.peek() {
+            Some(next) if next.known().is_some_and(|word| !word.starts_with('-')) => {
+                iter.next().cloned()
+            }
+            Some(next) if next.known().is_none() => iter.next().cloned(),
+            _ => None,
+        };
+        if let Some(long) = text.strip_prefix("--") {
+            let (name, value) = long
+                .split_once('=')
+                .map_or((long, None), |(name, value)| (name, Some(value)));
+            let Some(name) = rake_long(name) else {
+                found.unplaced = true;
+                return found;
+            };
+            if name == "require" {
+                found.unplaced = true;
+                return found;
+            }
+            let given = value.map(|value| Arg::Known(value.to_string()));
+            let value = if RAKE_CODE.contains(&name) || RAKE_VALUE.contains(&name) {
+                given.or_else(|| iter.next().cloned())
+            } else if RAKE_OPTIONAL.contains(&name) && !matches!(name, "backtrace" | "trace") {
+                given.or_else(|| placed(&mut iter))
+            } else {
+                given
+            };
+            if RAKE_CODE.contains(&name) {
+                found.pieces.extend(value);
+            } else if matches!(name, "rakelibdir" | "rakelib") {
+                found.lists.extend(value);
+            } else if matches!(name, "libdir" | "rakefile" | "directory") {
+                found.paths.extend(value);
+            }
+        } else if let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) {
+            for (at, letter) in bundle.char_indices() {
+                let rest = &bundle[at + letter.len_utf8()..];
+                match letter {
+                    'e' | 'p' | 'E' | 'I' | 'R' | 'r' => {
+                        if letter == 'r' {
+                            found.unplaced = true;
+                            return found;
+                        }
+                        let value = if rest.is_empty() {
+                            iter.next().cloned()
+                        } else {
+                            Some(Arg::Known(rest.to_string()))
+                        };
+                        if matches!(letter, 'e' | 'p' | 'E') {
+                            found.pieces.extend(value);
+                        } else if letter == 'R' {
+                            found.lists.extend(value);
+                        } else {
+                            found.paths.extend(value);
+                        }
+                        break;
+                    }
+                    'D' | 'C' | 'j' | 'f' | 'T' | 'W' => {
+                        let value = if rest.is_empty() {
+                            placed(&mut iter)
+                        } else {
+                            Some(Arg::Known(rest.to_string()))
+                        };
+                        if matches!(letter, 'C' | 'f') {
+                            found.paths.extend(value);
+                        }
+                        break;
+                    }
+                    'A' | 'B' | 'n' | 'm' | 'N' | 'P' | 'q' | 's' | 'g' | 'G' | 't' | 'v' | 'V'
+                    | 'X' | 'h' | 'H' => {}
+                    _ => {
+                        found.unplaced = true;
+                        return found;
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// `rake -e CODE` (`--execute`, and `-p`, `--execute-print`, `-E`,
+/// `--execute-continue`, with the code joined or after `=`) runs Ruby code,
+/// read as `ruby -e` reads it but never whole: rake loads its own libraries
+/// first, and `-E` goes on to the Rakefile. Any other rake line runs the
+/// workspace's Rakefile, its own business, and the files, folders and
+/// libraries its options name are judged by where they are (see
+/// [`rake_options`]). An option the guard cannot place, a word only known
+/// when it runs, and a library to load (`-r`) are code it does not read.
+pub(super) fn rake(args: &[Arg]) -> Launch {
+    let read = rake_options(args);
+    if read.unplaced {
+        return Launch::Reads(Reads::Interpreter);
+    }
+    if let Some(launch) = template(args) {
+        return launch;
+    }
+    if read.pieces.is_empty() {
+        return Launch::Itself;
+    }
+    Launch::Inline(
+        inline::Language::Ruby,
+        inline::Code {
+            pieces: read.pieces,
+            ..inline::Code::default()
+        },
+    )
+}
+
+/// The value of a `LOCATION=…` argument, the name in any case (Windows reads
+/// the names of its variables so).
+fn location_argument(text: &str) -> Option<&str> {
+    let (name, value) = text.split_once('=')?;
+    name.eq_ignore_ascii_case("LOCATION").then_some(value)
+}
+
+/// Whether a word of `args` is the rake task of a template, with the
+/// arguments a task may be given (`app:template[x]`).
+fn names_template(args: &[Arg]) -> bool {
+    args.iter().any(|arg| {
+        arg.known().is_some_and(|text| {
+            // A task by its scope (`rake:app:template`, `^app:template`).
+            let task = text.split('[').next().unwrap_or(text);
+            let task = task.trim_start_matches('^');
+            let task = task.strip_prefix("rake:").unwrap_or(task);
+            matches!(task, "app:template" | "rails:template")
+        })
+    })
+}
+
+/// `rake rails:template LOCATION=URL` and `rails app:template LOCATION=URL`
+/// run the template at `LOCATION`: a download when it is a URL, code the
+/// guard does not read otherwise.
+fn template(args: &[Arg]) -> Option<Launch> {
+    if !names_template(args) {
+        return None;
+    }
+    args.iter().find_map(|arg| {
+        let location = location_argument(arg.known()?)?;
+        Some(template_at(location))
+    })
+}
+
+/// `rake app:template` and `rails app:template` read `LOCATION` from the
+/// environment too, when no argument gives it: the launch of the template it
+/// names (one only known when it runs is code the guard does not read).
+pub(crate) fn template_from(args: &[Arg], location: Option<&Arg>) -> Option<Launch> {
+    let location = location?;
+    let given = args.iter().any(|arg| {
+        arg.known()
+            .is_some_and(|text| location_argument(text).is_some())
+    });
+    if !names_template(args) || given {
+        return None;
+    }
+    Some(match location.known() {
+        Some(text) => template_at(text),
+        None => Launch::Unread(location.clone()),
+    })
+}
+
+/// The launch of a template at `location`.
+fn template_at(location: &str) -> Launch {
+    if fetched(location) && !location.starts_with("jsr:") {
+        Launch::Downloaded
+    } else {
+        Launch::Reads(Reads::Interpreter)
+    }
+}
+
+/// Rails' own commands, which it runs itself; anything else it hands to
+/// rake, with its options.
+const RAILS_COMMANDS: [&str; 24] = [
+    "server",
+    "s",
+    "generate",
+    "g",
+    "new",
+    "test",
+    "t",
+    "console",
+    "c",
+    "runner",
+    "r",
+    "dbconsole",
+    "db",
+    "routes",
+    "credentials",
+    "destroy",
+    "d",
+    "plugin",
+    "version",
+    "help",
+    "notes",
+    "secret",
+    "initializers",
+    "-h",
+];
+
+/// The arguments rake reads in a line of `key`: its own, and those `rails`
+/// hands it for a command that is not Rails' own.
+pub(crate) fn rake_arguments<'a>(key: &str, args: &'a [Arg]) -> Option<&'a [Arg]> {
+    match rails_or_rake(key, args) {
+        Some(Ok((false, rest))) => Some(rest),
+        Some(Ok((true, rest))) if !rails_own(rest) => Some(rest),
+        _ => None,
+    }
+}
+
+/// Whether the first word of `rails`' arguments is a command of its own.
+fn rails_own(args: &[Arg]) -> bool {
+    args.first().and_then(Arg::known).is_some_and(|word| {
+        RAILS_COMMANDS.contains(&word) || word == "--version" || RAILS_NAMESPACED.contains(&word)
+    })
+}
+
+/// The commands of rails of its own that stand in a namespace (`rails
+/// credentials:edit`), where a namespace of rake's (`db:migrate`) is rake's.
+const RAILS_NAMESPACED: [&str; 7] = [
+    "credentials:edit",
+    "credentials:show",
+    "credentials:diff",
+    "credentials:fetch",
+    "encrypted:edit",
+    "encrypted:show",
+    "db:system:change",
+];
+
+/// `rails runner CODE` (`r`) and `rails console` (`c`) run Ruby, with the
+/// application loaded first: code the guard does not read. `rails new` runs
+/// the template its `-m` names, a download when it is a URL. Any other
+/// command not Rails' own (`rails db:migrate`, `rails -e CODE`) it hands to
+/// rake with its options, which are read as rake's.
+pub(super) fn rails(args: &[Arg]) -> Launch {
+    let first = args.first().and_then(Arg::known);
+    match first {
+        Some("runner" | "r" | "console" | "c" | "dbconsole" | "db") => {
+            Launch::Reads(Reads::Interpreter)
+        }
+        Some("new") => rails_template(args).unwrap_or(Launch::Itself),
+        // `rails plugin new NAME -m TEMPLATE` runs the template too.
+        Some("plugin") if args.get(1).and_then(Arg::known) == Some("new") => {
+            rails_template(args).unwrap_or(Launch::Itself)
+        }
+        _ if rails_own(args) => Launch::Itself,
+        _ => rake(args),
+    }
+}
+
+/// The template `rails new` is given with `-m`, `-mURL`, `--template URL` or
+/// `--template=URL`.
+fn rails_template(args: &[Arg]) -> Option<Launch> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let text = arg.known()?;
+        let value = if let Some(joined) = text.strip_prefix("--template=") {
+            Some(joined.to_string())
+        } else if let Some(joined) = text.strip_prefix("-m").filter(|rest| !rest.is_empty()) {
+            Some(joined.to_string())
+        } else if matches!(text, "-m" | "--template") {
+            Some(iter.next()?.text().to_string())
+        } else {
+            None
+        };
+        if let Some(location) = value {
+            return Some(template_at(&location));
+        }
+    }
+    None
 }

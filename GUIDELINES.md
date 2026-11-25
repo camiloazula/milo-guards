@@ -20,8 +20,8 @@ that guards build on, and the front door:
   `RuleName` trait with its stable wire names), the path model, and a test kit
   behind the `testing` feature. [Its design](docs/design/core.md).
 - `crates/code` (`milo-guards-code`) - a reader, not a guard: `read` and
-  `understand`. It reads Python and JavaScript and says what the code is
-  certain to do, or that it does not understand it. It judges nothing; the
+  `understand`. It reads Python, JavaScript and Ruby and says what the code
+  is certain to do, or that it does not understand it. It judges nothing; the
   shell guard builds on it for inline code, behind its `inline` feature, and
   the script guard for the code it judges. It shows its own tests the count
   of the work its parses do behind its `testing` feature, which is not for
@@ -43,9 +43,9 @@ that guards build on, and the front door:
   a text with a table of credential shapes and returns what it holds and where,
   masked, never the secret. [Its design](docs/design/secrets.md).
 - `crates/script` (`milo-guards-script`) - the script guard, `judge`. It
-  judges Python or JavaScript code an agent runs directly, act by act, with
-  the shell guard's rule names and reasons; a program the code starts is
-  `run_program`, its command line for the caller to ask the shell guard
+  judges Python, JavaScript or Ruby code an agent runs directly, act by act,
+  with the shell guard's rule names and reasons; a program the code starts
+  is `run_program`, its command line for the caller to ask the shell guard
   about. [Its design](docs/design/script.md).
 - `crates/guards` (`milo-guards`) - the one crate a caller depends on.
   It re-exports each guard behind a feature; `secrets` is the one that is off by

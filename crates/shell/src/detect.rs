@@ -2,9 +2,9 @@
 //! and judges every path by where it resolves.
 
 use crate::launch::{
-    after_run, cluster, find_targets, fish_codes, is_interpreter, is_node, is_shell, is_stdin,
-    long_option, options, own_args, powershell_file, shell_family, single_dash, uv_script, Dashed,
-    FishCodes, Options, BUN_VALUES, DENO_VALUES,
+    after_run, cluster, find_targets, fish_codes, is_interpreter, is_node, is_ruby, is_shell,
+    is_stdin, loads_ruby_libraries, long_option, options, own_args, powershell_file, shell_family,
+    single_dash, uv_script, Dashed, FishCodes, Options, BUN_VALUES, DENO_VALUES,
 };
 use crate::located::{Ident, Origin, Owned};
 use crate::path::{self, Access, Place, Resolver};
@@ -15,6 +15,7 @@ use milo_guards_core::spelling::glob;
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::unit::{
     may_split, operands, plain, unknown_start, Arg, Between, Flagged, Importing, Reads, Scope,
@@ -670,7 +671,7 @@ struct Checker<'a> {
     lengths: HashMap<usize, usize>,
     /// The `Get-Process` that starts a pipeline, read when a `Stop-Process`
     /// first asks for it.
-    pipelines: HashMap<usize, Option<std::rc::Rc<processes::Pipeline>>>,
+    pipelines: HashMap<usize, Option<Rc<processes::Pipeline>>>,
     /// Where secrets are read and where they go, for the rule that finds
     /// them sent away.
     flow: send::Flow,
@@ -889,6 +890,19 @@ impl Checker<'_> {
     /// had not. A code in a function body or a loop runs again after any
     /// `cd` of the line, so the folder is not known when the line has one.
     fn imports_in_workspace(&self, code: &Importing) -> bool {
+        // A project a variable names in another case than a POSIX machine
+        // reads is none there.
+        if code.windows_only && code.shell == Shell::Posix && !self.resolver.windows_machine() {
+            return true;
+        }
+        // Code in a body that runs later is given the environment the whole
+        // line sets, not the one before it.
+        if code.late && self.split.environment_set_later() {
+            return false;
+        }
+        if !code.folder {
+            return true;
+        }
         let moved = Arg::Unknown("where the line moves to".to_string());
         let dir = if code.repeated && self.split.ever_moves() {
             Some(&moved)
@@ -899,7 +913,7 @@ impl Checker<'_> {
             self.resolver.place(
                 dir,
                 &Arg::Known(".".to_string()),
-                Shell::Posix,
+                code.shell,
                 false,
                 Access::Item
             ),
@@ -1210,6 +1224,7 @@ impl Checker<'_> {
         self.reads(unit, unit.reads);
         self.secrets(at, unit, &key);
         if runs {
+            self.ruby_loaders(unit, &key);
             self.write_then_run(unit, &key);
             self.program_then_run(unit);
             self.startup_then_run(unit, Some(&key));
@@ -1875,12 +1890,134 @@ impl Checker<'_> {
         }
     }
 
+    /// The variables Ruby and its tools load code through, which any program
+    /// may hand to a Ruby it starts: `RUBYOPT` for the libraries and load
+    /// paths it names (`-r`, `-I`, `--require`; its other options that
+    /// change nothing about what is loaded are let be), the others for the
+    /// folders and files they name. A path outside the workspace, an option
+    /// the guard cannot place and a value only known when it runs are code it
+    /// does not read; `RAKEOPT` is rake's options, which it does not place.
+    fn ruby_loaders(&mut self, unit: &Unit, key: &str) {
+        // Windows reads the names of variables in any case, a POSIX machine
+        // as written.
+        let windows = unit.shell != Shell::Posix || self.resolver.windows_machine();
+        let separator = if windows { ';' } else { ':' };
+        // Each is read for every unit: at most as many as a line notes.
+        let rake = crate::launch::runs_rake(key, &unit.args);
+        let (over, over_other) = unit.argument_variables.ruby_overflow();
+        if over || (over_other && windows) {
+            self.add(Rule::Unknown, LOADS_THROUGH, None);
+        }
+        for (name, value) in unit.argument_variables.ruby_values() {
+            let Some(loader) = crate::unit::ruby_loader(name, windows) else {
+                continue;
+            };
+            let Some(text) = value.known() else {
+                self.add(Rule::Unknown, LOADS_THROUGH, Some(value));
+                continue;
+            };
+            match loader {
+                "RAKEOPT" => {
+                    if rake && !text.trim().is_empty() {
+                        self.add(Rule::Unknown, LOADS_THROUGH, Some(value));
+                    }
+                }
+                // The file RubyGems evaluates is a project (see
+                // `launch::project_folders`).
+                "RUBYGEMS_GEMDEPS" => {}
+                // JRuby's and TruffleRuby's are read as `RUBYOPT` is: a
+                // switch of theirs the guard cannot place (`-J…`) is unknown.
+                "RUBYOPT" | "JRUBY_OPTS" | "TRUFFLERUBYOPT" => match rubyopt_loads(text) {
+                    None => self.add(Rule::Unknown, LOADS_THROUGH, Some(value)),
+                    Some(loads) => {
+                        for (is_list, load) in loads {
+                            // A library by name is one of the installed ones.
+                            if !is_list && !ruby_path(&load) {
+                                continue;
+                            }
+                            let parts = if is_list {
+                                load.split(separator).map(str::to_string).collect()
+                            } else {
+                                vec![load]
+                            };
+                            for part in parts.into_iter().filter(|part| !part.is_empty()) {
+                                let part = Arg::Known(part);
+                                self.runs_outside(unit, &part, false, LOADS_OUTSIDE, true);
+                            }
+                        }
+                    }
+                },
+                _ => {
+                    for path in text.split(separator).filter(|path| !path.is_empty()) {
+                        let path = Arg::Known(path.to_string());
+                        self.runs_outside(unit, &path, false, LOADS_OUTSIDE, true);
+                    }
+                }
+            }
+        }
+    }
+
     /// A shell or interpreter that runs a script the same line writes, so
     /// what it does is not in the line. PowerShell runs a file by `-File`
     /// (`pwsh`, a first word that is not a parameter, too) and
     /// `Invoke-Command -FilePath`, and a name with no extension may be the
     /// `.ps1` it tries first.
     fn write_then_run(&mut self, unit: &Unit, key: &str) {
+        // The folder ruby's `-C`, `-X` and `-x` move to, when only known when
+        // it runs.
+        if is_ruby(key) {
+            let dirs = options(key, own_args(key, &unit.args)).dirs;
+            // Each moves from where the one before it landed.
+            let mut landed: Option<Arg> = None;
+            for (at, dir) in dirs.iter().enumerate() {
+                if at >= crate::launch::MOST_MOVES {
+                    self.add(Rule::Unknown, LOADS_OUTSIDE, Some(dir));
+                    break;
+                }
+                let dir = match &landed {
+                    Some(_) => path::within(landed.as_ref(), dir, unit.shell),
+                    None => dir.clone(),
+                };
+                if dir.known().is_none() {
+                    self.add(Rule::Unknown, LOADS_OUTSIDE, Some(&dir));
+                } else {
+                    self.runs_outside(unit, &dir, true, LOADS_OUTSIDE, true);
+                }
+                landed = Some(dir);
+            }
+        }
+        // The configuration file `gem` reads first is read as `GEMRC` is.
+        if crate::launch::is_gem(key) {
+            for file in crate::launch::gem_config_files(&unit.args) {
+                self.runs_outside(unit, &file, false, LOADS_OUTSIDE, true);
+            }
+        }
+        // The files, folders and libraries rake's options name.
+        if let Some(args) = crate::launch::rake_arguments(key, &unit.args) {
+            let read = crate::launch::rake_options(args);
+            for path in read.paths {
+                self.runs_outside(unit, &path, false, LOADS_OUTSIDE, true);
+            }
+            // `-R` takes a list of folders.
+            let separator = if unit.shell == Shell::Posix && !self.resolver.windows_machine() {
+                ':'
+            } else {
+                ';'
+            };
+            for list in read.lists {
+                let parts = match list.known() {
+                    Some(text) => text
+                        .split(separator)
+                        .filter(|part| !part.is_empty())
+                        .map(|part| Arg::Known(part.to_string()))
+                        .collect(),
+                    None => vec![list],
+                };
+                for part in parts {
+                    self.runs_outside(unit, &part, false, LOADS_OUTSIDE, true);
+                }
+            }
+        }
         let file = match key {
             "powershell" | "pwsh" => powershell_file(&unit.args),
             "invoke-command" if unit.shell == Shell::PowerShell => Params::read(&unit.args)
@@ -1896,7 +2033,13 @@ impl Checker<'_> {
                 self.extension_then_run(unit, &file);
             }
             if self.found.len() == before {
-                self.runs_outside(unit, &file);
+                self.runs_outside(
+                    unit,
+                    &file,
+                    true,
+                    "runs a script outside the workspace",
+                    false,
+                );
             }
             return;
         }
@@ -1909,17 +2052,43 @@ impl Checker<'_> {
         }
         // `node -r ./s.js main.js`: a module loaded before the script runs as
         // the script does.
-        for module in preloaded(key, &unit.args, unit.shell) {
+        let semicolon = unit.shell != Shell::Posix || self.resolver.windows_machine();
+        // After a `-C`, what is relative is from the folder it moved to.
+        let moved = crate::launch::ruby_moved(key, unit);
+        for module in preloaded(key, &unit.args, unit.shell, semicolon) {
             self.runs_written(unit, &module, unit.dir.as_ref());
+            // `ruby -r /tmp/x` and `-I /tmp -r x` load the file there, which
+            // is not the workspace's own code: `-r/tmp/x` too.
+            if loads_ruby_libraries(key) {
+                let module = match moved {
+                    Some(_) => path::within(moved.as_ref(), &module, unit.shell),
+                    None => module,
+                };
+                self.runs_outside(unit, &module, false, LOADS_OUTSIDE, true);
+            }
         }
         for script in script_operands(key, &unit.args, unit.shell) {
+            let from_moved;
+            let script: &Arg = match moved {
+                Some(_) => {
+                    from_moved = path::within(moved.as_ref(), &script, unit.shell);
+                    &from_moved
+                }
+                None => &script,
+            };
             let before = self.found.len();
-            self.runs_written(unit, &script, unit.dir.as_ref());
+            self.runs_written(unit, script, unit.dir.as_ref());
             // `source` and `.` read the shell's own settings (`source
             // ~/.nvm/nvm.sh`) as often as anything; what they read is judged
             // as a read.
             if self.found.len() == before && !matches!(key, "source" | ".") {
-                self.runs_outside(unit, &script);
+                self.runs_outside(
+                    unit,
+                    script,
+                    true,
+                    "runs a script outside the workspace",
+                    false,
+                );
             }
         }
     }
@@ -1928,8 +2097,17 @@ impl Checker<'_> {
     /// every workspace folder and temporary folder (`bash ~/.ssh/x`,
     /// `python3 /opt/x.py`): it is not the workspace's own code, which a
     /// script file in the workspace is, and the guard does not read it. A
-    /// path only known when it runs is said so elsewhere.
-    fn runs_outside(&mut self, unit: &Unit, script: &Arg) {
+    /// path only known when it runs is said so elsewhere. A library a Ruby
+    /// is told to load first (`ruby -r /tmp/x`) is code the line does not
+    /// show wherever it is, a temporary folder too (`temp_ok` is false).
+    fn runs_outside(
+        &mut self,
+        unit: &Unit,
+        script: &Arg,
+        temp_ok: bool,
+        why: &'static str,
+        folder: bool,
+    ) {
         // An init script is judged as the program it is; a relative name
         // after a `cd` is in the folder the `cd` moved to, which the line's
         // own rules judge.
@@ -1945,28 +2123,26 @@ impl Checker<'_> {
             return;
         }
         let place = self.place(unit.shell, unit.scope(), script, Access::Item);
+        // A folder given as an argument is one of the workspace, not one that
+        // holds it (`..`).
         let ours = matches!(
             place,
             Place::Inside
-                | Place::Workspace { .. }
-                | Place::Temp { .. }
+                | Place::Workspace { exact: true }
                 | Place::Null
-                | Place::Unknown
                 | Place::Sensitive(_, milo_guards_core::Sensitivity::History)
-        );
+        ) || (!folder && matches!(place, Place::Workspace { .. }))
+            || (temp_ok && matches!(place, Place::Temp { .. } | Place::Unknown));
         // A script read from the line's input is what the rules of the
         // input judge (`runs commands read from its input`, a download piped
-        // in).
-        let input = matches!(
-            script.known(),
-            Some("/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
-        );
-        if !ours && !input {
-            self.add(
-                Rule::Unknown,
-                "runs a script outside the workspace",
-                Some(script),
+        // in); a library Ruby is told to load from it is not read by them.
+        let input = temp_ok
+            && matches!(
+                script.known(),
+                Some("/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
             );
+        if !ours && !input {
+            self.add(Rule::Unknown, why, Some(script));
         }
     }
 
@@ -3141,12 +3317,12 @@ fn separators(shell: Shell) -> &'static [char] {
 /// `--experimental-loader` before the script, php's `auto_prepend_file`, the
 /// libraries ruby's `-r` and perl's `-M` load, and bun's and deno's
 /// `--preload`, `-r`, `--require` and `--import` anywhere before a `--`.
-fn preloaded(key: &str, args: &[Arg], shell: Shell) -> Vec<Arg> {
+fn preloaded(key: &str, args: &[Arg], shell: Shell, semicolon: bool) -> Vec<Arg> {
     if is_node(key) || key == "php" {
         return options(key, args).preloads;
     }
-    if key == "ruby" || key == "perl" {
-        return libraries(key, &options(key, args), shell);
+    if loads_ruby_libraries(key) || key == "perl" {
+        return libraries(key, &options(key, args), shell, semicolon);
     }
     if key != "bun" && key != "deno" {
         return Vec::new();
@@ -3174,8 +3350,19 @@ fn preloaded(key: &str, args: &[Arg], shell: Shell) -> Vec<Arg> {
 /// each `-I` folder, with its extension (`-r s` is `s.rb`, `-MFoo::Bar=x` is
 /// `Foo/Bar.pm`), and for ruby a path (`-r ./s`, `-r/tmp/s.rb`) from where
 /// the line is.
-fn libraries(key: &str, read: &Options, shell: Shell) -> Vec<Arg> {
+fn libraries(key: &str, read: &Options, shell: Shell, semicolon: bool) -> Vec<Arg> {
     let mut found = Vec::new();
+    let includes = include_folders(key, read, semicolon);
+    // Each library is looked up in each folder: past a count of those the
+    // lookups are too many to place, and what is loaded is only known when
+    // it runs.
+    if read.requires.len().saturating_mul(includes.len()) > MOST_LOOKUPS {
+        found.push(Arg::Unknown("the libraries and load paths".to_string()));
+        if loads_ruby_libraries(key) {
+            found.extend(includes);
+        }
+        return found;
+    }
     for library in &read.requires {
         let Some(text) = library.known() else {
             found.push(library.clone());
@@ -3193,20 +3380,123 @@ fn libraries(key: &str, read: &Options, shell: Shell) -> Vec<Arg> {
         } else {
             format!("{text}.rb")
         };
-        let path = key == "ruby"
-            && (name.starts_with("./") || name.starts_with("../") || name.starts_with('/'));
+        let path = loads_ruby_libraries(key) && ruby_path(&name);
         if path {
             found.push(Arg::Known(name));
             continue;
         }
-        for folder in &read.includes {
+        for folder in &includes {
             found.push(match folder.known() {
                 Some(folder) => Arg::Known(format!("{}/{name}", folder.trim_end_matches('/'))),
                 None => folder.clone(),
             });
         }
     }
+    // The folders `-I` puts first are where the code a library may name is.
+    if loads_ruby_libraries(key) {
+        found.extend(includes);
+    }
     found
+}
+
+/// The most lookups of libraries in folders (`-r` times `-I`) of a line that
+/// are placed one by one.
+const MOST_LOOKUPS: usize = 256;
+
+/// The folders of the `-I`s of ruby and its kin, each value being a list of
+/// them (`-Ilib:test`, `;` on Windows); perl's is one.
+fn include_folders(key: &str, read: &Options, semicolon: bool) -> Vec<Arg> {
+    let separator = if semicolon { ';' } else { ':' };
+    read.includes
+        .iter()
+        .flat_map(|folder| match folder.known() {
+            Some(list) if loads_ruby_libraries(key) => list
+                .split(separator)
+                .filter(|part| !part.is_empty())
+                .map(|part| Arg::Known(part.to_string()))
+                .collect::<Vec<_>>(),
+            _ => vec![folder.clone()],
+        })
+        .collect()
+}
+
+/// Why a variable Ruby loads code through is code the guard does not read.
+const LOADS_THROUGH: &str = "loads code through the environment that the guard does not read";
+
+/// Why a library, a load path or a project file outside the workspace is
+/// code the guard does not read.
+const LOADS_OUTSIDE: &str = "loads Ruby code from outside the workspace";
+
+/// What `RUBYOPT`, a list of the switches Ruby takes, loads: each library
+/// its `-r` and `--require` name, and each list of folders its `-I` does, as
+/// `(is a list of folders, the text)`. Its switches that change nothing
+/// about what is loaded are let be (`-w`, `-v`, `-d`, `-W` and its level,
+/// `--yjit`, `--enable`, `--disable`, and the like); `None` for any other
+/// switch, which the guard cannot place.
+pub(crate) fn rubyopt_loads(text: &str) -> Option<Vec<(bool, String)>> {
+    let mut found = Vec::new();
+    let mut words = text.split_whitespace();
+    while let Some(word) = words.next() {
+        if let Some(library) = word.strip_prefix("--require=") {
+            found.push((false, library.to_string()));
+        } else if word == "--require" {
+            found.push((false, words.next()?.to_string()));
+        } else if word == "--enable" || word == "--disable" {
+            words.next();
+        } else if word.starts_with("--") {
+            let harmless = [
+                "--debug",
+                "--verbose",
+                "--yjit",
+                "--rjit",
+                "--zjit",
+                "--jit",
+            ]
+            .iter()
+            .any(|name| word.starts_with(name))
+                || word.starts_with("--enable=")
+                || word.starts_with("--disable=")
+                || word.starts_with("--enable-")
+                || word.starts_with("--disable-");
+            if !harmless {
+                return None;
+            }
+        } else {
+            let bundle = word.strip_prefix('-').filter(|bundle| !bundle.is_empty())?;
+            let mut next = 0;
+            for (at, letter) in bundle.char_indices() {
+                if at < next {
+                    continue;
+                }
+                let rest = &bundle[at + letter.len_utf8()..];
+                match letter {
+                    'w' | 'v' | 'd' => {}
+                    'W' => {
+                        next = at + 1 + crate::launch::ruby_tail('W', rest)?;
+                    }
+                    'r' | 'I' => {
+                        let value = if rest.is_empty() { words.next()? } else { rest };
+                        found.push((letter == 'I', value.to_string()));
+                        break;
+                    }
+                    _ => return None,
+                }
+            }
+        }
+    }
+    Some(found)
+}
+
+/// Whether `name`, a library of Ruby, is a path (Ruby's `require` expands a
+/// `~` and reads an absolute one as it is): rooted, home-relative or
+/// `./`-relative, with a drive or as a share.
+fn ruby_path(name: &str) -> bool {
+    name.starts_with(['/', '~', '\\'])
+        || name.starts_with("./")
+        || name.starts_with("../")
+        || name.starts_with(".\\")
+        || name.starts_with("..\\")
+        || path::drive_of(name).is_some()
 }
 
 /// The script a shell or interpreter runs from a file: its first operand

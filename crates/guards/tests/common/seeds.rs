@@ -149,6 +149,7 @@ fn seed(folder: &str, words: &[Word], text: &str, declared: &HashMap<String, u8>
         ("secrets", _) => (Target::Secrets, 0),
         ("code", "python" | "python2") => (Target::Code, language_choice(Language::Python, 0)),
         ("code", "javascript") => (Target::Code, language_choice(Language::JavaScript, 0)),
+        ("code", "ruby") => (Target::Code, language_choice(Language::Ruby, 0)),
         ("script", "python") => (
             Target::Script,
             language_choice(Language::Python, machine_named(at, declared, POSIX)),
@@ -156,6 +157,10 @@ fn seed(folder: &str, words: &[Word], text: &str, declared: &HashMap<String, u8>
         ("script", "javascript") => (
             Target::Script,
             language_choice(Language::JavaScript, machine_named(at, declared, POSIX)),
+        ),
+        ("script", "ruby") => (
+            Target::Script,
+            language_choice(Language::Ruby, machine_named(at, declared, POSIX)),
         ),
         _ => return None,
     };

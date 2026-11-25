@@ -2,16 +2,18 @@
 //!
 //! An agent refused code on a code tool can hand it to an interpreter on a
 //! shell line, so `script::judge(language, code)` and
-//! `shell::classify("python3 -c '<code>'")` (`node -e` for JavaScript) must
-//! agree, and neither guard knows of the other. The code is:
+//! `shell::classify("python3 -c '<code>'")` (`node -e` for JavaScript,
+//! `ruby -e` for Ruby) must agree, and neither guard knows of the other.
+//! The code is:
 //!
-//! - every `python`, `python2` and `javascript` case of the code reader's
-//!   case files (`crates/code/tests/cases/*.cases`, Python 2's judged as
-//!   Python), on a POSIX machine, a Mac and a Windows one;
+//! - every `python`, `python2`, `javascript` and `ruby` case of the code
+//!   reader's case files (`crates/code/tests/cases/*.cases`, Python 2's
+//!   judged as Python), on a POSIX machine, a Mac and a Windows one;
 //! - every POSIX line of the shell guard's inline case files
-//!   (`crates/shell/tests/cases/inline*.cases`) that is `python3 -c WORD` or
-//!   `node -e WORD` and nothing else, the word quoted whole: on the paths the
-//!   case names, and when that is a sample machine, on the other two too;
+//!   (`crates/shell/tests/cases/inline*.cases`) that is `python3 -c WORD`,
+//!   `node -e WORD` or `ruby -e WORD` and nothing else, the word quoted
+//!   whole: on the paths the case names, and when that is a sample machine,
+//!   on the other two too;
 //! - code made here: each act on files after one or two `chdir`s to places
 //!   risky and harmless from the start, reads and writes of what the kernel
 //!   serves, every act on paths the caller protects, names as a secret, or
@@ -140,7 +142,7 @@ const WINDOWS_MAPPED: &[(&str, &str, &str, &str)] = &[];
 /// that does not parse, and code the reader stops on past the work its
 /// grammar may do, is `unreadable` to the script guard, as such a line is to
 /// the shell guard, and `unknown` to the shell guard's inline reading.
-const MAPPED: [(&str, &str, &str, &str); 2] = [
+const MAPPED: [(&str, &str, &str, &str); 6] = [
     (
         "unreadable",
         "does not parse",
@@ -150,6 +152,30 @@ const MAPPED: [(&str, &str, &str, &str); 2] = [
     (
         "unreadable",
         "takes too long to read",
+        "unknown",
+        "runs code the guard does not read",
+    ),
+    (
+        "unreadable",
+        "has a heredoc word the grammar cannot hold",
+        "unknown",
+        "runs code the guard does not read",
+    ),
+    (
+        "unreadable",
+        "has more than the grammar's scanner holds",
+        "unknown",
+        "runs code the guard does not read",
+    ),
+    (
+        "unreadable",
+        "has an embedded document the grammar ends before Ruby does",
+        "unknown",
+        "runs code the guard does not read",
+    ),
+    (
+        "unreadable",
+        "has an escape Ruby reads longer than the grammar",
         "unknown",
         "runs code the guard does not read",
     ),
@@ -290,6 +316,7 @@ fn reader_cases() -> Result<Vec<Code>, String> {
             let language = match what {
                 "python" | "python2" => Language::Python,
                 "javascript" => Language::JavaScript,
+                "ruby" => Language::Ruby,
                 _ => continue,
             };
             // No shell line can carry a NUL, so such code has no line to
@@ -387,6 +414,8 @@ fn shell_cases() -> Result<Vec<Code>, String> {
                 (Language::Python, word)
             } else if let Some(word) = line.strip_prefix("node -e ") {
                 (Language::JavaScript, word)
+            } else if let Some(word) = line.strip_prefix("ruby -e ") {
+                (Language::Ruby, word)
             } else {
                 continue;
             };
@@ -715,6 +744,7 @@ fn line_of(language: Language, code: &str) -> String {
     match language {
         Language::Python => format!("python3 -c {word}"),
         Language::JavaScript => format!("node -e {word}"),
+        Language::Ruby => format!("ruby -e {word}"),
     }
 }
 
@@ -722,6 +752,7 @@ fn language_name(language: Language) -> &'static str {
     match language {
         Language::Python => "python",
         Language::JavaScript => "javascript",
+        Language::Ruby => "ruby",
     }
 }
 

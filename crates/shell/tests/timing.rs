@@ -17,11 +17,12 @@ use common::lines::{
     after, clients_after_a_big_group, cmd_commands_read_again, dash_c_chain, deep_traps,
     distinct_folders, dotglob_loops, doubled_names, finds_in_finds_of_heavy_arguments,
     input_redirects_over_many_units, listing_chain, long_alias, long_code, long_hidden_listings,
-    long_item_cmdlet_lines, many_definitions_that_may_not_run, many_functions_that_move_the_line,
-    names, names_set_many_times, nested_do_strings, nested_outputs, numbered,
-    one_function_defined_and_called_many_times, open_bracket_shapes, open_brackets,
-    redirects_and_substitutions, too_much_said, variable_chain, wide_traps, wrapper_shapes, Shape,
-    EXTENDED_GLOB, FIND_EXPRESSIONS, OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES, VBS_MARKERS,
+    long_item_cmdlet_lines, long_ruby_code, many_definitions_that_may_not_run,
+    many_functions_that_move_the_line, names, names_set_many_times, nested_do_strings,
+    nested_outputs, numbered, one_function_defined_and_called_many_times, open_bracket_shapes,
+    open_brackets, redirects_and_substitutions, too_much_said, variable_chain, wide_traps,
+    wrapper_shapes, Shape, EXTENDED_GLOB, FIND_EXPRESSIONS, OUTPUT_SHAPES, PACKAGE_RUNNERS,
+    VARIABLE_COPIES, VBS_MARKERS,
 };
 use common::{
     assert_linear_by, assert_within, at, filled, head, linear_by, posix, steady_by, under, windows,
@@ -2064,6 +2065,325 @@ fn writers_given_many_files_commands_or_libraries_are_read_in_linear_time() {
     }
 }
 
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn ruby_given_many_libraries_load_paths_and_folders_is_read_in_linear_time() {
+    let _serial = serial();
+    // Each `-r` is looked up in each `-I` folder, and each `-C` moves from the
+    // one before: the lookups and the moves are counted, and past a count the
+    // line is read once, so the time grows with the line and no faster.
+    let (shell, paths) = (Shell::Posix, posix());
+    let half = |size: usize, first: &str, second: &str, tail: &str| {
+        let each = (size - tail.len() - 8) / 2;
+        format!(
+            "ruby{}{}{tail}",
+            filled(first, each, 0),
+            filled(second, each, 0)
+        )
+    };
+    for (what, first, second) in [
+        ("libraries after load paths", " -Ia", " -rx"),
+        ("load paths after libraries", " -rx", " -Ia"),
+        ("folders after load paths", " -Ia", " -C a"),
+        ("libraries after folders", " -C a", " -rx"),
+        ("libraries and folders", " -rx -C a", " -Ia -X b"),
+    ] {
+        assert_linear(what, shell, &paths, |size| {
+            half(size, first, second, " x.rb")
+        });
+    }
+    assert_linear(
+        "one list of load paths and libraries",
+        shell,
+        &paths,
+        |size| {
+            let each = (size - 16) / 2;
+            format!(
+                "ruby -I {}{} x.rb",
+                filled("a:", each, 0),
+                filled(" -rx", each, 0)
+            )
+        },
+    );
+    assert_linear("folders", shell, &paths, |size| {
+        format!("ruby{} x.rb", filled(" -C a", size, 8))
+    });
+    assert_linear("folders with a project", shell, &paths, |size| {
+        format!("ruby{} -rbundler/setup x.rb", filled(" -C ..", size, 24))
+    });
+    assert_linear("configuration files of gem", shell, &paths, |size| {
+        format!("gem list{}", filled(" --config-file x", size, 8))
+    });
+    assert_linear("a variable set in many spellings", shell, &paths, |size| {
+        format!(
+            "{}ruby -rbundler/setup x.rb",
+            filled("Bundle_Gemfile=a bundle_gemfile=b ", size, 32)
+        )
+    });
+    assert_linear("a variable exported many times", shell, &paths, |size| {
+        format!(
+            "{}ruby -rbundler/setup x.rb",
+            filled("export bundle_gemfile=a; ", size, 32)
+        )
+    });
+    // Each `ruby -e` is read as code: the line holds as many as it can.
+    for (what, part) in [
+        ("commands of ruby -e", "ruby -e 'p 1'; "),
+        (
+            "commands of ruby -e that read a file",
+            "ruby -e \"File.read('a')\"; ",
+        ),
+        ("commands of ruby -e with arguments", "ruby -e 'p 1' x y; "),
+    ] {
+        assert_linear(what, shell, &paths, |size| filled(part, size, 0));
+    }
+    // A word that opens brace after brace and closes none is read for a brace
+    // expansion once, as an argument and as the program.
+    assert_linear("braces opened in an argument", shell, &paths, |size| {
+        format!("ruby -e 'p 1' '{}'", filled("{{a..", size, 16))
+    });
+    assert_linear("braces opened in a program", shell, &paths, |size| {
+        format!("'{}' x", filled("{{a..", size, 8))
+    });
+    assert_linear(
+        "braces opened in a word of an argument",
+        shell,
+        &paths,
+        |size| format!("ruby -e 'p 1' {}", filled("{{a..", size, 16)),
+    );
+    assert_linear(
+        "braces opened in a word of a program",
+        shell,
+        &paths,
+        |size| format!("{} x", filled("{{a..", size, 8)),
+    );
+    // Each call with an assignment in front of it is checked against the
+    // functions the line defines, once.
+    assert_linear("prefixed calls of many functions", shell, &paths, |size| {
+        let each = (size - 40) / 2;
+        let mut line = String::new();
+        let mut at = 0;
+        while line.len() < each {
+            let _ = write!(line, "f{at}() {{ :; }}; ");
+            at += 1;
+        }
+        let mut call = 0;
+        while line.len() < 2 * each {
+            let _ = write!(line, "A=1 f{} ; ", call % at);
+            call += 1;
+        }
+        format!("{line}trap 'ruby -e \"p 1\"' EXIT")
+    });
+    assert_linear("prefixed calls of a late function", shell, &paths, |size| {
+        format!("{}f() {{ ruby -e 'p 1'; }}", filled("A=1 f; ", size, 32))
+    });
+    // Each value of a variable Ruby loads code through is judged once, for the
+    // many commands after it that see it.
+    for (what, name, value) in [
+        ("JRUBY_OPTS set many times", "JRUBY_OPTS", "-w"),
+        ("GEM_HOME set many times", "GEM_HOME", "lib"),
+        ("RUBYOPT set many times", "RUBYOPT", "-rx"),
+        ("BUNDLE_GEMFILE set many times", "BUNDLE_GEMFILE", "G"),
+    ] {
+        assert_linear(what, shell, &paths, |size| {
+            let each = (size - 64) / 2;
+            let mut line = String::new();
+            let mut at = 0;
+            while line.len() < each {
+                let _ = write!(line, "export {name}={value}{at}; ");
+                at += 1;
+            }
+            line.push_str(&filled("x; ", each, 0));
+            line
+        });
+    }
+    // Values noted one by one and commands that move the line: each command
+    // is read against the few values Ruby reads, not all that were noted.
+    let powershell = paths_for(Shell::PowerShell);
+    let many = |size: usize, set: &dyn Fn(usize) -> String, run: &dyn Fn(usize) -> String| {
+        let each = (size - 64) / 2;
+        let mut line = String::new();
+        let mut at = 0;
+        while line.len() < each {
+            line.push_str(&set(at));
+            at += 1;
+        }
+        while line.len() < 2 * each {
+            line.push_str(&run(at));
+            at += 1;
+        }
+        line
+    };
+    assert_linear(
+        "a variable set many times, then folders",
+        shell,
+        &paths,
+        |size| {
+            many(size, &|at| format!("export TF_CLI_ARGS_a=v{at}; "), &|at| {
+                format!("cd /d{at}; x; ")
+            })
+        },
+    );
+    assert_linear(
+        "a variable set and a folder, interleaved",
+        shell,
+        &paths,
+        |size| {
+            let mut line = String::new();
+            let mut at = 0;
+            while line.len() < size - 64 {
+                let _ = write!(line, "export TF_CLI_ARGS_a=v{at}; cd /d{at}; x; ");
+                at += 1;
+            }
+            line
+        },
+    );
+    assert_linear(
+        "a variable set many times, then subshells",
+        shell,
+        &paths,
+        |size| {
+            many(size, &|at| format!("export TF_CLI_ARGS_a=v{at}; "), &|at| {
+                format!("(cd /d{at}; x); ")
+            })
+        },
+    );
+    assert_linear(
+        "a variable set many times, then folders, in PowerShell",
+        Shell::PowerShell,
+        &powershell,
+        |size| {
+            many(size, &|at| format!("$env:TF_CLI_ARGS_a='v{at}'; "), &|at| {
+                format!("cd C:\\d{at}; x; ")
+            })
+        },
+    );
+    assert_linear(
+        "loader values set, then many commands",
+        shell,
+        &paths,
+        |size| {
+            let mut line = String::new();
+            for at in 0..64 {
+                let _ = write!(line, "export RUBYLIB=/w{at}; ");
+            }
+            line.push_str(&filled("x; ", size, line.len() + 8));
+            line
+        },
+    );
+    // A value of many parts is only known when it runs, judged once, and so
+    // is a line of many values, in every spelling of the name.
+    let tail = |size: usize, head: &str| {
+        let mut line = head.to_string();
+        line.push_str(&filled("x; ", size, head.len() + 8));
+        line
+    };
+    assert_linear("a long list in RUBYLIB", shell, &paths, |size| {
+        tail(
+            size,
+            &format!("export RUBYLIB={}; ", filled("a:", size / 2, 0)),
+        )
+    });
+    assert_linear(
+        "a long list in RUBYLIB, in PowerShell",
+        Shell::PowerShell,
+        &powershell,
+        |size| {
+            tail(
+                size,
+                &format!("$env:RUBYLIB='{}'; ", filled("a;", size / 2, 0)),
+            )
+        },
+    );
+    assert_linear("many load paths in RUBYOPT", shell, &paths, |size| {
+        tail(
+            size,
+            &format!("export RUBYOPT='{}'; ", filled("-Ia ", size / 2, 0)),
+        )
+    });
+    assert_linear("many libraries in RUBYOPT", shell, &paths, |size| {
+        tail(
+            size,
+            &format!("export RUBYOPT='{}'; ", filled("-r./a ", size / 2, 0)),
+        )
+    });
+    assert_linear("64 values of many parts", shell, &paths, |size| {
+        let part = filled("a:", size / 2 / 64, 0);
+        let mut head = String::new();
+        for at in 0..64 {
+            let _ = write!(head, "export RUBYLIB=a{at}:{part}; ");
+        }
+        tail(size, &head)
+    });
+    assert_linear(
+        "a long list in one word of RUBYOPT",
+        shell,
+        &paths,
+        |size| {
+            tail(
+                size,
+                &format!("export RUBYOPT='-I{}'; ", filled("/a:", size / 2, 0)),
+            )
+        },
+    );
+    assert_linear(
+        "a long list with one semicolon in RUBYLIB",
+        shell,
+        &paths,
+        |size| {
+            tail(
+                size,
+                &format!("export RUBYLIB='{};'; ", filled("/a:", size / 2, 0)),
+            )
+        },
+    );
+    assert_linear(
+        "a long list in a word of RUBYOPT, in PowerShell",
+        Shell::PowerShell,
+        &powershell,
+        |size| {
+            tail(
+                size,
+                &format!("$env:RUBYOPT='-I{}'; ", filled("C:/a;", size / 2, 0)),
+            )
+        },
+    );
+    assert_linear("the most parts of a few values", shell, &paths, |size| {
+        let mut head = String::new();
+        for at in 0..4 {
+            let _ = write!(head, "export RUBYLIB=a{at}:{}; ", "a:".repeat(6));
+        }
+        tail(size, &head)
+    });
+    assert_linear("the most options of a few values", shell, &paths, |size| {
+        let mut head = String::new();
+        for at in 0..3 {
+            let _ = write!(head, "export RUBYOPT='{}'; ", format!("-I{at} ").repeat(10));
+        }
+        tail(size, &head)
+    });
+    assert_linear(
+        "every spelling of a loader, past the count",
+        shell,
+        &windows(),
+        |size| {
+            let mut head = String::new();
+            let mut at = 0;
+            while head.len() < size / 2 {
+                let _ = write!(head, "export RubyLib=v{at}; export RUBYLIB=w{at}; ");
+                at += 1;
+            }
+            tail(size, &head)
+        },
+    );
+    assert_linear("a library of many parts", shell, &paths, |size| {
+        format!("ruby -r{}bundler/setup x.rb", filled("a/../", size, 32))
+    });
+}
+
 // ---- `classify`, `explain` and the tree it draws, over the lines `robust.rs` reads ----
 
 /// How long the slowest of `classify`, `explain` and the tree `explain`
@@ -2825,7 +3145,7 @@ fn a_long_chain_of_nested_do_strings_is_read_quickly() {
 )]
 fn long_inline_code_is_read_in_linear_time() {
     let _serial = serial();
-    for line in long_code().0 {
+    for line in long_code().0.into_iter().chain(long_ruby_code()) {
         let took = took(&line, Shell::Posix, &posix());
         assert!(
             under(&head(&line), took, Duration::from_secs(2)),

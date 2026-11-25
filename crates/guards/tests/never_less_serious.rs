@@ -335,6 +335,7 @@ fn every_finding_of_every_case_stays_with_links_named() {
         let language = match kind.as_str() {
             "python" => Language::Python,
             "javascript" => Language::JavaScript,
+            "ruby" => Language::Ruby,
             _ => continue,
         };
         let code = record.text.clone().unwrap_or_default();

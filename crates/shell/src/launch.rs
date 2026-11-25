@@ -35,9 +35,10 @@ pub(crate) use find::{
 };
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global, Unread};
 pub(crate) use interpreters::{
-    after_run, cluster, code_options, dashed_options, fish_codes, is_interpreter, is_ipython,
-    is_node, is_python, is_shell, is_ts_node, long_option, options, own_args, perl_edits,
-    py_picks_three, shell_family, single_dash, valued_options, Dashed, FishCodes, Options,
+    after_run, cluster, code_options, dashed_options, fish_codes, is_gem, is_interpreter,
+    is_ipython, is_irb, is_node, is_python, is_ruby, is_shell, is_ts_node, loads_ruby_libraries,
+    long_option, options, own_args, perl_edits, py_picks_three, rake_arguments, rake_options,
+    ruby_tail, runs_rake, shell_family, single_dash, valued_options, Dashed, FishCodes, Options,
     BUN_VALUES, DENO_VALUES,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
@@ -46,7 +47,9 @@ use wrappers::{
     cmd, env, env_sets, folder_option, getopt, in_folder, powershell, rsh, runner, start,
     start_process, tmux, xargs, Getopt,
 };
-pub(crate) use wrappers::{powershell_file, uv_script, RUNNERS};
+pub(crate) use wrappers::{
+    gem_config_files, powershell_file, ruby_moved, uv_script, MOST_MOVES, RUNNERS,
+};
 
 /// How many wrappers may stand in front of a program before the line is
 /// too wrapped to read.
@@ -224,6 +227,9 @@ fn loads_foreign(key: &str, unit: &Unit, split: &Split) -> bool {
                 || inline::options_load_foreign_code(split.node_options.values())
         }
         Some(Language::Python) => inline::path_loads_foreign_code(&split.python_path),
+        // `ruby -r lib`, `-I dir`, `-x`: code it loads first, or reads
+        // otherwise, which the guard does not read.
+        Some(Language::Ruby) => !inline::ruby_reads_input(key, &unit.args),
         _ => false,
     }
 }
@@ -335,6 +341,10 @@ fn add_launched(
             split.push(unit);
             return;
         };
+        // `ruby -C DIR x.rb` runs the script in another folder.
+        if given.is_none() && is_ruby(&key) && ruby_moved(&key, &unit).is_some() {
+            split.starts_elsewhere();
+        }
         // The words a brace list makes are one more reading of a command,
         // not of one whose own change to the line they would make again or
         // undo (an option it sets, a variable, a folder, a name it defines):
@@ -396,6 +406,20 @@ fn add_launched(
             let launched = launch(&key, &unit, input);
             named::with_commands(split, &key, &unit, launched)
         };
+        // A runner that sets a project up from a file outside the workspace
+        // runs that file's code (`bundle exec --gemfile=/x/Gemfile`, `uv run
+        // --project /x`).
+        // `time PATH=/tmp/e f`, `repeat 2 PATH=/tmp/e f`: the assignments the
+        // word steps over are in front of the command after them.
+        if unit.shell == Shell::Posix && (key == "coproc" || key == "do" || starts_command(&key)) {
+            note_stepped_assignments(split, &unit.args);
+        }
+        for (folder, windows_only) in wrappers::project_folders(&key, &unit) {
+            split.project_file(&folder, unit.program.text(), unit.shell, windows_only);
+        }
+        if let Some(reason) = wrappers::bundle_note(&key, &unit) {
+            split.problem(Rule::Unknown, reason, Some(unit.program.text()));
+        }
         // The command `npm_config_call` sets runs once for each `npx`: its
         // readings are bounded as a line's own text is.
         if let Launch::Script(_, script, _) = &launched {
@@ -2044,6 +2068,44 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
 fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
     let args = &unit.args;
     let posix = unit.shell != Shell::Cmd;
+    // `rails`, `rake`, `spring rails`, `ruby bin/rails`: what they run, and the
+    // template `LOCATION` of the environment names.
+    match interpreters::rails_or_rake(key, args) {
+        Some(Err(word)) => return Launch::Unread(word.clone()),
+        Some(Ok((rails, rest))) => {
+            let launch = if rails {
+                interpreters::rails(rest)
+            } else {
+                interpreters::rake(rest)
+            };
+            // Every value `LOCATION` is given may be the template, the
+            // riskiest of them counts (a download, then any other).
+            let values = unit.argument_variables.ruby_values();
+            let (over, over_other) = unit.argument_variables.ruby_overflow();
+            let past = Arg::Unknown("variables set past what is read".to_string());
+            let mut template = None;
+            for location in values
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("LOCATION"))
+                .map(|(_, value)| *value)
+                .chain((over || over_other).then_some(&past))
+            {
+                if let Some(found) = interpreters::template_from(rest, Some(location)) {
+                    if matches!(found, Launch::Downloaded) {
+                        template = Some(found);
+                        break;
+                    }
+                    template.get_or_insert(found);
+                }
+            }
+            // What the arguments run first, or else the environment's.
+            return match (&launch, template) {
+                (Launch::Itself | Launch::Reads(_), Some(template)) => template,
+                _ => launch,
+            };
+        }
+        None => {}
+    }
     match key {
         // `sudo -D DIR` (`--chdir`) starts the command in `DIR`.
         "sudo" => sudo(args),
@@ -2359,7 +2421,10 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // Runners of a project's environment start the command they name,
         // as `uv run` does.
         "poetry" | "pdm" | "hatch" | "conda" | "mamba" | "micromamba" | "pixi" | "rye"
-        | "volta" | "mise" | "pipenv" => runner(key, unit),
+        | "volta" | "mise" | "pipenv" | "bundle" | "bundler" | "rbenv" | "gem" | "asdf" | "rvm"
+        | "rvm-exec" | "chruby-exec" => runner(key, unit),
+        // `rvm-shell 3.3 -c 'text'` runs the text in a shell.
+        "rvm-shell" if posix => wrappers::rvm_shell(args),
         // `corepack pnpm@9 dlx …` starts the package manager it names.
         "corepack" if packages::corepack_runs(args) => {
             Launch::Replace(Box::new(wrappers::running(unit, key, 0)))
@@ -2727,6 +2792,25 @@ fn command_after(args: &[Arg], mut at: usize, repeat: bool) -> Launch {
     } else {
         runs(args, Some(at))
     }
+}
+
+/// Note the command after the assignments a word that starts a command steps
+/// over (`time -p PATH=/tmp/e f`): it is a command with an assignment in front
+/// of it.
+fn note_stepped_assignments(split: &mut Split, args: &[Arg]) {
+    let Some(first) = args
+        .iter()
+        .take(8)
+        .position(|arg| arg.known().is_some_and(is_assignment))
+    else {
+        return;
+    };
+    let words: Vec<&str> = args[first..]
+        .iter()
+        .filter_map(Arg::known)
+        .skip_while(|word| is_assignment(word))
+        .collect();
+    split.note_prefixed(&words);
 }
 
 /// How many groups the words before what a `coproc` (or `time`, `!`,

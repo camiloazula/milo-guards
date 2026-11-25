@@ -302,8 +302,11 @@ argument of the program.
 
 **Package runners** come off too, with each runner's own options skipped:
 `npx`, `npm exec`, `pnpm dlx` (also `pnpx` and `pnx`, its aliases), `pnpm exec`,
-`yarn dlx`, `yarn exec`, `bunx`, `bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`. The
-program the runner names is judged, with a version after the package taken
+`yarn dlx`, `yarn exec`, `bunx`, `bun x`, `deno x`, `dx`, `uvx`, `uv tool run`, `uv run`, `pipx run`, and
+`gem exec`, which installs the gem first as `npx` installs a package. The
+program the runner names is judged (that a runner may download the package
+is not a finding of its own: the guard's policy for `npx`, which `gem exec`
+follows), with a version after the package taken
 off (`npx rimraf@5`). Where the runner names the package apart from the
 program (`npx -p pkg prog`, `uvx --from pkg prog`) the program is the one
 after the options. An option that takes a value is skipped with it, because
@@ -1994,6 +1997,22 @@ and npm's and npx's `--prefix` for what `npm exec` runs (npm 11 runs it where
 the line is). So `npm --prefix a/b/c exec rimraf ../..` is `delete`, as is
 `npm --prefix ~ exec rimraf .ssh`.
 
+A project the runner sets up from a file is code it runs: a `Gemfile` is Ruby
+bundler evaluates, and uv builds a project with its build backend. So a
+project named outside the workspace (`bundle exec --gemfile=/tmp/x/Gemfile`,
+`BUNDLE_GEMFILE=/tmp/x/Gemfile bundle exec`, `uv run --project /tmp/p`, `uv
+--directory /tmp/p run`) is `unknown`, `runs code from a project file outside
+the workspace`, unless the line has a finding of its own; it is judged with
+the directories, as an import of inline Python is, so after `cd /tmp` a
+relative one is outside too. One inside the workspace is as before. A runner
+with no such option sets up the project of where the line is, which is judged
+the same: `cd /tmp && bundle exec rake` and `cd /tmp && uv run pytest` are
+`unknown`, as is every subcommand of bundle but `version`, `help`, `config` and
+`init`, and none (`install`), with or without a `--gemfile` (`uv tool run`
+sets up none). A known limit: bundler and uv look for the project's file in
+the folders above the one they run in too, which the guard does not follow,
+so a project file in a folder above the workspace's, found from a folder of
+the workspace, is not seen.
 A redirect on a `cd` (`chdir`, `pushd`, `Set-Location`) is opened before the
 command runs, so its file is placed from the folder the command starts in, not
 the one it goes to: `cd sub < ../../.ssh/id_rsa` opens the same key `cat
@@ -4726,13 +4745,15 @@ the workspace folder that fits the name (`*git`, `?git`, `*\objects`), though
 
 ## Inline code
 
-Python and JavaScript given inline are read with their own tree-sitter
-grammars, by the `milo-guards-code` crate ([Code](code.md)), and judged with the
-same rules and the same path model as the shell commands that do the same. The
-shell guard finds the code on a line (`inline`, apart from the shell
-splitters) and turns what the reader found into its own units and findings
-(`inline/apply.rs`); it depends on the crate behind its `inline` feature, on by
-default. With the feature off the line is still found, but none of the code is
+Python, JavaScript and Ruby given inline are read with their own tree-sitter
+grammars, by the `milo-guards-code` crate ([Code](code.md)), and judged with
+the same rules and the same path model as the shell commands that do the
+same. The shell guard finds the code on a line (`inline`, apart from the
+shell splitters) and turns what the reader found into its own units and
+findings (`inline/apply.rs`); it depends on the crate behind its `inline`
+feature, on by default, and reads Ruby behind its `ruby` feature, on by
+default too (off, with `inline` on, a Ruby line is `unknown` as every inline
+line is without `inline`). With the feature off the line is still found, but none of the code is
 read and no grammar is built: every inline line is `unknown` with the reason
 `runs code the guard does not read fully`, whatever the code is (a delete in it
 is not said), and a module an option loads (`--import`, `-r`, `NODE_OPTIONS`,
@@ -4785,7 +4806,11 @@ questions are answered apart:
    (`NODE_OPTIONS=x; node -e …`, `HOME=/elsewhere; python3 -c …`) earlier in
    the line, nor any other way of setting a variable: `printf -v`, the
    variable of a `for` or `select` loop, an arithmetic assignment (`((X=1))`,
-   `((X++))`, `$((X=1))`) and a `${X:=v}` or `${X=v}` expansion. A variable
+   `((X++))`, `$((X=1))`) and a `${X:=v}` or `${X=v}` expansion; for code in
+   a loop, a function or a trap, which runs after the rest of the line, one
+   anywhere in the line, the variable of any `for` or `select` loop (whatever
+   its name: zsh ties `path` to `PATH`) and an assignment in front of a call
+   to a function the line defines too, decided once the line is read. A variable
    already exported (`PATH`, `HOME`, and whatever the caller has set) is
    changed for the interpreter, and which are is not known. Nor does the line
    change what the interpreter's name stands for before it: `alias`,
@@ -4955,6 +4980,118 @@ options are read by any prefix of their name that no other starts with
 (`--co`), and a word only known when it runs among its options makes the
 line unknown. The program a `-c` string starts is its first word with the
 quotes off, after any assignments and `exec`, `command` and the like.
+
+**Ruby.** `ruby -e CODE` is read the same way (also `ruby3.3` and any `ruby`
+of a version, `jruby` and `truffleruby`, which read its options), behind
+the guard's `ruby` feature (on by default, with `inline`): `-e` also in a bundle (`-we`) or
+joined (`-eCODE`), and several `-e`, which ruby joins with a line's end into
+one script, read as the one piece they are (a heredoc that one starts,
+another may end); `-n` and `-p`, the loops around the code, with it; `-C
+DIR`, which runs it from `DIR`; `-w`, `-W`, `-v`, `-l`, `-a`, `-0`, `-F`,
+`--verbose`, `--yjit` and `--enable` and `--disable` of a feature; CRuby
+reads the options after `-0`'s digits and `-W`'s level in the same word
+(`-0r./x` loads `./x`), so such a word is not read. An
+option that loads other code first or finds the code elsewhere (`-r`, `-I`,
+`-x`, `-S`, `-s`), one that reads the code in another encoding (`-E`, `-K`,
+`-U`, `--encoding`), `-i`, which edits the files it is given in place, and
+any other long option leave it not read: `unknown`, as before. Its input (a
+here-document, a here-string, `ruby -`) is read as code too, but after one
+of those options or `-C`. Read whole only as `ruby -e CODE` alone: no
+option, no argument, no assignment in front of it (`RUBYOPT` loads a
+library, `RUBYLIB` adds where one is looked up, and so does any variable
+the line sets, as for Python), no runner, and code the reader understands
+(the subset written for Ruby in [Code](code.md#the-strict-subset)), which
+loads nothing from the folder it runs in: `ruby -e 'puts 1+1'` is safe
+anywhere, if it is CRuby. `jruby` reads `.jrubyrc` and `.jruby.java_opts`
+there, whose JVM options run code (`-javaagent`), and `truffleruby` is held to
+the same; and `ruby` and a `ruby` of a version are too, because under rvm,
+rbenv or chruby the name `ruby` may be JRuby, which the guard cannot tell from
+the line: the code of each is read whole only in the workspace's folder, as
+inline Python is (`cd /tmp && ruby -e 'puts 1'` is `unknown`). `mruby` and
+`mirb`, the embedded Ruby, are interpreters of a standard library of their own,
+whose code is not read, as perl's and lua's are not. `irb` reads its input as Ruby, after the `.irbrc` it finds, so
+never whole, and not after `-r` or `-I`; `irb FILE` and `erb FILE` run a
+file of the workspace's own, as `ruby FILE` does; `erb` runs the Ruby of the
+template it reads from its input, which the guard does not read: `unknown`.
+`bundle exec CMD` (`bundler exec`, and past a version, `bundle _2.4.0_
+exec`) is a runner of the bundle's environment, as `poetry run` is: `CMD`
+is judged, and an interpreter it starts is read but never whole; with
+`--gemfile DIR/Gemfile` it is judged from `DIR` too, as `uv run --project`
+is. `rbenv exec CMD`, `asdf exec CMD`, `rvm VERSION do CMD` (`exec`) and
+`chruby-exec VERSION -- CMD` run `CMD`, and `gem exec PROGRAM` runs a gem's
+program (installing the gem first, as `npx` does): `PROGRAM` is judged. `rake
+-e CODE` (`--execute`, `-p`, `-E`) runs Ruby, read but never whole: rake loads
+its own libraries first. rake's options are read as OptionParser reads them:
+a short one in a bundle (`-qe CODE`) takes the rest of its word or the next as
+its value when it needs one (`e p E I R r`), only the rest of its word when it
+may have one (`D C j f T W`); a long one is read by any start of its name that
+only it has (`--execute-p` is `--execute-print`); an option the guard cannot
+place, a word only known when it runs, and a library to load (`-r`) are code it
+does not read, `unknown`. `rails runner` (`r`), `rails console` (`c`) and `pry`
+run Ruby the guard does not read, `unknown`; `rubyw`, `ruby-3.3` and `jirb` are
+read as `ruby` and `irb` are.
+
+What the line sets in the environment of any program is code a Ruby it
+starts loads, which is not on the line: `RUBYOPT`, `RAKEOPT` (rake's),
+`RUBYLIB`, `GEM_HOME`, `GEM_PATH`, `BUNDLE_PATH`, `BUNDLE_APP_CONFIG`,
+`BUNDLE_SETTINGS`, `BUNDLE_USER_CONFIG`, `BUNDLE_USER_HOME`,
+`RUBYGEMS_GEMDEPS`, `GEMRC`, and JRuby's `JRUBY_OPTS` and TruffleRuby's
+`TRUFFLERUBYOPT` (options, as `RUBYOPT` is), set on the line or exported (Windows reads
+their names in any case, so a POSIX shell on a Windows machine does:
+`rubylib=/tmp rake` is `unknown` there and safe on a POSIX machine). The folders and
+files they name are judged by where they are (`RUBYLIB=lib` is safe, `RUBYLIB=/tmp/x`
+is `unknown`; a temporary folder is outside), `RUBYOPT` by the libraries and load
+paths of its `-r`, `-I` and `--require` (a library by name is an installed one;
+`-W0`, `--yjit` and the like change nothing loaded), and a value only known when
+it runs, or an option of `RUBYOPT` the guard cannot place, is `unknown`;
+`RAKEOPT` is rake's options, `unknown` for rake. `BUNDLE_GEMFILE` is the
+project's folder, judged as `--gemfile` is, for those tools too, and so is
+`RUBYGEMS_GEMDEPS` (`-` is the folder Ruby runs in). A Ruby that requires
+`bundler` (`-rbundler/setup`, any case, the name's `.` and `..` resolved as
+Ruby expands a path, also by `--require` and `RUBYOPT`) sets up the project
+of the folder it runs in once every `-C` and `-X` has moved it, each of which
+moves from where the one before landed, and a relative library, load path,
+script or `Gemfile` is from there. A line that gives more libraries than load
+paths and lookups than are placed one by one is `unknown` for them. `ruby -r
+PATH`, `-I PATH` and the same of `irb`, `erb` and `pry` load the file at a
+path (`~`, a drive, a share and `.\` count) outside the workspace, a temporary
+folder too, code the guard does not read: `unknown`. `ruby -S NAME …` runs
+`NAME` from `PATH` with the rest: it is judged as that program. `bundle exec
+WORD`, with one word that holds white space or a shell's characters, is no
+program bundler finds and it hands the word to the system's shell: judged as
+a line of it. A subcommand of `bundle`, `rbenv`, `gem`, `asdf` or `rvm` only
+known when it runs is `unknown`. `rails` hands what is not its own command to
+rake, which reads its options as above, `-e` and `-f` too; rake's `-f`, `-C`,
+`-R` and `-I` (and their long names) are judged by where the file or folder is.
+Rails' own commands in a namespace (`credentials:edit`, `encrypted:show`,
+`db:system:change`) are not rake's. A command of `bundle` or `gem` written by
+the start of its name that only it has is that command (`bundle conf set`,
+`gem inst -g`); a start that is no command's or more than one's is `unknown`.
+Ruby's `-W`, `-0`, `-T` and `-K` take their level, digits or character, and
+the switches after them in the word are read (`-We CODE` is `-W -e`);
+`ruby -S` is the program it names only when ruby's other options load nothing
+and move nowhere (`-r`, `-I`, `-C`, `-X`, `-x`, `-i`), and `RUBYPATH` is a
+variable that loads. `-I` takes a list of folders (`:`, `;` on Windows). A
+file, folder or library given as a word only known when it runs is `unknown`.
+`bundle console` reads its input as `irb` does. `ruby -S NAME` is a program of
+`PATH` only when `NAME` is a plain word: a name with a `/` or a `\`, a drive or
+`-` is the file it names (`-S ~/x.rb`, `-S /dev/stdin`), judged as `ruby PATH`
+is. `ruby -C`, `-X` and `-x` move to a folder judged by where it is. In a
+line for a Windows machine, a POSIX shell's too, a list of folders is split at
+`;`. `gem install -g FILE` and `gem update -g FILE` are read as OptionParser
+reads them (`-Ng FILE`, `-gFILE`, `--fil FILE`), and `gem build` evaluates
+the gemspec of `-C DIR` or of the folder. Rails' commands of its own in a
+namespace are the ones it has (`credentials:edit`, `encrypted:show`,
+`db:system:change`), not any word that starts as they do.
+`rails new -m` and `LOCATION=` of `app:template` and `rails:template` are
+downloads when a URL, code not read otherwise. `gem install -g FILE` and `gem
+build FILE.gemspec` evaluate the file: a project file at that path. `asdf env
+PLUGIN CMD`, `rvm-exec`, `rvm-shell -c`, `rvm-auto-ruby` and `rvm VERSION ruby`
+run Ruby or its commands, and `asdf plugin add` downloads a plugin.
+`bundle config`, written (`set`, `unset`, `--delete`, `KEY VALUE`) without
+`--local`, writes the settings every bundle of the user reads, and `bundle plugin
+install` downloads and runs a plugin: `unknown`; `bundle init --gemspec FILE` evaluates the
+gemspec, so it is judged as a project file at that path.
 
 **Where the script is.** Each interpreter's options are read with its own
 table of the options that take a value, so the word after one is its value
@@ -5407,8 +5544,8 @@ keys in it`. Another folder that holds a key without being one (`~/.config`,
   -y -f`, an editor, `column`. The list above is what is known; a program
   outside it is `effect`'s `Unknown`, and a script file is the workspace's own
   code and not read.
-- **Inline code that opens a file is a read of it.** Python and JavaScript
-  given inline are read (see [Inline code](#inline-code)), and an `open()` in a
+- **Inline code that opens a file is a read of it.** Python, JavaScript and
+  Ruby given inline are read (see [Inline code](#inline-code)), and an `open()` in a
   mode that reads, `Path.read_text` and `read_bytes`, `readFileSync`,
   `readFile`, `fs.promises.readFile`, `createReadStream`, `openSync`,
   `Deno.readTextFile`, and the source of `shutil.copy*`, `copytree` and
@@ -5536,9 +5673,10 @@ A line is never safe because the guard gave up on it. These come back risky:
   as they are (a lone `\r` there is already unreadable).
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
-- Code handed to an interpreter that is not read: Ruby, Perl (beyond
-  `perl -pi`), PHP and Lua, and xonsh's, a shell whose language is Python
-  and its own (`xonsh -c 'rm -rf ~'`, `echo … | xonsh`; a script file it is
+- Code handed to an interpreter that is not read: Perl (beyond `perl -pi`),
+  PHP and Lua (Ruby is read, but not after an option that loads other code:
+  see [Inline code](#inline-code)), `erb`'s templates, and xonsh's, a shell
+  whose language is Python and its own (`xonsh -c 'rm -rf ~'`, `echo … | xonsh`; a script file it is
   given, `xonsh build.xsh`, is the workspace's own, as `python3 x.py` is;
   its `-D`, `--shell-type` and `-st` take a value, and `--rc` every word
   after it that is not an option, as Python's `argparse` reads them, by a
@@ -8353,7 +8491,7 @@ guard finds anything in is its false-alarm share, and `just everyday`
 prints it for each shell and each rule, with every answer that moved
 ([CONTRIBUTING.md](../../CONTRIBUTING.md#the-everyday-answers)).
 
-`tests/cases/inline.cases` is the same for inline Python and JavaScript, with
+`tests/cases/inline.cases` is the same for inline Python, JavaScript and Ruby, with
 the lines that are safe, what each rule finds and what stays `unknown`; the
 `inline_*.cases` files beside it hold how code reaches an interpreter, the
 names and modules the reader follows, what is read whole, file calls, started

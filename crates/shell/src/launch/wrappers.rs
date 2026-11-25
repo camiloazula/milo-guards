@@ -1059,9 +1059,20 @@ pub(super) fn start(args: &[Arg]) -> Launch {
     Launch::Itself
 }
 
+/// The options of `gem exec` that take the next word.
+const GEM_EXEC_VALUES: &[&str] = &[
+    "-g",
+    "--gem",
+    "-v",
+    "--version",
+    "--platform",
+    "--source",
+    "--config-file",
+];
+
 /// The package runners, by the name they stand under in a unit's wrappers.
 /// What a runner starts is a program, never a builtin of the shell.
-pub(crate) const RUNNERS: [&str; 27] = [
+pub(crate) const RUNNERS: [&str; 35] = [
     "npx",
     "npm",
     "pnpm",
@@ -1086,6 +1097,14 @@ pub(crate) const RUNNERS: [&str; 27] = [
     "volta",
     "mise",
     "pipenv",
+    "bundle",
+    "bundler",
+    "rbenv",
+    "asdf",
+    "rvm",
+    "rvm-exec",
+    "chruby-exec",
+    "gem",
     "corepack",
     "shx",
     "cross-env",
@@ -1413,6 +1432,12 @@ pub(super) fn runner_in(key: &str, args: &[Arg], end: usize, launch: Launch) -> 
     };
     let either = match key {
         "uv" => listed(&["--project"], UV_VALUES),
+        // `bundle exec --gemfile DIR/Gemfile` sets up the bundle there,
+        // which may run the command there too, as `uv run --project` may.
+        "bundle" | "bundler" => {
+            let values = packages::run_values(key).unwrap_or_default();
+            listed(&["--gemfile"], values).map(|gemfile| gemfile_folder(&gemfile))
+        }
         "npx" | "npm" => prefix_folder(own, key == "npx"),
         _ => None,
     };
@@ -1517,132 +1542,60 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
             return Launch::Script(shell, line, Source::NONE);
         }
     }
-    let found = match key {
-        "npx" => Some((0, Opts::Npx.after(args))),
-        "bunx" => Some((0, Opts::List(&BUN_X_VALUES).after(args))),
-        "uvx" => Some((0, Opts::List(UV_VALUES).after(args))),
-        "dx" => Some((0, Opts::List(&DENO_X_VALUES).after(args))),
-        // npm reads an abbreviation of a command (`npm exe`) too.
-        "npm" => locate(args, &[(Opts::Npm, &["exec", "exe", "x"])], Opts::Npm),
-        // `pnpx` and `pnx` are `pnpm dlx`.
-        "pnpx" | "pnx" => Some((0, Opts::Pnpm.after(args))),
-        // `recursive`, `multi` and `m` are pnpm's own spellings of `-r`, so
-        // `pnpm recursive exec` is `pnpm -r exec`.
-        "pnpm" => locate(
-            args,
-            &[
-                (Opts::Pnpm, &PNPM_RECURSIVE),
-                (Opts::Pnpm, &["dlx", "exec"]),
-            ],
-            Opts::Pnpm,
-        )
-        .or_else(|| locate(args, &[(Opts::Pnpm, &["dlx", "exec"])], Opts::Pnpm))
-        .or_else(|| pnpm_direct(args)),
-        "yarn" => locate(
-            args,
-            &[(Opts::List(YARN_VALUES), &["dlx", "exec"])],
-            Opts::List(YARN_VALUES),
-        )
-        .or_else(|| direct(args, Opts::List(YARN_VALUES)))
-        // `yarn cdk` is short for `yarn run cdk`, which runs the script or
-        // the program of the project by that name.
-        .or_else(|| {
-            locate(
-                args,
-                &[(Opts::List(YARN_VALUES), &["run"])],
-                Opts::List(YARN_VALUES),
-            )
-            .filter(|(_, program)| program.is_some_and(|at| yarn_program(args, at)))
-        }),
-        // `x` after bun's options, which may take a value (`bun --cwd DIR
-        // x`), or as the first word with no dash, as bun finds its
-        // subcommand (`bun -F x echo` runs `bunx echo`).
-        "bun" => locate(
-            args,
-            &[(Opts::List(&BUN_VALUES), &["x"])],
-            Opts::List(&BUN_X_VALUES),
-        )
-        .or_else(|| {
-            locate(
-                args,
-                &[(Opts::List(&[]), &["x"])],
-                Opts::List(&BUN_X_VALUES),
-            )
-        }),
-        "deno" => locate(
-            args,
-            &[(Opts::List(&DENO_VALUES), &["x"])],
-            Opts::List(&DENO_X_VALUES),
-        ),
-        "uv" => locate(
-            args,
-            &[
-                (Opts::List(UV_VALUES), &["tool"]),
-                (Opts::List(&[]), &["run"]),
-            ],
-            Opts::List(UV_VALUES),
-        )
-        .or_else(|| uv_run(args)),
-        "pipx" => locate(
-            args,
-            &[(Opts::List(&[]), &["run"])],
-            Opts::List(PIPX_VALUES),
-        ),
-        // `hatch run CMD` and `hatch env run [--] CMD`, past the matrix
-        // variables in front of the command (`+py=3.12`).
-        "hatch" => {
-            let values = packages::run_values(key).unwrap_or_default();
-            locate(args, &[(Opts::List(values), &["run"])], Opts::List(values))
-                .or_else(|| {
-                    locate(
-                        args,
-                        &[(Opts::List(values), &["env"]), (Opts::List(&[]), &["run"])],
-                        Opts::List(values),
-                    )
-                })
-                .map(|(from, program)| {
-                    (
-                        from,
-                        program.and_then(|at| packages::past_selectors(args, at)),
-                    )
-                })
+    // A word of rvm only known when it runs, before its `do` or `exec`, may
+    // be a command.
+    if key == "rvm" {
+        for arg in args {
+            match arg.known() {
+                Some("do" | "exec") => break,
+                None => return Launch::Unread(arg.clone()),
+                Some(_) => {}
+            }
         }
-        // `pixi run CMD`, and `pixi exec CMD`, which installs the packages
-        // its `-s` names (or the command's) and runs the command, as `uvx`
-        // does.
-        "pixi" => {
-            let values = packages::run_values(key).unwrap_or_default();
-            locate(args, &[(Opts::List(values), &["run"])], Opts::List(values)).or_else(|| {
-                locate(
-                    args,
-                    &[(Opts::List(values), &["exec"])],
-                    Opts::List(PIXI_EXEC_VALUES),
-                )
-            })
+    }
+    // A subcommand only known when it runs may be `exec`.
+    if matches!(key, "bundle" | "bundler" | "rbenv" | "gem" | "asdf" | "rvm") {
+        let values = packages::run_values(key).unwrap_or(match key {
+            "gem" => GEM_EXEC_VALUES,
+            _ => &[],
+        });
+        if let (_, Some(word)) = bundle_word(args, values) {
+            if word.known().is_none() {
+                return Launch::Unread(word.clone());
+            }
         }
-        // `mise exec TOOLS -- CMD`: the command is the one after `--`.
-        "mise" => locate(
-            args,
-            &[(Opts::List(MISE_VALUES), &["exec", "x"])],
-            Opts::List(&[]),
-        )
-        .map(|(from, _)| {
-            let program = args[from..]
-                .iter()
-                .position(|arg| arg.known() == Some("--"))
-                .map(|at| from + at + 1)
-                .filter(|at| *at < args.len());
-            (from, program)
-        }),
-        key => packages::run_values(key)
-            .and_then(|values| locate(args, &[(Opts::List(values), &["run"])], Opts::List(values))),
-    };
+    }
+    // `bundle console` reads its input as irb does.
+    if matches!(key, "bundle" | "bundler") && bundle_console(args) {
+        return Launch::Reads(Reads::Interpreter);
+    }
+    let found = located(key, args);
     let Some((from, program)) = found else {
         return Launch::Itself;
     };
     let end = program.unwrap_or(args.len());
     let own = args.get(from..end).unwrap_or_default();
     match key {
+        // `bundle exec 'rm -rf ~'`: a word that holds white space or a
+        // shell's characters is no program bundler finds, and it hands the
+        // word to the system's shell.
+        "bundle" | "bundler" if program.is_some_and(|at| at + 1 == args.len()) => {
+            let word = &args[program.unwrap_or_default()];
+            if word.known().is_some_and(|text| {
+                text.contains(char::is_whitespace)
+                    || text.contains([
+                        ';', '&', '|', '<', '>', '(', ')', '$', '`', '\\', '"', '\'', '*', '?',
+                        '[', ']', '{', '}', '~', '!', '#',
+                    ])
+            }) {
+                return runner_in(
+                    key,
+                    args,
+                    end,
+                    Launch::Script(shell, word.clone(), Source::arg(word)),
+                );
+            }
+        }
         // `-c` (`--call`) runs a script in place of a program, wherever the
         // option stands among npm's: in a bundle (`-yc`), spelt `--c`, with
         // its value after `=`, and for npm also before `exec`.
@@ -1769,6 +1722,194 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
     runner_in(key, args, end, launch)
 }
 
+/// Where the program a runner `key` starts is among `args`: the first word
+/// past the runner's own options and subcommand, and that program, when
+/// the runner names one.
+fn located(key: &str, args: &[Arg]) -> Option<(usize, Option<usize>)> {
+    match key {
+        "npx" => Some((0, Opts::Npx.after(args))),
+        "bunx" => Some((0, Opts::List(&BUN_X_VALUES).after(args))),
+        "uvx" => Some((0, Opts::List(UV_VALUES).after(args))),
+        "dx" => Some((0, Opts::List(&DENO_X_VALUES).after(args))),
+        // npm reads an abbreviation of a command (`npm exe`) too.
+        "npm" => locate(args, &[(Opts::Npm, &["exec", "exe", "x"])], Opts::Npm),
+        // `pnpx` and `pnx` are `pnpm dlx`.
+        "pnpx" | "pnx" => Some((0, Opts::Pnpm.after(args))),
+        // `recursive`, `multi` and `m` are pnpm's own spellings of `-r`, so
+        // `pnpm recursive exec` is `pnpm -r exec`.
+        "pnpm" => locate(
+            args,
+            &[
+                (Opts::Pnpm, &PNPM_RECURSIVE),
+                (Opts::Pnpm, &["dlx", "exec"]),
+            ],
+            Opts::Pnpm,
+        )
+        .or_else(|| locate(args, &[(Opts::Pnpm, &["dlx", "exec"])], Opts::Pnpm))
+        .or_else(|| pnpm_direct(args)),
+        "yarn" => locate(
+            args,
+            &[(Opts::List(YARN_VALUES), &["dlx", "exec"])],
+            Opts::List(YARN_VALUES),
+        )
+        .or_else(|| direct(args, Opts::List(YARN_VALUES)))
+        // `yarn cdk` is short for `yarn run cdk`, which runs the script or
+        // the program of the project by that name.
+        .or_else(|| {
+            locate(
+                args,
+                &[(Opts::List(YARN_VALUES), &["run"])],
+                Opts::List(YARN_VALUES),
+            )
+            .filter(|(_, program)| program.is_some_and(|at| yarn_program(args, at)))
+        }),
+        // `x` after bun's options, which may take a value (`bun --cwd DIR
+        // x`), or as the first word with no dash, as bun finds its
+        // subcommand (`bun -F x echo` runs `bunx echo`).
+        "bun" => locate(
+            args,
+            &[(Opts::List(&BUN_VALUES), &["x"])],
+            Opts::List(&BUN_X_VALUES),
+        )
+        .or_else(|| {
+            locate(
+                args,
+                &[(Opts::List(&[]), &["x"])],
+                Opts::List(&BUN_X_VALUES),
+            )
+        }),
+        "deno" => locate(
+            args,
+            &[(Opts::List(&DENO_VALUES), &["x"])],
+            Opts::List(&DENO_X_VALUES),
+        ),
+        "uv" => locate(
+            args,
+            &[
+                (Opts::List(UV_VALUES), &["tool"]),
+                (Opts::List(&[]), &["run"]),
+            ],
+            Opts::List(UV_VALUES),
+        )
+        .or_else(|| uv_run(args)),
+        "pipx" => locate(
+            args,
+            &[(Opts::List(&[]), &["run"])],
+            Opts::List(PIPX_VALUES),
+        ),
+        // `hatch run CMD` and `hatch env run [--] CMD`, past the matrix
+        // variables in front of the command (`+py=3.12`).
+        "hatch" => {
+            let values = packages::run_values(key).unwrap_or_default();
+            locate(args, &[(Opts::List(values), &["run"])], Opts::List(values))
+                .or_else(|| {
+                    locate(
+                        args,
+                        &[(Opts::List(values), &["env"]), (Opts::List(&[]), &["run"])],
+                        Opts::List(values),
+                    )
+                })
+                .map(|(from, program)| {
+                    (
+                        from,
+                        program.and_then(|at| packages::past_selectors(args, at)),
+                    )
+                })
+        }
+        // `pixi run CMD`, and `pixi exec CMD`, which installs the packages
+        // its `-s` names (or the command's) and runs the command, as `uvx`
+        // does.
+        "pixi" => {
+            let values = packages::run_values(key).unwrap_or_default();
+            locate(args, &[(Opts::List(values), &["run"])], Opts::List(values)).or_else(|| {
+                locate(
+                    args,
+                    &[(Opts::List(values), &["exec"])],
+                    Opts::List(PIXI_EXEC_VALUES),
+                )
+            })
+        }
+        // `bundle exec CMD` runs CMD with the gems of the bundle set up (its
+        // `RUBYOPT`, its `PATH`).
+        // `bundle exec CMD` (`bundler` too), past the version RubyGems lets
+        // a gem's program be started at (`bundle _2.4.0_ exec`).
+        "bundle" | "bundler" => {
+            let values = packages::run_values(key).unwrap_or_default();
+            let skip = usize::from(args.first().and_then(Arg::known).is_some_and(|word| {
+                word.len() > 2 && word.starts_with('_') && word.ends_with('_')
+            }));
+            locate(
+                &args[skip..],
+                &[(Opts::List(values), &["exec", "exe", "ex", "e"])],
+                Opts::List(values),
+            )
+            .map(|(from, program)| (from + skip, program.map(|at| at + skip)))
+        }
+        // `rbenv exec CMD` runs CMD with the Ruby it picks on `PATH`.
+        "rbenv" => locate(args, &[(Opts::List(&[]), &["exec"])], Opts::List(&[])),
+        // `asdf exec CMD`, and `asdf env PLUGIN CMD`, which runs CMD with the
+        // plugin's environment.
+        "asdf" => locate(args, &[(Opts::List(&[]), &["exec"])], Opts::List(&[])).or_else(|| {
+            let at = args.iter().position(|arg| arg.known() == Some("env"))? + 2;
+            Some((at, Some(at).filter(|at| *at < args.len())))
+        }),
+        // `rvm-exec 3.3 CMD`.
+        "rvm-exec" => {
+            let at = after_options(args, &[])? + 1;
+            Some((at, Some(at).filter(|at| *at < args.len())))
+        }
+        // `rvm 3.3 do CMD` and `rvm all exec CMD` run CMD with the Ruby they
+        // pick, and `chruby-exec 3.3 -- CMD` does the same.
+        // `rvm 3.3 ruby ARGS` runs the ruby of the version, as itself.
+        "rvm" => args
+            .iter()
+            .position(|arg| match arg.known() {
+                Some("do" | "exec") => true,
+                // Not the word of an rvm command (`rvm install ruby`).
+                Some("ruby") => !args
+                    .first()
+                    .and_then(Arg::known)
+                    .is_some_and(|first| RVM_COMMANDS.contains(&first)),
+                _ => false,
+            })
+            .map(|at| {
+                let start = if args[at].known() == Some("ruby") {
+                    at
+                } else {
+                    at + 1
+                };
+                (start, Some(start).filter(|at| *at < args.len()))
+            }),
+        "chruby-exec" => args
+            .iter()
+            .position(|arg| arg.known() == Some("--"))
+            .map(|at| (at + 1, Some(at + 1).filter(|at| *at < args.len()))),
+        // `gem exec PROGRAM`, which installs the gem first when it is not, as
+        // `npx` does.
+        "gem" => locate(
+            args,
+            &[(Opts::List(GEM_EXEC_VALUES), &["exec", "exe", "ex"])],
+            Opts::List(GEM_EXEC_VALUES),
+        ),
+        // `mise exec TOOLS -- CMD`: the command is the one after `--`.
+        "mise" => locate(
+            args,
+            &[(Opts::List(MISE_VALUES), &["exec", "x"])],
+            Opts::List(&[]),
+        )
+        .map(|(from, _)| {
+            let program = args[from..]
+                .iter()
+                .position(|arg| arg.known() == Some("--"))
+                .map(|at| from + at + 1)
+                .filter(|at| *at < args.len());
+            (from, program)
+        }),
+        key => packages::run_values(key)
+            .and_then(|values| locate(args, &[(Opts::List(values), &["run"])], Opts::List(values))),
+    }
+}
+
 /// The table of options a runner whose own options are listed reads in
 /// front of its program, which starts at `from` in `args`: `None` for npm
 /// and pnpm, whose option parsers are read as they are, and for `mise
@@ -1785,6 +1926,8 @@ fn list_values(key: &str, args: &[Arg], from: usize) -> Option<&'static [&'stati
         "dx" | "deno" => Some(&DENO_X_VALUES),
         "yarn" => Some(YARN_VALUES),
         "pipx" => Some(PIPX_VALUES),
+        "gem" => Some(GEM_EXEC_VALUES),
+        "rbenv" | "asdf" | "rvm" | "rvm-exec" | "chruby-exec" => Some(&[]),
         key => packages::run_values(key),
     }
 }
@@ -1994,5 +2137,691 @@ pub(super) fn without_version(program: &Arg) -> Arg {
     match text[from..].find('@') {
         Some(at) if from + at > 0 => Arg::Known(text[..from + at].to_string()),
         _ => program.clone(),
+    }
+}
+
+/// The folder of the project a runner sets up from its file, whose code the
+/// runner runs (a `Gemfile` is Ruby; uv builds a project, running its build
+/// backend): `bundle exec`, `install` and the like with `--gemfile
+/// DIR/Gemfile` (`bundler`, and `BUNDLE_GEMFILE`), `uv run
+/// --project DIR` and `uv --directory DIR`, which finds the project there.
+/// Where the line names none, the folder is `.`, the one the line runs in:
+/// that runner finds its project there. `None` for a runner that sets none
+/// up.
+pub(super) fn project_folders(key: &str, unit: &Unit) -> Vec<(Arg, bool)> {
+    let mut found = project_folder(key, unit);
+    // `RUBYGEMS_GEMDEPS` names the file RubyGems evaluates in any Ruby it
+    // starts (`-`: the `Gemfile` found from the folder it runs in).
+    if key != "uv" {
+        let moved = ruby_moved(key, unit);
+        for (value, other_case) in variable_values(unit, "RUBYGEMS_GEMDEPS") {
+            let folder = match value.known() {
+                Some("-") => moved.clone().unwrap_or_else(|| Arg::Known(".".to_string())),
+                _ => joined(moved.as_ref(), gemfile_folder(&value), unit.shell),
+            };
+            found.push((folder, other_case));
+        }
+    }
+    found
+}
+
+/// The folder the Ruby `key` runs in once every `-C` and `-X` has moved it,
+/// from the one the line runs in; `None` when none does. Each moves from
+/// where the one before it moved to.
+pub(crate) fn ruby_moved(key: &str, unit: &Unit) -> Option<Arg> {
+    if !super::is_ruby(key) {
+        return None;
+    }
+    let dirs = super::options(key, &unit.args).dirs;
+    // Past a count the folders joined are too long to be read again for
+    // each of them: where it lands is only known when it runs.
+    if dirs.len() > MOST_MOVES {
+        return Some(Arg::Unknown("where ruby moves to".to_string()));
+    }
+    dirs.into_iter().fold(None, |at: Option<Arg>, dir| {
+        Some(joined(at.as_ref(), dir, unit.shell))
+    })
+}
+
+/// The most `-C`, `-X` and `-x` folders of a Ruby that are placed one after
+/// the other.
+pub(crate) const MOST_MOVES: usize = 32;
+
+/// `path` from the folder `moved` to, when one moved.
+fn joined(moved: Option<&Arg>, path: Arg, shell: Shell) -> Arg {
+    match moved {
+        Some(_) => crate::path::within(moved, &path, shell),
+        None => path,
+    }
+}
+
+/// The folders of the projects a runner sets up (see [`project_folder`]'s
+/// reading), each with whether it is only so when the machine reads the
+/// names of variables in any case (a Windows one): a variable named in
+/// another case than the one Ruby's tools read on a POSIX machine.
+fn project_folder(key: &str, unit: &Unit) -> Vec<(Arg, bool)> {
+    // `gem install -g FILE` and `gem build FILE.gemspec` evaluate the file.
+    if super::is_gem(key) {
+        if let Some(file) = gem_file(&unit.args) {
+            return vec![(gemfile_folder(&file), false)];
+        }
+    }
+    // Any other program may start a Ruby that evaluates the `Gemfile` the
+    // variable names, a binstub or a script that requires `bundler` or its
+    // `bundler/setup` among them; that evaluates the one of the folder the
+    // Ruby runs in (after `-C`) when none is named.
+    if !matches!(key, "uv" | "bundle" | "bundler") {
+        let moved = ruby_moved(key, unit);
+        let mut found: Vec<(Arg, bool)> = variable_values(unit, "BUNDLE_GEMFILE")
+            .into_iter()
+            .map(|(gemfile, other)| {
+                (
+                    joined(moved.as_ref(), gemfile_folder(&gemfile), unit.shell),
+                    other,
+                )
+            })
+            .collect();
+        if let Some(other) = requires_bundler(key, unit) {
+            if !found.iter().any(|(_, other)| !other) {
+                found.push((moved.unwrap_or_else(|| Arg::Known(".".to_string())), other));
+            }
+        }
+        return found;
+    }
+    let args = unit.args.as_slice();
+    let values = |list: &'static [&'static str]| {
+        move |text: &str, _: Option<&Arg>| {
+            if list.contains(&text) {
+                Word::Value
+            } else {
+                Word::Flag
+            }
+        }
+    };
+    if key == "uv" {
+        let Some((_, program)) = located(key, args) else {
+            return Vec::new();
+        };
+        let own = args
+            .get(..program.unwrap_or(args.len()))
+            .unwrap_or_default();
+        // `uv run` builds the project of the folder it runs in; `uv tool
+        // run` runs a tool of its own.
+        let runs = locate(args, &[(Opts::List(&[]), &["run"])], Opts::List(UV_VALUES))
+            .or_else(|| uv_run(args))
+            .is_some();
+        let directory = folder_option(own, &["--directory"], false, values(UV_VALUES));
+        let project = folder_option(own, &["--project"], false, values(UV_VALUES));
+        let folder = match (directory, project) {
+            (Some(directory), Some(project)) => {
+                Some(crate::path::within(Some(&directory), &project, unit.shell))
+            }
+            (directory, project) => project
+                .or(directory)
+                .or_else(|| runs.then(|| Arg::Known(".".to_string()))),
+        };
+        return folder.map(|folder| (folder, false)).into_iter().collect();
+    }
+    // `bundle exec CMD` and every other subcommand but `version`, `help`,
+    // `config` and `init`, and none (`install`), set up the bundle the
+    // `Gemfile` names, past the version RubyGems lets a gem's program be
+    // started at (`bundle _2.4.0_ exec`). `bundle init --gemspec FILE`
+    // evaluates the gemspec.
+    let values_list = packages::run_values(key).unwrap_or_default();
+    let (rest, word) = bundle_word(args, values_list);
+    let help = rest
+        .iter()
+        .any(|arg| matches!(arg.known(), Some("-h" | "--help")));
+    // `-v` and `--version` are the version where a subcommand would stand:
+    // after one they take a value (`add rails -v 7.0`).
+    let version = rest
+        .first()
+        .is_some_and(|arg| matches!(arg.known(), Some("-v" | "--version")));
+    if help || version {
+        return Vec::new();
+    }
+    let own = if let Some((_, program)) = located(key, args) {
+        let Some(own) = args.get(..program.unwrap_or(args.len())) else {
+            return Vec::new();
+        };
+        own
+    } else {
+        match word.and_then(Arg::known).and_then(bundle_command) {
+            Some("version" | "help" | "config") => return Vec::new(),
+            Some("init") => {
+                let gemspec = folder_option(args, &["--gemspec"], false, values(values_list));
+                return gemspec
+                    .map(|gemspec| (gemfile_folder(&gemspec), false))
+                    .into_iter()
+                    .collect();
+            }
+            _ => args,
+        }
+    };
+    if let Some(gemfile) = folder_option(own, &["--gemfile"], false, values(values_list)) {
+        return vec![(gemfile_folder(&gemfile), false)];
+    }
+    let mut found: Vec<(Arg, bool)> = variable_values(unit, "BUNDLE_GEMFILE")
+        .into_iter()
+        .map(|(gemfile, other)| (gemfile_folder(&gemfile), other))
+        .collect();
+    if !found.iter().any(|(_, other)| !other) {
+        found.push((Arg::Known(".".to_string()), false));
+    }
+    found
+}
+
+/// `rvm-shell VERSION -c TEXT` runs TEXT in a shell, with the Ruby the version
+/// picks first on `PATH`.
+pub(super) fn rvm_shell(args: &[Arg]) -> Launch {
+    match args
+        .iter()
+        .position(|arg| arg.known() == Some("-c"))
+        .and_then(|at| args.get(at + 1))
+    {
+        Some(text) => Launch::Script(Shell::Posix, text.clone(), Source::arg(text)),
+        None => Launch::Itself,
+    }
+}
+
+/// The file `gem install -g` (`--file`) and `gem build` evaluate: a list of
+/// gems that is Ruby, and a gemspec.
+fn gem_file(args: &[Arg]) -> Option<Arg> {
+    // RubyGems' own `-C DIR` moves to DIR before the command runs.
+    let mut moved = None;
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("-C") => {
+                moved = args.get(at + 1).cloned();
+                at += 2;
+            }
+            Some(text) if text.starts_with("-C") => {
+                moved = Some(Arg::Known(text[2..].to_string()));
+                at += 1;
+            }
+            // The configuration file it reads, which takes its value.
+            Some("--config-file") => at += 2,
+            Some(text) if text.starts_with('-') => at += 1,
+            _ => break,
+        }
+    }
+    let file = gem_command_file(&args[at.min(args.len())..])?;
+    let Some(dir) = moved else {
+        return Some(file);
+    };
+    match (dir.known(), file.known()) {
+        (Some(_), Some(text)) if text.starts_with(['/', '~']) => Some(file),
+        (Some(dir), Some(text)) => {
+            Some(Arg::Known(format!("{}/{text}", dir.trim_end_matches('/'))))
+        }
+        _ => Some(dir),
+    }
+}
+
+/// The files `gem`'s global `--config-file` names (`--config-file=FILE`
+/// too): code the guard does not read where it is not the workspace's own.
+pub(crate) fn gem_config_files(args: &[Arg]) -> Vec<Arg> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    // `gem` looks at every argument, to the `--`, wherever the command is.
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("--") => break,
+            Some("--config-file") => {
+                found.extend(args.get(at + 1).cloned());
+                at += 2;
+            }
+            Some(text) if text.starts_with("--config-file=") => {
+                found.push(Arg::Known(text["--config-file=".len()..].to_string()));
+                at += 1;
+            }
+            _ => at += 1,
+        }
+    }
+    found
+}
+
+/// [`gem_file`], for the arguments from the command on.
+fn gem_command_file(args: &[Arg]) -> Option<Arg> {
+    let (rest, word) = bundle_word(args, GEM_EXEC_VALUES);
+    let word = word?;
+    let at = rest.iter().position(|arg| std::ptr::eq(arg, word))?;
+    let mut iter = rest[at + 1..].iter().peekable();
+    // The word after an option that may have a value, when it is not an
+    // option itself (`-g FILE`).
+    fn placed(iter: &mut std::iter::Peekable<std::slice::Iter<'_, Arg>>) -> Option<Arg> {
+        match iter.peek() {
+            Some(next) if next.known().is_none_or(|text| !text.starts_with('-')) => {
+                iter.next().cloned()
+            }
+            _ => None,
+        }
+    }
+    match gem_command(word.known()?)? {
+        // `install` and `update` read the gems a file lists with `-g`, which
+        // is read as OptionParser reads it: in a bundle (`-Ng FILE`), joined
+        // (`-gFILE`), by a start of its long name (`--fil`).
+        "install" | "update" => {
+            let mut flagged = false;
+            let mut file = None;
+            while let Some(arg) = iter.next() {
+                let Some(text) = arg.known() else { continue };
+                if text == "--" {
+                    break;
+                }
+                if let Some(long) = text.strip_prefix("--") {
+                    let (name, joined) = long
+                        .split_once('=')
+                        .map_or((long, None), |(name, joined)| (name, Some(joined)));
+                    if name.len() >= 2 && "file".starts_with(name) {
+                        flagged = true;
+                        file = joined
+                            .map(|joined| Arg::Known(joined.to_string()))
+                            .or_else(|| placed(&mut iter));
+                    } else if joined.is_none() && GEM_FILE_VALUES.contains(&text) {
+                        iter.next();
+                    }
+                } else if let Some(bundle) = text.strip_prefix('-').filter(|b| !b.is_empty()) {
+                    for (at, letter) in bundle.char_indices() {
+                        let after = &bundle[at + letter.len_utf8()..];
+                        match letter {
+                            'g' => {
+                                flagged = true;
+                                file = if after.is_empty() {
+                                    placed(&mut iter)
+                                } else {
+                                    Some(Arg::Known(after.to_string()))
+                                };
+                                break;
+                            }
+                            'i' | 'n' | 'v' | 's' | 'P' | 'C' => {
+                                if after.is_empty() {
+                                    iter.next();
+                                }
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // `-g` alone is the `Gemfile` of the folder the line runs in.
+            flagged.then(|| file.unwrap_or_else(|| Arg::Known("Gemfile".to_string())))
+        }
+        // `build` evaluates the gemspec it is given, the one of the folder
+        // when none (RubyGems 3.4 builds it from `-C DIR`).
+        "build" => {
+            let mut dir = None;
+            let mut operand = None;
+            while let Some(arg) = iter.next() {
+                match arg.known() {
+                    Some("-C") => dir = iter.next().cloned(),
+                    Some(text) if text.starts_with("-C") => {
+                        dir = Some(Arg::Known(text[2..].to_string()));
+                    }
+                    Some(text) if GEM_FILE_VALUES.contains(&text) => {
+                        iter.next();
+                    }
+                    Some(text) if text.starts_with('-') => {}
+                    _ => {
+                        operand.get_or_insert_with(|| arg.clone());
+                    }
+                }
+            }
+            match (dir, operand) {
+                (Some(dir), _) => Some(match dir.known() {
+                    Some(text) => Arg::Known(format!("{}/gemspec", text.trim_end_matches('/'))),
+                    None => dir,
+                }),
+                (None, Some(file)) => Some(file),
+                (None, None) => Some(Arg::Known("Gemfile".to_string())),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The options of `gem install` and `gem build` that take the next word.
+const GEM_FILE_VALUES: &[&str] = &[
+    "-g",
+    "--file",
+    "-i",
+    "--install-dir",
+    "-n",
+    "--bindir",
+    "-o",
+    "--output",
+    "-C",
+    "-v",
+    "--version",
+    "--platform",
+    "--source",
+    "-s",
+    "--config-file",
+    "--http-proxy",
+    "-P",
+    "--trust-policy",
+];
+
+/// The commands of `rvm`, one of which as the first word is no version.
+const RVM_COMMANDS: [&str; 27] = [
+    "use",
+    "install",
+    "uninstall",
+    "reinstall",
+    "remove",
+    "list",
+    "reload",
+    "get",
+    "info",
+    "help",
+    "gemset",
+    "env",
+    "cleanup",
+    "current",
+    "default",
+    "alias",
+    "implode",
+    "upgrade",
+    "repair",
+    "rubygems",
+    "requirements",
+    "tools",
+    "docs",
+    "version",
+    "fetch",
+    "prepare",
+    "mount",
+];
+
+/// The commands of `gem`.
+const GEM_COMMANDS: [&str; 36] = [
+    "build",
+    "cert",
+    "check",
+    "cleanup",
+    "contents",
+    "dependency",
+    "environment",
+    "exec",
+    "fetch",
+    "generate_index",
+    "help",
+    "info",
+    "install",
+    "list",
+    "lock",
+    "mirror",
+    "open",
+    "outdated",
+    "owner",
+    "pristine",
+    "push",
+    "query",
+    "rdoc",
+    "rebuild",
+    "search",
+    "server",
+    "signin",
+    "signout",
+    "sources",
+    "specification",
+    "stale",
+    "uninstall",
+    "unpack",
+    "update",
+    "which",
+    "yank",
+];
+
+/// The commands of `bundle`.
+const BUNDLE_COMMANDS: [&str; 31] = [
+    "add", "binstubs", "cache", "check", "clean", "config", "console", "doctor", "env", "exec",
+    "fund", "gem", "help", "info", "init", "inject", "install", "issue", "licenses", "list",
+    "lock", "open", "outdated", "platform", "plugin", "pristine", "remove", "show", "update",
+    "version", "viz",
+];
+
+/// The command of `names` that `word` is, as written or by the start of its
+/// name only one has (`RubyGems` and Thor accept `inst` for `install`); `None`
+/// for a word that starts none, or more than one.
+fn command_of(word: &str, names: &[&'static str]) -> Option<&'static str> {
+    if let Some(exact) = names.iter().find(|name| **name == word) {
+        return Some(exact);
+    }
+    let mut starts = names
+        .iter()
+        .filter(|name| !word.is_empty() && name.starts_with(word));
+    let first = starts.next()?;
+    starts.next().is_none().then_some(*first)
+}
+
+/// Whether the subcommand of `bundle` in `args` is `console`, or the start of
+/// its name that is no other command's.
+fn bundle_console(args: &[Arg]) -> bool {
+    let values = packages::run_values("bundle").unwrap_or_default();
+    bundle_word(args, values)
+        .1
+        .and_then(Arg::known)
+        .and_then(bundle_command)
+        == Some("console")
+}
+
+/// The command of `gem` a word stands for.
+fn gem_command(word: &str) -> Option<&'static str> {
+    match word {
+        "i" => Some("install"),
+        "login" => Some("signin"),
+        "logout" => Some("signout"),
+        word => command_of(word, &GEM_COMMANDS),
+    }
+}
+
+/// The command of `bundle` a word stands for, with its aliases.
+fn bundle_command(word: &str) -> Option<&'static str> {
+    match word {
+        "c" => Some("check"),
+        "i" => Some("install"),
+        "ls" => Some("list"),
+        "package" | "pack" => Some("cache"),
+        word => command_of(word, &BUNDLE_COMMANDS),
+    }
+}
+
+/// Whether the Ruby `key` starts requires `bundler` first (`bundler/setup`
+/// evaluates the `Gemfile`), by `-r` or by the `RUBYOPT` the line gives, in
+/// any case and with `./` and doubled `/` dropped from the name: `Some(true)`
+/// when only by a variable named in another case than the one a POSIX
+/// machine reads.
+fn requires_bundler(key: &str, unit: &Unit) -> Option<bool> {
+    if super::loads_ruby_libraries(key)
+        && super::options(key, &unit.args)
+            .requires
+            .iter()
+            .any(|library| library.known().is_some_and(names_bundler))
+    {
+        return Some(false);
+    }
+    let mut found = None;
+    for (value, other_case) in variable_values(unit, "RUBYOPT") {
+        let Some(text) = value.known() else { continue };
+        if crate::detect::rubyopt_loads(text).is_some_and(|loads| {
+            loads
+                .iter()
+                .any(|(is_list, library)| !is_list && names_bundler(library))
+        }) {
+            if !other_case {
+                return Some(false);
+            }
+            found = Some(true);
+        }
+    }
+    found
+}
+
+/// Whether the library `name` may be `bundler` or one of its files: in any
+/// case, as Ruby expands each candidate path (`.` and `..` and doubled `/`
+/// dropped, `\` as `/`). A name that still holds `..` after that, or a `~`
+/// past its start (a short name of Windows, `bundle~1`), may be.
+fn names_bundler(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let mut parts: Vec<&str> = Vec::new();
+    for part in name.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return true;
+                }
+            }
+            part if part.get(1..).is_some_and(|rest| rest.contains('~')) => return true,
+            part => parts.push(part),
+        }
+    }
+    parts
+        .first()
+        .is_some_and(|first| first.starts_with("bundler"))
+}
+
+/// Every value of the variable `name` the line gives, each once, with
+/// whether it is one given in another case than `name`: a machine that reads
+/// the names of variables in any case (a Windows one) hands Ruby one of
+/// those. Each is judged, for the line may have set it where it need not run
+/// (`… || export NAME=…`, in a group, in a function); the list holds few (see
+/// [`MOST_RUBY_VALUES`](crate::unit)).
+fn variable_values(unit: &Unit, name: &str) -> Vec<(Arg, bool)> {
+    let mut found: Vec<(Arg, bool)> = Vec::new();
+    for (written, value) in unit.argument_variables.ruby_values() {
+        if !written.eq_ignore_ascii_case(name) {
+            continue;
+        }
+        let other = written != name;
+        if !found
+            .iter()
+            .any(|(known, was)| known == value && *was == other)
+        {
+            found.push((value.clone(), other));
+        }
+    }
+    // Past what the list notes, a value that is only known when it runs.
+    let (over, over_other) = unit.argument_variables.ruby_overflow();
+    for (is_over, other) in [(over, false), (over_other, true)] {
+        if is_over {
+            found.push((
+                Arg::Unknown("variables set past what is read".to_string()),
+                other,
+            ));
+        }
+    }
+    found
+}
+
+/// The arguments of `bundle` past the version `RubyGems` lets a gem's program
+/// be started at (`bundle _2.4.0_ exec`), and its subcommand, the first word
+/// past its options.
+fn bundle_word<'a>(args: &'a [Arg], values: &[&str]) -> (&'a [Arg], Option<&'a Arg>) {
+    let skip = usize::from(
+        args.first()
+            .and_then(Arg::known)
+            .is_some_and(|word| word.len() > 2 && word.starts_with('_') && word.ends_with('_')),
+    );
+    let rest = &args[skip..];
+    let word = after_options(rest, values).map(|at| &rest[at]);
+    (rest, word)
+}
+
+/// Why `bundle` or `asdf` with these arguments does what the line does not
+/// show, when it does: `bundle plugin install` and `asdf plugin add`
+/// download a plugin and run it, and `bundle config` writes the settings of
+/// the user, which every project's bundle reads, unless it is `--local`
+/// (`bundle config set path x` too, `--delete`, and the old `config KEY
+/// VALUE`).
+pub(super) fn bundle_note(key: &str, unit: &Unit) -> Option<&'static str> {
+    if key == "asdf" {
+        let (rest, word) = bundle_word(&unit.args, &[]);
+        let word = word?;
+        let at = rest.iter().position(|arg| std::ptr::eq(arg, word))?;
+        let adds = match word.known()? {
+            "plugin-add" => true,
+            "plugin" => rest[at + 1..]
+                .iter()
+                .find(|arg| arg.known().is_none_or(|text| !text.starts_with('-')))
+                .is_some_and(|arg| arg.known().is_none_or(|text| text == "add")),
+            _ => false,
+        };
+        return adds.then_some("installs a plugin, code that is downloaded and run");
+    }
+    if super::is_gem(key) {
+        let (_, word) = bundle_word(&unit.args, GEM_EXEC_VALUES);
+        // The command is the first word that is one (`gem -C DIR install x`
+        // has a word of an option before it).
+        let places = unit
+            .args
+            .iter()
+            .filter_map(Arg::known)
+            .any(|word| gem_command(word).is_some());
+        return word
+            .and_then(Arg::known)
+            .filter(|_| !places)
+            .map(|_| "runs a command of gem that the guard cannot place");
+    }
+    if !matches!(key, "bundle" | "bundler") {
+        return None;
+    }
+    let values = packages::run_values(key).unwrap_or_default();
+    let (rest, word) = bundle_word(&unit.args, values);
+    let word = word?;
+    let at = rest.iter().position(|arg| std::ptr::eq(arg, word))?;
+    // The words after the subcommand, each only known when it runs a word.
+    let after: Vec<Option<&str>> = rest[at + 1..]
+        .iter()
+        .filter(|arg| arg.known().is_none_or(|text| !text.starts_with('-')))
+        .map(Arg::known)
+        .collect();
+    let flag = |name: &str| {
+        rest.iter().any(|arg| {
+            arg.known().is_some_and(|text| {
+                text == name
+                    || text
+                        .strip_prefix(name)
+                        .is_some_and(|more| more.starts_with('='))
+            })
+        })
+    };
+    // A word that starts no command of bundler, or starts more than one, is
+    // one the guard cannot place.
+    let command = word.known().map(bundle_command)?;
+    match command {
+        None => Some("runs a command of bundler that the guard cannot place"),
+        Some("plugin") if matches!(after.first(), Some(Some(word)) if "install".starts_with(word)) => {
+            Some("installs a plugin, code that is downloaded and run")
+        }
+        Some("config") => {
+            let reads = matches!(after.first(), Some(Some("get" | "list")));
+            let writes = flag("--delete")
+                || matches!(after.first(), Some(Some("set" | "unset")))
+                || after.len() >= 2;
+            (writes && !reads && !flag("--local"))
+                .then_some("writes the settings every bundle of the user reads")
+        }
+        _ => None,
+    }
+}
+
+/// The folder a `Gemfile`'s path names it in: a path written with `/`, or
+/// with `\` where it has no `/` (`C:\Users\me\x\Gemfile`, `..\x\Gemfile`).
+fn gemfile_folder(gemfile: &Arg) -> Arg {
+    match gemfile.known() {
+        Some(text) => {
+            let separator = if text.contains('/') { '/' } else { '\\' };
+            Arg::Known(match text.rsplit_once(separator) {
+                Some(("", _)) => separator.to_string(),
+                Some((folder, _)) if folder.ends_with(':') => format!("{folder}{separator}"),
+                Some((folder, _)) => folder.to_string(),
+                None => ".".to_string(),
+            })
+        }
+        None => gemfile.clone(),
     }
 }

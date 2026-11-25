@@ -1,4 +1,4 @@
-//! Inline code: Python and JavaScript given with `-c`, `-e`, `eval` or a
+//! Inline code: Python, JavaScript and Ruby given with `-c`, `-e`, `eval` or a
 //! here-document are read, and what they delete, write and run is judged
 //! like the same shell command: a finding names the path and why, a path is
 //! read as the shell reads it, code that starts code is read to a limit, and
@@ -12,7 +12,7 @@
 mod common;
 
 use common::inline::nest;
-use common::lines::long_code;
+use common::lines::{long_code, long_ruby_code};
 use common::{posix, rules};
 use milo_guards_shell::{classify, Rule, Shell};
 
@@ -124,12 +124,16 @@ fn code_whose_parse_the_reader_stops_is_unknown() {
     let javascript = format!("{}{round}", "x;\n".repeat(1_000));
     let python = format!("!=]0x ]{}", "\n#".repeat(1_400));
     let wrapped = format!("in {}", "%c=>; ".repeat(500));
+    // Ruby that meets an error: an opener the code never closes, after a
+    // run of statements.
+    let ruby = format!("{}x = (\n", "x\n".repeat(1_400));
     for (interpreter, code) in [
         ("node", &javascript),
         ("node", &wrapped),
         ("python3", &python),
+        ("ruby", &ruby),
     ] {
-        let flag = if interpreter == "node" { "-e" } else { "-c" };
+        let flag = if interpreter == "python3" { "-c" } else { "-e" };
         // The code as one double-quoted word of the line.
         let word = format!("\"{}\"", code.replace('\\', "\\\\").replace('"', "\\\""));
         for line in [
@@ -153,6 +157,60 @@ fn code_whose_parse_the_reader_stops_is_unknown() {
                 milo_guards_shell::Effect::Unknown,
                 "{at}"
             );
+        }
+    }
+}
+
+#[test]
+fn long_inline_ruby_is_never_safe_unless_it_is_read() {
+    // Ruby up to the reader's length limit, in the shapes of the code above
+    // and the ones the grammar reads two ways: every line gets an answer,
+    // and the unread ones are not safe.
+    let paths = posix();
+    for line in long_ruby_code() {
+        assert!(line.len() <= 64 * 1024, "{}", line.len());
+        let assessment = classify(&line, Shell::Posix, &paths);
+        let found = rules(&line, Shell::Posix, &paths);
+        if line.contains(&"f(".repeat(500)) {
+            assert!(!assessment.is_safe(), "{:?}: {found:?}", &line[..20]);
+        }
+    }
+}
+
+#[test]
+fn code_longer_than_the_readers_limit_is_unknown() {
+    // The reader reads code of at most 3 KiB (`MAX_LEN`, a deliberate
+    // limit); a line may be longer (64 KiB), and the inline code in it that
+    // is not read for its length is `unknown`, in each language, however it
+    // is given. Code of the same shape within the limit is read, and safe.
+    const MAX_LEN: usize = 3 * 1024;
+    let paths = posix();
+    let code = |interpreter: &str, filler: usize| match interpreter {
+        "python3" => format!("x = '{}'\nprint(x)", "a".repeat(filler)),
+        "node" => format!("let x = '{}'; console.log(x)", "a".repeat(filler)),
+        _ => format!("x = '{}'\nputs x", "a".repeat(filler)),
+    };
+    for interpreter in ["python3", "node", "ruby"] {
+        let flag = if interpreter == "python3" { "-c" } else { "-e" };
+        for (filler, read) in [(2_000, true), (3_100, false), (20_000, false)] {
+            let code = code(interpreter, filler);
+            assert_eq!(code.len() <= MAX_LEN, read, "{interpreter}");
+            for (whole, line) in [
+                (true, format!("{interpreter} {flag} \"{code}\"")),
+                (false, format!("{interpreter} <<'END'\n{code}\nEND")),
+            ] {
+                let found = format!("{interpreter} {filler}: {:?}", &line[..line.len().min(30)]);
+                let assessment = classify(&line, Shell::Posix, &paths);
+                let unread = assessment.findings().iter().any(|finding| {
+                    finding.rule == Rule::Unknown
+                        && finding.reason == "runs code the guard does not read"
+                });
+                assert_eq!(unread, !read, "{found}: {assessment:?}");
+                // A line is safe only for code written whole on it, and read.
+                if read && whole {
+                    assert!(assessment.is_safe(), "{found}: {assessment:?}");
+                }
+            }
         }
     }
 }

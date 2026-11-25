@@ -1,13 +1,14 @@
 # milo-guards-code
 
-Reads Python and JavaScript code and says what it is certain to do to files
-and what it runs, or that it does not understand it. Part of
+Reads Python, JavaScript and Ruby code and says what it is certain to do
+to files and what it runs, or that it does not understand it. Part of
 [milo-guards](https://github.com/camiloazula/milo-guards); a reader, not a guard.
 
-A shell line can hand an interpreter code (`python3 -c`, `node -e`), and an
-agent can write a script or run a snippet directly. What matters to a guard
-is which files the code deletes, writes, reads and moves, and what it runs.
-This crate reads Python and JavaScript (Node, Bun and Deno) with their own
+A shell line can hand an interpreter code (`python3 -c`, `node -e`, `ruby
+-e`), and an agent can write a script or run a snippet directly. What
+matters to a guard is which files the code deletes, writes, reads and
+moves, and what it runs. This crate reads Python, JavaScript (Node, Bun and
+Deno) and Ruby (behind its `ruby` feature, on by default) with their own
 tree-sitter grammars and answers two questions of a piece of code:
 
 - **What is it certain to do?** `read` gives the `Act`s the code makes, in
@@ -28,7 +29,7 @@ judges (a delete is `rm -rf PATH`, a command line a script a shell reads).
 most 3 KiB of code (`MAX_LEN`), a deliberate limit that bounds the work any
 reading takes: longer code is an `Act::Unread` and not understood. The
 script guard calls it `unreadable`, and the shell guard calls such inline
-code (`python3 -c`, `node -e`, a here-document) `unknown`. Later releases
+code (`python3 -c`, `node -e`, `ruby -e`, a here-document) `unknown`. Later releases
 will raise the limit.
 
 ## Install

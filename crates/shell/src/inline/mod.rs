@@ -13,6 +13,7 @@
 
 #[cfg(feature = "inline")]
 use milo_guards_code::{is_data_url, is_foreign_module};
+use milo_guards_core::spelling::glob;
 
 use crate::launch;
 use crate::located::Source;
@@ -37,6 +38,8 @@ pub(crate) fn language(key: &str) -> Option<Language> {
         "bun" | "deno" => Some(Language::JavaScript),
         key if launch::is_node(key) => Some(Language::JavaScript),
         key if launch::is_python(key) && launch::is_interpreter(key) => Some(Language::Python),
+        key if launch::is_irb(key) => Some(Language::Ruby),
+        key if launch::is_ruby(key) => Some(Language::Ruby),
         _ => None,
     }
 }
@@ -75,6 +78,10 @@ pub(crate) fn shorten(code: &str) -> String {
 
 /// The inline code an interpreter is given, and where it runs.
 #[derive(Debug, Default, Clone, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag says one thing of the interpreter or its code, and none follows from another"
+)]
 pub(crate) struct Code {
     /// Every piece of code the options name: `node -e A -e B` runs both, the
     /// second after the first, so each is read.
@@ -99,6 +106,11 @@ pub(crate) struct Code {
     /// built in: every other module, `time` and `itertools` too, is a file
     /// the working folder is searched for first.
     pub(crate) python2: bool,
+    /// Whether the interpreter reads settings from the folder it runs in
+    /// that run code (`JRuby`'s `.jrubyrc` and `.jruby.java_opts`, whose JVM
+    /// options run an agent; `ruby` may be `JRuby` under rvm, rbenv or chruby), so that code is only read whole there when that folder is the
+    /// workspace's, as Python's imports are.
+    pub(crate) folder_config: bool,
 }
 
 impl Code {
@@ -120,26 +132,45 @@ pub(crate) fn code(key: &str, args: &[Arg]) -> Option<Code> {
         Language::Python => python_code(args),
         Language::JavaScript if key == "deno" => deno_code(args),
         Language::JavaScript => script_code(args, launch::is_node(key)),
+        Language::Ruby if launch::is_ruby(key) => ruby_code(args),
+        Language::Ruby => None,
     }?;
     Some(Code {
         plain: !never_whole(key) && is_plain(key, args),
         python2,
+        folder_config: launch::is_ruby(key),
         ..found
     })
 }
 
 /// Whether `args` are exactly the flag that carries code and the code:
 /// `python3 -c CODE`, `node -e CODE` (`-p`, `--eval`, `--print`), `bun` the
-/// same, `deno eval CODE`.
+/// same, `deno eval CODE`, and for ruby the arguments of the code after it.
 fn is_plain(key: &str, args: &[Arg]) -> bool {
-    let [flag, code] = args else {
+    let [flag, code, rest @ ..] = args else {
         return false;
     };
+    // What follows the code of ruby's `-e` fills `ARGV`: only words that are
+    // known and plain, since a brace list or a wildcard may be expanded into
+    // an option, which loads code, and so may a word only known when it
+    // runs. A leading `--` is the one word that starts with a dash.
+    let arguments_only = launch::is_ruby(key)
+        && rest.iter().enumerate().all(|(at, arg)| {
+            arg.known().is_some_and(|word| {
+                (!word.starts_with('-') || (at == 0 && word == "--"))
+                    && !crate::path::brace_expansion(word)
+                    && !glob::has_wildcard(word)
+            })
+        });
+    if !rest.is_empty() && !arguments_only {
+        return false;
+    }
     let flags: &[&str] = match key {
         "bun" => &["-e", "-p", "--eval", "--print"],
         "deno" => &["eval"],
         key if launch::is_node(key) => &["-e", "-p", "--eval", "--print"],
         key if launch::is_python(key) => &["-c"],
+        key if launch::is_ruby(key) => &["-e"],
         _ => &[],
     };
     code.known().is_some() && flag.known().is_some_and(|flag| flags.contains(&flag))
@@ -185,6 +216,122 @@ fn python_code(args: &[Arg]) -> Option<Code> {
     None
 }
 
+/// A piece of code given with `-e`, and where it is among the arguments.
+type Piece = (Arg, Source);
+
+/// What ruby's options say, read up to its script or the code's arguments:
+/// the pieces of code `-e` gives and the directory `-C` names. `None` for
+/// an option the guard does not read: one that loads other code or finds it
+/// elsewhere (`-r`, `-I`, `-x`, `-S`, `-s`), one that reads the code in
+/// another encoding (`-E`, `-K`, `-U`, `--encoding`), `-i`, which edits the
+/// files it is given in place, and any other the guard does not know. The
+/// loops `-n` and `-p` read their code as it is, around it.
+fn ruby_options(args: &[Arg]) -> Option<(Vec<Piece>, Option<Arg>)> {
+    let mut pieces = Vec::new();
+    let mut dir = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let text = arg.known()?;
+        // The script read from the input, a script, or the code's own
+        // arguments.
+        if text == "--" || text == "-" || !text.starts_with('-') {
+            break;
+        }
+        if let Some(long) = text.strip_prefix("--") {
+            let (name, value) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            match (name, value) {
+                ("verbose" | "yjit", None) => {}
+                ("enable" | "disable", Some(_)) => {}
+                ("enable" | "disable", None) => {
+                    iter.next()?;
+                }
+                (name, None) if name.starts_with("enable-") || name.starts_with("disable-") => {}
+                _ => return None,
+            }
+            continue;
+        }
+        let bundle = &text[1..];
+        let mut next = 0;
+        for (at, letter) in bundle.char_indices() {
+            if at < next {
+                continue;
+            }
+            let rest = &bundle[at + letter.len_utf8()..];
+            // A record separator (`-0777`), a level (`-W2`, `-T3`) and a
+            // character (`-Ku`) end where Ruby's grammar for them does, and
+            // the switches after them in the word are read.
+            if let Some(taken) = launch::ruby_tail(letter, rest) {
+                if rest.len() == taken {
+                    break;
+                }
+                next = at + letter.len_utf8() + taken;
+                continue;
+            }
+            match letter {
+                'e' | 'C' => {
+                    let (value, source) = if rest.is_empty() {
+                        let next = iter.next()?;
+                        (next.clone(), Source::arg(next))
+                    } else {
+                        (Arg::Known(rest.to_string()), Source::part(arg, rest))
+                    };
+                    if letter == 'e' {
+                        pieces.push((value, source));
+                    } else {
+                        dir = Some(value);
+                    }
+                    break;
+                }
+                // The rest of the word is the pattern `-a` splits at.
+                'F' => break,
+                'w' | 'v' | 'n' | 'p' | 'l' | 'a' => {}
+                _ => return None,
+            }
+        }
+    }
+    Some((pieces, dir))
+}
+
+/// `ruby -e CODE`, read with [`ruby_options`]. Ruby joins the pieces of
+/// several `-e` with a line's end into one script, so they are read as one.
+fn ruby_code(args: &[Arg]) -> Option<Code> {
+    let (pieces, dir) = ruby_options(args)?;
+    if pieces.is_empty() {
+        return None;
+    }
+    let joined: Option<Vec<&str>> = pieces.iter().map(|(piece, _)| piece.known()).collect();
+    let (pieces, sources) = match joined {
+        // One script of the pieces: it is no one argument's value, so its
+        // findings have no range of their own.
+        Some(texts) if texts.len() > 1 => (vec![Arg::Known(texts.join("\n"))], vec![Source::NONE]),
+        _ => pieces.into_iter().unzip(),
+    };
+    Some(Code {
+        pieces,
+        sources,
+        dir,
+        ..Code::default()
+    })
+}
+
+/// Whether `key` (`ruby`, `irb`) runs only the Ruby the guard reads: the
+/// code `-e` gives, or its input, as it is. None of its options loads other
+/// code first or reads the code otherwise (see [`ruby_options`]; for irb,
+/// `-r` and `-I`), and `-C DIR`, which runs the code elsewhere, comes with
+/// code on the line, which is read from there.
+pub(crate) fn ruby_reads_input(key: &str, args: &[Arg]) -> bool {
+    if launch::is_irb(key) {
+        return !args.iter().any(|arg| {
+            arg.known()
+                .is_none_or(|text| text.starts_with("-r") || text.starts_with("-I"))
+        });
+    }
+    ruby_options(args).is_some_and(|(pieces, dir)| !pieces.is_empty() || dir.is_none())
+}
+
 fn code_of(piece: Arg, source: Source, input: bool) -> Code {
     Code {
         pieces: vec![piece],
@@ -193,6 +340,7 @@ fn code_of(piece: Arg, source: Source, input: bool) -> Code {
         input,
         plain: false,
         python2: false,
+        folder_config: false,
     }
 }
 
@@ -480,6 +628,12 @@ fn deno_code(args: &[Arg]) -> Option<Code> {
 /// flag that is the value of the option before it (`python -W --version`) is
 /// not one, and neither is any after `--`, where the script's name comes.
 pub(crate) fn prints(key: &str, args: &[Arg]) -> bool {
+    // `ruby -v` alone prints its version and quits.
+    if (launch::is_ruby(key) || launch::is_irb(key) || key == "pry")
+        && matches!(args, [only] if only.known() == Some("-v"))
+    {
+        return true;
+    }
     const VALUES: [&str; 14] = [
         "-W",
         "-X",

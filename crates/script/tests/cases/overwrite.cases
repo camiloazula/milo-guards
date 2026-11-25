@@ -51,3 +51,4 @@ javascript finds=overwrite reason="writes to a file a tool runs on its own" | re
 javascript finds=overwrite reason="writes to a shell startup file" | require('fs').copyFileSync('x', '/home/me/.profile')
 javascript finds=overwrite reason="links to your SSH keys" | require('fs').symlinkSync('/home/me/.ssh/id_rsa', 'k')
 javascript rules=unknown | require('fs').writeFileSync('out.txt', 'x')
+ruby finds=overwrite | File.write('/home/me/.bashrc', 'x')

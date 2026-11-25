@@ -12,9 +12,10 @@
 //!    started with a script (`bash -c`, `eval`, `cmd /c`,
 //!    `powershell -Command`, `Invoke-Expression`) has that script split in
 //!    its own grammar.
-//!    Python and JavaScript given inline (`python3 -c`, `node -e`, a
-//!    here-document fed to `python3 -`) are read with their own grammars (the
-//!    `milo-guards-code` crate, behind the `inline` feature, on by default),
+//!    Python, JavaScript and Ruby given inline (`python3 -c`, `node -e`,
+//!    `ruby -e`, a here-document fed to `python3 -`) are read with their own
+//!    grammars (the `milo-guards-code` crate, behind the `inline` feature,
+//!    and Ruby behind `ruby`, both on by default),
 //!    and what they delete, write and run is judged like the same shell
 //!    command. A line is safe for such code only when it is read whole
 //!    (written on the line, plain statements, calls on a short list); any

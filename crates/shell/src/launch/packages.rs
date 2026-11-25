@@ -80,6 +80,9 @@ pub(super) fn run_values(key: &str) -> Option<&'static [&'static str]> {
             "--skip",
         ],
         "rye" => &["--pyproject"],
+        // bundler's global options and those of `bundle exec` that take a
+        // value; its command follows `exec`.
+        "bundle" | "bundler" => &["-r", "--retry", "--gemfile"],
         "pipenv" => &["--python", "--pypi-mirror"],
         // The tool versions and environment `volta run` gives the command.
         "volta" => &["--node", "--npm", "--pnpm", "--yarn", "--env"],

@@ -1106,6 +1106,10 @@ impl Walker<'_> {
             }
             _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
         };
+        if let Some(name) = &terraform {
+            self.split
+                .note_ruby_pwd(name, unit::text(&node, self.source));
+        }
         // `$env:BASH_ENV = 'x.sh'`: a bash the line starts runs the file
         // first.
         if startup {

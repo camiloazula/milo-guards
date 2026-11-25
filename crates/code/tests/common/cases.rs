@@ -4,7 +4,7 @@
 //!
 //! A case is `WHAT ANSWER... | CODE`:
 //!
-//! - `WHAT` is `python` or `javascript` (code in that language), `python2`
+//! - `WHAT` is `python`, `javascript` or `ruby` (code in that language), `python2`
 //!   (Python code a Python 2 interpreter runs) or `module` (a module
 //!   specifier, as `import` and `require` are given);
 //! - the answer is one or more fields: `acts="..."` (the acts `read` finds,
@@ -36,7 +36,7 @@ pub mod format;
 use std::collections::{BTreeMap, HashSet};
 
 use format::{Record, Word};
-use milo_guards_code::Language::{JavaScript, Python};
+use milo_guards_code::Language::{JavaScript, Python, Ruby};
 use milo_guards_code::{
     declares_other_encoding, gives_input, gives_shell_a_list, is_data_url, is_foreign_module,
     parses, read, understand, understand_python2, Budget, Understanding,
@@ -49,6 +49,7 @@ use super::shown;
 pub enum What {
     Python,
     JavaScript,
+    Ruby,
     Python2,
     Module,
 }
@@ -66,7 +67,7 @@ impl What {
                 "input",
                 "shell_list",
             ],
-            Self::JavaScript => &[
+            Self::JavaScript | Self::Ruby => &[
                 "acts",
                 "understand",
                 "parses",
@@ -84,6 +85,7 @@ impl What {
         match self {
             Self::Python => "python",
             Self::JavaScript => "javascript",
+            Self::Ruby => "ruby",
             Self::Python2 => "python2",
             Self::Module => "module",
         }
@@ -128,23 +130,26 @@ pub fn answer(case: &Case, field: &str) -> String {
     let code = case.code.as_str();
     let language = match case.what {
         What::JavaScript => JavaScript,
+        What::Ruby => Ruby,
         _ => Python,
     };
     match (case.what, field) {
-        (What::Python | What::JavaScript, "acts") => shown(&read(language, code).acts),
-        (What::Python | What::JavaScript, "understand") => {
+        (What::Python | What::JavaScript | What::Ruby, "acts") => shown(&read(language, code).acts),
+        (What::Python | What::JavaScript | What::Ruby, "understand") => {
             understanding(understand(language, code)).to_string()
         }
         (What::Python2, "understand") => understanding(understand_python2(code)).to_string(),
         (What::Python, "other_encoding") => yes(declares_other_encoding(code)),
-        (What::Python | What::JavaScript, "parses") => yes(parses(language, code)),
-        (What::Python | What::JavaScript, "stops") => {
+        (What::Python | What::JavaScript | What::Ruby, "parses") => yes(parses(language, code)),
+        (What::Python | What::JavaScript | What::Ruby, "stops") => {
             let budget = Budget::new(code.len());
             let _ = budget.parses(language, code);
             yes(budget.is_spent())
         }
-        (What::Python | What::JavaScript, "input") => yes(gives_input(language, code)),
-        (What::Python | What::JavaScript, "shell_list") => yes(gives_shell_a_list(language, code)),
+        (What::Python | What::JavaScript | What::Ruby, "input") => yes(gives_input(language, code)),
+        (What::Python | What::JavaScript | What::Ruby, "shell_list") => {
+            yes(gives_shell_a_list(language, code))
+        }
         (What::Module, "data_url") => yes(is_data_url(code)),
         (What::Module, "foreign") => yes(is_foreign_module(code)),
         (what, other) => format!("no question `{other}` of `{}`", what.name()),
@@ -257,6 +262,7 @@ fn case(words: &[Word]) -> Result<Answer, Vec<String>> {
         Some(Word::Bare(word)) => match word.as_str() {
             "python" => What::Python,
             "javascript" => What::JavaScript,
+            "ruby" => What::Ruby,
             "python2" => What::Python2,
             "module" => What::Module,
             other => return Err(vec![format!("an unknown kind of code `{other}`")]),

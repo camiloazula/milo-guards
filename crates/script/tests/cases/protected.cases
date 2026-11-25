@@ -41,6 +41,9 @@ python@env finds=read_secret reason="reads the project's environment file" | pri
 javascript@env finds=read_secret | require('fs').readFileSync('~/../.env')
 python@env safe | print(open('~/src/x').read())
 python safe | print(open('~/../.env').read())
+ruby@env finds=read_secret reason="reads the project's environment file" | puts File.read('~/../.env')
+ruby@env lacks=read_secret | puts File.read('~/src/x')
+ruby lacks=read_secret | puts File.read('~/../.env')
 # Without the secret named, a project's `.env` is the workspace's own.
 python rules=unknown | import os\nprint(open('.env').read(), os.getcwd())
 python safe | print(open('.env').read())
@@ -57,3 +60,5 @@ paths ssh_folder base=posix folder=/home/me/.ssh words="the agent's keys"
 python@ssh_folder finds=read_secret reason="reads your SSH keys" | print(open('/home/me/.ssh/id_rsa').read())
 python@ssh_folder finds=overwrite reason="writes to the agent's keys" | open('/home/me/.ssh/id_rsa', 'w')
 javascript@ssh_folder finds=read_secret | require('fs').readFileSync('/home/me/.ssh/id_rsa')
+ruby@ssh_folder finds=read_secret reason="reads your SSH keys" | puts File.read('/home/me/.ssh/id_rsa')
+ruby@ssh_folder finds=overwrite reason="writes to the agent's keys" | File.write('/home/me/.ssh/id_rsa', 'x')

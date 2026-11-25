@@ -22,3 +22,10 @@ python input=yes | import subprocess\np = subprocess.Popen(['sh'])\np['stdin']
 javascript input=yes | const {stdin: s} = require('child_process').spawn('sh'); s.write('x')
 javascript input=yes | const c = require('child_process').spawn('sh'); c['stdin'].write('x')
 python input=no | import os\nos.popen('ls')
+ruby input=yes | require 'open3'\nOpen3.capture2('sh', stdin_data: 'rm -rf ~')
+ruby input=yes | system('sh', in: '/tmp/x')
+ruby input=yes | IO.popen('sh', 'w') { |io| io.puts 'x' }
+ruby input=yes | Open3.popen3('sh') { |i, o, e, t| i.puts 'x' }
+ruby input=yes | system('sh',
+ruby input=no | system('ls')
+ruby input=no | IO.popen('ls').read

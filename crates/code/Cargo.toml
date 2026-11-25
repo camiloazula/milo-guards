@@ -1,6 +1,6 @@
 [package]
 name = "milo-guards-code"
-description = "Reads Python and JavaScript code and says what it is certain to do to files and what it runs, or that it does not understand it."
+description = "Reads Python, JavaScript and Ruby code and says what it is certain to do to files and what it runs, or that it does not understand it."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -19,6 +19,11 @@ exclude = ["tests/cases/"]
 workspace = true
 
 [features]
+default = ["ruby"]
+# Reads Ruby, with tree-sitter-ruby. Off, `Language::Ruby` is still there
+# and no Ruby code is read: `read` gives an `Unread` alone and `understand`
+# says not understood, and the grammar is not built.
+ruby = ["dep:tree-sitter-ruby"]
 # What only the reader's own tests read: the count of the work its parses
 # do for a call (`REPORT_BYTES` in `src/unit.rs`). Its tests turn it on,
 # through the dev-dependency on this crate below. It is not for callers and
@@ -32,6 +37,7 @@ testing = []
 tree-sitter.workspace = true
 tree-sitter-python.workspace = true
 tree-sitter-javascript.workspace = true
+tree-sitter-ruby = { workspace = true, optional = true }
 
 [dev-dependencies]
 # This crate with `testing` on, so every build of its tests reads the count

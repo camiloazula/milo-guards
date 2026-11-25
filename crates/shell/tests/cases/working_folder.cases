@@ -91,6 +91,13 @@ posix finds=delete | uv run --project /tmp/p rm -rf .git
 posix finds=delete | uv --directory / run --project home/me rm -rf .ssh
 posix safe | uv --directory sub run pytest
 posix safe | uv run --project sub pytest
+# A project outside the workspace is code uv builds and runs: `unknown`
+# when nothing else is found.
+posix finds=unknown reason="runs code from a project file outside the workspace" | uv run --project /tmp/p pytest
+posix finds=unknown | uv --directory /tmp/p run pytest
+posix finds=unknown | uv --directory /tmp run --project p pytest
+posix finds=unknown | uv run --project=../other pytest
+posix safe | uv --directory sub run --project . pytest
 
 # bun's and yarn's `--cwd`.
 posix finds=delete | bun --cwd=~ run rm -rf .config

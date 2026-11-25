@@ -11,7 +11,7 @@
 mod common;
 
 use common::{posix, windows};
-use milo_guards_script::Language::{self, JavaScript, Python};
+use milo_guards_script::Language::{self, JavaScript, Python, Ruby};
 use milo_guards_script::{judge, Assessment, Rule, MAX_LEN};
 
 /// Pieces of Python syntax, joined at random into code no parser expects.
@@ -114,6 +114,50 @@ const JAVASCRIPT: [&str; 46] = [
     "#!/usr/bin/env node\n",
 ];
 
+/// Pieces of Ruby syntax.
+const RUBY: [&str; 40] = [
+    "require 'fileutils'\n",
+    "File.delete(",
+    "FileUtils.rm_rf ",
+    "File.read(",
+    "File.write(",
+    "Dir.chdir(",
+    "system(",
+    "`ls`",
+    "eval(",
+    "puts ",
+    "'/home/me'",
+    "'~/.ssh/id_rsa'",
+    "'..'",
+    "\"x#{y}\"",
+    "%w(a b)",
+    "<<A\n",
+    "A\n",
+    "x = ",
+    "x",
+    "+",
+    ", ",
+    ")",
+    "]",
+    "[",
+    "{",
+    "}",
+    "|x| ",
+    " do ",
+    " end",
+    "if x\n",
+    "def f\n",
+    "\n",
+    "# c\n",
+    "=begin\n",
+    "\u{0}",
+    "é",
+    "\r",
+    "?a",
+    "/a/",
+    ":s",
+];
+
 /// A small deterministic generator, so a failure names its seed.
 struct Lcg(u64);
 
@@ -144,7 +188,11 @@ fn rules(assessment: &Assessment) -> Vec<Rule> {
 
 #[test]
 fn random_code_never_panics_and_gets_the_same_answer_twice() {
-    for (language, pieces, seed) in [(Python, &PYTHON[..], 7), (JavaScript, &JAVASCRIPT[..], 11)] {
+    for (language, pieces, seed) in [
+        (Python, &PYTHON[..], 7),
+        (JavaScript, &JAVASCRIPT[..], 11),
+        (Ruby, &RUBY[..], 29),
+    ] {
         let mut random = Lcg(seed);
         for paths in [posix(), windows()] {
             for _ in 0..3_000 {
@@ -164,7 +212,11 @@ fn random_code_never_panics_and_gets_the_same_answer_twice() {
 fn random_code_that_is_safe_is_read_whole() {
     // Safe code is code the reader understands: never code with a control
     // character other than a line feed or a tab, or a line separator.
-    for (language, pieces, seed) in [(Python, &PYTHON[..], 13), (JavaScript, &JAVASCRIPT[..], 17)] {
+    for (language, pieces, seed) in [
+        (Python, &PYTHON[..], 13),
+        (JavaScript, &JAVASCRIPT[..], 17),
+        (Ruby, &RUBY[..], 31),
+    ] {
         let mut random = Lcg(seed);
         for _ in 0..4_000 {
             let code = noise(&mut random, pieces);
@@ -186,12 +238,13 @@ fn long(language: Language) -> String {
     match language {
         Python => format!("x = '{}'\nprint(x)", "a".repeat(MAX_LEN)),
         JavaScript => format!("let x = '{}'; console.log(x)", "a".repeat(MAX_LEN)),
+        Ruby => format!("x = '{}'\nputs x", "a".repeat(MAX_LEN)),
     }
 }
 
 #[test]
 fn code_longer_than_the_limit_is_unreadable_and_never_safe() {
-    for language in [Python, JavaScript] {
+    for language in [Python, JavaScript, Ruby] {
         let code = long(language);
         assert!(code.len() > MAX_LEN);
         let assessment = judge(language, &code, &posix());
@@ -203,6 +256,7 @@ fn code_longer_than_the_limit_is_unreadable_and_never_safe() {
         let at_the_limit = match language {
             Python => format!("x = '{}'\nprint(x)", "a".repeat(MAX_LEN - 20)),
             JavaScript => format!("let x = '{}'; console.log(x)", "a".repeat(MAX_LEN - 30)),
+            Ruby => format!("x = '{}'\nputs x", "a".repeat(MAX_LEN - 20)),
         };
         assert!(at_the_limit.len() <= MAX_LEN);
         assert!(
@@ -240,12 +294,25 @@ fn deep(language: Language, depth: usize) -> Vec<String> {
             ),
             format!("let x = {}1\nconsole.log(x)", "-".repeat(depth)),
         ],
+        Ruby => vec![
+            format!("puts({}1{})", "(".repeat(depth), ")".repeat(depth)),
+            format!(
+                "x = 1\nx{}.b\nFile.write('/home/me/.bashrc', 'x')",
+                ".a".repeat(depth)
+            ),
+            format!(
+                "x = {}1{}\nFile.write('/home/me/.bashrc', 'x')",
+                "[".repeat(depth),
+                "]".repeat(depth)
+            ),
+            format!("x = {}1\nputs x", "- ".repeat(depth)),
+        ],
     }
 }
 
 #[test]
 fn code_nested_too_deeply_is_unreadable_and_never_safe() {
-    for language in [Python, JavaScript] {
+    for language in [Python, JavaScript, Ruby] {
         let mut unreadable = 0;
         for depth in [420, 1_000] {
             for code in deep(language, depth) {
@@ -261,8 +328,9 @@ fn code_nested_too_deeply_is_unreadable_and_never_safe() {
                 }
             }
         }
-        // Some shapes are past the reader's walk, or the check is empty.
-        assert!(unreadable > 0, "{language:?}");
+        // Some shapes are past the reader's walk, or the check is empty;
+        // the Ruby reader walks every tree it parses whole.
+        assert!(unreadable > 0 || language == Ruby, "{language:?}");
         // Code of a sensible depth is read as any other.
         assert!(judge(language, &deep(language, 20)[0], &posix()).is_safe());
     }
@@ -274,12 +342,13 @@ fn running(language: Language, depth: usize) -> String {
     let mut code = match language {
         Python => "import shutil; shutil.rmtree('/home/me')".to_string(),
         JavaScript => "require('fs').rmSync('/home/me')".to_string(),
+        Ruby => "File.delete('/home/me')".to_string(),
     };
     for _ in 0..depth {
         let quoted = code.replace('\\', "\\\\").replace('"', "\\\"");
         code = match language {
             Python => format!("exec(\"{quoted}\")"),
-            JavaScript => format!("eval(\"{quoted}\")"),
+            JavaScript | Ruby => format!("eval(\"{quoted}\")"),
         };
     }
     code
@@ -287,7 +356,7 @@ fn running(language: Language, depth: usize) -> String {
 
 #[test]
 fn code_that_runs_code_too_deeply_is_unreadable_and_never_safe() {
-    for language in [Python, JavaScript] {
+    for language in [Python, JavaScript, Ruby] {
         // Within the limit, the delete at the bottom is found.
         let assessment = judge(language, &running(language, 3), &posix());
         assert!(
@@ -329,10 +398,11 @@ fn code_that_runs_code_too_deeply_is_unreadable_and_never_safe() {
 #[test]
 fn code_that_runs_much_code_ends_and_is_never_safe() {
     // A long literal run many times over, and many literals each run.
-    for language in [Python, JavaScript] {
+    for language in [Python, JavaScript, Ruby] {
         let piece = match language {
             Python => format!("exec('x = 1 # {}')\n", "y".repeat(2_000)),
             JavaScript => format!("eval('let x = 1 // {}');\n", "y".repeat(2_000)),
+            Ruby => format!("eval('x = 1 # {}')\n", "y".repeat(2_000)),
         };
         let code = piece.repeat(MAX_LEN / piece.len());
         assert!(code.len() <= MAX_LEN);
@@ -340,7 +410,7 @@ fn code_that_runs_much_code_ends_and_is_never_safe() {
     }
 }
 
-/// The code of every `python` and `javascript` case of the code reader's
+/// The code of every `python`, `javascript` and `ruby` case of the code reader's
 /// case files.
 fn reader_cases() -> Vec<(Language, String)> {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../code/tests/cases");
@@ -368,6 +438,7 @@ fn reader_cases() -> Vec<(Language, String)> {
             let language = match common::cases::format::head(&record.words) {
                 Some(("python" | "python2", None)) => Python,
                 Some(("javascript", None)) => JavaScript,
+                Some(("ruby", None)) => Ruby,
                 _ => continue,
             };
             found.push((language, code));
@@ -391,7 +462,7 @@ fn every_case_of_the_code_reader_is_judged() {
     for (language, code) in &cases {
         let other = match language {
             Python => JavaScript,
-            JavaScript => Python,
+            JavaScript | Ruby => Python,
         };
         for language in [*language, other] {
             for paths in [posix(), windows()] {

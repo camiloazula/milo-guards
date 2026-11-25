@@ -20,3 +20,44 @@ javascript finds=overwrite reason="writes to a shell startup file" | require('fs
 javascript finds=overwrite reason="writes to a shell startup file" | require('fs').openSync('/home/me/.bashrc', 'a+')
 javascript finds=overwrite reason="writes to a shell startup file" | require('fs').createWriteStream('/home/me/.bashrc')
 javascript rules=unknown | require('fs').openSync('/home/me/.bashrc', 'r')
+
+# Ruby's `File.read` and the like open the file with the mode they are given,
+# which truncates it for a mode that writes.
+ruby safe | puts File.read('/home/me/.bashrc')
+ruby rules=unknown | puts File.read('/home/me/.bashrc', mode: 'r')
+ruby safe | puts File.readlines('/home/me/.bashrc', chomp: true).length
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', mode: 'w')
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', mode: "w")
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', mode: 'w+')
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', :mode => 'w')
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', {mode: 'w'})
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', mode: 513)
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', open_args: ['w'])
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', nil, 0, mode: 'w')
+ruby finds=overwrite reason="writes to a shell startup file" | File.readlines('/home/me/.bashrc', mode: 'w')
+ruby finds=overwrite reason="writes to a shell startup file" | File.readlines('/home/me/.bashrc', open_args: ['w'])
+ruby finds=overwrite reason="writes to a shell startup file" | File.foreach('/home/me/.bashrc', mode: 'a') { |l| puts l }
+ruby finds=overwrite reason="writes to a shell startup file" | File.binread('/home/me/.bashrc', flags: File::TRUNC)
+ruby finds=overwrite reason="writes to a shell startup file" | IO.read('/home/me/.bashrc', mode: 'w')
+ruby finds=overwrite reason="writes to a shell startup file" | File.write('/home/me/.bashrc', 'x', mode: 'a')
+ruby finds=overwrite reason="writes to a shell startup file" | File.write('/home/me/.bashrc', 'x', mode: 'r+')
+# A path that starts with `|` is a command to Ruby 2.5 and before, and JRuby.
+ruby finds=run_program | File.read('|id')
+ruby finds=run_program | File.write('|id', 'x')
+ruby finds=run_program | File.readlines('|id')
+
+# A read's options given in any form but a literal pair or hash may hold a
+# mode that writes (Ruby 2 takes a trailing hash as keywords).
+ruby finds=overwrite reason="writes to a shell startup file" | opts = {mode: 'w'}\nFile.read('/home/me/.bashrc', opts)
+ruby finds=overwrite reason="writes to a shell startup file" | opts = {flags: 513}\nFile.readlines('/home/me/.bashrc', opts)
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', ({mode: 'w'}))
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', {mode: 'w'}.freeze)
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', true ? {mode: 'w'} : nil)
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', nil || {mode: 'w'})
+ruby finds=overwrite reason="writes to a shell startup file" | a = [{mode: 'w'}]\nFile.read('/home/me/.bashrc', a[0])
+ruby finds=overwrite reason="writes to a shell startup file" | a = [{mode: 'w'}]\nFile.read('/home/me/.bashrc', a.first)
+ruby finds=overwrite reason="writes to a shell startup file" | a = [{mode: 'w'}]\nFile.read('/home/me/.bashrc', a.last)
+ruby finds=overwrite reason="writes to a shell startup file" | File.read('/home/me/.bashrc', a = {mode: 'w'})
+ruby safe | puts File.read('/home/me/.bashrc', 10)
+ruby safe | puts File.read('/home/me/.bashrc', 10, 0)
+ruby safe | puts File.read('/home/me/.bashrc', nil, 0, chomp: true)

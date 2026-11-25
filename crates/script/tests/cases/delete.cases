@@ -57,3 +57,9 @@ javascript finds=delete reason="moves your home directory" | require('fs').renam
 javascript finds=delete reason="deletes your home directory" | function f() { require('fs').rmSync('/home/me') }
 javascript rules=unknown | require('fs').rmSync('dist', {recursive: true, force: true})
 javascript rules=unknown | require('fs').unlinkSync('/tmp/x')
+
+# Ruby's deletes.
+ruby finds=delete reason="deletes your home directory" | FileUtils.rm_rf(Dir.home)
+ruby finds=delete | File.delete('/home/me/x')
+ruby finds=delete | Pathname.new('/home/me').rmtree
+ruby finds=delete | Dir.chdir('/home')\nFileUtils.rm_r('me')
