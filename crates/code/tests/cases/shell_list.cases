@@ -1,0 +1,22 @@
+# Whether code hands a shell a list of words (`gives_shell_a_list`), which
+# Windows joins into the line: on POSIX the shell runs the first word as the
+# line, which is what `read` gives.
+
+python shell_list=yes | import subprocess\nsubprocess.run(['del', 'x'], shell=True)
+python shell_list=yes | import subprocess\nsubprocess.call(('del', 'x'), shell=1)
+python shell_list=yes | import subprocess\nsubprocess.run(shell=True, args=['del', 'x'])
+python shell_list=yes | import subprocess\nsubprocess.run(['del', 'x'], shell=
+python shell_list=no | import subprocess\nsubprocess.run('del x', shell=True)
+python shell_list=no | import subprocess\nsubprocess.run(['del', 'x'], shell=False)
+python shell_list=no | import subprocess\nsubprocess.run(['del', 'x'])
+javascript shell_list=no | require('child_process').spawn('ls', ['x'], {shell: true})
+# It answers "may": `shell` may come by `**`, by `*`, or by position.
+python shell_list=yes | import subprocess\nsubprocess.run(['echo', 'a'], **{'shell': True})
+python shell_list=yes | import subprocess\nkw = dict(shell=True)\nsubprocess.run(['del', 'x'], **kw)
+python shell_list=yes | import subprocess\nsubprocess.Popen(['del', 'x'], -1, None, None, None, None, None, True, True)
+python shell_list=yes | import subprocess\nsubprocess.run(['del', 'x'], *rest)
+javascript shell_list=yes | const o = {shell: true}; require('child_process').spawn('del', ['x'], o)
+javascript shell_list=yes | const o = {shell: true}; require('child_process').spawn('del', ['x'], {...o})
+javascript shell_list=yes | require('child_process').spawn('del', ...args)
+javascript shell_list=no | require('child_process').spawn('del', ['x'], {cwd: 'sub'})
+javascript shell_list=no | require('child_process').execFile('git', ['status'], (e, out) => {})

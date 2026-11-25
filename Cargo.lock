@@ -204,6 +204,7 @@ dependencies = [
  "milo-guards-code",
  "milo-guards-core",
  "milo-guards-file",
+ "milo-guards-script",
  "milo-guards-secrets",
  "milo-guards-shell",
  "milo-guards-url",
@@ -227,6 +228,15 @@ name = "milo-guards-file"
 version = "0.1.4"
 dependencies = [
  "milo-guards-core",
+]
+
+[[package]]
+name = "milo-guards-script"
+version = "0.1.4"
+dependencies = [
+ "milo-guards-code",
+ "milo-guards-core",
+ "milo-guards-script",
 ]
 
 [[package]]

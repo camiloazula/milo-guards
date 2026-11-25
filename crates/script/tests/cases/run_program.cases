@@ -1,0 +1,77 @@
+# Code that starts a program or runs a command in a shell is `run_program`.
+# The guard does not judge the program, which is the shell guard's: the
+# target is the command as a line of the machine's shell (POSIX here; a
+# Windows machine's are in `windows_programs.cases`), for the caller to ask
+# the shell guard about. Code that starts a program is never read whole, so
+# it is `unknown` too: the target never makes the code safe.
+
+# A program, and the code around it not read whole, whatever the program is.
+python rules=run_program,unknown | import subprocess\nsubprocess.run(['true'])
+python finds=unknown reason="runs code the guard does not read fully" | import os\nos.system('true')\nimport x
+python finds=unknown reason="runs code the guard does not read fully" | import subprocess\nsubprocess.run(['true'])\nimport antigravity
+python finds=unknown reason="runs code the guard does not read fully" | import subprocess\nsubprocess.run(['true'])\nimport ctypes
+python finds=unknown reason="runs code the guard does not read fully" | import subprocess, sys\nsubprocess.run(['true'])\nsys.settrace(print)
+python finds=unknown reason="runs code the guard does not read fully" | import subprocess\nsubprocess.run(['true'])\ndef f(): pass
+python finds=unknown reason="runs code the guard does not read fully" | import subprocess, os\nsubprocess.run(['true'])\nprint(os.listdir('/home/me/.ssh'))
+javascript finds=unknown reason="runs code the guard does not read fully" | require('child_process').execSync('ls'); require('lodash')
+javascript finds=unknown reason="runs code the guard does not read fully" | require('child_process').execSync('ls'); require('./x.js')
+javascript finds=unknown | require('child_process').execSync('ls'); require('child_process').fork('x.js')
+javascript finds=unknown reason="runs code the guard does not read fully" | require('child_process').execSync('ls'); console.log(process.env)
+# A finding of its own already asks: no second `unknown` for the code.
+python rules=unknown,run_program | import subprocess, sys\nsubprocess.run(['rm', '-rf', sys.argv[1]])
+
+# A command line a shell runs is the line itself.
+python finds=run_program reason="runs a command in a shell" target="rm -rf ~" | import os\nos.system('rm -rf ~')
+python finds=run_program reason="runs a command in a shell" target="ls" | import os\nos.popen('ls')
+python finds=run_program reason="runs a command in a shell" target="cargo test" | import subprocess\nsubprocess.run('cargo test', shell=True)
+javascript finds=run_program reason="runs a command in a shell" target="npm test" | require('child_process').execSync('npm test')
+javascript finds=run_program reason="runs a command in a shell" target="rm -rf ~" | require('child_process').exec('rm -rf ~')
+
+# A program and its arguments are written as words a shell reads the same.
+python finds=run_program reason="runs a program" target="cargo build" | import subprocess\nsubprocess.run(['cargo', 'build'])
+python finds=run_program reason="runs a program" target="rm -rf ~" | import subprocess\nsubprocess.run(['rm', '-rf', '~'])
+python finds=run_program reason="runs a program" target="git commit -m 'a message'" | import subprocess\nsubprocess.call(['git', 'commit', '-m', 'a message'])
+python finds=run_program reason="runs a program" target="echo 'it'\\''s'" | import subprocess\nsubprocess.Popen(['echo', "it's"])
+python finds=run_program reason="runs a program" target="ls '$HOME'" | import subprocess\nsubprocess.check_output(['ls', '$HOME'])
+python finds=run_program reason="runs a program" target="kill -- -1" | import os\nos.kill(-1, 9)
+javascript finds=run_program reason="runs a program" target="git status" | require('child_process').spawnSync('git', ['status'])
+javascript finds=run_program reason="runs a program" target="git push --force" | require('child_process').execFileSync('git', ['push', '--force'])
+javascript finds=run_program reason="runs a program" target="kill -- 9" | process.kill(9)
+
+# A program run from another directory is run there: the line moves first.
+python finds=run_program target="cd -- /tmp && ls" | import subprocess\nsubprocess.run(['ls'], cwd='/tmp')
+# After a `chdir` the code may be in either place when it runs a program (a
+# function defined before it and called after), so the program is judged
+# from both.
+python rules=run_program,run_program,unknown first=run_program target="rm -rf x" | import os\nos.chdir('/tmp')\nos.system('rm -rf x')
+javascript finds=run_program target="cd -- /tmp && ls" | require('child_process').spawn('ls', [], { cwd: '/tmp' })
+
+# A word only known when the code runs is written as a variable no shell
+# sets, which the shell guard reads as a word only known when the line runs.
+python finds=unknown reason="runs a program with an argument only known when the code runs" | import subprocess, sys\nsubprocess.run(['rm', '-rf', sys.argv[1]])
+python finds=run_program target="rm -rf \"$UNKNOWN\"" | import subprocess, sys\nsubprocess.run(['rm', '-rf', sys.argv[1]])
+# A program only known when it runs is not one the shell guard can be asked
+# about.
+python rules=unknown first=unknown reason="runs a program only known when it runs" | import subprocess, sys\nsubprocess.run([sys.argv[1], 'x'])
+python rules=unknown first=unknown reason="runs a script only known when it runs" | import os, sys\nos.system(sys.argv[1])
+javascript rules=unknown first=unknown reason="runs a script only known when it runs" | require('child_process').execSync(process.argv[2])
+
+# A program started after the code sets its own environment may be given a
+# variable that loads code.
+python first=unknown finds=run_program reason="starts a program with an environment set in the code" | import os, subprocess\nos.environ['PYTHONPATH'] = '/tmp/x'\nsubprocess.run(['ls'])
+javascript first=unknown finds=run_program reason="starts a program with an environment set in the code" | process.env.NODE_OPTIONS = 'x'; require('child_process').execSync('ls')
+
+# A word a shell reads as its own (a group, a keyword) is quoted, so the
+# line names the program of that name.
+python finds=run_program target="'{' rm -rf /home/me '}'" | import subprocess\nsubprocess.run(['{', 'rm', '-rf', '/home/me', '}'])
+python finds=run_program target="'if' x" | import subprocess\nsubprocess.run(['if', 'x'])
+python finds=run_program target="'!' x" | import subprocess\nsubprocess.run(['!', 'x'])
+python finds=run_program target="'A=1' x" | import subprocess\nsubprocess.run(['A=1', 'x'])
+javascript finds=run_program target="'while' x" | require('child_process').spawnSync('while', ['x'])
+
+# A program the code gives input to reads what the line does not show.
+python finds=unknown reason="gives a program input the guard does not show" | import subprocess\nsubprocess.run(['sh'], input=b'rm -rf ~')
+python finds=unknown reason="gives a program input the guard does not show" | import subprocess\nsubprocess.run(['sh'], stdin=open('cmds.txt'))
+python finds=run_program target="sh" | import subprocess\nsubprocess.run(['sh'], input=b'rm -rf ~')
+javascript finds=unknown reason="gives a program input the guard does not show" | require('child_process').execSync('sh', {input: 'rm -rf ~'})
+javascript finds=unknown reason="gives a program input the guard does not show" | const c = require('child_process').spawn('sh'); c.stdin.write('rm -rf ~')

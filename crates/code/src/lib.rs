@@ -233,6 +233,63 @@ pub fn read(language: Language, code: &str) -> Reading {
     reading
 }
 
+/// Whether `code` in `language` parses whole: its grammar reads it with no
+/// error, as [`read`] reads it (Python with its line ends as the interpreter
+/// reads them, JavaScript with a hashbang line ended where the language ends
+/// it). Code that does not parse is read all the same, and [`read`] gives an
+/// [`Act::Unread`] for it first; a caller that tells such code from code it
+/// parses but does not follow asks this.
+pub fn parses(language: Language, code: &str) -> bool {
+    match language {
+        Language::Python => python::parses(code),
+        Language::JavaScript => javascript::parses(code),
+    }
+}
+
+/// Whether `code` in `language` may hand a program it starts something to
+/// read on its input, which [`read`] does not give with the program: in
+/// Python a keyword argument `input` or `stdin` (`subprocess.run(['sh'],
+/// input=b'…')`), a `communicate` or `stdin` member, a `popen` given more
+/// than its command (`os.popen('sh', 'w')`) or a `['stdin']` subscript; in
+/// JavaScript an option `input`, `stdin` or `stdio` (`execSync('sh', { input:
+/// '…' })`), a `stdin` member or subscript (`child.stdin.write(…)`,
+/// `c['stdin']`), or a `stdin` taken apart (`const { stdin: s } = spawn(…)`). It is read loosely, by name, on
+/// any call: a caller asks it of code that starts a program, and takes a yes
+/// for "the program may be given input the line does not show". Code that does
+/// not parse may give input.
+pub fn gives_input(language: Language, code: &str) -> bool {
+    match language {
+        Language::Python => python::gives_input(code),
+        Language::JavaScript => javascript::gives_input(code),
+    }
+}
+
+/// Whether `code` in `language` may hand a shell a list of words. It answers
+/// "may": yes wherever the reader cannot tell that no shell is given one.
+///
+/// - Python: a call whose first argument, or `args=`, is a list or a tuple,
+///   given `shell=` with anything but `False` (`subprocess.run(['del', 'x'],
+///   shell=True)`), or arguments that may carry it: a `**` mapping, a `*`
+///   list, or positional arguments past the list (`Popen(args, bufsize, …,
+///   shell)`).
+/// - JavaScript: a call given an array of words and options that are not an
+///   object written out without a spread (a name, a call, `{ ...o }`), which
+///   may hold `shell: true`, or any call with a spread among its arguments. An object
+///   written out with `shell: true` is read where the call is read: the words
+///   are joined into the script [`read`] gives.
+///
+/// On POSIX a shell given a list runs the first word as the line and the
+/// rest as its arguments, which [`read`] gives as an [`Act::Script`] of the
+/// first word; on Windows the words are joined into the line, which no act
+/// gives, so a caller that writes a line for a Windows shell asks this. Code
+/// that does not parse may.
+pub fn gives_shell_a_list(language: Language, code: &str) -> bool {
+    match language {
+        Language::Python => python::gives_shell_a_list(code),
+        Language::JavaScript => javascript::gives_shell_a_list(code),
+    }
+}
+
 /// Whether the code is read whole (see [`understand`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Understanding {

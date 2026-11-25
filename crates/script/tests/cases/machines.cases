@@ -1,0 +1,48 @@
+# Code is judged on the machine the paths describe: a Mac's home is under
+# `/Users`, and a Windows machine's paths are spelled as Windows reads them.
+
+python@macos finds=delete reason="deletes your home directory" | import shutil\nshutil.rmtree('/Users/me')
+python@macos finds=read_secret reason="reads your SSH keys" | open('/Users/me/.ssh/id_rsa').read()
+python@macos safe | open('/Users/me/dev/repo/out.txt', 'w')
+javascript@macos finds=read_secret reason="reads your SSH keys" | require('fs').readFileSync('/Users/me/.ssh/id_rsa')
+python@windows finds=delete reason="deletes your home directory" | import shutil\nshutil.rmtree('C:\\\\Users\\\\me')
+python@windows finds=delete reason="deletes your home directory" | import shutil\nshutil.rmtree('~')
+python@windows finds=read_secret reason="reads your SSH keys" | open('C:/Users/me/.ssh/id_rsa').read()
+python@windows finds=read_secret reason="reads your SSH keys" | open('~/.ssh/id_rsa').read()
+python@windows finds=overwrite reason="writes to a system folder" | open('C:\\\\Windows\\\\System32\\\\x.dll', 'w')
+python@windows safe | open('C:/Users/me/dev/repo/out.txt', 'w')
+javascript@windows finds=delete reason="deletes your home directory" | require('fs').rmSync('C:\\\\Users\\\\me', {recursive: true})
+
+# A Windows name the spelling does not settle is read for the file it is a
+# name of: a stream (`::$DATA`, `::$INDEX_ALLOCATION`), a part that ends in a
+# space or a dot, the NT prefix `\??\`. A path that cannot be placed (on
+# another drive's own working directory) may be any file.
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa::$DATA').read())
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('C:\\\\Users\\\\me\\\\.ssh::$INDEX_ALLOCATION\\\\id_rsa').read())
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('\\\\??\\\\C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('C:\\\\Users\\\\me\\\\.ssh \\\\id_rsa').read())
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('C:\\\\Users\\\\me\\\\.ssh.\\\\id_rsa').read())
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('~root/.ssh/id_rsa').read())
+python@windows rules=unknown first=unknown reason="opens a file whose path is only known when the code runs" target="D:x" | print(open('D:x').read())
+javascript@windows finds=read_secret reason="reads your SSH keys" | require('fs').readFileSync('C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa::$DATA')
+javascript@windows rules=unknown first=unknown reason="opens a file whose path is only known when the code runs" | console.log(require('fs').readFileSync('D:x'))
+paths winenv base=windows secret_file=C:\\Users\\me\\dev\\repo\\.env words="the project's environment file"
+python@winenv finds=read_secret reason="reads the project's environment file" | print(open('.env::$DATA').read())
+python@winenv finds=read_secret reason="reads the project's environment file" | print(open('.env').read())
+python@windows finds=overwrite reason="writes to a shell startup file" | open('C:\\\\Users\\\\me\\\\.bashrc', 'w')
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
+
+# The NT prefix `\??\` is the object namespace the rest is opened in, as
+# `\\?\` is: a disk, a share, a volume by its device name.
+python@windows finds=wipe_disk | open('\\\\??\\\\PhysicalDrive0', 'wb').write(b'x')
+python@windows finds=read_secret | print(open('\\\\??\\\\PhysicalDrive0', 'rb').read())
+python@windows finds=overwrite | open('\\\\??\\\\UNC\\\\localhost\\\\C$\\\\Users\\\\me\\\\.ssh\\\\authorized_keys', 'w')
+python@windows lacks=unknown | print(open('\\\\??\\\\UNC\\\\localhost\\\\C$\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
+python@windows finds=wipe_disk | open('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me\\\\.ssh\\\\id_rsa', 'w')
+python@windows finds=read_secret | print(open('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
+python@windows finds=wipe_disk | import shutil\nshutil.rmtree('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me')
+javascript@windows finds=wipe_disk | require('fs').writeFileSync('\\\\??\\\\PhysicalDrive0', 'x')
+# Another user's home directory, read whole, and a stream of a path in the
+# home directory.
+python finds=read_secret reason="reads your home directory, and the keys in it" | import shutil\nshutil.copytree('~me', 'x')
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('~\\\\.ssh\\\\id_rsa::$DATA').read())

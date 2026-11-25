@@ -1,0 +1,36 @@
+# Code read whole that does nothing risky is safe: it computes, prints, and
+# opens files in the workspace or a temporary folder. The format is in
+# CONTRIBUTING.md.
+
+# Python that computes and prints.
+python safe | print(1)
+python safe | print(1+1)
+python safe | x = 1\nx += 2\nprint(x)
+python safe | a, b = 1, 2\nprint(a + b)
+python safe | x = 1\nif x:\n    print(x)\nelse:\n    print(0)
+python safe | print(len('abc'), max(1, 2), sorted([3, 1]))
+python safe | print('x'.upper(), [1, 2].count(1))
+# The modules built into the interpreter binary: no file stands in for one.
+python safe | import sys\nprint(sys.version)
+python safe | import sys\nprint(sys.stdin.read())
+python safe | import time\nprint(time.time())
+python safe | import errno\nprint(errno.ENOENT)
+
+# Python that opens a file in the workspace or a temporary folder.
+python safe | open('out.txt', 'a').write('x')
+python safe | print(open('src/main.py').read())
+python safe | open('/tmp/x', 'w').write('x')
+python safe | open('/home/me/work/repo/build/x', 'w')
+# Reading a startup file is the agent's everyday work.
+python safe | print(open('/home/me/.zshrc').read())
+python safe | print(open('/home/me/.zshrc', 'r').read())
+python safe | print(open('/etc/hosts').read())
+
+# JavaScript that computes and prints.
+javascript safe | console.log(1)
+javascript safe | console.log(1 + 1)
+javascript safe | const x = 1; let y = x + 2; console.log(y)
+javascript safe | console.log('a,b'.split(','), Math.max(1, 2))
+javascript safe | console.log(JSON.stringify({a: 1}))
+javascript safe | var s = 'abc'; console.log(s.toUpperCase(), s.length)
+javascript safe | if (1) { console.log(1) } else { console.log(2) }

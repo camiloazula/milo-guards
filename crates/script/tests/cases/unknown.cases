@@ -1,0 +1,54 @@
+# Code the reader does not follow, or does not understand whole, is
+# `unknown` when nothing worse is found in it: never safe.
+
+# Not read whole, and nothing found.
+python rules=unknown first=unknown reason="runs code the guard does not read fully" target="import json; print(json.dumps(1))" | import json; print(json.dumps(1))
+python rules=unknown | import re\nprint(re.sub('a', 'b', 'abc'))
+python rules=unknown | import os\nprint(os.getcwd())
+python rules=unknown | import os\nprint(os.listdir('/home/me'))
+python rules=unknown | def f():\n    return 1
+python rules=unknown | for i in range(3):\n    print(i)
+python rules=unknown | x = {'a': 1}\nprint(getattr(x, 'get')('a'))
+javascript rules=unknown | process.version
+javascript rules=unknown | console.log(process.env.HOME)
+javascript rules=unknown | function f() { return 1 }
+javascript rules=unknown | new Date()
+javascript rules=unknown | setTimeout(() => {}, 1)
+
+# Empty code, or only a comment, holds no statement: not read whole.
+python rules=unknown first=unknown |
+python rules=unknown | # only a comment
+javascript rules=unknown first=unknown |
+javascript rules=unknown | // only a comment
+
+# Python that declares another encoding is run as that encoding from a file
+# or its input: UTF-7 can hide code in what reads as a string. The guard
+# holds for code run so, as well as for code handed as a string.
+python finds=unknown reason="runs code the guard does not read" | # coding: utf-7\nprint('+ACc-);import os;os.system(+ACc-echo PWNED+ACc-);print(+ACc-')
+python finds=unknown reason="runs code the guard does not read" | # -*- coding: latin-1 -*-\nprint('é')
+python finds=unknown reason="runs code the guard does not read" | #!/usr/bin/python\n# vim: set fileencoding=utf-16 :\nprint(1)
+# UTF-8, and an ASCII-compatible encoding of text that is all ASCII, read
+# the same.
+python safe | # coding: utf-8\nprint(1)
+python safe | # coding: latin-1\nprint(1)
+
+# Code the reader cannot follow says what it does not read.
+python finds=unknown reason="runs code the guard does not read" | exec(input())
+python finds=unknown reason="runs code the guard does not read" | eval(compile(input(), 'x', 'exec'))
+python finds=unknown reason="runs code the guard does not read" | import importlib\nimportlib.import_module(input())
+javascript finds=unknown reason="runs code the guard does not read" | eval(process.argv[1])
+javascript finds=unknown reason="runs code the guard does not read" | new Function(process.argv[1])()
+# A path handed to a call the reader has no row for may be read, written or
+# deleted.
+python finds=unknown reason="gives a path to a call the guard does not read" | import tool\ntool.process('/home/me/data')
+# Code loaded from outside the workspace is not the workspace's own.
+javascript finds=unknown reason="loads code from outside the workspace" | require('/tmp/x.js')
+javascript finds=unknown reason="loads code from outside the workspace" | require('../x.js')
+
+# Python looks in the folder it runs in first for what it imports: code read
+# whole is safe only where that folder is the workspace's own.
+paths outside cwd=/tmp/x home=/home/me workspace=/home/me/work/repo
+python@outside rules=unknown first=unknown reason="runs code the guard does not read fully" | print(1)
+python@outside rules=unknown | import sys\nprint(sys.version)
+# JavaScript read whole imports nothing.
+javascript@outside safe | console.log(1)

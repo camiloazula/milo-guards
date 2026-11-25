@@ -22,7 +22,8 @@ that guards build on, and the front door:
 - `crates/code` (`milo-guards-code`) - a reader, not a guard: `read` and
   `understand`. It reads Python and JavaScript and says what the code is
   certain to do, or that it does not understand it. It judges nothing; the
-  shell guard builds on it for inline code, behind its `inline` feature.
+  shell guard builds on it for inline code, behind its `inline` feature, and
+  the script guard for the code it judges.
   [Its design](docs/design/code.md).
 - `crates/shell` (`milo-guards-shell`) - the shell guard, `classify`. It
   parses POSIX shell, PowerShell and cmd and judges programs, flags, operands
@@ -37,6 +38,11 @@ that guards build on, and the front door:
 - `crates/secrets` (`milo-guards-secrets`) - the secrets guard, `find`. It reads
   a text with a table of credential shapes and returns what it holds and where,
   masked, never the secret. [Its design](docs/design/secrets.md).
+- `crates/script` (`milo-guards-script`) - the script guard, `judge`. It
+  judges Python or JavaScript code an agent runs directly, act by act, with
+  the shell guard's rule names and reasons; a program the code starts is
+  `run_program`, its command line for the caller to ask the shell guard
+  about. [Its design](docs/design/script.md).
 - `crates/guards` (`milo-guards`) - the one crate a caller depends on.
   It re-exports each guard behind a feature; `secrets` is the one that is off by
   default.
@@ -142,7 +148,8 @@ crates depend on each other and how that is enforced is in
 - Design pages: [docs/design/](docs/design/). [Architecture](docs/design/architecture.md),
   [core](docs/design/core.md), [code](docs/design/code.md),
   [shell](docs/design/shell.md) and [file](docs/design/file.md).
-  [url](docs/design/url.md) and [secrets](docs/design/secrets.md).
+  [url](docs/design/url.md), [secrets](docs/design/secrets.md) and
+  [script](docs/design/script.md).
 - What belongs here: only what the code and `cargo`/`clippy` cannot tell you.
 - A convention a coding agent gets wrong: add the fix here, as one line, with
   its detail on a design page.

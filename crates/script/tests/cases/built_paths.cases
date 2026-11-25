@@ -1,0 +1,23 @@
+# A path the code builds from names is judged as the path it builds:
+# `os.path.join`, `Path(…) / …`, `os.path.expanduser`, `Path.home()`,
+# `os.homedir()`, the home directory's variable, string `+`, f-strings and
+# template literals made of those.
+
+python finds=delete reason="deletes your home directory" | import os, shutil\nshutil.rmtree(os.path.expanduser('~'))
+python finds=delete reason="deletes your SSH keys" | import os, shutil\nshutil.rmtree(os.path.join(os.path.expanduser('~'), '.ssh'))
+python finds=delete reason="deletes your home directory" | from pathlib import Path\nimport shutil\nshutil.rmtree(Path.home())
+python finds=read_secret reason="reads your SSH keys" | from pathlib import Path\n(Path.home() / '.ssh' / 'id_rsa').read_text()
+python finds=read_secret reason="reads your SSH keys" | from pathlib import Path\nprint(Path('/home/me/.ssh/id_rsa').read_text())
+python finds=read_secret reason="reads your SSH keys" | import os\nopen(os.path.join('/home/me', '.ssh', 'id_rsa')).read()
+python finds=read_secret reason="reads your SSH keys" | import os\nopen(os.environ['HOME'] + '/.ssh/id_rsa').read()
+python finds=read_secret reason="reads your AWS credentials" | home = '/home/me'\nprint(open(f'{home}/.aws/credentials').read())
+python finds=read_secret reason="reads your SSH keys" | p = '/home/me/.ssh/id_rsa'\nprint(open(p).read())
+python finds=overwrite reason="writes to a shell startup file" | import os\nopen(os.path.join(os.path.expanduser('~'), '.bashrc'), 'a')
+python finds=delete reason="deletes a path outside the workspace" | import os\nos.remove(os.path.join('..', 'other', 'x'))
+
+javascript finds=delete reason="deletes your home directory" | const os = require('os'); require('fs').rmSync(os.homedir(), {recursive: true})
+javascript finds=read_secret reason="reads your SSH keys" | const os = require('os'); const path = require('path'); require('fs').readFileSync(path.join(os.homedir(), '.ssh', 'id_rsa'))
+javascript finds=read_secret reason="reads your SSH keys" | require('fs').readFileSync(process.env.HOME + '/.ssh/id_rsa')
+javascript finds=read_secret reason="reads your SSH keys" | require('fs').readFileSync(`${process.env.HOME}/.ssh/id_rsa`)
+javascript finds=read_secret reason="reads your SSH keys" | const p = '/home/me/.ssh/id_rsa'; require('fs').readFileSync(p)
+javascript finds=overwrite reason="writes to a shell startup file" | const os = require('os'); require('fs').appendFileSync(os.homedir() + '/.zshrc', 'x')

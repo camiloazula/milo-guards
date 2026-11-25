@@ -1,0 +1,73 @@
+# On a Windows machine `os.system`, `shell=True` and `child_process.exec`
+# run cmd, so a command run in a shell is the line as the code wrote it, for
+# the shell guard to read as cmd (`Shell::Cmd`); a program started without a
+# shell is its words, quoted as cmd hands them on. A program cmd cannot
+# carry as a line has no target, and an `unknown` says why. The front door's
+# `crates/guards/tests/script_targets.rs` reads these targets with the shell
+# guard.
+
+python@windows finds=run_program reason="runs a command in a shell" target="rd /s /q C:\\Users\\me" | import os\nos.system('rd /s /q C:\\\\Users\\\\me')
+python@windows finds=run_program target="type C:\\Users\\me\\.ssh\\id_rsa" | import os\nos.system('type C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa')
+python@windows finds=run_program target="echo x > C:\\Users\\me\\.ssh\\authorized_keys" | import os\nos.system('echo x > C:\\\\Users\\\\me\\\\.ssh\\\\authorized_keys')
+python@windows finds=run_program target="format D: /y" | import os\nos.system('format D: /y')
+python@windows finds=run_program target="rd /s /q %USERPROFILE%" | import os\nos.system('rd /s /q %USERPROFILE%')
+python@windows finds=run_program target="rd /s /q C:\\Users\\me" | import subprocess\nsubprocess.run('rd /s /q C:\\\\Users\\\\me', shell=True)
+javascript@windows finds=run_program target="rd /s /q C:\\Users\\me" | require('child_process').execSync('rd /s /q C:\\\\Users\\\\me')
+# A program and its words, quoted for cmd.
+python@windows finds=run_program reason="runs a program" target="rm -rf C:\\Users\\me" | import subprocess\nsubprocess.run(['rm', '-rf', 'C:\\\\Users\\\\me'])
+python@windows finds=run_program target="git commit -m \"a message\"" | import subprocess\nsubprocess.run(['git', 'commit', '-m', 'a message'])
+python@windows finds=run_program target="cmd /c \"rd /s /q C:\\Users\\me\"" | import subprocess\nsubprocess.run(['cmd', '/c', 'rd /s /q C:\\\\Users\\\\me'])
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['if', 'x'])
+javascript@windows finds=run_program target="git status" | require('child_process').spawnSync('git', ['status'])
+# Run from another directory, the line moves there first.
+python@windows finds=run_program target="cd /d C:\\Users\\me && del x" | import subprocess\nsubprocess.run(['del', 'x'], cwd='C:\\\\Users\\\\me')
+python@windows rules=run_program,run_program,unknown first=run_program target="rd /s /q x" | import os\nos.chdir('C:\\\\Users\\\\me')\nos.system('rd /s /q x')
+# A word cmd cannot carry: a `%`, which cmd expands even in quotes, or a `"`.
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" target="echo 100%" | import subprocess\nsubprocess.run(['echo', '100%'])
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['echo', 'say "hi"'])
+# A command line run from another directory that has a quote cannot be
+# wrapped for cmd.
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run('echo "x"', shell=True, cwd='C:\\\\tmp')
+# A word only known when the code runs.
+python@windows rules=unknown,run_program,unknown | import subprocess, sys\nsubprocess.run(['rd', '/s', '/q', sys.argv[1]])
+
+# A target is given only where it is the command that runs. cmd, or a batch
+# file, reads the words joined as Windows joins them as a line of its own:
+# no target where a word holds a character cmd reads as its own.
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['cmd', '/c', 'echo', 'a', '&', 'rd', '/s', '/q', 'C:\\\\Users\\\\me'])
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['build.bat', '&', 'rd', '/s', '/q', 'C:\\\\Users\\\\me'])
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['C:\\\\x\\\\CMD.EXE', '/c', 'type', 'a|b'])
+python@windows finds=run_program target="cmd /c rd /s /q C:\\Users\\me" | import subprocess\nsubprocess.run(['cmd', '/c', 'rd', '/s', '/q', 'C:\\\\Users\\\\me'])
+# A line that starts with a quote has its quotes taken off by `cmd /c`.
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import os\nos.system('"echo & rd /s /q C:\\\\Users\\\\me & echo"')
+# A list handed to a shell is joined into the line, which is not the act.
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['del', 'C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa'], shell=True)
+python finds=run_program target="del" | import subprocess\nsubprocess.run(['del', 'C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa'], shell=True)
+# A directory that starts as a switch does is read as one.
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['cmd', '/c', 'del', 'id_rsa'], cwd='/d')
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['del', 'x'], cwd='-x')
+# A word known in part that cmd cannot carry.
+python@windows rules=unknown,run_program,unknown | import subprocess, sys\nsubprocess.run(['type', 'C:/100%/' + sys.argv[1]])
+python@windows rules=unknown,run_program,unknown | import subprocess, sys\nsubprocess.run(['type', 'C:/x/' + sys.argv[1]])
+
+# Whatever the program is, a word that holds a character cmd reads as its
+# own gives no target: a launcher may hand the line on to cmd (`conhost cmd
+# …`), and cmd's name has other spellings (`cmd.exe.`, `cmd.exe `).
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['conhost', 'cmd', '/c', 'echo', 'a&rd', '/s', '/q', 'C:\\\\Users\\\\me'])
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['cmd.exe.', '/c', 'echo', 'a&rd', '/s', '/q', 'C:\\\\Users\\\\me'])
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['cmd.exe ', '/c', 'type', 'a|b'])
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['git', 'log', '--format=%H'])
+# A word with a space that ends in a backslash: the C runtime reads the
+# backslash as escaping the closing quote.
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['cmd', '/c', 'dir', 'C:\\\\a b\\\\'])
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | import subprocess\nsubprocess.run(['git', 'add', 'a b\\\\'])
+# `shell` handed where the reader does not see it: by `**`, or by position.
+# The program has no target: the last `unknown` is the one that says so.
+python@windows rules=unknown,run_program,unknown | import subprocess\nsubprocess.run(['echo', 'a', 'b'], **{'shell': True})
+python@windows rules=unknown,run_program,unknown | import subprocess\nkw = dict(shell=True)\nsubprocess.run(['del', 'x'], **kw)
+python@windows rules=unknown,run_program,unknown | import subprocess\nsubprocess.Popen(['del', 'x'], -1, None, None, None, None, None, True, True)
+javascript@windows rules=unknown,unknown,run_program,unknown | const o = {shell: true}; require('child_process').spawn('del', ['x'], o)
+javascript@windows rules=unknown,run_program,unknown | const o = {shell: true}; require('child_process').spawn('del', ['x'], {...o})
+javascript@windows finds=run_program target="cd /d sub2 && del x" | require('child_process').spawn('del', ['x'], {cwd: 'sub2'})
+# Nested code is asked the same as code at the top.
+python@windows finds=unknown reason="starts a program the guard cannot write as a command line" | exec("import subprocess\\nsubprocess.run(['del', 'C:\\\\\\\\Users\\\\\\\\me\\\\\\\\.ssh\\\\\\\\id_rsa'], shell=True)")

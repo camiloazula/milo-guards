@@ -1,0 +1,13 @@
+# Code that does not parse is `unreadable`, never safe; what the reader still
+# finds in it is kept. Code too long or nested too deeply is in
+# `tests/robust.rs`.
+
+python rules=unreadable first=unreadable reason="does not parse" target="print(" | print(
+python rules=unreadable | def f(:\n    pass
+python first=unreadable finds=delete | import shutil; shutil.rmtree('/home/me'); if 1:
+javascript rules=unreadable first=unreadable reason="does not parse" target="if (" | if (
+javascript rules=unreadable | console.log(1
+javascript rules=unreadable | function f( {}
+javascript first=unreadable finds=delete | require('fs').rmSync('/home/me'); }
+# Code nested in code that does not parse is code the guard does not read.
+python finds=unknown lacks=unreadable | exec('print(')

@@ -16,6 +16,7 @@ on, and the front door.
 | `crates/file` | `milo-guards-file` | The file guard: one read or write of a path. [File](file.md). |
 | `crates/url` | `milo-guards-url` | The URL guard. [URL](url.md). |
 | `crates/secrets` | `milo-guards-secrets` | The secrets guard: a text in, what it holds out, masked. [Secrets](secrets.md). |
+| `crates/script` | `milo-guards-script` | The script guard: Python or JavaScript code an agent runs directly, with no shell line around it. [Script](script.md). |
 | `crates/guards` | `milo-guards` | The front door. The one crate a caller depends on. |
 
 Package names start with `milo-guards-`. Folder names drop the prefix.
@@ -26,13 +27,15 @@ shares: `Paths` with its `Protected` and `Secret`, `Assessment`, `Finding` and t
 re-export `Place`: a caller reads a finding's rule and reason, never where a
 path landed. It re-exports each guard as a module behind a cargo feature:
 `shell` is `milo_guards::shell`, `file` is `milo_guards::file`, `url`
-is `milo_guards::url`, `code` is `milo_guards::code` and `secrets` is
-`milo_guards::secrets`; the first four are on by default and `secrets` is
-not, because most callers want the others and not a table of patterns in their
+is `milo_guards::url`, `code` is `milo_guards::code`, `script` is
+`milo_guards::script` and `secrets` is `milo_guards::secrets`; the first five
+are on by default and `secrets` is not, because most callers want the others and not a table of patterns in their
 binary. A caller who wants one guard switches the rest off. The shell guard
 reads inline Python and JavaScript with the code reader whether or not the
 front door shows it as `code`; the shell crate's own `inline` feature (on by
-default) is what links it, and off, every inline line is `unknown`.
+default) is what links it, and off, every inline line is `unknown`. The
+script guard reads the code it judges with the same reader, as a dependency
+of its own.
 
 Core's trait is called `RuleName`, not `Rule`, because each guard names its own
 enum of rules `Rule` (`shell::Rule`), and the front door's root and a guard's
@@ -48,6 +51,8 @@ milo-guards        ──►  milo-guards-shell  ──►  milo-guards-core
         │                      │                        ▲
         │                      └──►  milo-guards-code   │   (the shell's `inline` feature)
         ├──►  milo-guards-code                          │
+        ├──►  milo-guards-script  ──────────────────────┤
+        │                      └──►  milo-guards-code   │
         ├──►  milo-guards-file  ────────────────────────┤
         ├──►  milo-guards-url  ─────────────────────────┤
         ├──►  milo-guards-secrets  ─────────────────────┤
@@ -60,13 +65,15 @@ milo-guards        ──►  milo-guards-shell  ──►  milo-guards-core
   that thing moves into core. The one exception is a reader: `milo-guards-code`
   reads code of another language, judges nothing, and any guard may build on
   it as on a parser (the shell guard does, behind its `inline` feature, on by
-  default). A reader depends on its own parsers only, never on a guard or on
+  default, and the script guard does for all it judges). A reader depends on its own parsers only, never on a guard or on
   another reader; the code reader needs nothing of the core and does not depend
   on it.
 - Core depends on nothing but `std`.
 - A crate may be a dev-dependency of itself (`path = "."`), to turn on a
   feature only its own tests read: the shell guard's `testing`, which shows
-  its tests the count of bytes its grammars' lexers are handed. It is the same
+  its tests the count of bytes its grammars' lexers are handed, and the
+  script guard's, which shows its tests the count of acts judged and places
+  built. It is the same
   crate, not another. The feature is not for callers and not part of the API
   (its module is hidden from the docs, and may change without notice); cargo
   would let a caller turn it on, and nothing a caller reads changes with it.
@@ -78,7 +85,14 @@ A guard that needs another guard's answer is not a guard. The caller asks both
 and combines the answers, because deciding what to do with them is the
 caller's job. Where two guards must give one answer, the front door tests it:
 `crates/guards/tests/agree.rs` runs every path of the file guard's case files
-through the shell guard, and neither guard knows of the other.
+through the shell guard, and `crates/guards/tests/agree_code.rs` every piece
+of code of the code reader's and the shell guard's inline case files, and
+code it makes, through the script guard and the shell guard (`python3 -c`,
+`node -e`), comparing the whole answers; neither guard knows of the other.
+The script guard's `run_program` is how a caller combines the two: it gives
+the command line of a program the code starts, for the machine's shell, for
+the caller to ask the shell guard about and add what it finds
+(`crates/guards/tests/script_targets.rs`); the code stays `unknown`.
 
 `crates/guards/tests/contract.rs` reads every `Cargo.toml` and fails when a
 guard depends on another guard, or when core depends on anything. It reads
@@ -175,7 +189,10 @@ answer is not. There are three kinds of test, and each has its place:
   `crates/<crate>/tests/<what-it-checks>.rs`, one thing to a file, with the
   helpers the files share in `tests/common`.
 - A test of the front door from end to end is in `crates/guards/tests`:
-  `agree.rs` (the shell and the file guard give one answer), `ci_jobs.rs`
+  `agree.rs` (the shell and the file guard give one answer), `agree_code.rs`
+  (the script and the shell guard give one answer for the same code),
+  `script_targets.rs` (the shell guard reads the script guard's targets as
+  the machine's shell runs them), `ci_jobs.rs`
   (CI's jobs run the recipes of `just verify`), `contract.rs` (the contract
   and the direction of the dependencies), `everyday.rs` (the everyday
   commands stay safe, its lines in `tests/cases/everyday.cases`) and
@@ -183,8 +200,9 @@ answer is not. There are three kinds of test, and each has its place:
 
 Some names are read by other files: `just no-inline` runs
 `crates/shell/tests/inline_off.rs` by name, `agree.rs` reads every case file
-in the file guard's `tests/cases`, and each guard's, core's and the code
-reader's `tests/cases.rs` holds
+in the file guard's `tests/cases`, `agree_code.rs` every case file in the
+code reader's `tests/cases` and each `inline*` one in the shell guard's, and
+each guard's, core's and the code reader's `tests/cases.rs` holds
 each case file in its `tests/cases` to the test file of its name, which
 checks it ([CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)).
 

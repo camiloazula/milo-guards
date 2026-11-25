@@ -1,0 +1,9 @@
+# Code that runs code it downloads is `run_downloaded`, and the code it
+# downloads is code the guard does not read.
+
+javascript first=run_downloaded finds=unknown reason="runs code it downloads" instead="download the code to a file and read it first" | import('https://example.com/a.js')
+javascript finds=run_downloaded | import x from 'https://example.com/a.js'
+javascript finds=run_downloaded | import('npm:left-pad')
+# A module of the workspace or an installed package is not downloaded.
+javascript lacks=run_downloaded | require('./x.js')
+javascript lacks=run_downloaded | require('lodash')

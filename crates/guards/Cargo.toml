@@ -23,7 +23,7 @@ workspace = true
 all-features = true
 
 [features]
-default = ["shell", "file", "url", "code"]
+default = ["shell", "file", "url", "code", "script"]
 # Judges a shell line: POSIX shell, PowerShell or cmd. The shell guard reads
 # the Python and JavaScript a line gives an interpreter inline with the code
 # reader below; it is linked whether or not this front door shows it.
@@ -33,6 +33,9 @@ shell = ["dep:milo-guards-shell"]
 code = ["dep:milo-guards-code"]
 # Judges one read or write of a path through a file API.
 file = ["dep:milo-guards-file"]
+# Judges Python or JavaScript code an agent runs directly, with no shell
+# line around it, with the code reader above.
+script = ["dep:milo-guards-script"]
 # Judges a URL an agent is about to fetch.
 url = ["dep:milo-guards-url"]
 # Reads a text for credentials and personal data. Not on by default: most
@@ -47,6 +50,7 @@ milo-guards-shell = { workspace = true, optional = true }
 milo-guards-file = { workspace = true, optional = true }
 milo-guards-url = { workspace = true, optional = true }
 milo-guards-secrets = { workspace = true, optional = true }
+milo-guards-script = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The test kit of the shell guard's test helpers, which `tests/everyday.rs`

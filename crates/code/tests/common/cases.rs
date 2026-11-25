@@ -13,7 +13,10 @@
 //!   understood though it imports when it runs, or not understood) for
 //!   `python` and `javascript`; `understand=` alone for `python2`
 //!   (`understand_python2`); `other_encoding=yes|no`
-//!   (`declares_other_encoding`) for `python`; `data_url=yes|no`
+//!   (`declares_other_encoding`) for `python`; `parses=yes|no` (`parses`)
+//!   `input=yes|no` (`gives_input`) and `shell_list=yes|no`
+//!   (`gives_shell_a_list`) for `python` and `javascript`;
+//!   `data_url=yes|no`
 //!   (`is_data_url`) and `foreign=yes|no` (`is_foreign_module`) for
 //!   `module`.
 
@@ -33,8 +36,8 @@ use std::collections::{BTreeMap, HashSet};
 use format::{Record, Word};
 use milo_guards_code::Language::{JavaScript, Python};
 use milo_guards_code::{
-    declares_other_encoding, is_data_url, is_foreign_module, read, understand, understand_python2,
-    Understanding,
+    declares_other_encoding, gives_input, gives_shell_a_list, is_data_url, is_foreign_module,
+    parses, read, understand, understand_python2, Understanding,
 };
 
 use super::shown;
@@ -52,8 +55,15 @@ impl What {
     /// The fields a case of this kind can hold.
     fn fields(self) -> &'static [&'static str] {
         match self {
-            Self::Python => &["acts", "understand", "other_encoding"],
-            Self::JavaScript => &["acts", "understand"],
+            Self::Python => &[
+                "acts",
+                "understand",
+                "other_encoding",
+                "parses",
+                "input",
+                "shell_list",
+            ],
+            Self::JavaScript => &["acts", "understand", "parses", "input", "shell_list"],
             Self::Python2 => &["understand"],
             Self::Module => &["data_url", "foreign"],
         }
@@ -117,6 +127,9 @@ pub fn answer(case: &Case, field: &str) -> String {
         }
         (What::Python2, "understand") => understanding(understand_python2(code)).to_string(),
         (What::Python, "other_encoding") => yes(declares_other_encoding(code)),
+        (What::Python | What::JavaScript, "parses") => yes(parses(language, code)),
+        (What::Python | What::JavaScript, "input") => yes(gives_input(language, code)),
+        (What::Python | What::JavaScript, "shell_list") => yes(gives_shell_a_list(language, code)),
         (What::Module, "data_url") => yes(is_data_url(code)),
         (What::Module, "foreign") => yes(is_foreign_module(code)),
         (what, other) => format!("no question `{other}` of `{}`", what.name()),

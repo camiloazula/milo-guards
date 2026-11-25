@@ -1,0 +1,59 @@
+# A delete or a move beyond the workspace, of the workspace itself, of a
+# sensitive file or of a path only known when the code runs is `delete`,
+# with the shell guard's reason for `rm -rf PATH`. A delete in the
+# workspace or a temporary folder is no finding, but the code is not read
+# whole, so it is `unknown`.
+
+# Python deletes.
+python finds=delete reason="deletes your home directory" target="/home/me" | import shutil; shutil.rmtree('/home/me')
+python finds=delete reason="deletes your home directory" target="~" | import shutil\nshutil.rmtree('~')
+python finds=delete reason="deletes a path outside the workspace" | import os\nos.remove('/home/me/notes.txt')
+python finds=delete reason="deletes a system folder" | import shutil\nshutil.rmtree('/etc')
+python finds=delete reason="deletes the root of the disk" | import shutil\nshutil.rmtree('/')
+python finds=delete reason="deletes the whole workspace" | import shutil\nshutil.rmtree('.')
+python finds=delete reason="deletes a folder holding the workspace" | import shutil\nshutil.rmtree('..')
+python finds=delete reason="deletes your SSH keys" | import os\nos.remove('/home/me/.ssh/id_rsa')
+python finds=delete reason="deletes the repository's history" | import shutil\nshutil.rmtree('.git')
+python finds=delete reason="deletes a shell startup file" | import os\nos.unlink('/home/me/.bashrc')
+python finds=delete reason="deletes your home directory" | from pathlib import Path\nPath('/home/me').rmdir()
+python finds=delete reason="deletes a path outside the workspace" | from os import remove as rm\nrm('/home/me/x')
+python finds=delete reason="deletes a path outside the workspace" | import os\ngetattr(os, 'remove')('/home/me/x')
+# A path only known when the code runs may be any.
+python finds=delete reason="deletes a path only known when it runs" | import os, sys\nos.remove(sys.argv[1])
+python finds=delete reason="deletes a path only known when it runs" | import shutil\nshutil.rmtree(input())
+# Another user's home directory is a place the spelling does not say.
+python finds=delete reason="deletes a path only known when it runs" target="~alice" | import shutil\nshutil.rmtree('~alice')
+# A delete in a function or a loop is still a delete.
+python finds=delete reason="deletes your home directory" | def f():\n    import shutil\n    shutil.rmtree('/home/me')
+# A delete beyond the workspace says what to do instead; one of a sensitive
+# path in the workspace does not.
+python first=delete instead="delete inside the workspace, or ask the user" | import shutil; shutil.rmtree('/home/me')
+javascript first=delete instead="delete inside the workspace, or ask the user" | require('fs').rmSync('/etc', {recursive: true})
+python first=delete instead=none | import shutil\nshutil.rmtree('.git/hooks')
+python first=delete instead=none | import os, sys\nos.remove(sys.argv[1])
+
+# A move takes away what it moves.
+python finds=delete reason="moves your home directory" | import shutil\nshutil.move('/home/me', '/tmp/x')
+python finds=delete reason="moves your SSH keys" | import os\nos.rename('/home/me/.ssh', 'keys')
+python finds=delete reason="moves a path outside the workspace" | import os\nos.replace('/home/me/a', 'b')
+
+# In the workspace or a temporary folder, a delete is the agent's own work,
+# but the code is not read whole.
+python rules=unknown first=unknown reason="runs code the guard does not read fully" target="import os; os.remove('build.log')" | import os; os.remove('build.log')
+python rules=unknown | import shutil\nshutil.rmtree('/tmp/scratch')
+python rules=unknown | import shutil\nshutil.move('a.txt', 'b.txt')
+
+# JavaScript deletes.
+javascript finds=delete reason="deletes your home directory" | require('fs').rmSync('/home/me', {recursive: true})
+javascript finds=delete reason="deletes your home directory" | require('fs').rmSync('~', {recursive: true, force: true})
+javascript finds=delete reason="deletes a path outside the workspace" | const fs = require('fs'); fs.unlinkSync('/home/me/x')
+javascript finds=delete reason="deletes a path outside the workspace" | const { rm } = require('fs'); rm('/home/me/x', () => {})
+javascript finds=delete reason="deletes a system folder" | require('fs').promises.rm('/usr', {recursive: true})
+javascript finds=delete reason="deletes the whole workspace" | require('fs').rmSync('.', {recursive: true})
+javascript finds=delete reason="deletes your SSH keys" | Deno.remove('/home/me/.ssh', {recursive: true})
+javascript finds=delete reason="deletes the repository's history" | require('fs').rmSync('.git', {recursive: true})
+javascript finds=delete reason="deletes a path only known when it runs" | require('fs').rmSync(process.argv[1])
+javascript finds=delete reason="moves your home directory" | require('fs').renameSync('/home/me', '/tmp/x')
+javascript finds=delete reason="deletes your home directory" | function f() { require('fs').rmSync('/home/me') }
+javascript rules=unknown | require('fs').rmSync('dist', {recursive: true, force: true})
+javascript rules=unknown | require('fs').unlinkSync('/tmp/x')

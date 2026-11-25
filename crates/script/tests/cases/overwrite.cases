@@ -1,0 +1,53 @@
+# A write beyond the workspace, to a sensitive file, to a file a tool runs
+# on its own, or to a file only known when the code runs is `overwrite`,
+# with the shell guard's reason for a redirect's write. A write over a disk
+# is `wipe_disk`.
+
+# Python writes.
+python finds=overwrite reason="writes to a file outside the workspace" target="/home/me/notes.txt" | open('/home/me/notes.txt', 'w')
+python finds=overwrite reason="writes to a shell startup file" | open('/home/me/.bashrc', 'a').write('x')
+python finds=overwrite reason="writes to your SSH keys" | open('/home/me/.ssh/authorized_keys', 'a')
+python finds=overwrite reason="writes to a system folder" | open('/etc/hosts', 'w')
+python finds=overwrite reason="writes to the repository's history" | open('.git/config', 'w')
+python finds=overwrite reason="writes to a file only known when it runs" | import sys\nopen(sys.argv[1], 'w')
+python finds=overwrite reason="writes to a shell startup file" | from pathlib import Path\nPath('/home/me/.zshrc').write_text('x')
+python finds=overwrite reason="writes to a file outside the workspace" | import os\nos.makedirs('/home/me/new/a')
+python finds=overwrite reason="writes to a file outside the workspace" | import shutil\nshutil.copy('a.txt', '/home/me/a.txt')
+# A file a tool runs on its own, in the workspace: writing it plants code.
+python finds=overwrite reason="writes to a file a tool runs on its own" | open('.envrc', 'w')
+python finds=overwrite reason="writes to a file a tool runs on its own" | open('.github/workflows/ci.yml', 'w')
+# A move lands what it moves where it goes.
+python finds=overwrite reason="writes to a shell startup file" | import shutil\nshutil.move('x', '/home/me/.bashrc')
+python finds=overwrite reason="writes to a file a tool runs on its own" | import shutil\nshutil.move('x.yml', '.github/workflows/')
+# A move into a folder lands at its own name there, which may be a file a
+# tool runs on its own though the folder is not.
+python finds=overwrite reason="writes to a file a tool runs on its own" target="sub/" | import shutil\nshutil.move('x/.envrc', 'sub/')
+javascript finds=overwrite reason="writes to a file a tool runs on its own" target="sub/" | require('fs').renameSync('x/.envrc', 'sub/')
+python rules=unknown | import shutil\nshutil.move('x/notes.txt', 'sub/')
+# A link reaches what it points at.
+python finds=overwrite reason="links to your SSH keys" | import os\nos.symlink('/home/me/.ssh', 'keys')
+# In the workspace or a temporary folder, a write is the agent's own work.
+python rules=unknown | from pathlib import Path\nPath('out/x.txt').write_text('x')
+python rules=unknown | import os\nos.makedirs('a/b', exist_ok=True)
+python rules=unknown | import shutil\nshutil.copy('a.txt', 'b.txt')
+
+# A write over a disk.
+python finds=wipe_disk reason="writes over a disk" target="/dev/sda" | open('/dev/sda', 'wb').write(b'x')
+python finds=wipe_disk reason="writes over a disk" | open('/dev/disk0', 'w')
+python finds=wipe_disk reason="deletes a disk" | import os\nos.remove('/dev/sda')
+javascript finds=wipe_disk reason="writes over a disk" | require('fs').writeFileSync('/dev/nvme0n1', 'x')
+# The null device discards: no finding.
+python safe | open('/dev/null', 'w').write('x')
+
+# JavaScript writes.
+javascript finds=overwrite reason="writes to a file outside the workspace" | require('fs').writeFileSync('/home/me/x', 'b')
+javascript finds=overwrite reason="writes to a shell startup file" | require('fs').appendFileSync('/home/me/.bashrc', 'b')
+javascript finds=overwrite reason="writes to a system folder" | require('fs').appendFileSync('/etc/x', 'b')
+javascript finds=overwrite reason="writes to a file outside the workspace" | require('fs').mkdirSync('/home/me/a/b', {recursive: true})
+javascript finds=overwrite reason="writes to a file outside the workspace" | Bun.write('/home/me/f', 'x')
+javascript finds=overwrite reason="writes to a file outside the workspace" | Deno.writeTextFile('/home/me/f', 'x')
+javascript finds=overwrite reason="writes to a file only known when it runs" | require('fs').writeFileSync(process.argv[2], 'x')
+javascript finds=overwrite reason="writes to a file a tool runs on its own" | require('fs').writeFileSync('.vscode/tasks.json', '{}')
+javascript finds=overwrite reason="writes to a shell startup file" | require('fs').copyFileSync('x', '/home/me/.profile')
+javascript finds=overwrite reason="links to your SSH keys" | require('fs').symlinkSync('/home/me/.ssh/id_rsa', 'k')
+javascript rules=unknown | require('fs').writeFileSync('out.txt', 'x')

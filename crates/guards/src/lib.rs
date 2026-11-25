@@ -42,6 +42,7 @@
 //! | `code` (default) | `code` | not a guard: Python or JavaScript code, read for the acts it is certain to do (`code::read`) and for whether it is understood in full (`code::understand`); the shell guard reads inline code with it |
 //! | `file` (default) | `file` | one read or write of a path through a file API |
 //! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info |
+//! | `script` (default) | `script` | Python or JavaScript code an agent runs directly, with no shell line around it, act by act with the shell guard's rules and reasons; a program it starts is `run_program`, with its command line for the shell guard, and the code is `unknown` beside it |
 //! | `secrets` | `secrets` | a text: the keys, tokens, passwords and personal data in it, and where; `secrets::find_spans` gives the ranges to scrub |
 //!
 //! ```
@@ -92,6 +93,55 @@
 //! let code = "import shutil\nshutil.rmtree('/home/me')";
 //! assert!(matches!(read(Language::Python, code).acts[..], [Act::Remove(_)]));
 //! assert_eq!(understand(Language::Python, code), Understanding::NotUnderstood);
+//! # }
+//! ```
+//!
+//! Code an agent runs through a code tool (a Python tool, a notebook, a
+//! JavaScript sandbox) is judged by the script guard, as the same code handed
+//! to an interpreter on a shell line is. A program the code starts is the
+//! shell guard's to judge: the finding gives its command line, for the
+//! machine's shell (`Shell::Cmd` on Windows, `Shell::Posix` elsewhere), and
+//! the caller adds what the shell guard finds in it. Code that starts a
+//! program is never read whole, so it is `unknown` too: a safe answer for
+//! the program never makes the code safe.
+//!
+//! ```
+//! # #[cfg(all(feature = "script", feature = "shell"))] {
+//! use milo_guards::script::{self, Language};
+//! use milo_guards::shell::{self, Shell};
+//! use milo_guards::Paths;
+//!
+//! let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
+//!
+//! assert!(script::judge(Language::Python, "print(1)", &paths).is_safe());
+//!
+//! let code = "import shutil; shutil.rmtree('/home/me')";
+//! let assessment = script::judge(Language::Python, code, &paths);
+//! assert_eq!(assessment.findings()[0].rule, script::Rule::Delete);
+//! assert_eq!(assessment.findings()[0].reason, "deletes your home directory");
+//!
+//! // The program is the shell guard's: ask it about the command line, in the
+//! // shell the script guard says the line is for, and add what it finds.
+//! let shell_of_lines = match script::target_shell(&paths) {
+//!     script::TargetShell::Posix => Shell::Posix,
+//!     script::TargetShell::Cmd => Shell::Cmd,
+//! };
+//! let code = "require('child_process').execSync('rm -rf ~')";
+//! let assessment = script::judge(Language::JavaScript, code, &paths);
+//! let finding = &assessment.findings()[0];
+//! assert_eq!(finding.rule, script::Rule::RunProgram);
+//! let line = finding.target.as_deref().unwrap_or_default();
+//! let program = shell::classify(line, shell_of_lines, &paths);
+//! assert_eq!(program.findings()[0].rule, shell::Rule::Delete);
+//!
+//! // A program the shell guard calls safe leaves the code `unknown`: the
+//! // code is not read whole.
+//! let code = "import subprocess\nsubprocess.run(['true'])";
+//! let assessment = script::judge(Language::Python, code, &paths);
+//! let line = assessment.findings()[0].target.as_deref().unwrap_or_default();
+//! assert!(shell::classify(line, shell_of_lines, &paths).is_safe());
+//! assert!(!assessment.is_safe());
+//! assert_eq!(assessment.findings()[1].rule, script::Rule::Unknown);
 //! # }
 //! ```
 //!
@@ -235,6 +285,9 @@ pub use milo_guards_file as file;
 #[cfg(feature = "url")]
 pub use milo_guards_url as url;
 
+#[cfg(feature = "script")]
+pub use milo_guards_script as script;
+
 #[cfg(feature = "secrets")]
 pub use milo_guards_secrets as secrets;
 
@@ -242,7 +295,7 @@ pub use milo_guards_secrets as secrets;
 /// drift from the code. Only rustdoc's doctest pass reads the file, so
 /// building this crate never needs the README: a build that vendors only
 /// this crate's folder still works.
-#[cfg(all(doctest, feature = "shell", feature = "file"))]
+#[cfg(all(doctest, feature = "shell", feature = "file", feature = "script"))]
 #[allow(
     clippy::disallowed_macros,
     reason = "the README include is read by rustdoc's doctest pass only"

@@ -28,6 +28,92 @@ pub(super) fn read(code: &str) -> Reading {
     reader.reading
 }
 
+/// Whether `code` parses whole, read as [`read`] reads it.
+pub(super) fn parses(code: &str) -> bool {
+    parse(&end_hashbang(code)).is_some_and(|tree| !tree.root_node().has_error())
+}
+
+/// Whether `code` may hand a program it starts something to read on its
+/// input: an option `input`, `stdin` or `stdio` (`execSync(…, { input })`),
+/// or a `stdin` member (`child.stdin.write(…)`). Code that does not parse
+/// may.
+pub(super) fn gives_input(code: &str) -> bool {
+    let code = end_hashbang(code);
+    let Some(tree) = parse(&code) else {
+        return true;
+    };
+    let root = tree.root_node();
+    if root.has_error() {
+        return true;
+    }
+    let mut found = false;
+    unit::for_each_node(root, |node| {
+        let name = match node.kind() {
+            "pair" | "pair_pattern" => node.child_by_field_name("key"),
+            "member_expression" => node.child_by_field_name("property"),
+            "subscript_expression" => node.child_by_field_name("index"),
+            "shorthand_property_identifier" | "shorthand_property_identifier_pattern" => Some(node),
+            _ => None,
+        };
+        found |= name.is_some_and(|name| {
+            let text = unit::text(&name, &code).trim_matches(['\'', '"', '`']);
+            matches!(text, "input" | "stdin" | "stdio")
+        });
+    });
+    found
+}
+
+/// Whether `code` may hand a shell a list of words: a call given an array
+/// of words and options that are not an object written out without a
+/// spread (a name, a call, `{ ...o }`), which may hold `shell: true`, or any
+/// call with a spread among its arguments. An object written out is read for `shell`
+/// where the call is read. Code that does not parse may.
+pub(super) fn gives_shell_a_list(code: &str) -> bool {
+    let code = end_hashbang(code);
+    let Some(tree) = parse(&code) else {
+        return true;
+    };
+    let root = tree.root_node();
+    if root.has_error() {
+        return true;
+    }
+    let mut found = false;
+    unit::for_each_node(root, |node| {
+        if node.kind() != "call_expression" {
+            return;
+        }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut cursor = arguments.walk();
+        let given: Vec<Node<'_>> = arguments.named_children(&mut cursor).collect();
+        if given
+            .iter()
+            .any(|argument| argument.kind() == "spread_element")
+        {
+            found = true;
+            return;
+        }
+        let Some(array) = given.iter().position(|argument| argument.kind() == "array") else {
+            return;
+        };
+        found |= given[array + 1..]
+            .iter()
+            .any(|argument| match argument.kind() {
+                "object" => {
+                    let mut cursor = argument.walk();
+                    let spread = argument
+                        .named_children(&mut cursor)
+                        .any(|member| member.kind() == "spread_element");
+                    spread
+                }
+                "arrow_function" | "function_expression" | "function" => false,
+                _ => true,
+            });
+    });
+    found
+}
+
 fn parse(code: &str) -> Option<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
     parser

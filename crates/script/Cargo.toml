@@ -1,0 +1,39 @@
+[package]
+name = "milo-guards-script"
+description = "Judges Python or JavaScript code an agent runs directly and says whether it is safe without asking, or risky and why."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+# The case files are the tests' input, read at test time from the
+# repository; a published crate does not carry them.
+exclude = ["tests/cases/"]
+
+[lints]
+workspace = true
+
+[features]
+# What only the guard's own tests read: the count of what judging a piece of
+# code costs (the acts judged, the places built). Its tests turn it on,
+# through the dev-dependency on this crate below. It is not for callers and
+# not part of the API (hidden from the docs): it may change or go without
+# notice.
+testing = []
+
+[dependencies]
+milo-guards-core.workspace = true
+# The reader of Python and JavaScript: a reader, not a guard, which a guard
+# may build on as on a parser (docs/design/architecture.md).
+milo-guards-code.workspace = true
+
+[dev-dependencies]
+milo-guards-core = { workspace = true, features = ["testing"] }
+# This crate with `testing` on, so every build of its tests reads the counts
+# of what judging costs (`tests/work.rs`).
+milo-guards-script = { path = ".", features = ["testing"] }

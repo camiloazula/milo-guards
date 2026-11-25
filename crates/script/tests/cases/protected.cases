@@ -1,0 +1,46 @@
+# The paths the caller protects (`Paths::protected`) and the secrets it names
+# (`Paths::secrets`) are judged as for a path in a shell line: a delete or a
+# write of a protected path is `delete` or `overwrite` in the caller's words,
+# even inside the workspace, and a read of a named secret is `read_secret` in
+# the caller's words. Reading a protected path is safe.
+
+paths agent base=posix folder=/home/me/.agent words="the agent's settings" file=/home/me/work/repo/rules.yaml words="the agent's rules"
+python@agent finds=delete reason="deletes the agent's settings" | import shutil\nshutil.rmtree('/home/me/.agent')
+python@agent finds=delete reason="deletes the agent's rules" | import os\nos.remove('rules.yaml')
+python@agent finds=overwrite reason="writes to the agent's rules" | open('rules.yaml', 'w')
+python@agent finds=overwrite reason="writes to the agent's settings" | open('/home/me/.agent/config.yaml', 'a')
+python@agent finds=delete reason="moves the agent's rules" | import os\nos.rename('rules.yaml', 'old.yaml')
+python@agent finds=overwrite reason="writes to the agent's rules" | import shutil\nshutil.move('x.yaml', 'rules.yaml')
+python@agent finds=permissions reason="changes permissions of the agent's rules" | import os\nos.chmod('rules.yaml', 0o600)
+python@agent safe | print(open('rules.yaml').read())
+# A move into a folder lands at its own name there, which may be protected
+# though the folder is not.
+paths landing base=posix file=/home/me/work/repo/cfg/rules.yaml words="the agent's rules"
+python@landing finds=overwrite reason="writes to the agent's rules" target="cfg/" | import shutil\nshutil.move('new/rules.yaml', 'cfg/')
+javascript@landing finds=overwrite reason="writes to the agent's rules" target="cfg" | require('fs').renameSync('new/rules.yaml', 'cfg')
+python@landing rules=unknown | import shutil\nshutil.move('new/other.yaml', 'cfg/')
+# A folder that holds a protected path is deleted with it.
+python@agent finds=delete reason="deletes the agent's settings" | import shutil\nshutil.rmtree('/home/me/.agent/sub')
+javascript@agent finds=delete reason="deletes the agent's rules" | require('fs').rmSync('rules.yaml')
+javascript@agent finds=overwrite reason="writes to the agent's settings" | require('fs').writeFileSync('/home/me/.agent/x', 'y')
+javascript@agent rules=unknown | console.log(require('fs').readFileSync('rules.yaml', 'utf8'))
+
+paths env base=posix secret_file=/home/me/work/repo/.env words="the project's environment file" secret_folder=/home/me/.vault words="your password vault"
+python@env finds=read_secret reason="reads the project's environment file" target=".env" | print(open('.env').read())
+python@env finds=read_secret reason="reads the project's environment file" | print(open('/home/me/work/repo/.env').read())
+python@env finds=read_secret reason="reads your password vault" | open('/home/me/.vault/db.kdbx', 'rb').read()
+python@env finds=read_secret reason="reads the project's environment file" | from pathlib import Path\nPath('.env').read_text()
+python@env finds=overwrite reason="writes to the project's environment file" | open('.env', 'w')
+python@env finds=delete reason="deletes the project's environment file" | import os\nos.remove('.env')
+javascript@env finds=read_secret reason="reads the project's environment file" | require('fs').readFileSync('.env', 'utf8')
+javascript@env finds=read_secret reason="reads your password vault" | require('fs').readFileSync('/home/me/.vault/x')
+# Without the secret named, a project's `.env` is the workspace's own.
+python rules=unknown | import os\nprint(open('.env').read(), os.getcwd())
+python safe | print(open('.env').read())
+
+# A path named both protected and secret keeps its protected finding for a
+# write or a delete, and a read of it is a read of the secret.
+paths both base=posix file=/home/me/work/repo/.env words="the agent's settings" secret_file=/home/me/work/repo/.env words="the project's environment file"
+python@both finds=read_secret reason="reads the project's environment file" | print(open('.env').read())
+python@both finds=overwrite reason="writes to the agent's settings" | open('.env', 'w')
+python@both finds=delete reason="deletes the agent's settings" | import os\nos.remove('.env')

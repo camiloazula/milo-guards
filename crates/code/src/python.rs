@@ -31,6 +31,121 @@ pub(super) fn read(code: &str) -> Reading {
     reader.reading
 }
 
+/// Whether `code` parses whole, read as [`read`] reads it.
+pub(super) fn parses(code: &str) -> bool {
+    parse(&translate_newlines(code)).is_some_and(|tree| !tree.root_node().has_error())
+}
+
+/// Whether `code` may hand a program it starts something to read on its
+/// input: a keyword argument `input` or `stdin` (`subprocess.run([…],
+/// input=…)`), or a `communicate` or `stdin` member (`p.communicate(…)`,
+/// `p.stdin.write(…)`). Code that does not parse may.
+pub(super) fn gives_input(code: &str) -> bool {
+    let code = translate_newlines(code);
+    let Some(tree) = parse(&code) else {
+        return true;
+    };
+    let root = tree.root_node();
+    if root.has_error() {
+        return true;
+    }
+    let mut found = false;
+    unit::for_each_node(root, |node| {
+        let name = match node.kind() {
+            "keyword_argument" => node.child_by_field_name("name"),
+            "attribute" => node.child_by_field_name("attribute"),
+            _ => None,
+        };
+        found |= name.is_some_and(|name| {
+            matches!(unit::text(&name, &code), "input" | "stdin" | "communicate")
+        });
+        // `os.popen(command, 'w')` writes to the program's input: a `popen`
+        // given more than its command may.
+        found |= node.kind() == "call" && popen_given_more(node, &code);
+        // `p['stdin']`, a member by a string.
+        found |= node.kind() == "subscript"
+            && node.child_by_field_name("subscript").is_some_and(|key| {
+                let text = unit::text(&key, &code).trim_matches(['\'', '"']);
+                matches!(text, "stdin" | "input")
+            });
+    });
+    found
+}
+
+/// Whether `call` is a call of a `popen` (`os.popen`, `popen`) given more
+/// than one argument.
+fn popen_given_more(call: Node<'_>, code: &str) -> bool {
+    let named = call
+        .child_by_field_name("function")
+        .is_some_and(|function| {
+            let text = unit::text(&function, code);
+            text == "popen" || text.rsplit('.').next() == Some("popen")
+        });
+    named
+        && call
+            .child_by_field_name("arguments")
+            .is_some_and(|arguments| arguments.named_child_count() > 1)
+}
+
+/// Whether `code` may hand a shell a list of words: a call whose first
+/// argument, or `args=`, is a list or a tuple, and that is given `shell=`
+/// with anything but `False` (`subprocess.run(['del', 'x'], shell=True)`) or
+/// arguments that may carry it (`**kw`, `*rest`, positional arguments past
+/// the list). Code that does not parse may.
+pub(super) fn gives_shell_a_list(code: &str) -> bool {
+    let code = translate_newlines(code);
+    let Some(tree) = parse(&code) else {
+        return true;
+    };
+    let root = tree.root_node();
+    if root.has_error() {
+        return true;
+    }
+    let mut found = false;
+    unit::for_each_node(root, |node| {
+        if node.kind() != "call" {
+            return;
+        }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut cursor = arguments.walk();
+        let given: Vec<Node<'_>> = arguments.named_children(&mut cursor).collect();
+        let keyword = |argument: &Node<'_>, wanted: &str| {
+            argument.kind() == "keyword_argument"
+                && argument
+                    .child_by_field_name("name")
+                    .is_some_and(|name| unit::text(&name, &code) == wanted)
+        };
+        // `shell=` given anything but `False`, or arguments that may carry
+        // it: a `**` mapping, a `*` list, or positional arguments past the
+        // list (`Popen(args, bufsize, …, shell)`).
+        let positional = given
+            .iter()
+            .filter(|argument| !matches!(argument.kind(), "keyword_argument" | "dictionary_splat"))
+            .count();
+        let shell = positional > 1
+            || given
+                .iter()
+                .any(|argument| matches!(argument.kind(), "dictionary_splat" | "list_splat"))
+            || given.iter().any(|argument| {
+                keyword(argument, "shell")
+                    && argument.child_by_field_name("value").is_none_or(|value| {
+                        !matches!(unit::text(&value, &code), "False" | "0" | "None")
+                    })
+            });
+        let list = |node: Option<Node<'_>>| {
+            node.is_some_and(|node| matches!(node.kind(), "list" | "tuple"))
+        };
+        let listed = list(given.first().copied())
+            || given.iter().any(|argument| {
+                keyword(argument, "args") && list(argument.child_by_field_name("value"))
+            });
+        found |= shell && listed;
+    });
+    found
+}
+
 fn parse(code: &str) -> Option<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
     parser
