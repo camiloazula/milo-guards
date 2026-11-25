@@ -1,0 +1,2995 @@
+# The answers the shell guard gives the everyday commands that
+# `everyday_answers.templates` makes, one case to a line, in the order the
+# templates make them. Written by `just everyday-record`, never by hand:
+# `tests/everyday_answers.rs` fails when this is not what it writes
+# (CONTRIBUTING.md, "The everyday answers").
+
+# posix: rust
+posix safe | cargo build
+posix safe | cargo check
+posix safe | cargo test
+posix safe | cargo clippy
+posix safe | cargo doc
+posix safe | cargo build --release
+posix safe | cargo test --release
+posix safe | cargo test --workspace --all-features
+posix safe | cargo clippy --workspace --all-features
+posix safe | cargo build --workspace --all-features
+posix safe | cargo test -p core
+posix safe | cargo test -p cli
+posix safe | cargo test -p server
+posix safe | cargo test -p parser
+posix safe | cargo test -p core -- --nocapture
+posix safe | cargo test -p core --lib
+posix safe | cargo test -p core --test integration
+posix safe | cargo test parses_empty_input
+posix safe | cargo test round_trip
+posix safe | cargo test config::tests::defaults
+posix safe | cargo test handles_unicode
+posix safe | cargo test round_trip -- --exact
+posix safe | cargo test round_trip -- --nocapture
+posix safe | cargo run -- --help
+posix safe | cargo run -- --port 8080
+posix safe | cargo run -- --config config/dev.toml
+posix safe | cargo run
+posix safe | cargo run --release
+posix safe | cargo run --bin server
+posix safe | cargo run --example demo
+posix safe | cargo clippy --all-targets -- -D warnings
+posix safe | cargo clippy --all-targets --all-features -- -D warnings
+posix safe | cargo fmt
+posix safe | cargo fmt --all
+posix safe | cargo fmt -- --check
+posix safe | cargo fmt --all --check
+posix safe | cargo add serde
+posix safe | cargo add anyhow
+posix safe | cargo add tokio
+posix safe | cargo add clap
+posix safe | cargo add serde --features derive
+posix safe | cargo add tokio --features full
+posix safe | cargo add insta --dev
+posix safe | cargo remove serde
+posix safe | cargo remove anyhow
+posix safe | cargo remove tokio
+posix safe | cargo remove clap
+posix safe | cargo update
+posix safe | cargo update -p serde
+posix safe | cargo update --dry-run
+posix safe | cargo tree
+posix safe | cargo tree -d
+posix safe | cargo tree -i syn
+posix safe | cargo tree --depth 1
+posix safe | cargo bench
+posix safe | cargo bench --bench parse
+posix safe | cargo doc --no-deps
+posix safe | cargo doc --no-deps --open
+posix safe | cargo metadata --format-version 1 --no-deps
+posix safe | cargo nextest run
+posix safe | cargo nextest run --workspace
+posix safe | cargo llvm-cov
+posix safe | cargo llvm-cov --html
+posix safe | cargo expand parser
+posix safe | cargo udeps
+posix safe | cargo deny check
+posix safe | cargo audit
+posix safe | cargo outdated
+posix safe | cargo machete
+posix safe | cargo build --target x86_64-unknown-linux-musl
+posix safe | cargo build --target wasm32-unknown-unknown
+posix safe | cargo build --target aarch64-apple-darwin
+posix safe | cargo install --path crates/cli
+posix safe | cargo install --path .
+posix safe | cargo install cargo-nextest --locked
+posix safe | cargo install cargo-watch --locked
+posix safe | cargo install ripgrep --locked
+posix safe | RUST_BACKTRACE=1 cargo test parses_empty_input
+posix safe | RUST_BACKTRACE=1 cargo test round_trip
+posix safe | RUST_BACKTRACE=1 cargo test config::tests::defaults
+posix safe | RUST_BACKTRACE=1 cargo test handles_unicode
+posix safe | RUST_BACKTRACE=full cargo test parses_empty_input
+posix safe | RUST_BACKTRACE=full cargo test round_trip
+posix safe | RUST_BACKTRACE=full cargo test config::tests::defaults
+posix safe | RUST_BACKTRACE=full cargo test handles_unicode
+posix safe | RUST_LOG=debug cargo run
+posix safe | RUST_LOG=info,my_crate=trace cargo run
+posix safe | RUST_LOG=warn cargo run
+posix safe | cargo watch -x check
+posix safe | cargo watch -x test
+posix safe | cargo watch -x 'run -- serve'
+posix safe | rustc --version && cargo --version
+posix safe | rustup show
+posix safe | rustup update
+posix safe | rustup target add wasm32-unknown-unknown
+posix safe | rustup component add clippy rustfmt
+posix safe | rustup toolchain list
+posix safe | rustup override set nightly
+posix safe | cargo +nightly fmt
+posix safe | cargo +nightly miri test
+posix safe | cargo +nightly udeps
+posix safe | ./target/debug/app --help
+posix safe | ./target/debug/app --version
+posix safe | ./target/debug/app serve --port 8080
+posix safe | ./target/release/server --help
+posix safe | cargo test --doc
+posix safe | cargo build --timings
+
+# posix: javascript
+posix safe | npm install
+posix safe | npm ci
+posix safe | npm test
+posix safe | npm ls
+posix safe | npm outdated
+posix safe | npm audit
+posix safe | npm ls --depth=0
+posix safe | npm prune
+posix safe | npm dedupe
+posix safe | npm doctor
+posix safe | npm pack --dry-run
+posix safe | npm version patch --no-git-tag-version
+posix safe | npm run build
+posix safe | npm run test
+posix safe | npm run lint
+posix safe | npm run format
+posix safe | npm run dev
+posix safe | npm run typecheck
+posix safe | npm run e2e
+posix safe | npm run storybook
+posix safe | npm install lodash
+posix safe | npm install lodash --save-dev
+posix safe | npm install zod
+posix safe | npm install zod --save-dev
+posix safe | npm install vitest
+posix safe | npm install vitest --save-dev
+posix safe | npm install @types/node
+posix safe | npm install @types/node --save-dev
+posix safe | npm uninstall lodash
+posix safe | npm uninstall zod
+posix safe | npm uninstall vitest
+posix safe | npm uninstall @types/node
+posix safe | npm view lodash
+posix safe | npm view zod
+posix safe | npm view vitest
+posix safe | npm view @types/node
+posix safe | npm test -- --watch=false
+posix safe | npm test -- --coverage
+posix safe | npm test -- src/lib/api.test.ts
+posix safe | npm test -- -t 'renders the button'
+posix safe | npm run build -- --mode production
+posix safe | npm run build -- --watch
+posix safe | npm init -y
+posix safe | npm audit fix
+posix safe | npm exec -- tsc --noEmit
+posix safe | npm exec -- eslint .
+posix safe | pnpm install
+posix safe | pnpm build
+posix safe | pnpm test
+posix safe | pnpm lint
+posix safe | pnpm dev
+posix safe | pnpm -r build
+posix safe | pnpm --filter web dev
+posix safe | pnpm add -D vitest
+posix safe | pnpm install --frozen-lockfile
+posix safe | pnpm why react
+posix safe | pnpm up --latest
+posix safe | pnpm store prune
+posix safe | yarn
+posix safe | yarn install
+posix safe | yarn build
+posix safe | yarn test
+posix safe | yarn lint
+posix safe | yarn dev
+posix safe | yarn add zod
+posix safe | yarn add -D prettier
+posix safe | yarn why lodash
+posix safe | yarn install --immutable
+posix safe | yarn workspaces info
+posix safe | bun install
+posix safe | bun test
+posix safe | bun run dev
+posix safe | bun run build
+posix safe | bun add hono
+posix safe | bun x vitest
+posix safe | bun run src/index.ts
+posix safe | bun build ./src/index.ts --outdir dist
+posix safe | npx tsc --noEmit
+posix safe | npx eslint .
+posix safe | npx prettier --check .
+posix safe | npx prettier --write src
+posix safe | npx vitest run
+posix safe | npx jest --coverage
+posix safe | npx playwright test
+posix safe | npx tsx scripts/seed.ts
+posix safe | npx turbo run build
+posix safe | npx next build
+posix safe | npx vite build
+posix safe | npx prisma generate
+posix safe | npx prisma migrate dev
+posix safe | npx storybook build
+posix safe | npx depcheck
+posix safe | npx vitest run src/index.ts
+posix safe | npx vitest run src/components/Button.tsx
+posix safe | npx vitest run src/lib/api.ts
+posix safe | npx vitest run test/app.test.ts
+posix safe | npx tsc --noEmit -p tsconfig.json
+posix safe | npx tsc --noEmit -p packages/web/tsconfig.json
+posix safe | npx tsc --noEmit -p tsconfig.build.json
+posix safe | ./node_modules/.bin/tsc --version
+posix safe | ./node_modules/.bin/eslint --version
+posix safe | ./node_modules/.bin/vitest --version
+posix safe | ./node_modules/.bin/jest --version
+posix safe | ./node_modules/.bin/prettier --version
+posix safe | node_modules/.bin/tsc --version
+posix safe | node_modules/.bin/eslint --version
+posix safe | node_modules/.bin/vitest --version
+posix safe | node_modules/.bin/jest --version
+posix safe | node_modules/.bin/prettier --version
+posix safe | node scripts/build.js
+posix safe | node dist/index.js
+posix safe | node server.js
+posix safe | node scripts/gen-types.mjs
+posix rules=unknown first=unknown reason="runs code the guard does not read" | node --test
+posix safe | node --test test/
+posix safe | node --inspect server.js
+posix safe | node --watch server.js
+posix rules=unknown first=unknown reason="runs code the guard does not read fully" | node -e 'console.log(process.versions)'
+posix rules=unknown first=unknown reason="runs code the guard does not read fully" | node -p "require('./package.json').version"
+posix safe | tsc
+posix safe | tsc --noEmit
+posix safe | tsc -p tsconfig.json
+posix safe | tsc --build
+posix safe | tsc --watch
+posix safe | deno test
+posix safe | deno task dev
+posix safe | deno run --allow-net server.ts
+posix safe | deno fmt
+posix safe | deno lint
+posix safe | deno check main.ts
+posix safe | corepack enable && pnpm install
+posix safe | nvm use && npm ci
+
+# posix: python
+posix safe | python -m pytest -q
+posix safe | python -m pytest -x
+posix safe | python -m pytest -vv
+posix safe | python -m pytest tests/test_api.py::test_login
+posix safe | pytest tests/
+posix safe | pytest tests/test_api.py::test_login
+posix safe | pytest tests/unit
+posix safe | pytest -k parse
+posix safe | pytest --lf
+posix safe | pytest --cov=app
+posix safe | pytest -n auto
+posix safe | pip install requests
+posix safe | pip install pytest
+posix safe | pip install httpx
+posix safe | pip install pydantic
+posix safe | pip install ruff
+posix safe | pip install -r requirements.txt
+posix safe | pip install -r requirements-dev.txt
+posix safe | pip install -e .
+posix safe | pip install -e '.[dev]'
+posix safe | pip install --upgrade pip
+posix safe | pip install -U pip setuptools wheel
+posix safe | pip list
+posix safe | pip freeze
+posix safe | pip show requests
+posix safe | pip check
+posix safe | pip list --outdated
+posix safe | pip freeze > requirements.lock
+posix safe | python -m venv .venv
+posix safe | python3 -m venv .venv
+posix safe | source .venv/bin/activate && pytest -q
+posix safe | source .venv/bin/activate && pip install -r requirements.txt
+posix safe | source .venv/bin/activate && python app/main.py
+posix safe | . .venv/bin/activate
+posix safe | .venv/bin/python -m pytest
+posix safe | .venv/bin/pip install -e .
+posix safe | .venv/bin/python scripts/migrate.py
+posix safe | .venv/bin/ruff check .
+posix safe | uv sync
+posix safe | uv run pytest
+posix safe | uv add httpx
+posix safe | uv add --dev pytest-cov
+posix safe | uv lock
+posix safe | uv pip install -r requirements.txt
+posix safe | uv run python scripts/migrate.py
+posix safe | uv venv
+posix safe | uv pip list
+posix safe | uv tree
+posix safe | uv python install 3.12
+posix safe | poetry install
+posix safe | poetry run pytest
+posix safe | poetry add requests
+posix safe | poetry add --group dev ruff
+posix safe | poetry lock --no-update
+posix safe | poetry show --tree
+posix safe | poetry build
+posix safe | poetry env info
+posix safe | poetry check
+posix safe | poetry run python -m app
+posix safe | python app/main.py
+posix safe | python app/models.py
+posix safe | python tests/test_api.py
+posix safe | python scripts/migrate.py
+posix safe | python3 app/main.py
+posix safe | python3 app/models.py
+posix safe | python3 tests/test_api.py
+posix safe | python3 scripts/migrate.py
+posix safe | python -m app
+posix safe | python -m http.server 8000
+posix safe | python -m pip list
+posix safe | python -m json.tool package.json
+posix safe | python -m unittest discover -s tests
+posix safe | python -m compileall app
+posix safe | python -m pydoc json
+posix safe | python3 -m app
+posix safe | python3 -m http.server 8000
+posix safe | python3 -m pip list
+posix safe | python3 -m json.tool package.json
+posix safe | python3 -m unittest discover -s tests
+posix safe | python3 -m compileall app
+posix safe | python3 -m pydoc json
+posix safe | ruff check .
+posix safe | ruff check --fix .
+posix safe | ruff format .
+posix safe | ruff format --check .
+posix safe | ruff check app tests --select I --fix
+posix safe | mypy .
+posix safe | mypy app
+posix safe | mypy app --strict
+posix safe | mypy --install-types --non-interactive
+posix safe | black .
+posix safe | black --check .
+posix safe | black --diff app
+posix safe | black app tests
+posix safe | isort .
+posix safe | isort --check-only --diff .
+posix safe | flake8 app
+posix safe | flake8 .
+posix safe | pylint app
+posix safe | pylint app/models.py
+posix safe | pyright
+posix safe | pyright app
+posix safe | python3 -c 'import sys; print(sys.version)'
+posix rules=unknown first=unknown reason="runs code the guard does not read" | python3 -c "import django; print(django.get_version())"
+posix rules=unknown first=unknown reason="runs code the guard does not read fully" | python -c 'import json; print(json.load(open("package.json"))["version"])'
+posix safe | tox
+posix safe | tox -e py312
+posix safe | tox -e lint
+posix safe | tox -p
+posix safe | nox -s tests
+posix safe | nox -s lint
+posix safe | python manage.py runserver
+posix safe | python manage.py migrate
+posix safe | python manage.py makemigrations
+posix safe | python manage.py test
+posix safe | python manage.py shell -c 'print(1)'
+posix safe | python manage.py check
+posix safe | python manage.py collectstatic --noinput
+posix safe | python manage.py showmigrations
+posix safe | flask --app app run
+posix safe | flask --app app run --debug
+posix safe | uvicorn app.main:app --reload
+posix safe | uvicorn app.main:app --port 8001
+posix safe | uvicorn app.main:app --host 127.0.0.1 --port 8000
+posix safe | jupyter nbconvert --to script notebooks/eda.ipynb
+posix safe | jupyter nbconvert --to script analysis.ipynb
+posix safe | hatch run test
+posix safe | hatch build
+posix safe | hatch env show
+posix safe | conda list
+posix safe | conda env list
+posix safe | pre-commit run --all-files
+posix safe | pre-commit run ruff --all-files
+
+# posix: go
+posix safe | go build ./...
+posix safe | go test ./...
+posix safe | go vet ./...
+posix safe | go mod tidy
+posix safe | go mod download
+posix safe | go run ./cmd/server
+posix safe | go test -race ./...
+posix safe | go generate ./...
+posix safe | go mod verify
+posix safe | go mod why github.com/pkg/errors
+posix safe | go list ./...
+posix safe | go version
+posix safe | go env GOPATH
+posix safe | go work sync
+posix safe | go test -v ./...
+posix safe | go test -cover ./...
+posix safe | go test -count=1 ./...
+posix safe | go test -run TestParse ./...
+posix safe | go test -bench=. -benchmem ./...
+posix safe | go test ./internal/store/...
+posix safe | go test ./pkg/api/...
+posix safe | go test ./cmd/server/...
+posix safe | go get github.com/stretchr/testify@latest
+posix safe | go get golang.org/x/sync
+posix safe | go get -u ./...
+posix safe | go install golang.org/x/tools/cmd/goimports@latest
+posix safe | go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.59.1
+posix safe | go tool cover -html=coverage.out
+posix safe | go tool pprof cpu.prof
+posix safe | go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
+posix safe | gofmt -l .
+posix safe | gofmt -w .
+posix safe | gofmt -d internal
+posix safe | goimports -w .
+posix safe | goimports -w internal
+posix safe | golangci-lint run
+posix safe | golangci-lint run ./...
+posix safe | golangci-lint run --fix
+posix safe | staticcheck ./...
+
+# posix: native
+posix safe | make
+posix safe | make test
+posix safe | make build
+posix safe | make lint
+posix safe | make clean
+posix safe | make check
+posix safe | make -j8
+posix safe | make -j$(nproc)
+posix safe | make help
+posix safe | make -C docs
+posix safe | make -C docs clean
+posix safe | make -C build
+posix safe | make -C build clean
+posix safe | make -C tools
+posix safe | make -C tools clean
+posix safe | cmake -S . -B build
+posix safe | cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+posix safe | cmake -S . -B build -G Ninja
+posix safe | cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+posix safe | cmake --build build
+posix safe | cmake --build build --config Release
+posix safe | cmake --build build -j 8
+posix safe | cmake --build build --target tests
+posix safe | cmake --build build --parallel
+posix safe | ctest --test-dir build
+posix safe | ctest --test-dir build --output-on-failure
+posix safe | ctest --test-dir build -R parser
+posix safe | ctest --test-dir build -j4
+posix safe | ninja -C build
+posix safe | ninja -C build test
+posix safe | meson setup build
+posix safe | meson compile -C build
+posix safe | meson test -C build
+posix safe | ./configure
+posix safe | ./configure --prefix=$PWD/install
+posix safe | ./configure --enable-debug
+posix safe | autoreconf -fi
+posix safe | gcc -Wall -O2 -o build/app src/main.c
+posix safe | clang++ -std=c++20 -g -o build/test tests/test_main.cpp
+posix safe | bazel build //...
+posix safe | bazel test //...
+posix safe | bazel query //src/...
+posix safe | bazel run //cmd:server
+posix safe | zig build
+posix safe | zig build test
+posix safe | zig fmt src
+
+# posix: jvm
+posix safe | ./gradlew build
+posix safe | ./gradlew test
+posix safe | ./gradlew clean build
+posix safe | ./gradlew :app:test
+posix safe | ./gradlew check
+posix safe | ./gradlew dependencies
+posix safe | ./gradlew bootRun
+posix safe | ./gradlew test --tests '*ParserTest'
+posix safe | gradle build
+posix safe | gradle test
+posix safe | gradle wrapper
+posix safe | mvn test
+posix safe | mvn package
+posix safe | mvn clean install
+posix safe | mvn verify
+posix safe | mvn dependency:tree
+posix safe | mvn -DskipTests package
+posix safe | mvn -Dtest=ParserTest test
+posix safe | ./mvnw test
+posix safe | ./mvnw clean verify
+posix safe | ./mvnw spring-boot:run
+posix safe | ./mvnw -B package
+posix safe | java -jar target/app-1.0.jar
+posix safe | java -jar target/app-1.0.jar --server.port=8081
+posix safe | java -jar build/libs/app.jar
+posix safe | java -jar build/libs/app.jar --server.port=8081
+posix safe | java -version && javac -version
+posix safe | kotlinc src/Main.kt -include-runtime -d build/main.jar
+posix safe | sbt compile
+posix safe | sbt test
+posix safe | sbt run
+posix safe | sbt 'testOnly *ParserSpec'
+
+# posix: dotnet_swift
+posix safe | dotnet build
+posix safe | dotnet test
+posix safe | dotnet run
+posix safe | dotnet restore
+posix safe | dotnet format
+posix safe | dotnet watch run
+posix safe | dotnet --info
+posix safe | dotnet add package Serilog
+posix safe | dotnet add package Newtonsoft.Json
+posix safe | dotnet add package xunit
+posix safe | dotnet test --filter Category=Unit
+posix safe | dotnet test --filter FullyQualifiedName~Parser
+posix safe | dotnet new console -n Demo
+posix safe | dotnet new xunit -n Core.Tests
+posix safe | dotnet new gitignore
+posix safe | swift build
+posix safe | swift test
+posix safe | swift run
+posix safe | swift package resolve
+posix safe | swift test --filter ParserTests
+posix safe | swift build -c release
+posix safe | swift package update
+posix safe | swift package describe
+posix safe | xcodebuild -scheme App -destination 'platform=iOS Simulator,name=iPhone 15' build
+posix safe | xcodebuild -scheme App -destination 'platform=iOS Simulator,name=iPhone 15' test
+posix safe | xcodebuild -scheme AppTests -destination 'platform=iOS Simulator,name=iPhone 15' build
+posix safe | xcodebuild -scheme AppTests -destination 'platform=iOS Simulator,name=iPhone 15' test
+posix safe | xcodebuild -list
+posix safe | xcodebuild -showsdks
+posix safe | xcodebuild -version
+posix safe | xcodebuild -project App.xcodeproj -showBuildSettings
+posix safe | xcrun simctl list devices
+posix safe | xcrun simctl boot 'iPhone 15'
+posix safe | xcrun simctl list runtimes
+posix safe | swiftlint
+posix safe | swiftlint --fix
+posix safe | swiftlint lint --strict
+posix safe | swift-format lint -r Sources
+posix safe | swift-format format -i -r Sources
+posix safe | pod install
+posix safe | xcodebuild -workspace App.xcworkspace -scheme App -configuration Debug build
+
+# posix: other_languages
+posix safe | bundle install
+posix safe | bundle exec rspec
+posix safe | bundle exec rails test
+posix safe | bundle exec rubocop -a
+posix safe | rails server
+posix safe | rails test
+posix safe | rails routes
+posix safe | rspec spec/models/user_spec.rb
+posix safe | composer install
+posix safe | composer dump-autoload
+posix safe | composer test
+posix safe | php artisan migrate
+posix safe | php artisan test
+posix safe | php artisan serve
+posix safe | php artisan route:list
+posix safe | vendor/bin/phpunit
+posix safe | vendor/bin/phpunit --filter ParserTest
+posix safe | mix test
+posix safe | mix deps.get
+posix safe | mix compile
+posix safe | mix format
+posix safe | mix phx.server
+posix safe | stack build
+posix safe | stack test
+posix safe | cabal build
+posix safe | cabal test
+posix safe | dart pub get
+posix safe | dart test
+posix safe | dart analyze
+posix safe | dart format .
+posix safe | flutter pub get
+posix safe | flutter test
+posix safe | flutter analyze
+posix safe | terraform fmt
+posix safe | terraform validate
+posix safe | terraform plan
+posix safe | terraform init
+posix safe | terraform output
+posix safe | helm lint ./charts/api
+posix safe | helm template api ./charts/api
+posix safe | helm dependency update ./charts/api
+
+# posix: git_read
+posix safe | git status
+posix safe | git status -sb
+posix safe | git status --short
+posix safe | git diff
+posix safe | git diff --staged
+posix safe | git diff --cached
+posix safe | git diff --stat
+posix safe | git diff HEAD
+posix safe | git show
+posix safe | git show --stat HEAD
+posix safe | git branch
+posix safe | git branch -a
+posix safe | git branch -vv
+posix safe | git branch --show-current
+posix safe | git remote -v
+posix safe | git stash list
+posix safe | git tag
+posix safe | git rev-parse HEAD
+posix safe | git rev-parse --abbrev-ref HEAD
+posix safe | git describe --tags
+posix safe | git shortlog -sn
+posix safe | git reflog -10
+posix safe | git log -1
+posix safe | git log --oneline -20
+posix safe | git log --oneline --graph --all
+posix safe | git log --oneline --decorate -n 15
+posix safe | git log -p -3
+posix safe | git log --stat -5
+posix safe | git log --format='%h %an %s' -10
+posix safe | git log --since='2 weeks ago' --oneline
+posix safe | git log origin/main..HEAD --oneline
+posix safe | git log --merges --oneline -5
+posix safe | git log --oneline -- src/lib.rs
+posix safe | git log --oneline -- src/main.rs
+posix safe | git log --oneline -- src/parser/mod.rs
+posix safe | git log -p -- src/lib.rs
+posix safe | git log --follow --oneline -- src/lib.rs
+posix safe | git diff main...HEAD
+posix safe | git diff feature/login...HEAD
+posix safe | git diff fix/parser-crash...HEAD
+posix safe | git diff release/2.3...HEAD
+posix safe | git diff main...HEAD --stat
+posix safe | git diff main...HEAD --name-only
+posix safe | git diff HEAD~1 -- src/
+posix safe | git diff HEAD~1 -- tests/
+posix safe | git diff HEAD~1 -- package.json
+posix safe | git diff HEAD~3 HEAD -- src/
+posix safe | git diff origin/main -- src/
+posix safe | git blame src/lib.rs
+posix safe | git blame src/config.rs
+posix safe | git blame crates/core/src/lib.rs
+posix safe | git blame build.rs
+posix safe | git blame -L 10,40 src/lib.rs
+posix safe | git blame -L 10,40 src/config.rs
+posix safe | git blame -L 10,40 crates/core/src/lib.rs
+posix safe | git blame -L 10,40 build.rs
+posix safe | git show HEAD~1
+posix safe | git show abc1234
+posix safe | git show HEAD:src/lib.rs
+posix safe | git show v1.2.0 --stat
+posix safe | git grep -n TODO
+posix safe | git grep -n TODO -- '*.rs'
+posix safe | git grep -n FIXME
+posix safe | git grep -n FIXME -- '*.rs'
+posix safe | git grep -n 'unwrap()'
+posix safe | git grep -n 'unwrap()' -- '*.rs'
+posix safe | git grep -n console.log
+posix safe | git grep -n console.log -- '*.rs'
+posix safe | git ls-files
+posix safe | git ls-files '*.rs'
+posix safe | git ls-files --others --exclude-standard
+posix safe | git ls-files -m
+posix safe | git ls-files | wc -l
+posix safe | git config --get user.email
+posix safe | git config --list --show-origin
+posix safe | git config user.name
+posix safe | git config --get remote.origin.url
+posix safe | git config --global --get core.editor
+posix safe | git remote get-url origin
+posix safe | git rev-list --count HEAD
+posix safe | git rev-list --count main..HEAD
+posix safe | git merge-base HEAD origin/main
+posix safe | git diff --name-only HEAD~1 | xargs wc -l
+posix safe | git diff --name-only HEAD~1 | xargs ls -la
+posix safe | git diff --name-only origin/main | xargs wc -l
+posix safe | git diff --name-only origin/main | xargs ls -la
+posix safe | git log --oneline | head -5
+posix safe | git log --oneline | head -20
+posix safe | git diff --check
+posix safe | git check-ignore -v target/debug
+posix safe | git check-ignore -v node_modules
+posix safe | git check-ignore -v .env
+posix safe | git count-objects -vH
+posix safe | git cat-file -p HEAD
+posix safe | git worktree list
+posix safe | git status --porcelain | wc -l
+posix safe | git -C ../other-repo log --oneline -5
+posix safe | git -C ../repo-docs log --oneline -5
+posix safe | git --no-pager log --oneline -10
+posix safe | git --no-pager diff --stat
+posix safe | git --no-pager show --name-only
+
+# posix: git_write
+posix safe | git add src/lib.rs
+posix safe | git add src/main.rs
+posix safe | git add src/parser/mod.rs
+posix safe | git add .
+posix safe | git add -A
+posix safe | git add -u
+posix safe | git add src/ tests/
+posix safe | git add --all
+posix safe | git add -N src/new.rs
+posix safe | git add Cargo.toml Cargo.lock
+posix safe | git commit -m 'fix: handle empty input'
+posix safe | git commit -m "chore: bump dependencies"
+posix safe | git commit -m 'test: cover the parser edge cases'
+posix safe | git commit -am 'fix: handle empty input'
+posix safe | git commit -am "chore: bump dependencies"
+posix safe | git commit -am 'test: cover the parser edge cases'
+posix safe | git add -A && git commit -m 'fix: handle empty input'
+posix safe | git add -A && git commit -m "chore: bump dependencies"
+posix safe | git add -A && git commit -m 'test: cover the parser edge cases'
+posix safe | git commit --amend --no-edit
+posix safe | git commit --amend -m 'fix: handle empty input'
+posix safe | git commit --fixup HEAD~1
+posix safe | git commit -v
+posix safe | git commit --allow-empty -m 'ci: trigger'
+posix safe | git checkout main
+posix safe | git checkout feature/login
+posix safe | git checkout fix/parser-crash
+posix safe | git checkout release/2.3
+posix safe | git checkout -b feature/rate-limit
+posix safe | git checkout -b feature/rate-limit origin/main
+posix safe | git checkout -b fix/null-check
+posix safe | git checkout -b fix/null-check origin/main
+posix safe | git checkout -b chore/bump-deps
+posix safe | git checkout -b chore/bump-deps origin/main
+posix safe | git checkout -b docs/readme
+posix safe | git checkout -b docs/readme origin/main
+posix safe | git switch main
+posix safe | git switch feature/login
+posix safe | git switch fix/parser-crash
+posix safe | git switch release/2.3
+posix safe | git switch -c feature/rate-limit
+posix safe | git switch -c fix/null-check
+posix safe | git switch -c chore/bump-deps
+posix safe | git switch -c docs/readme
+posix safe | git switch -
+posix safe | git stash
+posix safe | git stash push -m 'wip: parser'
+posix safe | git stash pop
+posix safe | git stash apply
+posix safe | git stash show -p
+posix safe | git stash push --include-untracked
+posix safe | git stash list --stat
+posix safe | git fetch
+posix safe | git fetch --all --prune
+posix safe | git fetch origin
+posix safe | git fetch origin main
+posix safe | git fetch --tags
+posix safe | git fetch upstream
+posix safe | git pull
+posix safe | git pull --rebase
+posix safe | git pull --ff-only
+posix safe | git pull origin main
+posix safe | git pull --rebase origin main
+posix safe | git push
+posix safe | git push -u origin HEAD
+posix safe | git push origin HEAD
+posix safe | git push --set-upstream origin feature/rate-limit
+posix safe | git push --tags
+posix safe | git push origin v1.2.0
+posix safe | git push -u origin feature/rate-limit
+posix safe | git push -u origin fix/null-check
+posix safe | git push -u origin chore/bump-deps
+posix safe | git push -u origin docs/readme
+posix safe | git rebase main
+posix safe | git rebase origin/main
+posix safe | git rebase --continue
+posix safe | git rebase --abort
+posix safe | git rebase --skip
+posix safe | git merge --no-ff feature/login
+posix safe | git merge --abort
+posix safe | git merge origin/main
+posix safe | git merge --ff-only origin/main
+posix safe | git merge main
+posix safe | git cherry-pick abc1234
+posix safe | git cherry-pick --continue
+posix safe | git cherry-pick --abort
+posix safe | git cherry-pick -x 9f8e7d6
+posix safe | git restore --staged src/lib.rs
+posix safe | git restore --staged src/main.rs
+posix safe | git restore --staged src/parser/mod.rs
+posix safe | git reset
+posix safe | git reset HEAD~1
+posix safe | git reset --soft HEAD~1
+posix safe | git reset HEAD src/lib.rs
+posix safe | git reset --mixed HEAD~2
+posix safe | git worktree add ../wt-login feature/login
+posix safe | git worktree add -b fix/typo ../wt-typo
+posix safe | git worktree prune
+posix safe | git worktree remove ../wt-login
+posix safe | git worktree add ../wt-review origin/main
+posix safe | git branch feature/rate-limit
+posix safe | git branch fix/null-check
+posix safe | git branch chore/bump-deps
+posix safe | git branch docs/readme
+posix safe | git branch -m old-name new-name
+posix safe | git branch -m feature/rate-limit
+posix safe | git branch -d feature/login
+posix safe | git branch -d fix/parser-crash
+posix safe | git branch --set-upstream-to=origin/main
+posix safe | git branch --set-upstream-to=origin/feature/login
+posix safe | git tag v1.2.0
+posix safe | git tag -a v1.3.0 -m 'Release 1.3.0'
+posix safe | git submodule update --init --recursive
+posix safe | git submodule status
+posix safe | git submodule sync
+posix safe | git lfs pull
+posix safe | git lfs ls-files
+posix safe | git lfs track '*.psd'
+posix safe | git clone https://github.com/rust-lang/rustlings.git
+posix safe | git clone git@github.com:org/service.git
+posix safe | git clone --depth 1 https://github.com/vitejs/vite.git vendor/vite
+posix safe | git init
+posix safe | git init -b main
+posix safe | git remote add upstream https://github.com/org/repo.git
+posix safe | git remote add origin git@github.com:me/repo.git
+posix safe | git mv src/old.rs src/new.rs
+posix safe | git mv docs/a.md docs/guide.md
+posix safe | git rm --cached .env.local
+posix safe | git rm --cached -r node_modules
+posix safe | git bisect start
+posix safe | git bisect good
+posix safe | git bisect bad
+posix safe | git bisect reset
+posix safe | git bisect good v1.2.0
+posix safe | git apply patches/fix.patch
+posix safe | git apply --check patches/fix.patch
+posix safe | git format-patch -1 HEAD -o patches/
+posix safe | git notes add -m 'reviewed'
+posix safe | git config user.email 'me@example.com'
+posix safe | git config --local core.autocrlf input
+posix safe | git gc --auto
+posix safe | git update-index --assume-unchanged config/local.yml
+
+# posix: github
+posix safe | gh pr list
+posix safe | gh pr status
+posix safe | gh pr view
+posix safe | gh pr view 42
+posix safe | gh pr view 42 --comments
+posix safe | gh pr diff 42
+posix safe | gh pr checks
+posix safe | gh pr checks 42 --watch
+posix safe | gh pr list --state merged --limit 5
+posix safe | gh pr view --web
+posix safe | gh issue list
+posix safe | gh issue view 17
+posix safe | gh issue list --label bug
+posix safe | gh issue view 17 --comments
+posix safe | gh issue status
+posix safe | gh run list
+posix safe | gh run view 123456
+posix safe | gh run view 123456 --log-failed
+posix safe | gh run watch
+posix safe | gh run list --workflow ci.yml
+posix safe | gh repo view
+posix safe | gh repo view --web
+posix safe | gh release list
+posix safe | gh release view v1.2.0
+posix safe | gh auth status
+posix safe | gh workflow list
+posix safe | gh browse
+posix safe | gh search code 'fn parse'
+posix safe | gh api repos/{owner}/{repo}/pulls
+posix safe | gh api user --jq .login
+posix safe | gh pr checkout 42
+posix safe | gh pr checkout feature/login
+posix safe | gh pr view 42 --json title,body,files
+posix safe | gh repo clone org/service
+posix safe | gh repo clone org/service vendor/cli
+posix safe | gh repo clone cli/cli
+posix safe | gh repo clone cli/cli vendor/cli
+
+# posix: read
+posix safe | ls
+posix safe | ls -la
+posix safe | ls -lah
+posix safe | ls -R
+posix safe | ls -la src
+posix safe | ls -la tests
+posix safe | ls -la target/debug
+posix safe | ls -la node_modules/.bin
+posix safe | ls -la .github/workflows
+posix safe | ls -la scripts
+posix safe | ls -la ~/.cargo/bin
+posix safe | ls -la /tmp
+posix safe | cat src/lib.rs
+posix safe | cat src/main.rs
+posix safe | cat src/parser/mod.rs
+posix safe | cat package.json
+posix safe | cat Cargo.toml
+posix safe | cat pyproject.toml
+posix safe | cat go.mod
+posix safe | cat README.md
+posix safe | cat CHANGELOG.md
+posix safe | cat docs/architecture.md
+posix safe | cat CONTRIBUTING.md
+posix safe | cat -n src/lib.rs
+posix safe | cat -n src/config.rs
+posix safe | cat -n crates/core/src/lib.rs
+posix safe | cat -n build.rs
+posix safe | head -n 20 app/main.py
+posix safe | head -n 20 app/models.py
+posix safe | head -n 20 tests/test_api.py
+posix safe | head -n 20 scripts/migrate.py
+posix safe | head app/main.py
+posix safe | head app/models.py
+posix safe | head tests/test_api.py
+posix safe | head scripts/migrate.py
+posix safe | head -c 500 build.log
+posix safe | head -c 500 logs/dev.log
+posix safe | head -c 500 test-output.txt
+posix safe | tail -n 50 build.log
+posix safe | tail -f build.log
+posix safe | tail -100 build.log
+posix safe | tail -n +20 build.log
+posix safe | tail -f logs/dev.log
+posix safe | less README.md
+posix safe | less CHANGELOG.md
+posix safe | less docs/architecture.md
+posix safe | less CONTRIBUTING.md
+posix safe | bat src/lib.rs
+posix safe | bat src/main.rs
+posix safe | bat src/parser/mod.rs
+posix safe | grep -rni TODO src/
+posix safe | grep -rl TODO src/
+posix safe | grep -rn TODO src/
+posix safe | grep -rn FIXME src/
+posix safe | grep -rn 'unwrap()' src/
+posix safe | grep -rn console.log src/
+posix safe | grep -rn TODO .
+posix safe | grep -rn TODO tests/
+posix safe | grep -rn FIXME .
+posix safe | grep -rn FIXME tests/
+posix safe | grep -rn 'unwrap()' .
+posix safe | grep -rn 'unwrap()' tests/
+posix safe | grep -rn console.log .
+posix safe | grep -rn console.log tests/
+posix safe | grep -rn 'fn main' --include='*.rs' .
+posix safe | grep -rn 'def test_' --include='*.py' .
+posix safe | grep -rn 'import React' --include='*.tsx' .
+posix safe | grep -rn '#\\[test\\]' --include='*.rs' .
+posix safe | grep -c TODO src/lib.rs
+posix safe | grep -c FIXME src/lib.rs
+posix safe | grep -c 'unwrap()' src/lib.rs
+posix safe | grep -c console.log src/lib.rs
+posix safe | grep -E 'error|warning' build.log
+posix safe | grep -E 'error|warning' logs/dev.log
+posix safe | grep -E 'error|warning' test-output.txt
+posix safe | grep -E '^(fn|pub fn) ' build.log
+posix safe | grep -E '^(fn|pub fn) ' logs/dev.log
+posix safe | grep -E '^(fn|pub fn) ' test-output.txt
+posix safe | grep -E 'TODO|FIXME' build.log
+posix safe | grep -E 'TODO|FIXME' logs/dev.log
+posix safe | grep -E 'TODO|FIXME' test-output.txt
+posix safe | grep -n 'version' package.json
+posix safe | grep -n 'version' Cargo.toml
+posix safe | grep -n 'version' pyproject.toml
+posix safe | grep -n 'version' go.mod
+posix safe | grep -n '"name"' package.json
+posix safe | grep -n 'edition' Cargo.toml
+posix safe | grep -v '^#' .env.example
+posix safe | grep -v '^#' config/app.conf
+posix safe | grep -v '^#' .gitignore
+posix safe | rg TODO
+posix safe | rg FIXME
+posix safe | rg 'unwrap()'
+posix safe | rg console.log
+posix safe | rg TODO src
+posix safe | rg TODO -l
+posix safe | rg TODO -C 3
+posix safe | rg TODO -g '*.ts'
+posix safe | rg TODO -n --hidden
+posix safe | rg TODO --stats
+posix safe | rg FIXME -g '*.ts'
+posix safe | rg FIXME -n --hidden
+posix safe | rg FIXME --stats
+posix safe | rg 'fn \\w+\\(' src
+posix safe | rg 'useEffect\\(' src
+posix safe | rg 'class \\w+Error' src
+posix safe | rg 'TODO\\(\\w+\\)' src
+posix safe | rg --files
+posix safe | rg --files -g '*.md'
+posix safe | rg --files src
+posix safe | rg --files --hidden -g '!.git'
+posix safe | rg -l 'serde'
+posix safe | rg -l 'serde' crates
+posix safe | rg -l 'tokio::'
+posix safe | rg -l 'tokio::' crates
+posix safe | rg -l 'from requests'
+posix safe | rg -l 'from requests' crates
+posix safe | find . -name '*.rs'
+posix safe | find . -name '*.py'
+posix safe | find . -name '*.test.ts'
+posix safe | find . -name 'Cargo.toml'
+posix safe | find . -name '*.snap'
+posix safe | find src -name '*.rs' -type f
+posix safe | find . -type f -name '*.ts' -not -path './node_modules/*'
+posix safe | find . -type f -name '*.go' -not -path './node_modules/*'
+posix safe | find . -type f -name '*.md' -not -path './node_modules/*'
+posix safe | find . -maxdepth 1 -type d
+posix safe | find . -maxdepth 1 -type f
+posix safe | find . -maxdepth 2 -type d
+posix safe | find . -maxdepth 2 -type f
+posix safe | find . -maxdepth 3 -type d
+posix safe | find . -maxdepth 3 -type f
+posix safe | find src -newer Cargo.lock -type f
+posix safe | find src -newer package.json -type f
+posix safe | find . -newer Cargo.lock -type f
+posix safe | find . -newer package.json -type f
+posix safe | find . -name '*.py' -mtime -1
+posix safe | find . -type d -name node_modules -prune
+posix safe | find . -type d -name __pycache__ -prune
+posix safe | find . -type d -name target -prune
+posix safe | find . -size +1M -type f -not -path './.git/*'
+posix safe | find . -empty -type d
+posix safe | fd parser
+posix safe | fd config
+posix safe | fd test
+posix safe | fd parser -e rs
+posix safe | fd parser -t f
+posix safe | fd parser -H
+posix safe | fd -e rs
+posix safe | fd -e md
+posix safe | fd -e ts
+posix safe | fd -e py
+posix safe | fd -e rs src
+posix safe | fd -e rs -x wc -l
+posix safe | wc -l src/lib.rs
+posix safe | wc -l src/main.rs
+posix safe | wc -l src/parser/mod.rs
+posix safe | wc -w src/lib.rs
+posix safe | wc -w src/main.rs
+posix safe | wc -w src/parser/mod.rs
+posix safe | wc -l src/*.rs
+posix safe | wc -l src/**/*.ts
+posix safe | wc -l *.md
+posix safe | wc -l tests/*.py
+posix safe | find src -name '*.rs' | xargs wc -l
+posix safe | find src -name '*.rs' | xargs wc -l | sort -n
+posix safe | find src -name '*.rs' | xargs wc -l | tail -1
+posix safe | sort data/users.csv
+posix safe | sort -u data/users.csv
+posix safe | sort -n data/users.csv
+posix safe | sort -r data/users.csv
+posix safe | sort -t, -k2 data/users.csv
+posix safe | sort data/words.txt | uniq -c | sort -rn | head
+posix safe | sort data/words.txt | uniq -c | sort -rn | head -20
+posix safe | cut -d, -f1 data/users.csv
+posix safe | cut -d, -f2,3 data/users.csv
+posix safe | cut -d, -f1-3 data/users.csv
+posix safe | sed -n '1,40p' src/lib.rs
+posix safe | sed -n '1,40p' build.rs
+posix safe | sed -n '100,140p' src/lib.rs
+posix safe | sed -n '100,140p' build.rs
+posix safe | sed -n '/fn main/,/^}/p' src/lib.rs
+posix safe | sed -n '/fn main/,/^}/p' build.rs
+posix safe | sed -n '$p' src/lib.rs
+posix safe | sed -n '$p' build.rs
+posix safe | sed -n '5p' src/lib.rs
+posix safe | sed -n '5p' build.rs
+posix safe | sed -n '1,80p' README.md
+posix safe | sed -n '1,80p' CHANGELOG.md
+posix safe | sed -n '1,80p' docs/architecture.md
+posix safe | sed -n '1,80p' CONTRIBUTING.md
+posix safe | sed -n '/^## /p' README.md
+posix safe | sed -n '/^## /p' CHANGELOG.md
+posix safe | sed -n '/^## /p' docs/architecture.md
+posix safe | sed -n '/^## /p' CONTRIBUTING.md
+posix safe | awk '{print $1}' build.log
+posix safe | awk 'NR<=10' build.log
+posix safe | awk '/ERROR/ {print}' build.log
+posix safe | awk '{s+=$3} END {print s}' build.log
+posix safe | awk -F: '{print $1}' build.log
+posix safe | awk -F, 'NR>1 {print $2}' data/users.csv
+posix safe | awk -F, '{print NF}' data/users.csv
+posix safe | awk -F, '$3 > 100' data/users.csv
+posix safe | jq . package.json
+posix safe | jq '.scripts' package.json
+posix safe | jq '.dependencies' package.json
+posix safe | jq -r '.version' package.json
+posix safe | jq 'keys' package.json
+posix safe | jq -r '.name' package.json
+posix safe | jq .compilerOptions tsconfig.json
+posix safe | jq '.compilerOptions.paths' tsconfig.json
+posix safe | jq '.devDependencies | keys' package.json
+posix safe | jq '.[].name' data/users.json
+posix safe | jq 'map(select(.active))' data/users.json
+posix safe | jq 'length' data/users.json
+posix safe | jq '.[0]' data/users.json
+posix safe | jq 'map(.email)' data/users.json
+posix safe | jq 'sort_by(.name)' data/users.json
+posix safe | jq -r '.packages[] | .name' cargo-metadata.json
+posix safe | jq -r '.packages[] | .name' target/metadata.json
+posix safe | tree
+posix safe | tree -L 2
+posix safe | tree -L 3 -I node_modules
+posix safe | tree src
+posix safe | tree -d
+posix safe | tree -a -I .git
+posix safe | tree --gitignore
+posix safe | du -sh target
+posix safe | du -sh node_modules
+posix safe | du -sh .git
+posix safe | du -sh dist
+posix safe | du -sh *
+posix safe | du -sh .
+posix safe | du -h --max-depth=1 . | sort -h
+posix safe | df -h
+posix safe | df -h .
+posix safe | file target/release/app
+posix safe | file assets/logo.png
+posix safe | file data/dump.bin
+posix safe | stat Cargo.lock
+posix safe | stat package-lock.json
+posix safe | stat build.log
+posix safe | diff -u a/config.json b/config.json
+posix safe | diff -u expected.txt actual.txt
+posix safe | diff -u tests/snapshots/old.snap tests/snapshots/new.snap
+posix safe | diff -r a/config.json b/config.json
+posix safe | diff -r expected.txt actual.txt
+posix safe | diff -r tests/snapshots/old.snap tests/snapshots/new.snap
+posix safe | diff a/config.json b/config.json
+posix safe | diff expected.txt actual.txt
+posix safe | diff tests/snapshots/old.snap tests/snapshots/new.snap
+posix safe | cmp a.bin b.bin
+posix safe | cmp out/1.bin out/2.bin
+posix safe | xxd assets/logo.png | head
+posix safe | xxd assets/logo.png | head -20
+posix safe | xxd data/dump.bin | head
+posix safe | xxd data/dump.bin | head -20
+posix safe | hexdump -C target/release/app | head
+posix safe | strings target/release/app | grep version
+posix safe | strings target/release/app | grep panic
+posix safe | pwd
+posix safe | realpath .
+posix safe | realpath src/lib.rs
+posix safe | basename $PWD
+posix safe | dirname src/parser/mod.rs
+posix safe | md5sum dist/app.tar.gz
+posix safe | md5sum Cargo.lock
+posix safe | shasum -a 256 dist/app.tar.gz
+posix safe | shasum -a 256 target/release/app
+posix safe | column -t -s, data/users.csv
+posix safe | nl -ba src/lib.rs | sed -n '20,60p'
+posix safe | nl -ba src/lib.rs | sed -n '1,30p'
+posix safe | nl -ba src/main.rs | sed -n '20,60p'
+posix safe | nl -ba src/main.rs | sed -n '1,30p'
+posix safe | nl -ba src/parser/mod.rs | sed -n '20,60p'
+posix safe | nl -ba src/parser/mod.rs | sed -n '1,30p'
+posix safe | tac build.log | head
+posix safe | tac logs/dev.log | head
+posix safe | tac test-output.txt | head
+posix safe | comm -12 <(sort a.txt) <(sort b.txt)
+posix safe | od -c data/sample.txt | head
+posix safe | od -c .editorconfig | head
+posix safe | readlink -f node_modules/.bin/tsc
+posix safe | readlink -f target
+posix safe | cat .nvmrc .node-version 2>/dev/null
+posix safe | cat ~/.gitconfig
+
+# posix: edit
+posix safe | mkdir -p src/utils
+posix safe | mkdir -p tests/fixtures
+posix safe | mkdir -p docs/adr
+posix safe | mkdir -p scripts
+posix safe | mkdir -p .github/workflows
+posix safe | mkdir -p crates/cli/src
+posix safe | mkdir -p app/api/v1
+posix safe | mkdir -p public/images
+posix safe | mkdir src/models
+posix safe | mkdir tests/e2e
+posix safe | touch src/utils/mod.rs
+posix safe | touch tests/__init__.py
+posix safe | touch src/lib/api.test.ts
+posix safe | touch .env.local
+posix safe | touch docs/adr/0002-use-postgres.md
+posix safe | touch CHANGELOG.md
+posix safe | cp src/config.rs src/config.rs.bak
+posix safe | cp .env.example .env
+posix safe | cp -r templates/ build/templates
+posix safe | cp -r fixtures tests/fixtures
+posix safe | cp README.md docs/index.md
+posix safe | cp config/dev.toml config/test.toml
+posix safe | cp -n .env.example .env
+posix safe | cp -n config/defaults.yml config/local.yml
+posix safe | mv src/old.rs src/new.rs
+posix safe | mv tmp/report.html reports/
+posix safe | mv docs/draft.md docs/guide.md
+posix safe | mv src/utils.ts src/lib/utils.ts
+posix safe | mv build/app dist/app
+posix safe | rm -rf target
+posix safe | rm -rf dist
+posix safe | rm -rf build
+posix safe | rm -rf node_modules
+posix safe | rm -rf coverage
+posix safe | rm -rf .next
+posix safe | rm -rf __pycache__
+posix safe | rm -rf .pytest_cache
+posix safe | rm -rf .turbo
+posix safe | rm -r target
+posix safe | rm -fr target
+posix safe | rm -r -f target
+posix safe | rm src/old.rs
+posix safe | rm tests/tmp_test.py
+posix safe | rm build.log
+posix safe | rm -f *.orig
+posix safe | rm -f package-lock.json
+posix safe | rm -rf target/debug/incremental
+posix safe | rm -f src/*.bak
+posix safe | rm -rf dist/ build/
+posix safe | rm -rf node_modules package-lock.json
+posix safe | rm -f coverage/lcov.info
+posix safe | rm -rf ./target
+posix safe | rm -rf ./dist
+posix safe | rm -rf ./node_modules/.cache
+posix safe | rm -rf .next/cache
+posix safe | rmdir tests/fixtures/empty
+posix safe | rmdir docs/drafts
+posix safe | sed -i 's/old_name/new_name/g' src/lib.rs
+posix safe | sed -i '' 's/old_name/new_name/g' src/lib.rs
+posix safe | sed -i .bak 's/old_name/new_name/g' src/lib.rs
+posix safe | sed -i 's/http:/https:/g' src/config.rs
+posix safe | sed -i 's/http:/https:/g' docs/guide.md
+posix safe | sed -i 's/version = "1.0.0"/version = "1.1.0"/' Cargo.toml
+posix safe | sed -i 's/^edition = .*/edition = "2021"/' Cargo.toml
+posix safe | sed -i 's/^edition = .*/edition = "2021"/' crates/cli/Cargo.toml
+posix safe | sed -i '/console.log/d' src/index.ts
+posix safe | sed -i '/console.log/d' src/lib/api.ts
+posix safe | sed -i '/debugger/d' src/index.ts
+posix safe | sed -i '/debugger/d' src/lib/api.ts
+posix safe | sed -i '/^$/d' src/index.ts
+posix safe | sed -i '/^$/d' src/lib/api.ts
+posix safe | sed -i '1i // SPDX-License-Identifier: MIT' src/index.ts
+posix safe | sed -i '1i // SPDX-License-Identifier: MIT' src/lib.rs
+posix safe | perl -pi -e 's/foo/bar/g' src/lib.rs
+posix safe | perl -pi -e 's/\\bOldName\\b/NewName/g' src/lib.rs
+posix safe | perl -pi -e 's/v1/v2/g' src/lib.rs
+posix safe | echo 'node_modules/' >> .gitignore
+posix safe | echo 'target/' >> .gitignore
+posix safe | echo '.env' >> .gitignore
+posix safe | echo '*.log' >> .gitignore
+posix safe | echo '.DS_Store' >> .gitignore
+posix safe | echo 'hello' > out.txt
+posix safe | echo $PATH > out.txt
+posix safe | echo "build done" > out.txt
+posix safe | echo test > out.txt
+posix safe | echo '{}' > out.txt
+posix safe | printf '%s\\n' a b c > list.txt
+posix safe | printf '%s,%s\\n' id name > data/sample.csv
+posix safe | cat > src/config.json <<'EOF'\n{\n  "name": "test"\n}\nEOF
+posix safe | cat > .prettierrc <<'EOF'\n{\n  "name": "test"\n}\nEOF
+posix safe | cat > tests/fixtures/user.json <<'EOF'\n{\n  "name": "test"\n}\nEOF
+posix safe | cat <<'EOF' > src/bin/hello.rs\nfn main() {\n    println!("hi");\n}\nEOF
+posix safe | cat <<'EOF' > app/greet.py\ndef greet(name: str) -> str:\n    return f"hello {name}"\nEOF
+posix safe | cat >> .env.local <<EOF\nDEBUG=1\nEOF
+posix safe | tee out.log < build.log
+posix safe | tee reports/summary.txt < reports/raw.txt
+posix safe | ln -s target/release/app bin/app
+posix safe | ln -s .env.example .env
+posix safe | ln -sf target/release/app bin/app
+posix safe | ln -sf .env.example .env
+posix safe | chmod +x scripts/build.sh
+posix safe | chmod +x scripts/test.sh
+posix safe | chmod +x bin/dev
+posix safe | chmod u+x scripts/build.sh
+posix safe | chmod 755 scripts/build.sh
+posix safe | tar -czf dist/release.tar.gz -C build .
+posix safe | tar -xzf vendor.tgz -C vendor
+posix safe | tar -tzf dist/release.tar.gz
+posix safe | tar -cjf backups/src.tar.bz2 src
+posix safe | tar -xf fixtures.tar -C tests/fixtures
+posix safe | unzip -o fixtures.zip -d tests/fixtures
+posix safe | unzip -l dist/site.zip
+posix safe | unzip -q data.zip -d data
+posix safe | zip -r dist/site.zip public
+posix safe | zip -r backups/docs.zip docs
+posix safe | zip -r -q out/app.zip build
+posix safe | gzip -k data/dump.sql
+posix safe | gzip -d data/dump.sql.gz
+posix safe | gzip -9 logs/old.log
+posix safe | patch -p1 < patches/fix.patch
+posix safe | patch -p1 < fix.diff
+posix safe | truncate -s 0 build.log
+posix safe | truncate -s 0 logs/dev.log
+posix safe | dd if=/dev/urandom of=tests/fixtures/random.bin bs=1k count=16
+posix safe | install -m 755 target/release/app bin/app
+posix safe | mkdir -p tmp && cd tmp
+posix safe | mkdir -p /tmp/build-cache && cd /tmp/build-cache
+posix safe | mkdir -p "$TMPDIR/scratch" && cd "$TMPDIR/scratch"
+posix safe | mktemp -d
+posix safe | rm -rf /tmp/build-cache
+posix safe | rm -rf /tmp/pytest-of-me
+posix safe | rm -rf /tmp/vite-cache
+posix safe | cp -r dist /tmp/preview
+posix safe | cp -r dist /tmp/site
+posix safe | cp -r build/web /tmp/preview
+posix safe | cp -r build/web /tmp/site
+
+# posix: run
+posix safe | ./scripts/setup.sh
+posix safe | ./scripts/test.sh
+posix safe | ./scripts/lint.sh
+posix safe | ./scripts/bootstrap
+posix safe | ./scripts/dev.sh
+posix safe | ./scripts/check-format.sh
+posix safe | ./scripts/release-notes.sh
+posix safe | bash scripts/setup.sh
+posix safe | bash scripts/test.sh
+posix safe | bash scripts/ci/run-tests.sh
+posix safe | sh ./scripts/gen.sh
+posix safe | sh scripts/fetch-fixtures.sh
+posix safe | ./bin/dev
+posix safe | ./run_tests.sh
+posix safe | ./gradlew --version
+posix safe | ./manage.py check
+posix safe | make dev & sleep 3 && curl -s http://localhost:3000
+posix safe | make dev & sleep 3 && curl -s http://localhost:3000/health
+posix safe | make dev & sleep 3 && curl -s http://127.0.0.1:8000/api/items
+posix safe | make dev & sleep 3 && curl -s http://localhost:8080/actuator/health
+posix safe | node server.js &
+posix safe | node dist/server.js &
+posix safe | node --env-file=.env server.js &
+posix safe | npm run dev -- --port 3001
+posix safe | npm run dev -- --port 5174
+posix safe | python -m http.server 8000 --directory dist
+posix safe | python -m http.server 8000 --directory public
+posix safe | python -m http.server 9000 --directory dist
+posix safe | python -m http.server 9000 --directory public
+posix safe | docker ps
+posix safe | docker ps -a
+posix safe | docker images
+posix safe | docker info
+posix safe | docker version
+posix safe | docker stats --no-stream
+posix safe | docker network ls
+posix safe | docker volume ls
+posix safe | docker system df
+posix safe | docker ps --format '{{.Names}}\\t{{.Status}}'
+posix safe | docker compose ps
+posix safe | docker compose up -d
+posix safe | docker compose up --build
+posix safe | docker compose logs -f web
+posix safe | docker compose logs --tail=100 api
+posix safe | docker compose build
+posix safe | docker compose restart web
+posix safe | docker compose stop
+posix safe | docker compose pull
+posix safe | docker compose config
+posix safe | docker compose exec db psql -U postgres
+posix safe | docker compose run --rm web npm test
+posix safe | docker compose down
+posix safe | docker compose top
+posix safe | docker-compose up -d
+posix safe | docker-compose ps
+posix safe | docker-compose logs api
+posix safe | docker build -t myapp .
+posix safe | docker build -t myapp -f docker/Dockerfile .
+posix safe | docker build -t myapp:dev .
+posix safe | docker build -t myapp:dev -f docker/Dockerfile .
+posix safe | docker build -t api:latest .
+posix safe | docker build -t api:latest -f docker/Dockerfile .
+posix safe | docker run --rm myapp npm test
+posix safe | docker run --rm -p 8080:8080 myapp
+posix safe | docker run --rm -it python:3.12 python --version
+posix safe | docker run --rm -v $PWD:/app -w /app node:20 npm ci
+posix safe | docker logs api
+posix safe | docker logs -f --tail 50 web
+posix safe | docker exec -it db psql -U postgres
+posix safe | docker exec api env
+posix safe | docker inspect api
+posix safe | docker port web
+posix safe | docker top api
+posix safe | docker cp api:/app/logs ./logs
+posix safe | docker stop api
+posix safe | docker stop web
+posix safe | docker restart api
+posix safe | docker restart web
+posix safe | kubectl get pods
+posix safe | kubectl get pods -n staging
+posix safe | kubectl get svc
+posix safe | kubectl get deployments -o wide
+posix safe | kubectl top pods
+posix safe | kubectl get events --sort-by=.lastTimestamp
+posix safe | kubectl explain deployment.spec
+posix safe | kubectl config current-context
+posix safe | kubectl config get-contexts
+posix safe | kubectl get nodes
+posix safe | kubectl get ingress -A
+posix safe | kubectl api-resources
+posix safe | kubectl version --client
+posix safe | kubectl describe api-7d9f8b6c5-x2kqp
+posix safe | kubectl describe worker-5c4d9
+posix safe | kubectl describe deploy/api
+posix safe | kubectl describe statefulset/db
+posix safe | kubectl get deploy/api -o yaml
+posix safe | kubectl logs api-7d9f8b6c5-x2kqp
+posix safe | kubectl logs worker-5c4d9
+posix safe | kubectl logs deploy/api
+posix safe | kubectl logs statefulset/db
+posix safe | kubectl logs deploy/api --tail=100
+posix safe | kubectl logs deploy/api -f
+posix safe | kubectl logs deploy/api --previous
+posix safe | kubectl get pods -l app=api -o jsonpath='{.items[*].metadata.name}'
+posix safe | kubectl port-forward svc/api 8080:80
+posix safe | kubectl port-forward svc/api 5432:5432
+posix safe | kubectl rollout status deploy/api
+posix safe | kubectl diff -f k8s/
+posix safe | curl -fsSL http://localhost:3000/health
+posix safe | curl -I http://localhost:3000/health
+posix safe | curl -sS http://localhost:3000/health
+posix safe | curl -s http://localhost:3000
+posix safe | curl -s http://localhost:3000/health
+posix safe | curl -s http://127.0.0.1:8000/api/items
+posix safe | curl -s http://localhost:8080/actuator/health
+posix safe | curl -s http://localhost:3000 | jq .
+posix safe | curl -s http://localhost:3000/health | jq .
+posix safe | curl -s http://127.0.0.1:8000/api/items | jq .
+posix safe | curl -s http://localhost:8080/actuator/health | jq .
+posix safe | curl -s http://localhost:3000/api/items | head -20
+posix safe | curl -s http://localhost:3000/api/items | jq '.status'
+posix safe | curl -s http://localhost:3000/api/items | python3 -m json.tool
+posix safe | curl -fsSL https://example.com -o page.html
+posix safe | curl -fsSL https://example.com -o tmp/page.html
+posix safe | curl -fsSL https://docs.rs/serde/latest/serde/ -o page.html
+posix safe | curl -fsSL https://docs.rs/serde/latest/serde/ -o tmp/page.html
+posix safe | curl -fsSL https://registry.npmjs.org/zod -o page.html
+posix safe | curl -fsSL https://registry.npmjs.org/zod -o tmp/page.html
+posix safe | curl -fsSL https://api.github.com/repos/rust-lang/rust/releases/latest -o page.html
+posix safe | curl -fsSL https://api.github.com/repos/rust-lang/rust/releases/latest -o tmp/page.html
+posix safe | curl -fsSL https://example.com | head -40
+posix safe | curl -fsSL https://docs.rs/serde/latest/serde/ | head -40
+posix safe | curl -fsSL https://registry.npmjs.org/zod | head -40
+posix safe | curl -fsSL https://api.github.com/repos/rust-lang/rust/releases/latest | head -40
+posix safe | curl -X POST http://localhost:3000/api/items -H 'Content-Type: application/json' -d '{"name":"test"}'
+posix safe | curl -X POST http://127.0.0.1:8000/graphql -H 'Content-Type: application/json' -d '{"query":"{ items { id } }"}'
+posix safe | curl -s -o /dev/null -w '%{http_code}' http://localhost:3000
+posix safe | curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/health
+posix safe | curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/items
+posix safe | curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health
+posix safe | curl -L https://github.com/org/repo/archive/refs/tags/v1.0.0.tar.gz -o vendor/repo.tar.gz
+posix safe | curl -L https://example.com/data.csv -o data/data.csv
+posix safe | wget -qO- https://example.com
+posix safe | wget -qO- https://docs.rs/serde/latest/serde/
+posix safe | wget -qO- https://registry.npmjs.org/zod
+posix safe | wget -qO- https://api.github.com/repos/rust-lang/rust/releases/latest
+posix safe | wget --spider https://example.com
+posix safe | wget --spider https://docs.rs/serde/latest/serde/
+posix safe | wget --spider https://registry.npmjs.org/zod
+posix safe | wget --spider https://api.github.com/repos/rust-lang/rust/releases/latest
+posix safe | wget -q http://localhost:8080/health -O -
+posix safe | wget -q https://example.com/data.csv -O data/download.csv
+posix safe | http :3000/health
+posix safe | http GET localhost:8000/api/items
+posix safe | http POST :3000/api/items name=test
+posix safe | ps aux
+posix safe | ps -ef
+posix safe | ps aux --sort=-%mem
+posix safe | ps -o pid,cmd -p 4242
+posix safe | ps aux | grep node
+posix safe | ps aux | grep python
+posix safe | ps aux | grep cargo
+posix safe | ps aux | grep vite
+posix safe | ps aux | grep webpack
+posix safe | ps aux | grep node | grep -v grep
+posix safe | ps aux | grep python | grep -v grep
+posix safe | ps aux | grep cargo | grep -v grep
+posix safe | ps aux | grep vite | grep -v grep
+posix safe | ps aux | grep webpack | grep -v grep
+posix safe | pgrep -fl node
+posix safe | pgrep -fl python
+posix safe | pgrep -fl cargo
+posix safe | pgrep -fl vite
+posix safe | pgrep -fl webpack
+posix safe | top -b -n 1 | head -20
+posix safe | env
+posix safe | env | sort
+posix safe | env | grep -i node
+posix safe | env | grep RUST
+posix safe | env | wc -l
+posix safe | printenv PATH
+posix safe | printenv HOME
+posix safe | printenv NODE_ENV
+posix safe | printenv VIRTUAL_ENV
+posix safe | printenv CARGO_HOME
+posix safe | echo $PATH
+posix safe | echo $SHELL
+posix safe | echo $NODE_ENV
+posix safe | echo $?
+posix safe | echo $PWD
+posix safe | which node
+posix safe | which python3
+posix safe | which cargo
+posix safe | which pnpm
+posix safe | which docker
+posix safe | command -v node
+posix safe | command -v python3
+posix safe | command -v go
+posix safe | type npm
+posix safe | type cargo
+posix safe | type ll
+posix safe | node --version
+posix safe | python3 --version
+posix safe | go --version
+posix safe | java --version
+posix safe | rustc --version
+posix safe | docker --version
+posix safe | kubectl --version
+posix safe | go version && node --version
+posix safe | lsof -i :3000
+posix safe | lsof -i :8080
+posix safe | lsof -i tcp:5432
+posix safe | lsof -nP -iTCP -sTCP:LISTEN
+posix safe | lsof -p 4242
+posix safe | lsof +D target
+posix safe | lsof -ti :3000
+posix safe | lsof -ti :5173
+posix safe | lsof -ti :8000
+posix safe | kill 4242
+posix safe | kill -9 4242
+posix safe | kill -TERM 31337
+posix safe | kill %1
+posix safe | pkill -f 'node server.js'
+posix safe | pkill -f vite
+posix safe | pkill -f 'cargo watch'
+posix safe | pkill -f 'uvicorn app.main:app'
+posix safe | pkill -f 'next dev'
+posix safe | killall node
+posix safe | killall vite
+posix safe | uname -a
+posix safe | sw_vers
+posix safe | nproc
+posix safe | whoami
+posix safe | hostname
+posix safe | date -u +%Y-%m-%dT%H:%M:%SZ
+posix safe | ulimit -n
+posix safe | free -h
+posix safe | sysctl -n hw.ncpu
+posix safe | sleep 2 && curl -s http://localhost:3000
+posix safe | sleep 2 && curl -s http://localhost:3000/health
+posix safe | sleep 2 && curl -s http://127.0.0.1:8000/api/items
+posix safe | sleep 2 && curl -s http://localhost:8080/actuator/health
+posix safe | time cargo build
+posix safe | time npm run build
+posix safe | time pytest -q
+posix safe | time go test ./...
+posix safe | timeout 60 npm test
+posix safe | timeout 60 cargo test
+posix safe | timeout 60 pytest -x
+posix safe | timeout 60 ./target/debug/app serve
+posix safe | open http://localhost:3000
+posix safe | open coverage/index.html
+posix safe | open target/doc/my_crate/index.html
+posix safe | open .
+posix safe | xdg-open http://localhost:5173
+posix safe | xdg-open coverage/index.html
+posix safe | psql -h localhost -U postgres -c 'select 1'
+posix safe | psql -d app_dev -c '\\dt'
+posix safe | psql -h localhost -U app -d app_dev -c 'select count(*) from users'
+posix safe | sqlite3 db.sqlite3 '.tables'
+posix safe | sqlite3 db.sqlite3 '.schema users'
+posix safe | sqlite3 db.sqlite3 'select count(*) from users;'
+posix safe | sqlite3 data/app.db '.tables'
+posix safe | sqlite3 data/app.db '.schema users'
+posix safe | sqlite3 data/app.db 'select count(*) from users;'
+posix safe | redis-cli ping
+posix safe | redis-cli info server
+posix safe | mysql -u root -e 'show databases'
+posix safe | nc -zv localhost 3000
+posix safe | nc -zv localhost 5432
+posix safe | nc -zv localhost 6379
+posix safe | ping -c 3 localhost
+posix safe | ping -c 3 example.com
+posix safe | dig +short example.com
+posix safe | dig +short api.github.com
+posix safe | ssh -T git@github.com
+posix safe | brew list
+posix safe | brew outdated
+posix safe | brew install jq
+posix safe | apt list --installed 2>/dev/null | grep python
+posix safe | apt list --installed 2>/dev/null | grep node
+posix safe | systemctl --user status redis
+posix safe | systemctl --user status postgresql
+posix safe | journalctl --user -u api -n 50
+posix safe | journalctl --user -u redis -n 50
+posix safe | tmux ls
+posix safe | tmux new -d -s dev 'npm run dev'
+posix safe | nohup npm run dev > dev.log 2>&1 &
+posix safe | nohup npm run dev > logs/dev.log 2>&1 &
+posix safe | jobs -l
+posix safe | wait
+
+# posix: format_lint
+posix safe | prettier --check .
+posix safe | prettier --write .
+posix safe | prettier --list-different .
+posix safe | prettier --write src
+posix safe | prettier --write 'src/**/*.ts'
+posix safe | prettier --write '**/*.{md,json,yml}'
+posix safe | eslint .
+posix safe | eslint src --ext .ts,.tsx
+posix safe | eslint --fix .
+posix safe | eslint --max-warnings=0 src
+posix safe | eslint src/lib/api.ts
+posix safe | npx eslint . --fix
+posix safe | npx eslint src --cache
+posix safe | rustfmt src/lib.rs
+posix safe | rustfmt src/lib.rs --check
+posix safe | rustfmt src/main.rs
+posix safe | rustfmt src/main.rs --check
+posix safe | rustfmt src/parser/mod.rs
+posix safe | rustfmt src/parser/mod.rs --check
+posix safe | clang-format -i src/main.c
+posix safe | clang-format -i src/*.cpp
+posix safe | clang-format -i include/app.h
+posix safe | clang-format --dry-run --Werror src/main.c
+posix safe | clang-format --dry-run --Werror src/*.cpp
+posix safe | clang-format --dry-run --Werror include/app.h
+posix safe | clang-tidy src/main.cpp -- -Iinclude
+posix safe | shellcheck scripts/*.sh
+posix safe | shellcheck scripts/build.sh
+posix safe | shellcheck -x scripts/test.sh
+posix safe | shfmt -w scripts
+posix safe | shfmt -d scripts
+posix safe | shfmt -l scripts
+posix safe | markdownlint '**/*.md'
+posix safe | markdownlint README.md docs/
+posix safe | yamllint .
+posix safe | yamllint .github/workflows
+posix safe | hadolint Dockerfile
+posix safe | hadolint docker/api.Dockerfile
+posix safe | actionlint
+posix safe | stylelint 'src/**/*.css'
+posix safe | stylelint '**/*.scss'
+posix safe | biome check .
+posix safe | biome format --write .
+posix safe | biome lint src
+posix safe | typos
+posix safe | typos --write-changes
+posix safe | codespell docs
+posix safe | codespell src
+posix safe | codespell -w docs
+posix safe | codespell -w src
+posix safe | taplo fmt
+posix safe | taplo fmt Cargo.toml
+posix safe | taplo fmt --check
+posix safe | editorconfig-checker
+posix safe | buf lint
+posix safe | buf format -w
+posix safe | buf generate
+posix safe | sqlfluff lint migrations
+posix safe | sqlfluff lint sql/
+posix safe | tflint
+posix safe | tflint --recursive
+posix safe | ktlint 'src/**/*.kt'
+posix safe | ktlint -F 'src/**/*.kt'
+posix safe | rubocop
+posix safe | rubocop -a
+posix safe | rubocop app/models
+
+# posix: chains
+posix safe | cargo fmt && cargo clippy -- -D warnings && cargo test
+posix safe | cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
+posix safe | cargo build && ./target/debug/app --help
+posix safe | cargo build && ./target/debug/server --port 8080
+posix safe | cargo build && ./target/debug/cli parse tests/fixtures/sample.txt
+posix safe | cargo test 2>&1 | tail -30
+posix safe | cargo test 2>&1 | head -50
+posix safe | cargo test 2>&1 | grep -E 'test result|FAILED'
+posix safe | cargo test 2>&1 | tee test.log
+posix safe | cargo test 2>&1 | grep -n panicked
+posix safe | cargo build 2>&1 | grep -E '^(error|warning)'
+posix safe | cargo build 2>&1 | grep -c warning
+posix safe | cargo build 2>&1 | grep -A 5 'error\\['
+posix safe | npm ci && npm run build && npm test
+posix safe | npm run build && npm run lint
+posix safe | npm run build && npm run test
+posix safe | npm run build && npm run e2e
+posix safe | npm run build && npm run preview
+posix safe | npm test 2>&1 | tail -40
+posix safe | npm test 2>&1 | tee test.log
+posix safe | npm test 2>&1 | grep -i fail
+posix safe | npm run lint -- --fix && git diff --stat
+posix safe | pnpm install && pnpm build
+posix safe | pnpm install && pnpm test
+posix safe | pnpm install && pnpm -r lint
+posix safe | git add -A && git commit -m 'wip' && git push
+posix safe | git add -A && git commit -m 'fix: lint' && git push
+posix safe | git fetch origin && git rebase origin/main
+posix safe | git stash && git pull --rebase && git stash pop
+posix safe | git checkout main && git pull && git checkout -b feature/rate-limit
+posix safe | git checkout main && git pull && git checkout -b fix/null-check
+posix safe | git checkout main && git pull && git checkout -b chore/bump-deps
+posix safe | git checkout main && git pull && git checkout -b docs/readme
+posix safe | git diff --stat && git diff src/
+posix safe | git diff --stat && git diff --staged
+posix safe | git status && git log --oneline -5
+posix safe | git add src/lib.rs && git commit -m 'fix: handle empty input'
+posix safe | git add src/main.rs && git commit -m 'fix: handle empty input'
+posix safe | git add src/parser/mod.rs && git commit -m 'fix: handle empty input'
+posix safe | cd frontend && npm test
+posix safe | cd backend && npm test
+posix safe | cd packages/web && npm test
+posix safe | cd crates/cli && npm test
+posix safe | cd frontend && npm install
+posix safe | cd frontend && make
+posix safe | cd frontend && git status
+posix safe | cd frontend && npm run build
+posix safe | cd frontend && npm run dev
+posix safe | cd frontend && npm run lint
+posix safe | cd ../repo-docs && git status
+posix safe | cd ../other-repo && git status
+posix safe | (cd frontend && npm test)
+posix safe | (cd crates/cli && cargo check)
+posix safe | (cd backend && go test ./...)
+posix safe | pushd frontend && npm ci && popd
+posix safe | pushd crates/cli && cargo build && popd
+posix safe | cd build && cmake .. && make -j4
+posix safe | cd build && cmake .. && make -j8
+posix safe | mkdir -p build && cd build && cmake .. && make
+posix safe | mkdir -p build && cd build && cmake .. -G Ninja && ninja
+posix safe | python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+posix safe | test -f .env || cp .env.example .env
+posix safe | [ -d node_modules ] || npm install
+posix safe | [ -f Cargo.lock ] && cargo build --locked
+posix safe | if [ -f package.json ]; then npm test; fi
+posix safe | for f in tests/*.py; do echo "$f"; wc -l "$f"; done
+posix safe | for f in tests/*.py; do echo "$f"; head -3 "$f"; done
+posix safe | for f in src/*.rs; do echo "$f"; wc -l "$f"; done
+posix safe | for f in src/*.rs; do echo "$f"; head -3 "$f"; done
+posix safe | for f in scripts/*.sh; do echo "$f"; wc -l "$f"; done
+posix safe | for f in scripts/*.sh; do echo "$f"; head -3 "$f"; done
+posix safe | for d in crates/*/; do (cd "$d" && cargo check); done
+posix safe | for d in packages/*/; do (cd "$d" && npm test); done
+posix safe | while read -r f; do wc -l "$f"; done < files.txt
+posix safe | grep -rn TODO src | wc -l
+posix safe | grep -rn FIXME src | wc -l
+posix safe | grep -rn 'unwrap()' src | wc -l
+posix safe | grep -rn console.log src | wc -l
+posix safe | grep -rn TODO src | head -20
+posix safe | grep -rn TODO src | sort
+posix safe | grep -rn TODO src | cut -d: -f1 | sort -u
+posix safe | find . -name '*.py' | xargs grep -l 'import requests'
+posix safe | find . -name '*.py' | xargs grep -l 'TODO'
+posix safe | find . -name '*.ts' | xargs grep -l 'useState'
+posix safe | find . -name '*.ts' | xargs grep -l 'TODO'
+posix safe | find src -name '*.rs' -exec grep -l 'unsafe' {} +
+posix safe | find src -name '*.rs' -exec grep -l 'todo!' {} +
+posix safe | find src -name '*.rs' -exec grep -l 'unwrap' {} +
+posix safe | find . -name '*.log' -delete
+posix safe | find . -name '*.tmp' -delete
+posix safe | find . -name '*.orig' -delete
+posix safe | find . -name '.DS_Store' -delete
+posix safe | find . -name '__pycache__' -type d -exec rm -rf {} +
+posix safe | find . -name '*.rs' | xargs rustfmt --check
+posix safe | cat package.json | jq .scripts
+posix safe | cat package.json | jq .dependencies
+posix safe | cat tsconfig.json | jq .compilerOptions
+posix safe | ls -la src | grep -v total
+posix safe | ls -la src | grep '^d'
+posix safe | ls -la dist | grep -v total
+posix safe | ls -la dist | grep '^d'
+posix safe | ls src | wc -l
+posix safe | ls tests | wc -l
+posix safe | ps aux | grep node | awk '{print $2}'
+posix safe | ps aux | grep python | awk '{print $2}'
+posix safe | docker compose up -d && docker compose logs -f api
+posix safe | docker compose up -d && docker compose logs -f web
+posix safe | docker compose down && docker compose up -d --build
+posix safe | docker build -t myapp . && docker run --rm -p 8080:8080 myapp
+posix safe | export NODE_ENV=test && npm test
+posix safe | NODE_ENV=production npm run build
+posix safe | CI=1 npm test
+posix safe | DEBUG=app:* npm start
+posix safe | PORT=3001 npm start
+posix safe | DATABASE_URL=postgres://localhost/app_test pytest -q
+posix safe | PYTHONPATH=. pytest -q
+posix safe | env PORT=8081 cargo run
+posix safe | env RUST_LOG=debug cargo run
+posix safe | set -e; cargo build; cargo test
+posix safe | set -o pipefail && cargo test 2>&1 | tee test.log
+posix safe | echo "$(date): build ok" >> build.log
+posix safe | diff <(cargo run -q -- --help) docs/help.txt
+posix safe | cargo run -q -- --help > docs/help.txt
+posix safe | npm run build > build.log 2>&1 && tail -5 build.log
+posix safe | curl -s http://localhost:3000 > tmp/response.json && jq . tmp/response.json
+posix safe | curl -s http://localhost:3000/health > tmp/response.json && jq . tmp/response.json
+posix safe | curl -s http://127.0.0.1:8000/api/items > tmp/response.json && jq . tmp/response.json
+posix safe | curl -s http://localhost:8080/actuator/health > tmp/response.json && jq . tmp/response.json
+posix safe | git log --format='%H' -1 > .git-sha
+posix safe | git log --format='%H' -1 > build/VERSION
+posix safe | sort -u .gitignore -o .gitignore
+posix safe | sort -u words.txt -o words.txt
+posix safe | cargo test && git add -A && git commit -m 'fix: handle empty input'
+posix safe | cargo test && git add -A && git commit -m "chore: bump dependencies"
+posix safe | cargo test && git add -A && git commit -m 'test: cover the parser edge cases'
+posix safe | make clean && make && make test
+posix safe | make clean && make -j8 && make test
+posix safe | rm -rf node_modules && npm install
+posix safe | rm -rf node_modules package-lock.json && npm install
+posix safe | rm -rf dist && npm run build
+posix safe | rm -rf target && cargo build
+posix safe | go mod tidy && go build ./... && go test ./...
+posix safe | ruff check --fix . && ruff format . && pytest -q
+posix safe | black . && isort . && flake8 app
+posix safe | yes | npx create-vite@latest app --template react-ts
+posix safe | yes | npx shadcn@latest init
+posix safe | xargs -n1 echo < files.txt
+posix safe | xargs -n1 echo < list.txt
+posix safe | echo '{"a":1}' | jq .
+posix safe | echo '{"a":1}' | jq length
+posix safe | echo '[1,2,3]' | jq .
+posix safe | echo '[1,2,3]' | jq length
+posix safe | printf 'y\\n' | npx playwright install
+posix safe | seq 1 5 | xargs -I{} echo item-{}
+posix safe | seq 1 10 | xargs -I{} echo item-{}
+posix safe | watch -n 2 'kubectl get pods'
+posix safe | watch -n 2 'docker compose ps'
+posix safe | watch -n 2 'ls -la dist'
+posix safe | watch -n 5 'kubectl get pods'
+posix safe | watch -n 5 'docker compose ps'
+posix safe | watch -n 5 'ls -la dist'
+
+# powershell: build
+powershell safe | dotnet build
+powershell safe | dotnet test
+powershell safe | dotnet restore
+powershell safe | dotnet run
+powershell safe | dotnet clean
+powershell safe | dotnet format
+powershell safe | dotnet format --verify-no-changes
+powershell safe | dotnet watch run
+powershell safe | dotnet --info
+powershell safe | dotnet --list-sdks
+powershell safe | dotnet tool restore
+powershell safe | dotnet list package --outdated
+powershell safe | dotnet build -c Release
+powershell safe | dotnet test --no-build
+powershell safe | dotnet test --logger trx
+powershell safe | dotnet run --project src\\Api
+powershell safe | dotnet run --project src\\Api\\Api.csproj
+powershell safe | dotnet build src\\Api\\Api.csproj
+powershell safe | dotnet build tests\\Core.Tests
+powershell safe | dotnet test tests\\Core.Tests
+powershell safe | dotnet test --filter Category=Unit
+powershell safe | dotnet test --filter FullyQualifiedName~Parser
+powershell safe | dotnet test --filter 'Name=Parses_Empty_Input'
+powershell safe | dotnet add package Serilog
+powershell safe | dotnet add package Newtonsoft.Json
+powershell safe | dotnet add src\\Api reference src\\Core\\Core.csproj
+powershell safe | dotnet add package Microsoft.EntityFrameworkCore --version 8.0.4
+powershell safe | dotnet new classlib -n Core -o src\\Core
+powershell safe | dotnet new xunit -n Core.Tests -o tests\\Core.Tests
+powershell safe | dotnet new sln -n App
+powershell safe | dotnet new gitignore
+powershell safe | dotnet new webapi -n Api -o src\\Api
+powershell safe | dotnet sln add src\\Core\\Core.csproj
+powershell safe | dotnet sln add tests\\Core.Tests\\Core.Tests.csproj
+powershell safe | dotnet publish -c Release -o .\\publish
+powershell safe | dotnet publish -c Release -o .\\out
+powershell safe | dotnet ef migrations add AddUsers
+powershell safe | dotnet ef database update
+powershell safe | dotnet ef migrations list
+powershell safe | cargo build
+powershell safe | cargo build --release
+powershell safe | cargo test
+powershell safe | cargo test --release
+powershell safe | cargo check
+powershell safe | cargo check --release
+powershell safe | cargo clippy
+powershell safe | cargo clippy --release
+powershell safe | cargo run
+powershell safe | cargo run --release
+powershell safe | cargo fmt --check
+powershell safe | cargo fmt --check --release
+powershell safe | npm install
+powershell safe | npm ci
+powershell safe | npm test
+powershell safe | npm run build
+powershell safe | npm run dev
+powershell safe | npm run lint
+powershell safe | npm run typecheck
+powershell safe | npm outdated
+powershell safe | npm install zod
+powershell safe | npm install -D vitest
+powershell safe | npm install typescript --save-dev
+powershell safe | npx tsc --noEmit
+powershell safe | npx eslint .
+powershell safe | npx prettier --check .
+powershell safe | npx vitest run
+powershell safe | npx playwright test
+powershell safe | pnpm install
+powershell safe | pnpm build
+powershell safe | pnpm test
+powershell safe | pnpm dev
+powershell safe | yarn
+powershell safe | yarn install
+powershell safe | yarn build
+powershell safe | yarn test
+powershell safe | py -m pytest
+powershell safe | py -m pytest -q
+powershell safe | py -m pip install -r requirements.txt
+powershell safe | py -3.12 -m venv .venv
+powershell safe | py --list
+powershell safe | py scripts\\migrate.py
+powershell safe | python -m pytest
+powershell safe | python -m pip install -e .
+powershell safe | python -m venv .venv
+powershell safe | python -m http.server 8000
+powershell safe | .\\.venv\\Scripts\\Activate.ps1
+powershell safe | .\\.venv\\Scripts\\python.exe -m pytest
+powershell safe | .\\.venv\\Scripts\\pip.exe install -r requirements.txt
+powershell safe | go build ./...
+powershell safe | go test ./...
+powershell safe | go vet ./...
+powershell safe | go mod tidy
+powershell safe | .\\gradlew.bat build
+powershell safe | .\\gradlew.bat test
+powershell safe | .\\gradlew.bat assemble
+powershell safe | mvn test
+powershell safe | mvn package
+powershell safe | mvn -DskipTests package
+powershell safe | cmake -S . -B build -G 'Visual Studio 17 2022'
+powershell safe | cmake -S . -B build -G Ninja
+powershell safe | cmake -S . -B build -A x64
+powershell safe | cmake --build build --config Release
+powershell safe | cmake --build build --config Debug
+powershell safe | ctest --test-dir build -C Release --output-on-failure
+powershell safe | ctest --test-dir build -C Debug --output-on-failure
+powershell safe | msbuild App.sln
+powershell safe | msbuild App.sln /p:Configuration=Release
+powershell safe | msbuild src\\Api\\Api.csproj /t:Rebuild
+powershell safe | nuget restore App.sln
+powershell safe | Invoke-Pester
+powershell safe | Invoke-Pester -Path .\\tests
+powershell safe | Invoke-Pester -Output Detailed
+powershell safe | Invoke-Pester .\\tests\\Build.Tests.ps1
+powershell safe | Invoke-ScriptAnalyzer -Path .\\scripts
+powershell safe | Invoke-ScriptAnalyzer -Path .\\scripts -Recurse
+powershell safe | Invoke-ScriptAnalyzer -Path .\\build.ps1
+powershell safe | Invoke-ScriptAnalyzer -Path .\\build.ps1 -Recurse
+powershell safe | .\\build.ps1
+powershell safe | .\\build.ps1 -Configuration Release
+powershell safe | .\\build.ps1 -Target Test
+powershell safe | & .\\scripts\\test.ps1
+powershell safe | & .\\scripts\\setup.ps1 -Verbose
+powershell safe | & .\\scripts\\lint.ps1
+powershell safe | swift build
+powershell safe | flutter pub get
+powershell safe | flutter test
+
+# powershell: git
+powershell safe | git status
+powershell safe | git status -sb
+powershell safe | git diff
+powershell safe | git diff --staged
+powershell safe | git diff --stat
+powershell safe | git log --oneline -20
+powershell safe | git log --oneline --graph --all
+powershell safe | git show --stat
+powershell safe | git branch
+powershell safe | git branch -a
+powershell safe | git branch --show-current
+powershell safe | git remote -v
+powershell safe | git stash list
+powershell safe | git fetch
+powershell safe | git fetch --all --prune
+powershell safe | git pull
+powershell safe | git pull --rebase
+powershell safe | git rev-parse HEAD
+powershell safe | git worktree list
+powershell safe | git add .
+powershell safe | git add -A
+powershell safe | git add -u
+powershell safe | git add src\\Api\\Program.cs
+powershell safe | git add src\\Core\\Parser.cs
+powershell safe | git add tests\\Core.Tests\\ParserTests.cs
+powershell safe | git add src\\Api\\Controllers\\UsersController.cs
+powershell safe | git commit -m "fix: handle empty input"
+powershell safe | git commit -m "feat: add rate limiting"
+powershell safe | git commit -m "chore: bump packages"
+powershell safe | git commit -m 'test: cover the parser'
+powershell safe | git add -A; git commit -m "fix: handle empty input"
+powershell safe | git add -A; git commit -m "feat: add rate limiting"
+powershell safe | git add -A; git commit -m "chore: bump packages"
+powershell safe | git add -A; git commit -m 'test: cover the parser'
+powershell safe | git checkout main
+powershell safe | git checkout feature/login
+powershell safe | git checkout develop
+powershell safe | git switch main
+powershell safe | git switch feature/login
+powershell safe | git switch develop
+powershell safe | git checkout -b feature/rate-limit
+powershell safe | git checkout -b fix/null-check
+powershell safe | git switch -c feature/rate-limit
+powershell safe | git switch -c fix/null-check
+powershell safe | git push
+powershell safe | git push -u origin HEAD
+powershell safe | git push -u origin feature/rate-limit
+powershell safe | git rebase main
+powershell safe | git rebase origin/main
+powershell safe | git rebase --continue
+powershell safe | git rebase --abort
+powershell safe | git stash
+powershell safe | git stash pop
+powershell safe | git stash push -m 'wip'
+powershell safe | git log --oneline -n 10 | Select-Object -First 3
+powershell safe | git log --oneline -n 10 | Select-Object -First 5
+powershell safe | git diff --name-only | ForEach-Object { Get-Item $_ }
+powershell safe | git diff --name-only | ForEach-Object { Write-Output $_ }
+powershell safe | git branch --merged | Select-String -NotMatch 'main'
+powershell safe | git status --porcelain | Measure-Object -Line
+powershell safe | git grep -n 'TODO'
+powershell safe | git grep -n 'async void'
+powershell safe | git grep -n 'class \\w+Controller'
+powershell safe | git grep -n 'ConnectionString'
+powershell safe | git grep -n 'Console.WriteLine'
+powershell safe | git worktree add ..\\wt-login feature/login
+powershell safe | git worktree add ..\\wt-review origin/main
+powershell safe | gh pr list
+powershell safe | gh pr view 42
+powershell safe | gh pr checks
+powershell safe | gh pr status
+powershell safe | gh pr diff 42
+powershell safe | gh run list
+powershell safe | gh run view 123456 --log-failed
+
+# powershell: read
+powershell safe | Get-ChildItem
+powershell safe | Get-ChildItem -Recurse
+powershell safe | Get-ChildItem -Force
+powershell safe | Get-ChildItem -Name
+powershell safe | Get-ChildItem -Directory
+powershell safe | Get-ChildItem -File
+powershell safe | Get-ChildItem src
+powershell safe | Get-ChildItem .\\tests
+powershell safe | Get-ChildItem -Path .\\src\\Api
+powershell safe | Get-ChildItem -Recurse -Filter *.cs
+powershell safe | Get-ChildItem -Recurse -Filter *.cs -File
+powershell safe | Get-ChildItem -Recurse -Filter *.ps1
+powershell safe | Get-ChildItem -Recurse -Filter *.ps1 -File
+powershell safe | Get-ChildItem -Recurse -Filter *.json
+powershell safe | Get-ChildItem -Recurse -Filter *.json -File
+powershell safe | Get-ChildItem -Recurse -Filter *.csproj
+powershell safe | Get-ChildItem -Recurse -Filter *.csproj -File
+powershell safe | Get-ChildItem -Recurse -Filter *.md
+powershell safe | Get-ChildItem -Recurse -Filter *.md -File
+powershell safe | Get-ChildItem -Recurse -Include *.cs,*.csproj | Select-Object -ExpandProperty FullName
+powershell safe | Get-ChildItem -Recurse -File | Sort-Object Length -Descending | Select-Object -First 10 FullName, Length
+powershell safe | Get-ChildItem -Recurse -File | Sort-Object Length -Descending | Select-Object -First 20 FullName, Length
+powershell safe | Get-ChildItem src -Recurse | Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-1) }
+powershell safe | Get-ChildItem . -Recurse | Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-1) }
+powershell safe | Get-ChildItem -Recurse -Directory -Filter bin | Select-Object FullName
+powershell safe | Get-ChildItem -Recurse -Directory -Filter obj | Select-Object FullName
+powershell safe | Get-ChildItem -Recurse -Directory -Filter node_modules | Select-Object FullName
+powershell safe | gci
+powershell safe | gci src
+powershell safe | gci -Recurse *.cs
+powershell safe | ls
+powershell safe | ls src
+powershell safe | ls -Recurse *.cs
+powershell safe | dir
+powershell safe | dir src
+powershell safe | dir -Recurse *.cs
+powershell safe | Get-Content README.md
+powershell safe | Get-Content package.json
+powershell safe | Get-Content appsettings.json
+powershell safe | Get-Content .\\src\\index.ts
+powershell safe | Get-Content src\\Core\\Core.csproj
+powershell safe | Get-Content README.md -Head 20
+powershell safe | Get-Content README.md -Tail 50
+powershell safe | Get-Content README.md -TotalCount 40
+powershell safe | Get-Content README.md -Raw
+powershell safe | Get-Content src\\Api\\Program.cs
+powershell safe | Get-Content src\\Core\\Parser.cs
+powershell safe | Get-Content tests\\Core.Tests\\ParserTests.cs
+powershell safe | Get-Content src\\Api\\Controllers\\UsersController.cs
+powershell safe | Get-Content build.log -Tail 20
+powershell safe | Get-Content build.log -Tail 20 -Wait
+powershell safe | Get-Content build.log -Tail 100
+powershell safe | Get-Content build.log -Tail 100 -Wait
+powershell safe | Get-Content logs\\app.log -Tail 20
+powershell safe | Get-Content logs\\app.log -Tail 20 -Wait
+powershell safe | Get-Content logs\\app.log -Tail 100
+powershell safe | Get-Content logs\\app.log -Tail 100 -Wait
+powershell safe | Get-Content TestResults\\results.trx -Tail 20
+powershell safe | Get-Content TestResults\\results.trx -Tail 20 -Wait
+powershell safe | Get-Content TestResults\\results.trx -Tail 100
+powershell safe | Get-Content TestResults\\results.trx -Tail 100 -Wait
+powershell safe | cat README.md
+powershell safe | cat package.json
+powershell safe | cat .\\src\\Core\\Parser.cs
+powershell safe | type README.md
+powershell safe | type package.json
+powershell safe | type .\\src\\Core\\Parser.cs
+powershell safe | gc README.md
+powershell safe | gc package.json
+powershell safe | gc .\\src\\Core\\Parser.cs
+powershell safe | Select-String -Path 'src\\*.cs' -Pattern 'TODO'
+powershell safe | Select-String -Path 'src\\*.cs' -Pattern 'async void'
+powershell safe | Select-String -Path 'src\\*.cs' -Pattern 'class \\w+Controller'
+powershell safe | Select-String -Path 'src\\*.cs' -Pattern 'ConnectionString'
+powershell safe | Select-String -Path 'src\\*.cs' -Pattern 'Console.WriteLine'
+powershell safe | Select-String -Path '.\\*.md' -Pattern 'TODO'
+powershell safe | Select-String -Path 'src\\**\\*.ts' -Pattern 'TODO'
+powershell safe | Get-ChildItem -Recurse -Filter *.cs | Select-String -Pattern 'TODO'
+powershell safe | Get-ChildItem -Recurse -Filter *.cs | Select-String -Pattern 'async void'
+powershell safe | Get-ChildItem -Recurse -Filter *.cs | Select-String -Pattern 'class \\w+Controller'
+powershell safe | Get-ChildItem -Recurse -Filter *.cs | Select-String -Pattern 'ConnectionString'
+powershell safe | Get-ChildItem -Recurse -Filter *.cs | Select-String -Pattern 'Console.WriteLine'
+powershell safe | Get-ChildItem -Recurse *.cs | Select-String 'TODO' | Select-Object -First 20
+powershell safe | Get-ChildItem -Recurse *.cs | Select-String 'HACK' | Select-Object -First 20
+powershell safe | sls 'TODO' *.md
+powershell safe | sls 'TODO' src\\*.ts
+powershell safe | sls 'FIXME' *.md
+powershell safe | sls 'FIXME' src\\*.ts
+powershell safe | (Get-Content package.json | ConvertFrom-Json).scripts
+powershell safe | (Get-Content package.json | ConvertFrom-Json).dependencies
+powershell safe | (Get-Content package.json | ConvertFrom-Json).version
+powershell safe | Get-Content .\\appsettings.json | ConvertFrom-Json | Select-Object -ExpandProperty Logging
+powershell safe | Get-Content .\\appsettings.json | ConvertFrom-Json | Select-Object -ExpandProperty ConnectionStrings
+powershell safe | Get-Content .\\appsettings.json | ConvertFrom-Json | Select-Object -ExpandProperty AllowedHosts
+powershell safe | Get-Content README.md | Measure-Object -Line -Word
+powershell safe | Get-Content package.json | Measure-Object -Line -Word
+powershell safe | Get-Content appsettings.json | Measure-Object -Line -Word
+powershell safe | Get-Content .\\src\\index.ts | Measure-Object -Line -Word
+powershell safe | Get-Content src\\Core\\Core.csproj | Measure-Object -Line -Word
+powershell safe | (Get-Content src\\Api\\Program.cs).Count
+powershell safe | (Get-Content src\\Core\\Parser.cs).Count
+powershell safe | (Get-Content tests\\Core.Tests\\ParserTests.cs).Count
+powershell safe | (Get-Content src\\Api\\Controllers\\UsersController.cs).Count
+powershell safe | Get-Content src\\Api\\Program.cs | Select-Object -Skip 10 -First 20
+powershell safe | Get-Content src\\Core\\Parser.cs | Select-Object -Skip 10 -First 20
+powershell safe | Get-Content tests\\Core.Tests\\ParserTests.cs | Select-Object -Skip 10 -First 20
+powershell safe | Get-Content src\\Api\\Controllers\\UsersController.cs | Select-Object -Skip 10 -First 20
+powershell safe | Get-Item .\\src | Format-List
+powershell safe | Get-Item package.json | Format-List
+powershell safe | Get-Item .\\bin\\Debug | Format-List
+powershell safe | Test-Path .\\node_modules
+powershell safe | Test-Path .\\.venv
+powershell safe | Test-Path .\\bin\\Release
+powershell safe | Test-Path package-lock.json
+powershell safe | Resolve-Path .\\src
+powershell safe | Resolve-Path ..\\shared
+powershell safe | Get-Location
+powershell safe | pwd
+powershell safe | $PWD.Path
+powershell safe | Split-Path -Leaf (Get-Location)
+powershell safe | Get-FileHash .\\dist\\app.zip
+powershell safe | Get-FileHash .\\dist\\app.zip -Algorithm SHA256
+powershell safe | Get-FileHash .\\publish\\Api.dll
+powershell safe | Get-FileHash .\\publish\\Api.dll -Algorithm SHA256
+powershell safe | Compare-Object (Get-Content expected.txt) (Get-Content actual.txt)
+powershell safe | Compare-Object (Get-Content .\\a\\config.json) (Get-Content .\\b\\config.json)
+powershell safe | Get-ItemProperty .\\publish\\Api.dll | Select-Object Name, Length, LastWriteTime
+powershell safe | Get-ItemProperty package.json | Select-Object Name, Length, LastWriteTime
+powershell safe | (Get-Item .\\publish\\Api.dll).VersionInfo
+powershell safe | Get-ChildItem -Recurse -File | Measure-Object -Property Length -Sum
+powershell safe | Get-ChildItem *.json | ForEach-Object { $_.Name }
+powershell safe | Format-Hex .\\assets\\logo.png | Select-Object -First 5
+powershell safe | Format-Hex .\\data\\dump.bin | Select-Object -First 5
+powershell safe | tree /F src
+powershell safe | tree /F .\\tests
+powershell safe | rg 'TODO' src
+powershell safe | rg 'TODO' -t cs
+powershell safe | rg 'async void' src
+powershell safe | rg 'async void' -t cs
+powershell safe | Import-Csv .\\data\\users.csv | Select-Object -First 5
+powershell safe | Import-Csv .\\data\\users.csv | Select-Object -First 10
+powershell safe | Import-Csv data\\report.csv | Select-Object -First 5
+powershell safe | Import-Csv data\\report.csv | Select-Object -First 10
+powershell safe | Import-Csv .\\data\\users.csv | Where-Object { $_.Active -eq 'true' } | Measure-Object
+powershell safe | [xml](Get-Content src\\Core\\Core.csproj) | Select-Object -ExpandProperty Project
+powershell safe | [xml](Get-Content App.config) | Select-Object -ExpandProperty Project
+powershell safe | Get-Content package.json -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 3
+powershell safe | Get-Content package.json -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 5
+powershell safe | Get-ChildItem -Recurse -Filter *.cs | Group-Object Directory | Sort-Object Count -Descending
+powershell safe | Get-ChildItem Env:
+powershell safe | Get-ChildItem Env: | Sort-Object Name
+powershell safe | Get-ChildItem Env: | Where-Object Name -Like 'DOTNET*'
+
+# powershell: edit
+powershell safe | New-Item -ItemType Directory -Path src\\Utils
+powershell safe | New-Item -ItemType Directory -Path src\\Utils -Force
+powershell safe | New-Item -ItemType Directory -Path tests\\Fixtures
+powershell safe | New-Item -ItemType Directory -Path tests\\Fixtures -Force
+powershell safe | New-Item -ItemType Directory -Path .\\docs\\adr
+powershell safe | New-Item -ItemType Directory -Path .\\docs\\adr -Force
+powershell safe | New-Item -ItemType Directory -Path .\\scripts
+powershell safe | New-Item -ItemType Directory -Path .\\scripts -Force
+powershell safe | New-Item -ItemType File -Path src\\Utils\\Guard.cs
+powershell safe | New-Item -ItemType File -Path src\\Utils\\Guard.cs -Force
+powershell safe | New-Item -ItemType File -Path .\\docs\\notes.md
+powershell safe | New-Item -ItemType File -Path .\\docs\\notes.md -Force
+powershell safe | New-Item -ItemType File -Path .env.local
+powershell safe | New-Item -ItemType File -Path .env.local -Force
+powershell safe | New-Item -ItemType File -Path tests\\Fixtures\\empty.json
+powershell safe | New-Item -ItemType File -Path tests\\Fixtures\\empty.json -Force
+powershell safe | mkdir src\\Utils
+powershell safe | mkdir tests\\Fixtures
+powershell safe | mkdir out
+powershell safe | md src\\Utils
+powershell safe | md tests\\Fixtures
+powershell safe | md out
+powershell safe | ni notes.md
+powershell safe | ni notes.md -Force
+powershell safe | ni src\\Utils\\Text.cs
+powershell safe | ni src\\Utils\\Text.cs -Force
+powershell safe | Set-Content -Path notes.md -Value 'hello'
+powershell safe | Set-Content -Path .\\out\\version.txt -Value $env:GITHUB_SHA
+powershell safe | Set-Content -Path src\\version.txt -Value '1.2.0'
+powershell safe | Add-Content -Path .gitignore -Value 'bin/'
+powershell safe | Add-Content -Path .gitignore -Value 'obj/'
+powershell safe | Add-Content -Path .gitignore -Value '*.user'
+powershell safe | Add-Content -Path build.log -Value 'done'
+powershell safe | Add-Content -Path .\\docs\\notes.md -Value 'done'
+powershell safe | 'hello' | Out-File -FilePath .\\out\\hello.txt
+powershell safe | '{}' | Out-File out.json -Encoding utf8
+powershell safe | $version | Out-File .\\build\\VERSION
+powershell safe | 'build done' >> build.log
+powershell safe | 'build done' >> .\\logs\\build.log
+powershell safe | Get-Date >> build.log
+powershell safe | Get-Date >> .\\logs\\build.log
+powershell safe | dotnet test > test.log 2>&1
+powershell safe | dotnet test > TestResults\\out.txt 2>&1
+powershell safe | Copy-Item appsettings.json appsettings.Development.json
+powershell safe | Copy-Item .\\src\\* .\\backup -Recurse
+powershell safe | Copy-Item .env.example .env
+powershell safe | Copy-Item README.md .\\docs\\index.md
+powershell safe | Copy-Item -Path .\\assets -Destination .\\dist\\assets -Recurse
+powershell safe | Move-Item old.txt new.txt
+powershell safe | Move-Item .\\src\\Old.cs .\\src\\New.cs
+powershell safe | Move-Item .\\out\\report.html .\\reports\\
+powershell safe | Move-Item -Path .\\draft.md -Destination .\\docs\\guide.md
+powershell safe | Rename-Item .\\src\\Old.cs New.cs
+powershell safe | Rename-Item notes.txt notes.md
+powershell safe | Remove-Item -Recurse -Force bin
+powershell safe | Remove-Item -Recurse -Force obj
+powershell safe | Remove-Item -Recurse -Force dist
+powershell safe | Remove-Item -Recurse -Force build
+powershell safe | Remove-Item -Recurse -Force node_modules
+powershell safe | Remove-Item -Recurse -Force TestResults
+powershell safe | Remove-Item -Recurse -Force .vs
+powershell safe | Remove-Item -Recurse -Force out
+powershell safe | Remove-Item -Recurse -Force coverage
+powershell safe | Remove-Item -Recurse -Force publish
+powershell safe | Remove-Item .\\out\\*.tmp
+powershell safe | Remove-Item build.log
+powershell safe | Remove-Item .\\src\\Old.cs
+powershell safe | Remove-Item .\\TestResults -Recurse
+powershell safe | Remove-Item *.log -Force
+powershell safe | Remove-Item -Path .\\bin -Recurse -Force -ErrorAction SilentlyContinue
+powershell safe | Remove-Item -Path .\\obj -Recurse -Force -ErrorAction SilentlyContinue
+powershell safe | Remove-Item -Path .\\dist -Recurse -Force -ErrorAction SilentlyContinue
+powershell safe | Get-ChildItem -Recurse -Directory -Include bin,obj | Remove-Item -Recurse -Force
+powershell safe | Get-ChildItem -Filter *.log | Remove-Item
+powershell safe | Get-ChildItem -Filter *.tmp | Remove-Item
+powershell safe | rm -r -fo node_modules
+powershell safe | rm -r -fo dist
+powershell safe | rm -r -fo bin
+powershell safe | (Get-Content src\\version.txt) -replace '1.0.0', '1.1.0' | Set-Content src\\version.txt
+powershell safe | (Get-Content package.json) -replace '"version": "1.0.0"', '"version": "1.1.0"' | Set-Content package.json
+powershell safe | (Get-Content .\\src\\Api\\appsettings.json) -replace 'Debug', 'Information' | Set-Content .\\src\\Api\\appsettings.json
+powershell safe | (Get-Content .\\src\\Core\\Parser.cs) -replace 'OldName','NewName' | Set-Content .\\src\\Core\\Parser.cs
+powershell safe | Expand-Archive -Path .\\vendor.zip -DestinationPath .\\vendor
+powershell safe | Expand-Archive -Path .\\vendor.zip -DestinationPath .\\vendor -Force
+powershell safe | Expand-Archive -Path .\\vendor.zip -DestinationPath .\\tests\\Fixtures
+powershell safe | Expand-Archive -Path .\\vendor.zip -DestinationPath .\\tests\\Fixtures -Force
+powershell safe | Expand-Archive -Path .\\fixtures.zip -DestinationPath .\\vendor
+powershell safe | Expand-Archive -Path .\\fixtures.zip -DestinationPath .\\vendor -Force
+powershell safe | Expand-Archive -Path .\\fixtures.zip -DestinationPath .\\tests\\Fixtures
+powershell safe | Expand-Archive -Path .\\fixtures.zip -DestinationPath .\\tests\\Fixtures -Force
+powershell safe | Compress-Archive -Path .\\dist\\* -DestinationPath .\\release.zip -Force
+powershell safe | Compress-Archive -Path .\\dist\\* -DestinationPath .\\out\\app.zip -Force
+powershell safe | Compress-Archive -Path .\\publish\\* -DestinationPath .\\release.zip -Force
+powershell safe | Compress-Archive -Path .\\publish\\* -DestinationPath .\\out\\app.zip -Force
+powershell safe | Set-Content -Path .\\src\\Hello.cs -Value @'\nnamespace Demo;\n\npublic static class Hello { }\n'@
+powershell safe | Set-Content -Path .\\docs\\notes.md -Value @'\n# Notes\n\n- the parser rejects empty input\n'@
+powershell safe | @'\n{\n  "name": "demo"\n}\n'@ | Set-Content package.json
+powershell safe | @'\n{\n  "name": "demo"\n}\n'@ | Set-Content .\\tests\\Fixtures\\user.json
+powershell safe | $content = Get-Content package.json -Raw; $content.Length
+powershell safe | $content = Get-Content .\\appsettings.json -Raw; $content.Length
+powershell safe | $json = Get-Content package.json -Raw | ConvertFrom-Json; $json.version = '1.1.0'; $json | ConvertTo-Json -Depth 10 | Set-Content package.json
+powershell safe | Invoke-WebRequest https://example.com/data.csv -OutFile .\\data\\data.csv
+powershell safe | Invoke-WebRequest https://raw.githubusercontent.com/github/gitignore/main/VisualStudio.gitignore -OutFile .gitignore
+powershell safe | New-Item -ItemType SymbolicLink -Path .\\bin\\app.exe -Target .\\publish\\Api.exe
+
+# powershell: run
+powershell safe | Get-Process
+powershell safe | Get-Process node
+powershell safe | Get-Process dotnet
+powershell safe | Get-Process -Name node
+powershell safe | Get-Process -Id 4242
+powershell safe | Get-Process -Name node | Select-Object Id, ProcessName, CPU
+powershell safe | Get-Process -Name dotnet | Select-Object Id, ProcessName, CPU
+powershell safe | Get-Process -Name python | Select-Object Id, ProcessName, CPU
+powershell safe | Get-Process -Name Code | Select-Object Id, ProcessName, CPU
+powershell safe | Get-Process -Name msbuild | Select-Object Id, ProcessName, CPU
+powershell safe | Get-Process | Sort-Object CPU -Descending | Select-Object -First 5
+powershell safe | Get-Process | Sort-Object CPU -Descending | Select-Object -First 10
+powershell safe | Get-Process | Where-Object { $_.ProcessName -like 'node*' }
+powershell safe | Get-Process | Where-Object { $_.ProcessName -like 'dotnet*' }
+powershell safe | Stop-Process -Id 4242
+powershell safe | Stop-Process -Id 4242 -Force
+powershell safe | Stop-Process -Id 31337
+powershell safe | Stop-Process -Id 31337 -Force
+powershell safe | Stop-Process -Name node
+powershell safe | Stop-Process -Name node -Force
+powershell safe | Stop-Process -Name dotnet
+powershell safe | Stop-Process -Name dotnet -Force
+powershell safe | Stop-Process -Name Api
+powershell safe | Stop-Process -Name Api -Force
+powershell safe | Get-Process node | Stop-Process
+powershell safe | Get-Process node | Stop-Process -Force
+powershell safe | Get-Process dotnet | Stop-Process
+powershell safe | Get-Process dotnet | Stop-Process -Force
+powershell safe | Get-NetTCPConnection -LocalPort 3000
+powershell safe | Get-NetTCPConnection -LocalPort 3000 -State Listen
+powershell safe | Get-NetTCPConnection -LocalPort 5000
+powershell safe | Get-NetTCPConnection -LocalPort 5000 -State Listen
+powershell safe | Get-NetTCPConnection -LocalPort 5432
+powershell safe | Get-NetTCPConnection -LocalPort 5432 -State Listen
+powershell safe | Get-NetTCPConnection -LocalPort 3000 | Select-Object OwningProcess
+powershell safe | Get-NetTCPConnection -LocalPort 5000 | Select-Object OwningProcess
+powershell safe | netstat -ano | Select-String ':3000'
+powershell safe | netstat -ano | Select-String ':5000'
+powershell safe | netstat -ano | findstr :3000
+powershell safe | netstat -ano | findstr :5000
+powershell safe | netstat -ano | findstr LISTENING
+powershell safe | $env:PATH
+powershell safe | $env:USERPROFILE
+powershell safe | $env:NODE_ENV
+powershell safe | $env:ASPNETCORE_ENVIRONMENT
+powershell safe | $env:PATH -split ';'
+powershell safe | $env:NODE_ENV = 'test'; npm test
+powershell safe | $env:ASPNETCORE_ENVIRONMENT = 'Development'; dotnet run
+powershell safe | $env:RUST_LOG = 'debug'; cargo run
+powershell safe | [Environment]::GetEnvironmentVariable('PATH')
+powershell safe | [Environment]::GetEnvironmentVariable('PATH', 'User')
+powershell safe | [Environment]::GetEnvironmentVariable('JAVA_HOME')
+powershell safe | [Environment]::GetEnvironmentVariable('JAVA_HOME', 'User')
+powershell safe | Get-Command node
+powershell safe | Get-Command node -All
+powershell safe | Get-Command python
+powershell safe | Get-Command python -All
+powershell safe | Get-Command cargo
+powershell safe | Get-Command cargo -All
+powershell safe | Get-Command dotnet
+powershell safe | Get-Command dotnet -All
+powershell safe | Get-Command git
+powershell safe | Get-Command git -All
+powershell safe | where.exe node
+powershell safe | where.exe python
+powershell safe | where.exe git
+powershell safe | (Get-Command node).Source
+powershell safe | (Get-Command dotnet).Source
+powershell safe | node --version
+powershell safe | python --version
+powershell safe | dotnet --version
+powershell safe | cargo --version
+powershell safe | git --version
+powershell safe | Invoke-WebRequest http://localhost:5000/health -UseBasicParsing
+powershell safe | Invoke-WebRequest http://localhost:5000/health -Method Head
+powershell safe | Invoke-WebRequest http://localhost:3000 -UseBasicParsing
+powershell safe | Invoke-WebRequest http://localhost:3000 -Method Head
+powershell safe | Invoke-WebRequest https://localhost:7001/swagger/index.html -UseBasicParsing
+powershell safe | Invoke-WebRequest https://localhost:7001/swagger/index.html -Method Head
+powershell safe | Invoke-WebRequest http://127.0.0.1:8080/api/items -UseBasicParsing
+powershell safe | Invoke-WebRequest http://127.0.0.1:8080/api/items -Method Head
+powershell safe | (Invoke-WebRequest http://localhost:5000/health -UseBasicParsing).StatusCode
+powershell safe | (Invoke-WebRequest http://localhost:3000 -UseBasicParsing).StatusCode
+powershell safe | (Invoke-WebRequest https://localhost:7001/swagger/index.html -UseBasicParsing).StatusCode
+powershell safe | (Invoke-WebRequest http://127.0.0.1:8080/api/items -UseBasicParsing).StatusCode
+powershell safe | Invoke-RestMethod http://localhost:5000/api/items
+powershell safe | Invoke-RestMethod http://localhost:3000/api/health
+powershell safe | Invoke-RestMethod https://api.github.com/repos/PowerShell/PowerShell/releases/latest
+powershell safe | Invoke-RestMethod -Uri http://localhost:5000/api/items -Method Post -ContentType 'application/json' -Body '{"name":"test"}'
+powershell safe | $body = @{ name = 'test' } | ConvertTo-Json; Invoke-RestMethod -Uri http://localhost:5000/api/items -Method Post -ContentType 'application/json' -Body $body
+powershell safe | iwr http://localhost:5000/health
+powershell safe | iwr https://example.com
+powershell safe | irm http://localhost:5000/health
+powershell safe | irm https://example.com
+powershell safe | curl.exe -s http://localhost:5000/health
+powershell safe | curl.exe -s http://localhost:3000
+powershell safe | curl.exe -s https://localhost:7001/swagger/index.html
+powershell safe | curl.exe -s http://127.0.0.1:8080/api/items
+powershell safe | curl.exe -I http://localhost:5000/health
+powershell safe | curl.exe -I http://localhost:3000
+powershell safe | curl.exe -I https://localhost:7001/swagger/index.html
+powershell safe | curl.exe -I http://127.0.0.1:8080/api/items
+powershell safe | curl.exe -sS -o NUL -w '%{http_code}' http://localhost:5000/health
+powershell safe | curl.exe -sS -o NUL -w '%{http_code}' http://localhost:3000
+powershell safe | curl.exe -sS -o NUL -w '%{http_code}' https://localhost:7001/swagger/index.html
+powershell safe | curl.exe -sS -o NUL -w '%{http_code}' http://127.0.0.1:8080/api/items
+powershell safe | docker ps
+powershell safe | docker ps -a
+powershell safe | docker images
+powershell safe | docker compose ps
+powershell safe | docker compose up -d
+powershell safe | docker compose logs -f api
+powershell safe | docker compose down
+powershell safe | docker build -t myapp .
+powershell safe | docker stats --no-stream
+powershell safe | kubectl get pods
+powershell safe | kubectl get svc
+powershell safe | kubectl logs deploy/api --tail=100
+powershell safe | kubectl describe pod api-7d9f8b6c5-x2kqp
+powershell safe | kubectl config current-context
+powershell safe | $PSVersionTable
+powershell safe | $PSVersionTable.PSVersion
+powershell safe | Get-Date
+powershell safe | [System.Environment]::OSVersion
+powershell safe | [Environment]::ProcessorCount
+powershell safe | $Host.Version
+powershell safe | whoami
+powershell safe | hostname
+powershell safe | Get-ComputerInfo -Property OsName
+powershell safe | Get-ComputerInfo -Property WindowsVersion
+powershell safe | Get-ComputerInfo -Property CsProcessors
+powershell safe | Get-ExecutionPolicy
+powershell safe | Get-ExecutionPolicy -List
+powershell safe | Get-Module -ListAvailable Pester
+powershell safe | Get-Module -ListAvailable PSScriptAnalyzer
+powershell safe | Get-Module -ListAvailable Az*
+powershell safe | Get-Help Get-ChildItem
+powershell safe | Get-Help Get-ChildItem -Examples
+powershell safe | Get-Help Select-String
+powershell safe | Get-Help Select-String -Examples
+powershell safe | Start-Process http://localhost:5000
+powershell safe | Start-Process .\\coverage\\index.html
+powershell safe | Start-Process code -ArgumentList '.'
+powershell safe | Start-Process dotnet -ArgumentList 'run --project src\\Api' -NoNewWindow
+powershell safe | Start-Sleep -Seconds 2; Invoke-WebRequest http://localhost:5000/health -UseBasicParsing
+powershell safe | Start-Sleep -Seconds 2; Invoke-WebRequest http://localhost:3000 -UseBasicParsing
+powershell safe | Start-Sleep -Seconds 2; Invoke-WebRequest https://localhost:7001/swagger/index.html -UseBasicParsing
+powershell safe | Start-Sleep -Seconds 2; Invoke-WebRequest http://127.0.0.1:8080/api/items -UseBasicParsing
+powershell safe | Start-Sleep -Seconds 5; Invoke-WebRequest http://localhost:5000/health -UseBasicParsing
+powershell safe | Start-Sleep -Seconds 5; Invoke-WebRequest http://localhost:3000 -UseBasicParsing
+powershell safe | Start-Sleep -Seconds 5; Invoke-WebRequest https://localhost:7001/swagger/index.html -UseBasicParsing
+powershell safe | Start-Sleep -Seconds 5; Invoke-WebRequest http://127.0.0.1:8080/api/items -UseBasicParsing
+powershell safe | Start-Job { dotnet run --project src\\Api } | Out-Null
+powershell safe | Get-Job | Receive-Job
+powershell safe | Measure-Command { dotnet build }
+powershell safe | Measure-Command { npm run build }
+powershell safe | Measure-Command { cargo build }
+powershell safe | Get-Service
+powershell safe | Get-Service postgresql*
+powershell safe | Get-Service MSSQL*
+powershell safe | Get-Service docker
+powershell safe | Get-EventLog -LogName Application -Newest 10
+powershell safe | Get-EventLog -LogName Application -Newest 20
+powershell safe | Get-WinEvent -LogName Application -MaxEvents 20
+powershell safe | Test-NetConnection localhost -Port 5000
+powershell safe | Test-NetConnection localhost -Port 5432
+powershell safe | Test-NetConnection localhost -Port 1433
+powershell safe | Resolve-DnsName example.com
+powershell safe | Resolve-DnsName api.github.com
+powershell safe | winget list
+powershell safe | winget search ripgrep
+powershell safe | winget show Git.Git
+powershell safe | choco list --local-only
+powershell safe | scoop list
+powershell safe | scoop install ripgrep
+powershell safe | sqlcmd -S localhost -Q 'SELECT @@VERSION'
+powershell safe | sqlcmd -S localhost -Q 'SELECT name FROM sys.databases'
+powershell safe | Write-Host 'Build done'
+powershell safe | Write-Host "Version: $version"
+powershell safe | Write-Host '---'
+powershell safe | Write-Output $env:COMPUTERNAME
+powershell safe | Write-Output (Get-Date -Format o)
+powershell safe | Clear-Host
+
+# powershell: chains
+powershell safe | dotnet build; if ($LASTEXITCODE -eq 0) { dotnet test }
+powershell safe | dotnet restore && dotnet build && dotnet test
+powershell safe | npm ci; npm run build; npm test
+powershell safe | Set-Location frontend; ls
+powershell safe | Set-Location src\\Api; ls
+powershell safe | Set-Location tools\\gen; ls
+powershell safe | Set-Location packages\\web; ls
+powershell safe | Set-Location docs; ls
+powershell safe | Set-Location frontend; npm test
+powershell safe | Set-Location frontend; npm run build
+powershell safe | Set-Location src\\Api; dotnet build
+powershell safe | cd frontend; npm install
+powershell safe | cd tools\\gen; dotnet test
+powershell safe | cd docs; git status
+powershell safe | Push-Location frontend; npm test; Pop-Location
+powershell safe | Push-Location src\\Api; dotnet run; Pop-Location
+powershell safe | if (-not (Test-Path .\\node_modules)) { npm install }
+powershell safe | if (Test-Path .\\bin) { Remove-Item .\\bin -Recurse -Force }
+powershell safe | if (Test-Path .\\dist) { Remove-Item .\\dist -Recurse -Force }
+powershell safe | if (Test-Path .\\node_modules) { Remove-Item .\\node_modules -Recurse -Force }
+powershell safe | foreach ($p in Get-ChildItem tests -Filter *.csproj -Recurse) { dotnet test $p.FullName }
+powershell safe | Get-ChildItem -Recurse -Filter *.csproj | ForEach-Object { dotnet build $_.FullName }
+powershell safe | Get-ChildItem -Filter *.md | ForEach-Object { Write-Output $_.Name }
+powershell safe | Get-ChildItem -Filter *.md | ForEach-Object { (Get-Content $_).Count }
+powershell safe | 1..3 | ForEach-Object { Invoke-WebRequest http://localhost:5000/health -UseBasicParsing | Select-Object StatusCode }
+powershell safe | 1..5 | ForEach-Object { Invoke-WebRequest http://localhost:5000/health -UseBasicParsing | Select-Object StatusCode }
+powershell safe | git status --short | ForEach-Object { $_.Substring(3) }
+powershell safe | Get-Content .\\files.txt | ForEach-Object { Get-Item $_ }
+powershell safe | Get-ChildItem -Recurse -Filter *.cs | Select-String 'TODO' | Group-Object Path | Select-Object Name, Count
+powershell safe | dotnet test 2>&1 | Select-String 'Failed'
+powershell safe | dotnet test 2>&1 | Select-String 'Passed!'
+powershell safe | dotnet test 2>&1 | Select-String 'error'
+powershell safe | npm test 2>&1 | Select-Object -Last 20
+powershell safe | npm test 2>&1 | Select-Object -Last 40
+powershell safe | cargo build 2>&1 | Tee-Object -FilePath build.log
+powershell safe | dotnet build | Out-File build.log
+powershell safe | $env:CI = 'true'; npm test
+powershell safe | $sw = [Diagnostics.Stopwatch]::StartNew(); dotnet build; $sw.Elapsed
+powershell safe | try { dotnet build } catch { Write-Error $_ }
+powershell safe | $ErrorActionPreference = 'Stop'; dotnet test
+powershell safe | Get-ChildItem .\\src -Recurse -Filter *.cs | Measure-Object | Select-Object -ExpandProperty Count
+powershell safe | (Get-ChildItem -Recurse -Filter *.cs | Get-Content | Measure-Object -Line).Lines
+powershell safe | Get-Content .\\.env.example | ForEach-Object { $_.Split('=')[0] }
+powershell safe | dotnet --list-sdks | Select-String '8.0'
+powershell safe | dotnet --list-sdks | Select-String '9.0'
+powershell safe | Get-ChildItem *.zip | Expand-Archive -DestinationPath .\\vendor -Force
+powershell safe | Get-ChildItem .\\TestResults -Filter *.trx | Select-Object -Last 1 | Get-Content
+powershell safe | [IO.File]::ReadAllText('package.json')
+powershell safe | [IO.File]::ReadAllText('.\\appsettings.json')
+powershell safe | [IO.Path]::Combine('src', 'Api', 'Program.cs')
+powershell safe | [guid]::NewGuid()
+powershell safe | Get-Random -Minimum 1000 -Maximum 9999
+
+# cmd: build
+cmd safe | dotnet build
+cmd safe | dotnet test
+cmd safe | dotnet restore
+cmd safe | dotnet run
+cmd safe | dotnet clean
+cmd safe | dotnet format
+cmd safe | dotnet build -c Release
+cmd safe | dotnet test --no-build
+cmd safe | dotnet publish -c Release -o publish
+cmd safe | dotnet run --project src\\Api
+cmd safe | dotnet test tests\\Core.Tests
+cmd safe | cargo build
+cmd safe | cargo build --release
+cmd safe | cargo test
+cmd safe | cargo test --release
+cmd safe | cargo check
+cmd safe | cargo check --release
+cmd safe | cargo clippy
+cmd safe | cargo clippy --release
+cmd safe | cargo run
+cmd safe | cargo run --release
+cmd safe | npm install
+cmd safe | npm ci
+cmd safe | npm test
+cmd safe | npm run build
+cmd safe | npm run dev
+cmd safe | npm run lint
+cmd safe | npm outdated
+cmd safe | npx tsc --noEmit
+cmd safe | npx eslint .
+cmd safe | npx prettier --check .
+cmd safe | yarn install
+cmd safe | yarn build
+cmd safe | yarn test
+cmd safe | pnpm install
+cmd safe | pnpm build
+cmd safe | pnpm test
+cmd safe | msbuild App.sln
+cmd safe | msbuild App.sln /p:Configuration=Release /m
+cmd safe | msbuild src\\Api\\Api.csproj /t:Rebuild
+cmd safe | msbuild App.sln /t:Clean
+cmd safe | nmake
+cmd safe | nmake /f Makefile.win
+cmd safe | nmake clean
+cmd safe | cl /EHsc /W4 src\\main.cpp /Fe:build\\app.exe
+cmd safe | gradlew.bat build
+cmd safe | gradlew.bat test
+cmd safe | gradlew.bat assemble
+cmd safe | gradlew.bat clean build
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | .\\gradlew.bat build
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | .\\gradlew.bat test
+cmd safe | mvnw.cmd test
+cmd safe | mvnw.cmd package
+cmd safe | mvnw.cmd -DskipTests package
+cmd safe | mvn test
+cmd safe | mvn package
+cmd safe | py -m pytest
+cmd safe | py -m pytest -q
+cmd safe | py -m pip install -r requirements.txt
+cmd safe | py -m venv .venv
+cmd safe | py scripts\\migrate.py
+cmd safe | python -m pytest
+cmd safe | python -m pip install -e .
+cmd safe | python -m venv .venv
+cmd safe | python -m pip list
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | .venv\\Scripts\\activate.bat
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | .venv\\Scripts\\python.exe -m pytest
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | .venv\\Scripts\\pip.exe install -r requirements.txt
+cmd safe | go build ./...
+cmd safe | go test ./...
+cmd safe | go vet ./...
+cmd safe | go mod tidy
+cmd safe | cmake -S . -B build -G "Visual Studio 17 2022"
+cmd safe | cmake -S . -B build -G Ninja
+cmd safe | cmake -S . -B build -G "NMake Makefiles"
+cmd safe | cmake --build build --config Release
+cmd safe | cmake --build build --config Debug
+cmd safe | ctest --test-dir build -C Release --output-on-failure
+cmd safe | nuget restore App.sln
+cmd safe | build.cmd
+cmd safe | build.cmd Release
+cmd safe | build.cmd test
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | .\\build.cmd Release
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | .\\scripts\\test.bat
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | ..\\tools\\gen.exe --out src\\Generated
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | .\\bin\\Debug\\net8.0\\Api.exe --urls http://localhost:5000
+cmd safe | bin\\Debug\\net8.0\\Api.exe --help
+cmd safe | call build.bat
+cmd safe | call scripts\\setup.cmd
+cmd safe | call scripts\\test.bat Release
+cmd safe | vcvars64.bat
+cmd safe | flutter pub get
+cmd safe | flutter build windows
+
+# cmd: git
+cmd safe | git status
+cmd safe | git status -sb
+cmd safe | git diff
+cmd safe | git diff --staged
+cmd safe | git diff --stat
+cmd safe | git log --oneline -20
+cmd safe | git log --oneline --graph --all
+cmd safe | git show --stat
+cmd safe | git branch
+cmd safe | git branch -a
+cmd safe | git remote -v
+cmd safe | git stash list
+cmd safe | git fetch
+cmd safe | git pull
+cmd safe | git pull --rebase
+cmd safe | git rev-parse HEAD
+cmd safe | git worktree list
+cmd safe | git add .
+cmd safe | git add -A
+cmd safe | git add src\\Api\\Program.cs
+cmd safe | git commit -m "fix: handle empty input"
+cmd safe | git commit -m "feat: add rate limiting"
+cmd safe | git commit -m "chore: bump packages"
+cmd safe | git add -A && git commit -m "wip"
+cmd safe | git add -A && git commit -m "fix: lint"
+cmd safe | git checkout main
+cmd safe | git checkout feature/login
+cmd safe | git switch main
+cmd safe | git switch feature/login
+cmd safe | git checkout -b feature/rate-limit
+cmd safe | git checkout -b fix/null-check
+cmd safe | git switch -c feature/rate-limit
+cmd safe | git switch -c fix/null-check
+cmd safe | git push
+cmd safe | git push -u origin HEAD
+cmd safe | git push -u origin feature/rate-limit
+cmd safe | git rebase origin/main
+cmd safe | git rebase --continue
+cmd safe | git rebase --abort
+cmd safe | git stash
+cmd safe | git stash pop
+cmd safe | git status | findstr modified
+cmd safe | git status | findstr "new file"
+cmd safe | git status | findstr deleted
+cmd safe | git log --oneline | findstr fix
+cmd safe | git log --oneline | findstr feat
+cmd safe | git diff --name-only | findstr .cs
+cmd safe | git diff --name-only | findstr .json
+cmd safe | git branch | find /c /v ""
+cmd safe | gh pr list
+cmd safe | gh pr view 42
+cmd safe | gh pr checks
+
+# cmd: read
+cmd safe | dir
+cmd safe | dir /b
+cmd safe | dir /s
+cmd safe | dir /a
+cmd safe | dir /o-d
+cmd safe | dir /s /b *.cs
+cmd safe | dir /a:d
+cmd safe | dir /b /s *.csproj
+cmd safe | dir /q
+cmd safe | dir /w
+cmd safe | dir src /b
+cmd safe | dir src /s
+cmd safe | dir tests /b
+cmd safe | dir tests /s
+cmd safe | dir src\\*.cs
+cmd safe | dir src\\*.cs /b
+cmd safe | dir *.json
+cmd safe | dir *.json /b
+cmd safe | dir bin\\Debug
+cmd safe | dir bin\\Debug /b
+cmd safe | dir .\\publish
+cmd safe | dir .\\publish /b
+cmd safe | type README.md
+cmd safe | type package.json
+cmd safe | type appsettings.json
+cmd safe | type src\\Core\\Parser.cs
+cmd safe | type build.log
+cmd safe | type .gitignore
+cmd safe | type build.log | more
+cmd safe | type README.md | more
+cmd safe | type build.log | findstr /i error
+cmd safe | type build.log | findstr /i warn
+cmd safe | type build.log | findstr /i exception
+cmd safe | type logs\\app.log | findstr /i error
+cmd safe | type logs\\app.log | findstr /i warn
+cmd safe | type logs\\app.log | findstr /i exception
+cmd safe | more README.md
+cmd safe | more build.log
+cmd safe | findstr /s /i /n TODO *.cs
+cmd safe | findstr /s /n TODO *.cs
+cmd safe | findstr /i /n TODO *.cs
+cmd safe | findstr /s /n "async void" *.cs
+cmd safe | findstr /s /n "async void" src\\*.cs
+cmd safe | findstr /s /n ConnectionString *.cs
+cmd safe | findstr /s /n ConnectionString src\\*.cs
+cmd safe | findstr /m /s Console.WriteLine *.cs
+cmd safe | findstr /m /s ConnectionString *.cs
+cmd safe | findstr /m /s ConnectionString *.json
+cmd safe | findstr /r /n "^using" src\\Api\\*.cs
+cmd safe | findstr /r /n "^using" src\\Core\\*.cs
+cmd safe | findstr /r /n "class.*Controller" src\\Api\\*.cs
+cmd safe | findstr /r /n "class.*Controller" src\\Core\\*.cs
+cmd safe | find /c /v "" build.log
+cmd safe | find /c /v "" src\\Core\\Parser.cs
+cmd safe | find /c /v "" README.md
+cmd safe | find /i "error" build.log
+cmd safe | find /i "error" logs\\app.log
+cmd safe | where node
+cmd safe | where python
+cmd safe | where git
+cmd safe | where dotnet
+cmd safe | where msbuild
+cmd safe | where /r src *.cs
+cmd safe | where /r src *.csproj
+cmd safe | tree src
+cmd safe | tree .
+cmd safe | tree /f src
+cmd safe | tree /f .
+cmd safe | tree /a src
+cmd safe | tree /a .
+cmd safe | fc expected.txt actual.txt
+cmd safe | fc /b a.bin b.bin
+cmd safe | fc /n src\\a.cs src\\b.cs
+cmd safe | comp a.bin b.bin /m
+cmd safe | certutil -hashfile dist\\app.zip SHA256
+cmd safe | certutil -hashfile publish\\Api.dll SHA256
+cmd safe | echo %CD%
+cmd safe | echo %PATH%
+cmd safe | echo %USERPROFILE%
+cmd safe | echo %ERRORLEVEL%
+cmd safe | echo %NODE_ENV%
+cmd safe | echo %DATE% %TIME%
+cmd safe | cd
+cmd safe | chdir
+cmd safe | vol
+cmd safe | attrib README.md
+cmd safe | attrib src\\*.cs
+cmd safe | rg TODO src
+cmd safe | rg TODO -t cs
+cmd safe | rg "async void" src
+cmd safe | rg "async void" -t cs
+cmd rules=unknown first=unknown reason="runs a command for each matched file" | forfiles /p src /s /m *.cs /c "cmd /c echo @path"
+
+# cmd: edit
+cmd safe | mkdir src\\Utils
+cmd safe | mkdir tests\\Fixtures
+cmd safe | mkdir out
+cmd safe | mkdir docs\\adr
+cmd safe | mkdir build
+cmd safe | md src\\Utils
+cmd safe | md tests\\Fixtures
+cmd safe | md out
+cmd safe | md docs\\adr
+cmd safe | md build
+cmd safe | type nul > notes.md
+cmd safe | type nul > src\\Utils\\Guard.cs
+cmd safe | type nul > .env.local
+cmd safe | echo hello > out.txt
+cmd safe | echo 1.2.0 > version.txt
+cmd safe | echo {} > tests\\Fixtures\\empty.json
+cmd safe | echo done > out\\status.txt
+cmd safe | echo bin/ >> .gitignore
+cmd safe | echo obj/ >> .gitignore
+cmd safe | echo *.user >> .gitignore
+cmd safe | echo node_modules/ >> .gitignore
+cmd safe | echo.>> build.log
+cmd safe | copy appsettings.json appsettings.Development.json
+cmd safe | copy .env.example .env
+cmd safe | copy README.md docs\\index.md
+cmd safe | copy /y src\\config.json build\\config.json
+cmd safe | copy /b part1.bin+part2.bin out.bin
+cmd safe | copy /b file1.txt+file2.txt combined.txt
+cmd safe | xcopy /e /i /y assets dist\\assets
+cmd safe | xcopy /s /i src backup\\src
+cmd safe | xcopy /y /q config\\*.json build\\config\\
+cmd safe | robocopy src backup\\src /e
+cmd safe | robocopy assets dist\\assets /mir
+cmd safe | move old.txt new.txt
+cmd safe | move src\\Old.cs src\\New.cs
+cmd safe | move /y out\\report.html reports\\
+cmd safe | ren notes.txt notes.md
+cmd safe | ren src\\Old.cs New.cs
+cmd safe | rename notes.txt notes.md
+cmd safe | rename src\\Old.cs New.cs
+cmd safe | del build\\*.obj
+cmd safe | del *.log
+cmd safe | del out\\*.tmp
+cmd safe | del TestResults\\*.trx
+cmd safe | del src\\Old.cs
+cmd safe | del /q build\\*.obj
+cmd safe | del /f /q build\\*.obj
+cmd safe | del /s /q build\\*.obj
+cmd safe | rd /s /q bin
+cmd safe | rd /s /q obj
+cmd safe | rd /s /q dist
+cmd safe | rd /s /q build
+cmd safe | rd /s /q node_modules
+cmd safe | rd /s /q TestResults
+cmd safe | rd /s /q .vs
+cmd safe | rd /s /q out
+cmd safe | rd /s /q coverage
+cmd safe | rd /s /q publish
+cmd safe | rmdir /s /q bin
+cmd safe | rmdir /s /q obj
+cmd safe | rmdir /s /q dist
+cmd safe | rmdir /s /q node_modules
+cmd safe | if exist bin rd /s /q bin
+cmd safe | if exist dist rd /s /q dist
+cmd safe | if exist node_modules rd /s /q node_modules
+cmd safe | dotnet test > test.log 2>&1
+cmd safe | dotnet test > TestResults\\out.txt 2>&1
+cmd safe | npm run build > build.log 2>&1
+cmd safe | tar -xf vendor.zip -C vendor
+cmd safe | tar -czf release.tgz dist
+cmd safe | tar -tf release.tgz
+cmd safe | powershell -NoProfile -Command "Expand-Archive -Path vendor.zip -DestinationPath vendor -Force"
+cmd safe | attrib -r src\\generated\\*.cs
+cmd safe | attrib -r build\\*.*
+
+# cmd: run
+cmd safe | tasklist
+cmd safe | tasklist /v
+cmd safe | tasklist /fi "imagename eq node.exe"
+cmd safe | tasklist /fi "pid eq 4242"
+cmd safe | tasklist /m
+cmd safe | tasklist | findstr node
+cmd safe | tasklist | findstr dotnet
+cmd safe | tasklist | findstr python
+cmd safe | taskkill /pid 4242
+cmd safe | taskkill /pid 4242 /f
+cmd safe | taskkill /pid 4242 /t /f
+cmd safe | taskkill /pid 31337
+cmd safe | taskkill /pid 31337 /f
+cmd safe | taskkill /pid 31337 /t /f
+cmd safe | taskkill /im node.exe /f
+cmd safe | taskkill /im dotnet.exe /f
+cmd safe | taskkill /im Api.exe /f
+cmd safe | netstat -ano | findstr :3000
+cmd safe | netstat -ano | findstr :5000
+cmd safe | netstat -ano | findstr :5432
+cmd safe | netstat -ano | findstr LISTENING
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | set
+cmd safe | set PATH
+cmd safe | set NODE
+cmd safe | set DOTNET
+cmd safe | set NODE_ENV=test&& npm test
+cmd safe | set ASPNETCORE_ENVIRONMENT=Development&& dotnet run
+cmd safe | set RUST_LOG=debug&& cargo run
+cmd safe | set PATH=%PATH%;%CD%\\bin
+cmd safe | ver
+cmd safe | whoami
+cmd safe | hostname
+cmd safe | systeminfo
+cmd safe | date /t
+cmd safe | time /t
+cmd safe | echo %PROCESSOR_ARCHITECTURE%
+cmd safe | wmic os get caption
+cmd safe | wmic cpu get name
+cmd safe | node --version
+cmd safe | python --version
+cmd safe | dotnet --version
+cmd safe | cargo --version
+cmd safe | git --version
+cmd safe | java --version
+cmd safe | curl -s http://localhost:5000/health
+cmd safe | curl -s http://localhost:3000
+cmd safe | curl -s https://localhost:7001/swagger/index.html
+cmd safe | curl -s http://127.0.0.1:8080/api/items
+cmd safe | curl -I http://localhost:5000/health
+cmd safe | curl -I http://localhost:3000
+cmd safe | curl -I https://localhost:7001/swagger/index.html
+cmd safe | curl -I http://127.0.0.1:8080/api/items
+cmd safe | curl -sS -o nul -w "%{http_code}" http://localhost:5000/health
+cmd safe | curl -sS -o nul -w "%{http_code}" http://localhost:3000
+cmd safe | curl -sS -o nul -w "%{http_code}" https://localhost:7001/swagger/index.html
+cmd safe | curl -sS -o nul -w "%{http_code}" http://127.0.0.1:8080/api/items
+cmd safe | curl -s http://localhost:5000/api/items -H "Accept: application/json"
+cmd safe | curl -X POST http://localhost:5000/api/items -H "Content-Type: application/json" -d "{\\"name\\":\\"test\\"}"
+cmd safe | start http://localhost:5000
+cmd safe | start coverage\\index.html
+cmd safe | start "" code .
+cmd safe | start "" dotnet run --project src\\Api
+cmd safe | timeout /t 2 /nobreak
+cmd safe | timeout /t 5 /nobreak
+cmd safe | timeout /t 3 && curl -s http://localhost:5000/health
+cmd safe | docker ps
+cmd safe | docker ps -a
+cmd safe | docker images
+cmd safe | docker compose up -d
+cmd safe | docker compose ps
+cmd safe | docker compose logs api
+cmd safe | docker compose down
+cmd safe | docker build -t myapp .
+cmd safe | kubectl get pods
+cmd safe | kubectl get svc
+cmd safe | kubectl logs deploy/api --tail=100
+cmd safe | sc query postgresql-x64-16
+cmd safe | sc query MSSQLSERVER
+cmd safe | sc query docker
+cmd safe | net start | findstr /i sql
+cmd safe | net start | findstr /i postgres
+cmd safe | ping -n 2 localhost
+cmd safe | ping -n 2 example.com
+cmd safe | nslookup example.com
+cmd safe | nslookup api.github.com
+cmd safe | ipconfig
+cmd safe | ipconfig /all
+cmd safe | sqlcmd -S localhost -Q "SELECT @@VERSION"
+cmd safe | sqlcmd -S localhost -Q "SELECT name FROM sys.databases"
+cmd safe | winget list
+cmd safe | winget search ripgrep
+cmd safe | cls
+cmd safe | title Dev server
+cmd safe | pause
+
+# cmd: chains
+cmd safe | dotnet restore && dotnet build && dotnet test
+cmd safe | npm ci && npm run build && npm test
+cmd safe | cd frontend && dir
+cmd safe | cd src\\Api && dir
+cmd safe | cd tools\\gen && dir
+cmd safe | cd packages\\web && dir
+cmd safe | cd docs && dir
+cmd safe | cd frontend && npm test
+cmd safe | cd frontend && npm install
+cmd safe | cd src\\Api && dotnet build
+cmd safe | cd /d %USERPROFILE%\\dev\\repo && dotnet build
+cmd safe | cd /d %USERPROFILE%\\dev\\repo && dir
+cmd safe | cd /d C:\\Users\\me\\dev\\repo\\src && dotnet build
+cmd safe | cd /d C:\\Users\\me\\dev\\repo\\src && dir
+cmd safe | pushd frontend && npm test && popd
+cmd safe | pushd src\\Api && dotnet run && popd
+cmd safe | if exist node_modules (npm run build) else (npm install && npm run build)
+cmd safe | if not exist out mkdir out
+cmd safe | if not exist build mkdir build
+cmd safe | if not exist .env copy .env.example .env
+cmd safe | if %ERRORLEVEL% neq 0 echo failed
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | for %f in (*.csproj) do dotnet build "%f"
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | for %f in (tests\\*.csproj) do dotnet build "%f"
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | for /r %f in (*.cs) do @echo %f
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | for /r %f in (*.json) do @echo %f
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | for /d %d in (src\\*) do @echo %d
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | for /d %d in (tests\\*) do @echo %d
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | for /f "tokens=5" %a in ('netstat -ano ^| findstr :3000') do @echo %a
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | for /f %i in ('git rev-parse HEAD') do set SHA=%i
+cmd safe | dotnet build 2>&1 | findstr /i error
+cmd safe | dotnet build 2>&1 | findstr /i warning
+cmd safe | npm test 2>&1 | findstr /i fail
+cmd safe | npm test 2>&1 | findstr /i pass
+cmd safe | dir /s /b *.cs | find /c /v ""
+cmd safe | git status && git diff --stat
+cmd safe | git fetch && git rebase origin/main
+cmd safe | dotnet build || echo build failed
+cmd safe | cargo build && target\\debug\\app.exe --help
+cmd safe | cargo build && target\\debug\\app.exe --version
+cmd safe | msbuild App.sln /p:Configuration=Release && dotnet test --no-build
+cmd safe | rd /s /q bin & dotnet build
+cmd safe | rd /s /q node_modules & npm install
+cmd safe | echo %DATE% %TIME% >> build.log && dotnet build >> build.log
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | call .venv\\Scripts\\activate.bat && py -m pytest
+cmd rules=unreadable first=unreadable reason="cannot be read in full" | setlocal && set NODE_ENV=test && npm test
+cmd safe | type package.json | findstr version
+cmd safe | where node >nul 2>&1 || echo Node is not installed
