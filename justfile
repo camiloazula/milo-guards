@@ -66,6 +66,25 @@ publish *flags:
 test:
     cargo test --workspace --all-features --locked
 
+# The everyday answers (CONTRIBUTING.md): the commands that
+# `crates/guards/tests/cases/everyday_answers.templates` makes, judged by the
+# shell guard, against the record of their answers beside it,
+# `everyday_answers.cases`. It fails when an answer differs from the record.
+# `just verify` runs the same test (in `coverage`), and shows the report only
+# when it fails.
+# The share of everyday commands the shell guard asks about, and every answer that differs from the record.
+everyday:
+    cargo test -p milo-guards --all-features --locked --test everyday_answers -- --exact everyday_answers_are_as_recorded --nocapture
+
+# On purpose only, and committed with the change that moved the answers: a
+# release's changelog says what the diff of the record shows. It prints the
+# report of what moved, then writes the record. The variable is what lets
+# it write: `cargo test -- --ignored` runs the same test, which then only
+# prints the report.
+# Rewrite the record of the everyday answers with the answers the guard gives today.
+everyday-record:
+    MILO_EVERYDAY_RECORD=1 cargo test -p milo-guards --all-features --locked --test everyday_answers -- --ignored --exact record --nocapture
+
 # Not part of `verify`, which needs only the Rust in rust-toolchain.toml:
 # this needs the oldest supported one too (`rustup toolchain install` it,
 # CONTRIBUTING.md). CI runs it in its `oldest-rust` job, on Linux, and a
