@@ -1,7 +1,8 @@
 //! CI runs the gate `just verify` runs locally, in two jobs: the `verify`
 //! job runs every recipe of it but `timing`, in its order, and the `timing`
 //! job runs `just timing` alone. A recipe added to `verify` and not to CI
-//! fails here. The `test` job runs `just test` alone, on Windows and on
+//! fails here. The `timing` job is a required check, and the comment above
+//! it and CONTRIBUTING.md must say so. The `test` job runs `just test` alone, on Windows and on
 //! macOS, and the `oldest-rust` job runs `just oldest-rust` alone, on Linux:
 //! a job removed, a system dropped or another command fails here too. The
 //! `grammars` job runs `just grammars --require bash --entries` alone, a
@@ -355,6 +356,64 @@ fn ci_runs_every_recipe_of_verify_with_timing_in_a_job_of_its_own() -> Result<()
         setting(&workflow, "timing", &["name"])?,
         "timing",
         "the timing job's check is named `timing`"
+    );
+    Ok(())
+}
+
+/// The comment right above the job `name` of `workflow`, its lines joined
+/// by a space, without their `#`.
+fn comment_above(workflow: &str, name: &str) -> Result<String, String> {
+    let lines: Vec<&str> = workflow.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| *line == format!("  {name}:"))
+        .ok_or_else(|| format!("ci.yml has no job `{name}`"))?;
+    let mut said: Vec<&str> = lines[..at]
+        .iter()
+        .rev()
+        .map_while(|line| line.trim_start().strip_prefix('#'))
+        .map(str::trim)
+        .collect();
+    said.reverse();
+    Ok(said.join(" "))
+}
+
+/// `text` with every run of white space one space, so a phrase is found
+/// wherever its lines wrap.
+fn flowed(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn the_timing_job_is_described_as_a_required_check() -> Result<(), String> {
+    // A guard that hangs on a crafted line is a vulnerability (SECURITY.md),
+    // so the check that would catch one stops a merge: the workflow and
+    // CONTRIBUTING.md say so, and name the check the owner adds to the
+    // ruleset on `main`.
+    let comment = comment_above(&read(".github/workflows/ci.yml")?, "timing")?;
+    assert!(
+        comment.contains("Required: the ruleset on `main` requires its check, `timing`"),
+        "the comment above the timing job of ci.yml must say it is required: {comment:?}"
+    );
+    assert!(
+        !comment.to_lowercase().contains("advisory"),
+        "the timing job is required, not advisory: {comment:?}"
+    );
+    let contributing = flowed(&read("CONTRIBUTING.md")?);
+    for phrase in [
+        "The `timing` job runs `just timing` alone, and it is required too",
+        "the ruleset on `main` requires two checks, `verify` and `timing`",
+        "add the check `timing` from GitHub Actions",
+        "it merges only once CI's `verify` and `timing` jobs have passed on it",
+    ] {
+        assert!(
+            contributing.contains(phrase),
+            "CONTRIBUTING.md must say the timing job is required: {phrase:?}"
+        );
+    }
+    assert!(
+        !contributing.contains("a red `timing` run there is a time to look at"),
+        "CONTRIBUTING.md must not call the timing job advisory"
     );
     Ok(())
 }

@@ -20,9 +20,10 @@ _default:
 # clippy's check pass, one instrumented build of every test, which runs them
 # and measures coverage, and one optimized build of the timing tests, which
 # runs them alone. CI runs every recipe but `timing` in its `verify` job and
-# `timing` in a job of its own, both on Linux, and `test` on Windows and
-# macOS in its `test` job. Advisories are not part of it: they change
-# without a commit, so they are their own recipe and their own CI job.
+# `timing` in a job of its own, both required checks, both on Linux, and
+# `test` on Windows and macOS in its `test` job. Advisories are not part of
+# it: they change without a commit, so they are their own recipe and their
+# own CI job.
 # Nor is `oldest-rust`, which needs a second Rust: CI runs it in a job of
 # its own. Nor is `semver`, which needs the network as advisories do and
 # has a job of its own, nor `mutants`, which is run by hand.
@@ -119,11 +120,12 @@ coverage:
 # instrumented build of `coverage` and the debug build of `test` are several
 # times slower, so they are ignored there
 # (`cfg(any(coverage, debug_assertions))`) and run here, alone: no other test
-# binary runs beside them.
+# binary runs beside them. `--show-output` prints what each test that passes
+# printed: every timed row's share of its bound, for the timing job's log.
 # The timing tests, and nothing else, in an optimized build.
 timing:
-    cargo test --release --locked --all-features -p milo-guards-shell --test timing
-    cargo test --release --locked --all-features -p milo-guards-secrets --test timing
+    cargo test --release --locked --all-features -p milo-guards-shell --test timing -- --show-output
+    cargo test --release --locked --all-features -p milo-guards-secrets --test timing -- --show-output
 
 # The examples in the documentation and the README, compiled and run.
 # Every doctest.

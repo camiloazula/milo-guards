@@ -24,8 +24,8 @@ use common::lines::{
     EXTENDED_GLOB, FIND_EXPRESSIONS, OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES, VBS_MARKERS,
 };
 use common::{
-    assert_linear_by, assert_within, at, filled, linear_by, posix, windows, within, Maker,
-    STAGE_SIZES,
+    assert_linear_by, assert_within, at, filled, head, linear_by, posix, steady_by, under, windows,
+    Maker, STAGE_SIZES, STEADY_SIZES,
 };
 use milo_guards_shell::{classify, effect, explain, Paths, Protected, Secret, Shell};
 use noise::{paths_for, wide_lines, SHELLS};
@@ -69,8 +69,12 @@ enum Time {
     Grows,
     /// Up to a count or a budget the guard reads to, and no further: past
     /// it a longer line is no slower, so two lengths do not show how the
-    /// time grows below it. The row is held to [`COUNTED`] at each of
-    /// [`COUNTED_SIZES`], up to and past the count (`assert_within`).
+    /// time grows below it. At each of [`STEADY_SIZES`], below and past the
+    /// count, the row four times as long takes at most ten times as long
+    /// (`steady_by`). They were held to a fixed 250 ms, which measured the
+    /// machine: one went past it on GitHub's runner (`${` nested in
+    /// PowerShell, 263 ms at 2 KB), and the slowest took 30 to 60 ms here,
+    /// within half of it on a runner two to four times slower.
     Stops,
 }
 
@@ -79,17 +83,6 @@ use Time::{Grows, Stops};
 /// What makes a row of a timed table of the size it is given, boxed, so
 /// that a table holds rows that keep what they build from.
 type Grown = Box<dyn Fn(usize) -> String>;
-
-/// The bound a row whose time [`Stops`] is held to: it leaves room for a
-/// machine several times slower and busy, about six times the slowest such
-/// row an optimized build here takes with other gates running beside it,
-/// 40 ms.
-const COUNTED: Duration = Duration::from_millis(250);
-
-/// The sizes, in KB, at which a row whose time [`Stops`] is held to
-/// [`COUNTED`]: from a line shorter than any count a row reaches to the
-/// length limit.
-const COUNTED_SIZES: [usize; 7] = [1, 2, 4, 8, 16, 32, 64];
 
 impl Time {
     /// Holds the row `line` makes, of the size it is given, to how its time
@@ -103,7 +96,7 @@ impl Time {
     ) -> Result<(), String> {
         match self {
             Grows => linear_by(what, took, line),
-            Stops => within(what, COUNTED, &COUNTED_SIZES, took, line),
+            Stops => steady_by(what, &STEADY_SIZES, took, line),
         }
     }
 }
@@ -134,7 +127,12 @@ fn wide_random_lines_stay_quick() {
             }
         }
     }
-    assert!(worst.0 < WORST, "{:?} for {:?}", worst.0, worst.1);
+    assert!(
+        under("the slowest wide random line", worst.0, WORST),
+        "{:?} for {:?}",
+        worst.0,
+        worst.1
+    );
 }
 
 #[test]
@@ -156,7 +154,7 @@ fn finds_in_finds_are_read_in_time_whatever_their_arguments_weigh() {
         let started = Instant::now();
         let _ = classify(line, Shell::Posix, &posix());
         let took = started.elapsed();
-        assert!(took < LIMIT, "{what}: {took:?}");
+        assert!(under(what, took, LIMIT), "{what}: {took:?}");
     }
 }
 
@@ -489,7 +487,11 @@ fn wrappers_that_build_their_command_are_read_in_time() {
         let started = Instant::now();
         let _ = classify(line, Shell::Posix, &posix());
         let took = started.elapsed();
-        assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
+        assert!(
+            under(&head(line), took, LIMIT),
+            "{took:?} for {:?}",
+            &line[..40]
+        );
     }
 }
 
@@ -514,7 +516,11 @@ fn cmd_commands_read_again_are_read_in_time() {
         let started = Instant::now();
         let _ = classify(line, Shell::Cmd, &paths);
         let took = started.elapsed();
-        assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
+        assert!(
+            under(&head(line), took, LIMIT),
+            "{took:?} for {:?}",
+            &line[..40]
+        );
     }
 }
 
@@ -652,7 +658,11 @@ fn find_path_tests_over_many_folders_are_read_in_time() {
     ];
     for line in lines {
         let took = took(&line, Shell::Posix, &paths);
-        assert!(took < LIMIT, "{took:?} for {:?}", &line[..40]);
+        assert!(
+            under(&head(&line), took, LIMIT),
+            "{took:?} for {:?}",
+            &line[..40]
+        );
     }
 }
 
@@ -710,8 +720,9 @@ fn shapes_that_stalled_a_grammar_or_a_rule_are_read_in_linear_time() {
     // count, past which it stops (the openers counted before parsing, the
     // recoveries and the characters a grammar's lexer moves over counted
     // from its log), takes no longer past it, so two lengths cannot show how
-    // its time grows: it is held to a fixed bound at each of several lengths
-    // instead (`Stops`). The shapes cmd's grammar reads in quadratic time
+    // its time grows: at each of several lengths, below and past the count,
+    // the line four times as long takes at most ten times as long instead
+    // (`Stops`), not a fixed bound. The shapes cmd's grammar reads in quadratic time
     // below the budget of what its lexer reads (`@`, `()`, `(echo) `,
     // `cd x; echo y > NUL; `, `echo ` then `$((1<<2)); echo `, and
     // `for %%i in (a) do ` repeated) are held to that count instead, in
@@ -1892,8 +1903,8 @@ fn took_explained(line: &str, shell: Shell, paths: &Paths) -> Duration {
         .fold(took(line, shell, paths), Duration::max)
 }
 
-/// [`took_explained`] of one run each, for [`assert_within`], which times a line
-/// again while it is over its bound.
+/// [`took_explained`] of one run each, for `steady_by`, which times a pair
+/// again while it is over its ratio.
 #[allow(
     clippy::disallowed_methods,
     reason = "the guard keeps no clock; only a test times it, to catch a quadratic read"
@@ -1957,7 +1968,10 @@ fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
     // held to a bound; the wide one's by its word, so it is held to how
     // its time grows.
     let took_deep = took_explained(&deep_traps(), Shell::Posix, &posix());
-    assert!(took_deep < Duration::from_millis(200), "took {took_deep:?}");
+    assert!(
+        under("traps nested deep", took_deep, Duration::from_millis(200)),
+        "took {took_deep:?}"
+    );
     assert_linear_by(
         "trap \"$(trap \"$(… echo aaa…)\" EXIT)\" EXIT",
         |line| took_explained(line, Shell::Posix, &posix()),
@@ -2042,8 +2056,11 @@ fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly() {
     let _serial = serial();
     // A shape read whole grows linearly. One read only to a count of
     // wrappers comes back early past it, so a long line may be quicker than
-    // a short one and two sizes do not show how it grows: each size up to
-    // and past the count is held to a bound, about ten times the slowest seen.
+    // a short one and two sizes do not show how it grows: at each size, below
+    // and past the count, the line four times as long takes at most ten times
+    // as long (`steady_by`). A fixed bound of 2 s left `pwsh --wd` repeated
+    // within half of it on a runner two to four times slower than here,
+    // where it took 0.8 s at the length limit.
     for (at, (shell, (head, part, tail), paths)) in wrapper_shapes().into_iter().enumerate() {
         let what = format!("{head}{part}… in {shell:?}");
         let line = |size: usize| {
@@ -2052,17 +2069,17 @@ fn a_wrapper_given_its_folder_or_its_options_many_times_is_read_quickly() {
                 filled(part, size, head.len() + tail.len())
             )
         };
-        if at < WRAPPERS_READ_WHOLE {
-            assert_linear_by(&what, |line| took_explained(line, shell, &paths), line);
+        let held = if at < WRAPPERS_READ_WHOLE {
+            linear_by(&what, |line| took_explained(line, shell, &paths), line)
         } else {
-            assert_within(
+            steady_by(
                 &what,
-                Duration::from_secs(2),
-                &[16, 32, 48, 56, 64],
+                &STEADY_SIZES,
                 |line| took_explained_once(line, shell, &paths),
                 line,
-            );
-        }
+            )
+        };
+        assert!(held.is_ok(), "{}", held.err().unwrap_or_default());
     }
 }
 
@@ -2140,7 +2157,10 @@ fn input_redirects_over_many_units_are_read_in_linear_time() {
     // each unit in it.
     for line in input_redirects_over_many_units() {
         let took = took_explained(&line, Shell::Posix, &posix());
-        assert!(took < Duration::from_secs(2), "took {took:?}");
+        assert!(
+            under(&head(&line), took, Duration::from_secs(2)),
+            "took {took:?}"
+        );
     }
 }
 
@@ -2328,7 +2348,10 @@ fn many_clients_after_a_group_too_large_to_read_are_read_quickly() {
     // Many clients after a big group are not read over and over.
     let line = clients_after_a_big_group();
     let took = took(&line, Shell::Posix, &posix());
-    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert!(
+        under("clients after a big group", took, Duration::from_secs(5)),
+        "took {took:?}"
+    );
 }
 
 #[test]
@@ -2449,7 +2472,7 @@ fn many_clients_on_one_line_are_read_in_linear_time() {
     for line in &lines {
         let took = took(line, Shell::Posix, &posix());
         assert!(
-            took < Duration::from_millis(500),
+            under(&head(line), took, Duration::from_millis(500)),
             "{} bytes took {took:?}",
             line.len()
         );
@@ -2465,7 +2488,11 @@ fn a_stage_that_says_too_much_stays_quick() {
     let _serial = serial();
     // Five printfs of 63 KB each are more than a stage may say, and are not
     // printed in full for each client.
-    assert!(took(&too_much_said(), Shell::Posix, &posix()) < Duration::from_millis(500));
+    assert!(under(
+        "a stage that says too much",
+        took(&too_much_said(), Shell::Posix, &posix()),
+        Duration::from_millis(500)
+    ));
 }
 
 #[test]
@@ -2476,7 +2503,11 @@ fn a_stage_that_says_too_much_stays_quick() {
 fn a_long_chain_of_nested_do_strings_is_read_quickly() {
     let _serial = serial();
     // It is read without going deep.
-    assert!(took(&nested_do_strings(), Shell::Posix, &posix()) < Duration::from_millis(200));
+    assert!(under(
+        "nested do strings",
+        took(&nested_do_strings(), Shell::Posix, &posix()),
+        Duration::from_millis(200)
+    ));
 }
 
 // ---- inline code ----
@@ -2491,7 +2522,7 @@ fn long_inline_code_is_read_in_linear_time() {
     for line in long_code().0 {
         let took = took(&line, Shell::Posix, &posix());
         assert!(
-            took < Duration::from_secs(2),
+            under(&head(&line), took, Duration::from_secs(2)),
             "{:?} took {took:?}",
             &line[..20]
         );
@@ -2508,7 +2539,7 @@ fn names_each_set_to_twice_the_one_before_are_read_in_bounded_time() {
     for (line, _) in &doubled_names() {
         let took = took(line, Shell::Posix, &posix());
         assert!(
-            took < Duration::from_secs(2),
+            under(&head(line), took, Duration::from_secs(2)),
             "{} bytes took {took:?}: {line}",
             line.len()
         );
@@ -2556,7 +2587,7 @@ fn a_long_run_of_posix_class_openers_in_a_word_is_read_in_a_bound() {
             // The quadratic one took ten seconds for the `mv` line alone in
             // a release build, and minutes at the full length.
             assert!(
-                elapsed < Duration::from_secs(6),
+                under(&head(&line), elapsed, Duration::from_secs(6)),
                 "took {elapsed:?} for a line of {} bytes: {}",
                 line.len(),
                 &line[..line.len().min(40)]
@@ -2583,7 +2614,7 @@ fn a_long_hidden_listing_is_read_quickly() {
         // quadratic read would take minutes.
         let took = took(&line, Shell::PowerShell, &windows());
         assert!(
-            took < Duration::from_secs(3),
+            under(&head(&line), took, Duration::from_secs(3)),
             "{} bytes took {took:?}",
             line.len()
         );
@@ -2604,7 +2635,7 @@ fn long_lists_and_pipelines_of_the_item_cmdlets_are_read_quickly() {
     for line in long_item_cmdlet_lines() {
         let took = took(&line, Shell::PowerShell, &windows());
         assert!(
-            took < Duration::from_secs(3),
+            under(&head(&line), took, Duration::from_secs(3)),
             "{} bytes took {took:?}",
             line.len()
         );
@@ -2666,7 +2697,7 @@ fn many_functions_that_move_the_line_and_many_calls_are_read_in_linear_time() {
     for line in many_functions_that_move_the_line() {
         let took = took(&line, Shell::Posix, &posix());
         assert!(
-            took < Duration::from_secs(4),
+            under(&head(&line), took, Duration::from_secs(4)),
             "{} bytes took {took:?}",
             line.len()
         );
@@ -2686,7 +2717,7 @@ fn one_function_defined_many_times_and_called_many_times_is_read_in_linear_time(
     for line in one_function_defined_and_called_many_times() {
         let took = took(&line, Shell::Posix, &posix());
         assert!(
-            took < Duration::from_secs(4),
+            under(&head(&line), took, Duration::from_secs(4)),
             "{} bytes took {took:?}",
             line.len()
         );
@@ -2705,7 +2736,7 @@ fn many_definitions_that_may_not_run_are_read_in_linear_time() {
     for line in many_definitions_that_may_not_run() {
         let took = took(&line, Shell::Posix, &posix());
         assert!(
-            took < Duration::from_secs(4),
+            under(&head(&line), took, Duration::from_secs(4)),
             "{} bytes took {took:?}",
             line.len()
         );
@@ -3070,7 +3101,11 @@ fn the_fork_bomb_scan_reads_nested_functions_quickly() {
         .chain(deep.iter().map(|line| (line, slow * 8)));
     for (line, limit) in limits {
         let took = took(line, Shell::Posix, &linux);
-        assert!(took < limit, "{} bytes took {took:?}", line.len());
+        assert!(
+            under(&head(line), took, limit),
+            "{} bytes took {took:?}",
+            line.len()
+        );
     }
 }
 
@@ -3169,7 +3204,11 @@ fn the_process_rules_read_few_wildcards_and_nested_listings_quickly() {
     for ((shell, line), limit) in limits {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
         let took = took(line, *shell, &windows);
-        assert!(took < limit, "{shell:?} {} bytes took {took:?}", line.len());
+        assert!(
+            under(&head(line), took, limit),
+            "{shell:?} {} bytes took {took:?}",
+            line.len()
+        );
     }
 }
 
