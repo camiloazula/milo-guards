@@ -2,13 +2,14 @@
 //! job runs every recipe of it but `timing`, in its order, and the `timing`
 //! job runs `just timing` alone. A recipe added to `verify` and not to CI
 //! fails here. The `test` job runs `just test` alone, on Windows and on
-//! macOS: a job removed, a system dropped or another command fails here too.
-//! The `grammars` job runs `just grammars --require bash --entries` alone, a
+//! macOS, and the `oldest-rust` job runs `just oldest-rust` alone, on Linux:
+//! a job removed, a system dropped or another command fails here too. The
+//! `grammars` job runs `just grammars --require bash --entries` alone, a
 //! recipe `just verify` does not run: it starts bash, and is not part of the
 //! gate; PowerShell is not run there yet, and bash is required.
 //!
 //! The workflow is read line by line, as plain block YAML: each job under
-//! `jobs:`, each key by where it sits, comments skipped. In the four jobs
+//! `jobs:`, each key by where it sits, comments skipped. In the five jobs
 //! held here, some ways a job could run less than it shows are refused, never
 //! read: the keys `if:`, `continue-on-error:`, `needs:`, `shell:`,
 //! `include:`, `exclude:` and `working-directory:`; a quoted key, an explicit
@@ -414,6 +415,38 @@ fn ci_runs_just_grammars_alone_outside_the_gate() -> Result<(), String> {
         setting(&workflow, "grammars", &["runs-on"])?,
         "ubuntu-latest",
         "the grammars job runs on Linux, where bash and pwsh come with the runner"
+    );
+    Ok(())
+}
+
+#[test]
+fn ci_runs_just_oldest_rust_alone_on_linux() -> Result<(), String> {
+    let justfile = read("justfile")?;
+    let workflow = read(".github/workflows/ci.yml")?;
+    assert!(
+        dependencies(&justfile, "oldest-rust")?.is_empty(),
+        "`just oldest-rust` runs its own commands, not other recipes"
+    );
+    assert!(
+        !dependencies(&justfile, "verify")?
+            .iter()
+            .any(|recipe| recipe == "oldest-rust"),
+        "`just verify` runs with the pinned Rust alone, so it does not run `oldest-rust`"
+    );
+    assert_eq!(
+        runs(&workflow, "oldest-rust")?,
+        ["just oldest-rust"],
+        "the oldest-rust job of ci.yml must run `just oldest-rust` alone"
+    );
+    assert_eq!(
+        setting(&workflow, "oldest-rust", &["name"])?,
+        "oldest-rust",
+        "the oldest-rust job's check is named `oldest-rust`"
+    );
+    assert_eq!(
+        setting(&workflow, "oldest-rust", &["runs-on"])?,
+        "ubuntu-latest",
+        "the oldest-rust job of ci.yml runs on Linux"
     );
     Ok(())
 }

@@ -9,13 +9,37 @@ submit a change. How the code is organised, and the rules it follows, are in
 Requires [`just`](https://github.com/casey/just) and rustup; plain `just`
 lists the recipes.
 
-One Rust builds everything: `rust-toolchain.toml` pins it (rustup installs it,
-with clippy, rustfmt and `llvm-tools-preview`, the first time `cargo` runs
-here), so every contributor gets the same clippy verdicts. It is also the
-minimum supported version (`rust-version` in `Cargo.toml`) and the version CI
-runs (`RUSTUP_TOOLCHAIN` and each Rust install step's `toolchain:` input in
-`.github/workflows/ci.yml` and `release.yml`); a test fails when they differ. Bump them
-together, to the newest stable. Edition 2021.
+One Rust builds everything the gate runs: `rust-toolchain.toml` pins it
+(rustup installs it, with clippy, rustfmt and `llvm-tools-preview`, the first
+time `cargo` runs here), so every contributor gets the same clippy verdicts.
+It is the version CI runs (`RUSTUP_TOOLCHAIN` and each Rust install step's
+`toolchain:` input in `.github/workflows/ci.yml` and `release.yml`); a test
+fails when they differ. Bump them together, to the newest stable. Edition
+2021.
+
+The oldest Rust the crates support is another, lower version: `rust-version`
+in `Cargo.toml`, Rust 1.90 today, the one the crates declare to a caller
+([Versions](README.md#versions)). `just oldest-rust` builds with it what a
+caller builds (the workspace with its default features, so without the
+`testing` features only the dev-dependencies turn on, and the shell guard
+without `inline`) and runs every test but the timing ones with it (`cargo
++` the `oldest_rust` of the `justfile`), all against `Cargo.lock`; CI's
+`oldest-rust` job runs that recipe, and a release runs it by hand
+([Releasing](#releasing)). `just verify` does not, and needs only the
+pinned Rust. To run
+`just oldest-rust` locally, install that Rust once, with no component:
+`rustup toolchain install 1.90 --profile minimal`.
+`crates/guards/tests/toolchain.rs` holds each copy of it to `rust-version`:
+`oldest_rust`, the job's `RUSTUP_TOOLCHAIN` and `toolchain:` input, the
+README and this page; it fails when the job is gone, when another job
+overrides the pinned Rust, and when `rust-version` is above the pin.
+
+`rust-version` is raised only when a dependency, a language feature or a
+library API the code needs requires it, never just because a new Rust is
+out, and a raise is a minor bump at `0.x` ([Releasing](#releasing)): a
+caller on the old Rust can no longer build the crates. Raise it with each
+copy above, and say so in `CHANGELOG.md`. The pinned Rust is separate and
+moves freely.
 
 Run commands with the pinned toolchain: `cargo --version` in the repo should
 print the version in `rust-toolchain.toml`. A Homebrew-installed Rust earlier on
@@ -85,9 +109,19 @@ systems are pinned to the runner labels of that day's images (such as
 `windows-2025` and `macos-26`), and the checks' names with them: a
 `-latest` label moves to a new system without a commit here, and a
 required check should not.
+The `oldest-rust` job runs `just oldest-rust` on Linux, with the oldest Rust
+the crates support (above) where every other job uses the pinned one. It is
+advisory for now: the ruleset on `main` does not require it, and a red run
+is a time to look, not a change that cannot merge. It is to become a
+required check: once it has passed on `main` steadily, its check,
+`oldest-rust`, is added to the ruleset's required checks beside `verify`.
+Until then nothing keeps a red run from merging or from being released
+(the release workflow builds with the pinned Rust only), so a release runs
+`just oldest-rust` by hand ([Releasing](#releasing)).
 `crates/guards/tests/ci_jobs.rs` holds each job to its recipes: `verify` to
-every recipe of `just verify` but `timing`, `timing` to `just timing`, and
-`test` to `just test` alone, on those two systems.
+every recipe of `just verify` but `timing`, `timing` to `just timing`,
+`test` to `just test` alone, on those two systems, and `oldest-rust` to
+`just oldest-rust` alone, on Linux.
 
 A timing test lives in its crate's `tests/timing.rs`, and only there. It
 reads the clock in an optimized build only, with
@@ -141,8 +175,14 @@ is over its bound before it fails, so one run on the runner shows them all.
 commit, so CI runs it as its own job and a failure there is not a code
 failure. Run it when you add or update a dependency.
 
-Clippy reads `rust-version` and its `incompatible_msrv` lint fails on an API
-newer than it, so no gate needs a second compiler.
+Clippy reads `rust-version`, and in `just lint` its `incompatible_msrv`
+lint fails on a standard library API newer than it, in the library and, with
+`check-incompatible-msrv-in-tests` in `clippy.toml`, in the tests too. It
+does not see a language feature newer than it (an `if let` guard on a
+`match` arm, stable since 1.95, passed it with `rust-version` at 1.90), nor
+a dependency whose own `rust-version` is higher: a build with that Rust
+does, which is why `just oldest-rust` needs a second compiler and is not
+part of the gate.
 
 This is a library and ships no binary, so there is no notices file here. The
 third-party notices travel with the binaries of the programs that use it.
@@ -214,7 +254,11 @@ The tool is a package of its own, in `tools/grammar-check`, which the
 workspace excludes: it starts processes, which no crate under `crates/` may,
 and it is never published, so no gate of the workspace builds it and
 `just package`, `just publish` and the release workflow never see it. The
-recipe formats, lints, tests and runs it. Its `Cargo.lock` is its own, and
+recipe formats, lints, tests and runs it. `just oldest-rust` does not build
+it: it is not published, so no caller compiles it with an older Rust. Its
+`rust-version` and `edition` are the workspace's (`contract.rs` holds them),
+so clippy's `incompatible_msrv` holds its code, tests included, to the
+oldest Rust as it holds the crates'. Its `Cargo.lock` is its own, and
 `crates/guards/tests/contract.rs` holds every package in it to `Cargo.lock`,
 at the same version and from the same source, and the recipe builds it
 `--locked`, so it builds what the gates build and `just advisories` audits; after a change to `Cargo.lock` (a new
@@ -440,14 +484,18 @@ its path. A release is:
    `milo-guards-*` entry under `[workspace.dependencies]`, to the same
    number, and bring `tools/grammar-check/Cargo.lock` in step with
    `Cargo.lock` ([the command](#the-grammars-beside-the-real-shells);
-   `just verify` fails until it is): a new rule or any other change to what a caller compiles
-   against is a minor bump at `0.x`; a change to what a guard answers with
-   the same API is a patch ([Versions](README.md#versions)).
+   `just verify` fails until it is): a new rule, a raise of `rust-version`
+   or any other change to what a caller compiles against is a minor bump at
+   `0.x`; a change to what a guard answers with the same API is a patch
+   ([Versions](README.md#versions)).
 2. Move the changelog's `Unreleased` section under the new version, with the
    date, in `CHANGELOG.md`.
-3. `just verify`, then `just package`: every crate packaged and built from
-   its package, as crates.io will build it, with the case files left out
-   (`exclude` in each crate's manifest).
+3. `just verify` and `just oldest-rust`, then `just package`: every crate
+   packaged and built from its package, as crates.io will build it, with
+   the case files left out (`exclude` in each crate's manifest). The
+   release workflow builds with the pinned Rust only, and the `oldest-rust`
+   job is not yet a required check, so `just oldest-rust` here is what
+   keeps a release from declaring a `rust-version` it does not build with.
 4. Merge, tag the merge commit `vX.Y.Z` and push the tag. Only the owner
    can create a release tag.
 5. The tag starts `.github/workflows/release.yml`, which does the rest. It

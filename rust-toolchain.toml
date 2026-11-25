@@ -1,9 +1,11 @@
-# The one Rust this repo builds with, everywhere: every `cargo` and `just`
-# here, the gates, and CI (each workflow in .github/workflows that installs
-# Rust sets `RUSTUP_TOOLCHAIN` to the same version, because the install
-# action's `rustup default` would otherwise outrank this file). It is also the minimum supported version
-# (`rust-version` in Cargo.toml), so no gate needs a second compiler. Bump all
-# of them together, to the newest stable.
+# The Rust this repo builds with: every `cargo` and `just` here, the gates,
+# and CI (each workflow in .github/workflows that installs Rust sets
+# `RUSTUP_TOOLCHAIN` to the same version, because the install action's
+# `rustup default` would otherwise outrank this file). Bump all of them
+# together, to the newest stable. The one exception is `just oldest-rust`
+# and CI's `oldest-rust` job, which build and test with the oldest Rust the
+# crates support, `rust-version` in Cargo.toml: a lower version that moves
+# on its own.
 #
 # Note: a Homebrew-installed rustc/cargo earlier on PATH ignores this file;
 # rustup's ~/.cargo/bin must come first for the pin to take effect.

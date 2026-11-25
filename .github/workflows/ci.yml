@@ -10,7 +10,10 @@
 # compiled by each system's C compiler (MSVC on Windows, Apple's clang on
 # macOS), and a caller builds them on its own system: the `test` job runs
 # `just test` on Windows and on macOS, so a caller there is not the first to
-# build and test them. It is advisory for now (below). This is a library:
+# build and test them. It is advisory for now (below). The `oldest-rust` job
+# runs `just oldest-rust` on Linux: the crates built and tested with the
+# oldest Rust they support (`rust-version` in Cargo.toml), where every other
+# job uses the pinned one. It is advisory for now too. This is a library:
 # nothing here produces an artefact. Advisories are their own job, running
 # `just advisories`, because they change without a commit and must not be
 # confused with a code failure; the verify job does not run them. The
@@ -39,7 +42,8 @@ env:
   # Outranks rust-toolchain.toml, which the install action's `rustup default`
   # would otherwise silently lose. Keep this, the `toolchain:` input of each
   # Rust install step and rust-toolchain.toml on the same version (a test
-  # checks all of them).
+  # checks all of them). The `oldest-rust` job alone overrides it, with the
+  # oldest supported Rust.
   RUSTUP_TOOLCHAIN: "1.99.1"
   # No debuginfo: linking every test binary with full debuginfo starves the
   # runner on cold builds. Test failures still name the assertion.
@@ -152,6 +156,54 @@ jobs:
       # Git for Windows' `sh` on its PATH (`crates/guards/tests/ci_jobs.rs`
       # checks the job runs this recipe alone).
       - run: just test
+        timeout-minutes: 45
+
+  # `just oldest-rust` on Linux: what a caller builds of the crates, and
+  # every test but the timing ones, with the oldest Rust they support,
+  # `rust-version` in Cargo.toml, against Cargo.lock. Clippy's `incompatible_msrv` catches an API newer than it
+  # in the verify job, but not a language feature, nor a dependency that asks
+  # for a newer Rust; this build does. It is the one job that installs
+  # another Rust than rust-toolchain.toml's. Advisory for now: the ruleset on
+  # `main` does not require it, so a red run here is a time to look, not a
+  # change that cannot merge. It is to become a required check: `oldest-rust`
+  # is added to the ruleset's required checks once it has passed on `main`
+  # steadily. Until then a release runs `just oldest-rust` by hand
+  # (CONTRIBUTING.md, Releasing), since release.yml builds with the pinned
+  # Rust only.
+  oldest-rust:
+    name: oldest-rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Outranks the workflow's RUSTUP_TOOLCHAIN for this job alone, so every
+    # step reads the Rust it installs, rust-cache's key included; the recipe
+    # names it too (`cargo +…`). A test holds this and the `toolchain:`
+    # input below to `rust-version`, and refuses such an override in any
+    # other job.
+    env:
+      RUSTUP_TOOLCHAIN: "1.90"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # `just oldest-rust` needs no component: no clippy, rustfmt or
+      # llvm-tools.
+      - name: Install the oldest supported Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.90"
+
+      # The cache key carries the job's name and the version of rustc, so
+      # this compiler's build is kept apart from the pinned one's.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: "epoch-${{ vars.RUST_CACHE_EPOCH || '1' }}"
+          cache-on-failure: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      # `crates/guards/tests/ci_jobs.rs` checks the job runs this recipe
+      # alone.
+      - run: just oldest-rust
         timeout-minutes: 45
 
   advisories:

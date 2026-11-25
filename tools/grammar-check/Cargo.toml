@@ -10,7 +10,7 @@ description = "Holds the shell guard's grammars to how the real shells parse eac
 version = "0.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-rust-version = "1.99"
+rust-version = "1.90"
 publish = false
 # The tool; `hold-output-open` below is a program its tests start.
 default-run = "grammar-check"

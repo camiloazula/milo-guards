@@ -3078,36 +3078,48 @@ impl Walker<'_> {
     /// computed is only known when it runs.
     fn expr(&self, node: Node<'_>) -> Arg {
         let source = unit::text(&node, self.source);
+        // An option with a path attached (`--post-file=$HOME/.env`) is read for the
+        // path before anything else. Not written as `if let` guards on the
+        // arms: they are stable only from Rust 1.95, newer than the oldest the
+        // crates support (`rust-version`), and clippy does not catch them.
         match node.kind() {
             "generic_token" => match bare_expansion(source) {
                 None => Arg::Known(unescape(source)),
-                Some(false) if let Some(word) = attached_path(source, self.split) => word,
-                Some(runs) => Arg::Template {
-                    text: unescape(source),
-                    source: source.into(),
-                    runs,
-                },
-            },
-            "command_parameter" if let Some(word) = attached_path(source, self.split) => word,
-            "command_parameter" => match quoted_parameter(source) {
-                Some(Parameter {
-                    text,
-                    made,
-                    expands: None,
-                }) => {
-                    self.split.note_splitting(&made);
-                    Arg::Known(text)
+                Some(runs) => {
+                    let attached = if runs {
+                        None
+                    } else {
+                        attached_path(source, self.split)
+                    };
+                    attached.unwrap_or_else(|| Arg::Template {
+                        text: unescape(source),
+                        source: source.into(),
+                        runs,
+                    })
                 }
-                Some(Parameter {
-                    text,
-                    expands: Some(runs),
-                    ..
-                }) => Arg::Template {
-                    text,
-                    source: source.into(),
-                    runs,
+            },
+            "command_parameter" => match attached_path(source, self.split) {
+                Some(word) => word,
+                None => match quoted_parameter(source) {
+                    Some(Parameter {
+                        text,
+                        made,
+                        expands: None,
+                    }) => {
+                        self.split.note_splitting(&made);
+                        Arg::Known(text)
+                    }
+                    Some(Parameter {
+                        text,
+                        expands: Some(runs),
+                        ..
+                    }) => Arg::Template {
+                        text,
+                        source: source.into(),
+                        runs,
+                    },
+                    None => Arg::Unknown(source.to_string()),
                 },
-                None => Arg::Unknown(source.to_string()),
             },
             "integer_literal"
             | "decimal_integer_literal"
