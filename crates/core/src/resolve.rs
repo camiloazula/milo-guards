@@ -18,9 +18,9 @@ mod mount;
 use std::sync::Arc;
 
 use land::{Held, Landed};
-pub(crate) use land::{Prepared, MOST_LINKS};
+pub(crate) use land::{Prepared, MOST_LINKS, MOST_PARTS};
 #[cfg(any(feature = "testing", test))]
-pub(crate) use land::{MOST_BUILD, MOST_HOPS, MOST_ROUNDS, MOST_TARGET};
+pub(crate) use land::{MOST_BUILD, MOST_HOPS, MOST_ROUNDS, MOST_TARGET, PART_BYTES};
 pub(crate) use mount::MOST_WORK;
 use mount::{Budget, Mounts, Picked};
 
@@ -1441,10 +1441,10 @@ impl Resolver {
         // is not clear: a plain name there may be the secret. A workspace
         // that holds a mount's folder is not clear either: a plain name there
         // may be a drive (`c/Users` from `/mnt`).
-        // A workspace the caller names a link in, or one a link lands in
-        // (through other links or not), is not clear either: a plain name
-        // there may go through the link to anywhere, or be a name another
-        // link lends a key.
+        // A workspace the caller names a link in, or one a link lands in or
+        // above (through other links or not), is not clear either: a plain
+        // name there may go through the link to anywhere, or be a name
+        // another link lends a key.
         let mounted = |workspace: &Workspace| {
             landing
                 && (tree.holds_mount(&workspace.loc, &building)
@@ -1455,7 +1455,7 @@ impl Resolver {
                             || links
                                 .tree()
                                 .links_at_or_below(&workspace.spelled, &building)
-                            || links.tree().lands_at_or_below(&workspace.loc, &building)
+                            || links.tree().lands_around(&workspace.loc, &building)
                     }))
         };
         let own = |workspace: &Workspace| {

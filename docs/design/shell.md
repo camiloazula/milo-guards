@@ -3737,14 +3737,23 @@ reads the key through `p/lnk`. A pattern that can pick a link is read
 through it, and through the links past it (`cat */*/id_rsa`). A folder read,
 sent or changed whole holds what a link below it lands on only for a tool
 that follows the links it meets: `grep -R`, `find -L`, `cp -L`, `rsync -L`,
-`-k` and `-K`, `tar -h`, `scp -r`, `zip -r`, `chown -RL` and `chmod -RL`, a
-tool the guard does not know, and `cp -r`, which follows them on macOS and
-the BSDs (GNU's does not; reading it so is the cautious side); `grep -r`,
-`rm -rf`, `mv`, `chown -R` and `find -delete` act on the links themselves
-(`rm -rf .venv` with a link in it to `/usr/bin/python3` deletes the link).
-`rm`, `unlink` and `mv` of a path that is itself a link act on the link
-(`rm .venv/bin/python`), unless a trailing `/` goes through it, and a
-pattern they are given reads the links it can pick as names. A read or a send of a path through
+`-k`, `-K` and `--copy-unsafe-links`, `tar -h`, `scp -r`, `zip -r`,
+`chown -RL` and `chmod -RL`, a tool the guard does not know, and `cp -r`,
+which follows them on macOS and the BSDs, FreeBSD's even after `-P` (GNU's
+does not; reading it so is the cautious side), unless a `-P` comes after
+it; `grep -r`, `rm -rf`, `mv`, `chown -R` and `find -delete` act on the
+links themselves (`rm -rf .venv` with a link in it to `/usr/bin/python3`
+deletes the link). POSIX `rm`, `unlink` and `mv`, and cmd's `rd`, of a
+path that is itself a link act on the link (`rm .venv/bin/python`), unless
+a trailing `/` goes through it, and a pattern they are given reads the
+links it can pick as names. Every other delete or move of it goes through
+it: `shred` and `srm` overwrite what it points to before they delete,
+cmd's `del` of a folder deletes the files in it, `Remove-Item` and the
+listings piped to it may follow a junction (Windows PowerShell 5.1 deletes
+through one, and the line does not say which PowerShell runs it), `rsync
+--delete` deletes inside the folder it points to, and what a `find -L` or
+`-H` runs for each file it finds (`find -L data -exec rm -rf {} +`) is
+handed what is below it. A read or a send of a path through
 more links than any system follows, or through a link that cannot be read
 or placed, is `unknown`, `reads a path only known when it runs`. A brace in
 a link's name is that name when a word spells it (`cat '{a,b}/x'`), and

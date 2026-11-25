@@ -338,17 +338,23 @@ and a new field on
   (`~/current`, a web server's folder, a share's) makes none of it beyond.
   A link named where another link lands lends the other's name too
   (`s/keys` is `~/.ssh/keys` when `~/.ssh` is a link to `s`), and a
-  workspace a link lands in, through other links or not, is one whose plain
-  names are looked up in full.
+  workspace a link lands in or above (a stow layout, `~/.config` a link to
+  the `dotfiles/config` it is in), through other links or not, is one whose
+  plain names are looked up in full.
 - A folder holds what a link below it lands on only for a tool that follows
-  the links it meets (`grep -R`, `find -L`, `cp -L`, `rsync -L`, `-k` and
-  `-K`, `tar -h`, `scp -r`, `zip -r`, `chown -RL`, `shutil.copytree`, and
-  `cp -r`, which follows them on macOS and the BSDs and is read so on every
-  POSIX line, a false alarm for GNU's); `rm -rf`, `mv`, `chown -R`,
-  `find -delete` and `shutil.rmtree` act on the links. `rm`, `unlink` and
-  `mv` of a path that is itself a link act on the link (a trailing `/` goes
-  through it), and a pattern they are given reads the links it can pick as
-  names. What each folder holds is worked out when the tree is built, so
+  the links it meets (`grep -R`, `find -L`, `cp -L`, `rsync -L`, `-k`,
+  `-K` and `--copy-unsafe-links`, `tar -h`, `scp -r`, `zip -r`,
+  `chown -RL`, `shutil.copytree`, and `cp -r`, which follows them on macOS
+  and the BSDs, FreeBSD's even after `-P`, and is read so on every POSIX
+  line unless a `-P` comes after it, a false alarm for GNU's); `rm -rf`,
+  `mv`, `chown -R`, `find -delete` and `shutil.rmtree` act on the links.
+  POSIX `rm`, `unlink` and `mv`, and cmd's `rd`, of a path that is itself
+  a link act on the link (a trailing `/` goes through it), and a pattern
+  they are given reads the links it can pick as names; every other delete
+  or move goes through it: `shred` and `srm` overwrite what it points to,
+  `del` of a folder empties it, `Remove-Item` may follow a junction
+  (Windows PowerShell 5.1 does), `rsync --delete` deletes in it, and a
+  `find -L` or `-H` hands on what is below it. What each folder holds is worked out when the tree is built, so
   asking costs a lookup for each part of a path, whatever the number of
   links, and a pattern does not read again through a link that lands on
   nothing serious (a package manager's links into its store).
@@ -358,12 +364,16 @@ and a new field on
   naming them at once does. A link named below another is placed through it,
   in rounds, the same in any order; one named more than nine levels deep
   is lost, every path through it only known when it runs. Past the build's
-  own counted budget (33,554,432) or past 262,144 links, no link is held
-  and every path is only known when it runs, whatever the order. The tree
-  keeps about 1.1 KB for each link, and its build takes about 3 KB and a
-  few microseconds for each, in time linear in the number of links (about
-  half a second for 50,000 and 2.5 seconds for 250,000): a caller that
-  starts a process for each tool call pays it on every call.
+  own counted budget (33,554,432), past 262,144 links, or past 1,048,576
+  parts of their names and targets in all (`MOST_LINK_PARTS`, a part
+  counting once more for each 64 bytes in it), no link is held and every
+  path is only known when it runs, whatever the order. The tree keeps about
+  1.1 KB for each package manager's link, and its build takes about 3 KB
+  and 7 to 10 microseconds for each, in time linear in the parts: at the
+  bound, about 0.75 seconds and 285 MB at the most for 104,000 such links,
+  and 1 second and 440 MB for links 60 folders deep in folders of their
+  own, the dearest measured: a caller that starts a process for each
+  tool call pays it on every call.
 - A path through more links than any system follows (63, Windows's), a
   link that cannot be read or placed, or past the counted work one resolver
   may spend (1,048,576) is only known when it runs: `unreadable` to the

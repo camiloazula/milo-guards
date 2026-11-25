@@ -158,13 +158,16 @@ impl Link {
 /// one call.
 ///
 /// The tree keeps about 1.1 KB of memory for each link (measured for
-/// package-manager links of five parts each and their targets), and its
-/// build takes about 3 KB and a few microseconds for each while it runs, in
-/// time linear in the number of links, and a counted amount of work for
-/// each part of each link's name and target: a caller that starts a process
-/// for each tool call builds it on every call. Past [`MOST_LINKS`]
-/// links, or past the work the build may spend, the guard holds none of
-/// them, and every path is only known when it runs; a link it cannot place
+/// package-manager links of six parts each and targets of four), and its
+/// build takes about 3 KB and 7 to 10 microseconds for each while it runs,
+/// in time linear in the parts of the links' names and targets, and a
+/// counted amount of work for each: a caller that starts a process for each
+/// tool call builds it on every call. Past [`MOST_LINKS`] links, past
+/// [`MOST_LINK_PARTS`] parts of their names and targets, or past the work
+/// the build may spend, the guard holds none of them, and every path is
+/// only known when it runs. At the bound of parts a build takes about a
+/// second and 440 MB at the most (links 60 folders deep, each in folders of
+/// its own), and 0.75 seconds and 285 MB for 104,000 package-manager links; a link it cannot place
 /// among the others (one named through more than eight links named through
 /// links, or through a link it cannot place) makes the paths through it so,
 /// whatever the order of the list.
@@ -179,6 +182,13 @@ pub struct Links {
 /// The most links the guards hold: past it, every path is only known when
 /// it runs.
 pub const MOST_LINKS: usize = crate::resolve::MOST_LINKS;
+
+/// The most parts the names and targets of the links the guards hold may
+/// have, all together, a part counting once more for each 64 bytes in it:
+/// past it, every path is only known when it runs. A package manager's link
+/// (`/home/me/work/repo/node_modules/pkg` to
+/// `.pnpm/pkg@1.0.0/node_modules/pkg`) has ten.
+pub const MOST_LINK_PARTS: usize = crate::resolve::MOST_PARTS;
 
 impl Links {
     /// The links, in the order they were named.

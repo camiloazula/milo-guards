@@ -803,14 +803,16 @@ may land is read, and the most serious wins:
   -r`, `chown -RL`, `shutil.copytree`, and `cp -r`, which follows them on
   macOS and the BSDs and is read so on every POSIX line, a false alarm for
   GNU's). `place_name`, which a guard asks of what acts on the name itself
-  (`rm`, `unlink`, `mv`), reads a path that ends at a link as the link, and
+  (POSIX `rm`, `unlink` and `mv`, cmd's `rd`, and the script guard's
+  deletes and moves), reads a path that ends at a link as the link, and
   the links a pattern can pick as names. `place`, `holds_protected` and `reaches_secret` read
   the links below a folder as links: `rm -rf .venv` with a link inside it to
   `/usr/bin/python3` deletes the link, not the system folder.
 - **The workspace** is the workspace by both names when a workspace folder
   is itself a link, and a working directory in a workspace with a link in
-  it, or one a link lands in (through other links or not), is not one whose
-  plain names are all the agent's (`cwd_is_clear`).
+  it, or one a link lands in or above (through other links or not: a stow
+  layout, `~/.config` a link to the `dotfiles/config` the workspace is in),
+  is not one whose plain names are all the agent's (`cwd_is_clear`).
 
 **What cannot be placed.** A path through more links than any system
 follows (Windows follows 63, the most of any; Linux 40, macOS 32), through a
@@ -835,13 +837,21 @@ nothing there, and a pattern that can pick it does not read through it
 again (`cat node_modules/*/package.json` over a package manager's links
 into its store costs the match alone). The build has a budget of counted
 work of its own, `MOST_BUILD` (33,554,432), and holds at most `MOST_LINKS`
-(262,144) links: past either, no link is held, and every path is only
-known when it runs, whatever the order of the list. The tree keeps about
-1.1 KB for each link (measured for package-manager links of five parts and
-their targets); its build takes about 3 KB and a few microseconds for
-each, in time linear in the number of links (about half a second for
-50,000, 2.5 seconds for 250,000). A caller that starts a process for each
-tool call builds it on every call.
+(262,144) links, of at most `MOST_LINK_PARTS` (1,048,576) parts of their
+names and targets in all, a part counting once more for each 64 bytes in
+it, counted as the list is read: past any, no link is held, and every path
+is only known when it runs, whatever the order of the list. The work bounds
+the time of a build, and the parts what it keeps: the tree and the lent
+names grow with the parts, not the links (links 60 folders deep, each in
+folders of its own, kept 17 KB each). The tree keeps about 1.1 KB for each
+package manager's link (`node_modules/pkg` to its store, six parts and a
+target of four); its build takes about 3 KB and 7 to 10 microseconds for
+each, in time linear in the parts. At the bound, 104,000 such links take
+0.75 seconds and 285 MB at the most while it runs; the dearest
+measured, links 60 folders deep in folders of their own, is 1 second and
+440 MB (265 MB kept), where 262,144 of them took 13 seconds and 9 GB
+before the bound. A caller that starts a process for each tool call builds
+it on every call.
 
 **Names.** A link's name compares as the system it is on compares names:
 without case on Windows (a drive or a share), by its 8.3 short name there

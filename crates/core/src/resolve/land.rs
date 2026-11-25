@@ -10,8 +10,9 @@
 //! finish (through more links than any system follows, through a link that
 //! cannot be read or placed, past the budget) is only known when it runs.
 //! The build spends from a budget of its own, [`MOST_BUILD`], and holds at
-//! most [`MOST_LINKS`] links: past either, no link is held and every path
-//! is only known when it runs, whatever the order of the list.
+//! most [`MOST_LINKS`] links of at most [`MOST_PARTS`] parts in all: past
+//! any, no link is held and every path is only known when it runs, whatever
+//! the order of the list.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -38,6 +39,22 @@ pub(crate) const MOST_TARGET: usize = 4_096;
 /// The most links held. Past it no link is held, and every path is only
 /// known when it runs.
 pub(crate) const MOST_LINKS: usize = 1 << 18;
+
+/// The most parts the names and targets of the links held may have, all
+/// together, a part counting once more for each [`PART_BYTES`] bytes in it:
+/// what the tree keeps, and the work and memory of its build, grow with
+/// them. Past it no link is held, and every path is only known when it
+/// runs. A link of ten parts with a target of four (`node_modules/pkg` to
+/// `.pnpm/pkg@1.0.0/node_modules/pkg`) counts 14: 74,898 of them fit.
+pub(crate) const MOST_PARTS: usize = 1 << 20;
+
+/// The bytes of a part that count as one part more toward [`MOST_PARTS`].
+pub(crate) const PART_BYTES: usize = 64;
+
+/// What `part` counts toward [`MOST_PARTS`].
+fn weight(part: &str) -> usize {
+    1 + part.len() / PART_BYTES
+}
 
 /// The counted work the build of the tree may spend: each part of a link's
 /// name and target walked to place it, each round. Past it no link is held,
@@ -375,10 +392,13 @@ impl Tree {
             |folder| Loc::absolute(&folder.to_string_lossy()),
         );
         let base = if mac { base.firm() } else { base };
-        let named: Vec<(Loc, Target)> = paths
-            .links
-            .iter()
-            .filter_map(|link| {
+        // What the tree keeps grows with the parts of the names and the
+        // targets: they are counted as they are read, and past
+        // `MOST_PARTS` none is held.
+        let mut kept = 0_usize;
+        let mut named: Vec<(Loc, Target)> = Vec::new();
+        for link in &paths.links {
+            let one = (|| {
                 let text = link.path.to_string_lossy();
                 if text.is_empty() {
                     return None;
@@ -401,8 +421,20 @@ impl Tree {
                 }
                 let target = empty.target(link.target.as_deref(), &loc);
                 Some((loc, target))
-            })
-            .collect();
+            })();
+            let Some((loc, target)) = one else {
+                continue;
+            };
+            kept = loc
+                .parts
+                .iter()
+                .chain(&target.parts)
+                .fold(kept, |kept, part| kept.saturating_add(weight(part)));
+            if kept > MOST_PARTS {
+                return (empty.overflowed(), Vec::new());
+            }
+            named.push((loc, target));
+        }
         let wild = named.iter().any(|(loc, _)| {
             loc.parts
                 .iter()
@@ -603,13 +635,16 @@ impl Tree {
         self.aliases = list;
     }
 
-    /// Whether a link lands at or below `folder` (already landed).
-    pub(super) fn lands_at_or_below(&self, folder: &Loc, budget: &Budget) -> bool {
+    /// Whether a link lands at, below or above `folder` (already landed):
+    /// a name in it may be one a link lends, whether the link lands on a
+    /// folder it holds or on one that holds it (`~/.config` a link to the
+    /// `dotfiles/config` the workspace is in).
+    pub(super) fn lands_around(&self, folder: &Loc, budget: &Budget) -> bool {
         let Some(mut at) = landed_root(&self.landed_roots, &folder.root) else {
             return false;
         };
         for part in &folder.parts {
-            if !budget.spend(1) {
+            if !budget.spend(1) || !self.aliases[at as usize].is_empty() {
                 return true;
             }
             let Some(child) = find(

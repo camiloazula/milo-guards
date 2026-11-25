@@ -1460,6 +1460,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         repeated: false,
         downloaded: false,
         relocates: false,
+        followed: false,
         autocd: false,
         aliased: false,
         listings: Vec::new(),

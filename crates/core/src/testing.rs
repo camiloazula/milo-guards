@@ -24,6 +24,12 @@ pub const MOST_TARGET: usize = crate::resolve::MOST_TARGET;
 /// The most links held.
 pub const MOST_LINKS: usize = crate::resolve::MOST_LINKS;
 
+/// The most parts of the links' names and targets held.
+pub const MOST_PARTS: usize = crate::resolve::MOST_PARTS;
+
+/// The bytes of a part that count as one part more.
+pub const PART_BYTES: usize = crate::resolve::PART_BYTES;
+
 /// The counted work the build of the tree of links may spend.
 pub const MOST_BUILD: usize = crate::resolve::MOST_BUILD;
 

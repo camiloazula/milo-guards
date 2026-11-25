@@ -744,7 +744,9 @@ fn quoted(path: &str, shell: Shell) -> Option<String> {
 /// not, named. By design, and in every case file too: the shell's send also
 /// finds a file by a name that looks like a secret (`.env`), and sends a
 /// public key (`.pub`) as no secret, so a send is held one way and not for
-/// a public key; what the kernel serves is the file guard's and the script
+/// a public key; `Remove-Item` of a path that ends at a junction deletes
+/// through it where `shutil.rmtree` refuses one, so there a delete is held
+/// one way; what the kernel serves is the file guard's and the script
 /// guard's read alone; and the file guard judges a write to a folder that
 /// holds a protected path as a write of what it holds, where a redirect
 /// writes into it, so such a folder's write is left out.
@@ -885,13 +887,22 @@ fn disagree_on_acts(path: &str, paths: &Paths) -> (Vec<String>, usize) {
     ));
     // A long path is PowerShell's to read as a provider path too, which
     // adds a finding of its own to a delete there.
+    // `Remove-Item` may delete through a junction it is given (Windows
+    // PowerShell 5.1 does), where `shutil.rmtree` refuses one: the shell is
+    // the more cautious of the two there, never the less.
+    let at_link = windows && !path.starts_with('~') && {
+        let resolver = milo_guards_core::Resolver::new(paths);
+        let spelling = milo_guards_core::Spelling::Plain(path);
+        let flavour = milo_guards_core::Flavour::Windows;
+        resolver.place_name(spelling, flavour, false) != resolver.place(spelling, flavour)
+    };
     if !path.starts_with("\\\\") {
         let shell_deletes =
             finds(&delete_line, shell::Rule::Delete) || finds(&delete_line, shell::Rule::WipeDisk);
         check(
             "delete: the shell, the script guard",
             shell_deletes,
-            script_deletes,
+            script_deletes || (at_link && shell_deletes),
         );
     }
     // A `file:` URL to an absolute POSIX path reads in the file guard's

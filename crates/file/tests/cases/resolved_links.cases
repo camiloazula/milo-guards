@@ -155,3 +155,7 @@ paths lent_twice base=posix link=/home/me/.ssh to=/home/me/work/repo/s link=/hom
 paths bare base=posix link=/home/me/work/repo/.git to=.bare link=/home/me/work/repo/.bare/hooks to=../scripts/hooks
 read@lent_twice rules=read_secret first=read_secret reason="reads your SSH keys" | k/id_rsa
 write@bare rules=write_sensitive first=write_sensitive reason="writes to a git hook, which runs code" | scripts/hooks/pre-commit
+# A workspace inside a folder a link lands on (a stow layout) is one whose
+# plain names a link lends: `credentials` is `~/.config/git/credentials`.
+paths stow cwd=/home/me/dotfiles/config/git home=/home/me workspace=/home/me/dotfiles/config/git link=/home/me/.config to=/home/me/dotfiles/config
+read@stow rules=read_secret first=read_secret reason="reads your git credentials" | credentials

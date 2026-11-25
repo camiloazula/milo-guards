@@ -959,18 +959,42 @@ fn only_listed(args: &[Arg], flags: &Flags) -> bool {
     true
 }
 
-/// Whether the reader, when it goes below the folders it names, opens what it
-/// finds through symbolic links. It does not only when it is on this list of
-/// walkers that stay out of them and every flag it is given is one that
-/// walker's own list says does not change that: `ls -R` and `du` (not `-L`,
-/// `-H`, `--dereference`), `grep -r` (not `-R`, `-S`), `rg` and `fd` (not
-/// `-L`, `--follow`), `find` (not `-L`, `-follow`, `-xtype`, and no `-exec` or
-/// `-ok`, which open the names it finds), and `git`, which reads the index and
-/// the objects and takes a link as a link (not `--no-index`). Any other flag,
-/// an abbreviation of one included, or any other reader, a reader added later
-/// and everything in PowerShell and cmd included, is taken to follow them.
-/// `find -H` and `grep -O` follow only the folder named on the command line,
-/// which is the root, and stay on the list.
+/// Whether `cp` with `args` follows the links it is given: the last of its
+/// flags that says is `-L`, `-H` or `--dereference`, or a lower-case `-r`,
+/// which follows them on macOS and the BSDs (FreeBSD 13 and later even
+/// after `-P`), where GNU's does not: it is read as following, the
+/// cautious side, unless a `-P` or `--no-dereference` comes after it. A
+/// word only known when it runs may be any of them.
+fn cp_follows(args: &[Arg]) -> bool {
+    let mut follows = false;
+    for arg in args {
+        let Some(text) = arg.known() else {
+            return true;
+        };
+        if text == "--" {
+            break;
+        }
+        match text.strip_prefix("--") {
+            Some(name) => match name.split('=').next().unwrap_or_default() {
+                "dereference" => follows = true,
+                "no-dereference" => follows = false,
+                _ => {}
+            },
+            None if text.starts_with('-') => {
+                for flag in text[1..].chars() {
+                    match flag {
+                        'L' | 'H' | 'r' => follows = true,
+                        'P' => follows = false,
+                        _ => {}
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+    follows
+}
+
 /// Whether a word of `args` is the short flag `short` (alone or in a bundle,
 /// `-RL`) or one of the long flags `long`; a word only known when it runs
 /// may be one.
@@ -984,6 +1008,19 @@ pub(super) fn flagged(args: &[Arg], short: char, long: &[&str]) -> bool {
     })
 }
 
+/// Whether the reader, when it goes below the folders it names, opens what it
+/// finds through symbolic links. It does not only when it is on this list of
+/// walkers that stay out of them and every flag it is given is one that
+/// walker's own list says does not change that: `ls -R` and `du` (not `-L`,
+/// `-H`, `--dereference`), `grep -r` (not `-R`, `-S`), `rg` and `fd` (not
+/// `-L`, `--follow`), `find` (not `-L`, `-follow`, `-xtype`, and no `-exec` or
+/// `-ok`, which open the names it finds), and `git`, which reads the index and
+/// the objects and takes a link as a link (not `--no-index`). Any other flag,
+/// an abbreviation of one included, or any other reader, a reader added later
+/// and everything in PowerShell and cmd included, is taken to follow them.
+/// `find -H` and `grep -O` follow only the folder named on the command line,
+/// which is the root, and stay on the list. The copiers and packers each
+/// say by their own flags (see the comment below).
 pub(super) fn follows_links(unit: &Unit, key: &str) -> bool {
     if unit.shell != Shell::Posix {
         return true;
@@ -1003,17 +1040,12 @@ pub(super) fn follows_links(unit: &Unit, key: &str) -> bool {
         }
         // Each copies or packs the links it meets as links, unless a flag
         // says to follow them: `tar -h`, `cp -L`, `rsync -L` (and `-k`, `-K`
-        // for links to folders), `zip` without `-y` (it follows them unless
-        // told not to). A lower-case `cp -r` follows them on macOS and the
-        // BSDs, where GNU's does not: it is read as following, the cautious
-        // side, unless `-P` says otherwise.
+        // for links to folders, `--copy-unsafe-links` for those that leave
+        // it), `zip` without `-y` (it follows them unless told not to).
         "tar" | "gtar" | "bsdtar" => return flagged(args, 'h', &["dereference"]),
-        "cp" => {
-            return flagged(args, 'L', &["dereference"])
-                || (flagged(args, 'r', &[]) && !flagged(args, 'P', &["no-dereference"]))
-        }
+        "cp" => return cp_follows(args),
         "rsync" => {
-            return flagged(args, 'L', &["copy-links"])
+            return flagged(args, 'L', &["copy-links", "copy-unsafe-links"])
                 || flagged(args, 'k', &["copy-dirlinks"])
                 || flagged(args, 'K', &["keep-dirlinks"])
         }

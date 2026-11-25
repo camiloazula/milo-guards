@@ -351,6 +351,11 @@ paths bare base=posix link=/home/me/work/repo/.git to=.bare link=/home/me/work/r
 posix@lent_twice place="secret:your SSH keys" | k/id_rsa
 posix@lent_twice_named place="secret:your SSH keys" | k/id_rsa
 posix@bare git="a git hook, which runs code" | scripts/hooks/pre-commit
+# A link that lands on a folder the workspace is in (a stow layout) lends
+# its name to every path below: `hosts.yml` there is `~/.config/gh/hosts.yml`.
+paths stow cwd=/home/me/dotfiles/config/gh home=/home/me workspace=/home/me/dotfiles/config/gh link=/home/me/.config to=/home/me/dotfiles/config
+posix@stow place="secret:your GitHub login" | hosts.yml
+posix@stow place="secret:your GitHub login" | ./hosts.yml
 
 # A path that ends at a link is the link itself to what acts on the name
 # (`name`, as a delete asks), and what it points to through a trailing `/`.

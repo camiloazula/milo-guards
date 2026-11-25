@@ -43,7 +43,9 @@ pub mod spelling;
 pub mod testing;
 mod verdict;
 
-pub use paths::{Link, Links, Paths, Protected, ProtectedKind, Secret, MOST_LINKS};
+pub use paths::{
+    Link, Links, Paths, Protected, ProtectedKind, Secret, MOST_LINKS, MOST_LINK_PARTS,
+};
 pub use place::{Place, Sensitivity};
 pub use resolve::{Flavour, Resolver, Spelling};
 pub use verdict::{Assessment, Finding, RuleName};

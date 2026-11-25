@@ -1298,6 +1298,21 @@ impl Checker<'_> {
         self.delete_matching(unit, targets, verb, false);
     }
 
+    /// [`Checker::delete`] by a program that deletes a link it is given, not
+    /// what the link points to (`rm`, `unlink`, `rd /s`): a path that ends
+    /// at a link the caller named is the link, unless a trailing separator
+    /// says to go through it. Every other delete is judged through the link:
+    /// one that overwrites first (`shred`), one that empties a folder it is
+    /// given (`del`), and one that may follow a junction (`Remove-Item` in
+    /// Windows PowerShell 5.1, which the line does not tell from 7).
+    fn delete_link(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
+        for target in targets {
+            self.judging(target, |checker| {
+                checker.delete_one(unit, target, verb, false, None, !unit.followed);
+            });
+        }
+    }
+
     /// [`Checker::delete`], where `hidden` says the program matches the
     /// wildcards itself, with names that start with a dot among them.
     fn delete_matching(&mut self, unit: &Unit, targets: &[&Arg], verb: &str, hidden: bool) {
@@ -1326,12 +1341,13 @@ impl Checker<'_> {
     ) {
         for target in targets {
             self.judging(target, |checker| {
-                checker.delete_one(unit, target, verb, hidden, picks);
+                checker.delete_one(unit, target, verb, hidden, picks, false);
             });
         }
     }
 
-    /// [`Checker::delete_picked`] of one target.
+    /// [`Checker::delete_picked`] of one target; `itself` says the program
+    /// deletes a link it is given (see [`Checker::delete_link`]).
     fn delete_one(
         &mut self,
         unit: &Unit,
@@ -1339,6 +1355,7 @@ impl Checker<'_> {
         verb: &str,
         hidden: bool,
         picks: Option<&dyn Fn(&str) -> bool>,
+        itself: bool,
     ) {
         {
             let (found, listed_hidden) = self.expand(unit, target);
@@ -1357,15 +1374,14 @@ impl Checker<'_> {
                         self.resolver
                             .place_picked(scope.dir, &arg, unit.shell, scope.hidden, picks)
                     }
-                    // A delete acts on the name: a link the caller named is
-                    // deleted, not what it points to.
-                    None => self.resolver.place_name(
+                    None if itself => self.resolver.place_name(
                         scope.dir,
                         &arg,
                         unit.shell,
                         scope.hidden,
                         Access::Item,
                     ),
+                    None => self.place(unit.shell, scope, &arg, Access::Item),
                 };
                 match place {
                     place if place.harmless() => {}
@@ -1392,13 +1408,28 @@ impl Checker<'_> {
     /// `rm -rf /tmp/x` deletes it). A registry key moved is a registry
     /// change.
     fn move_away(&mut self, unit: &Unit, sources: &[&Arg], verb: &str) {
+        self.move_from(unit, sources, verb, false);
+    }
+
+    /// [`Checker::move_away`] by POSIX `mv`, which moves a link it is given,
+    /// not what it points to: a source that ends at a link the caller named
+    /// is the link, unless a trailing separator says to go through it. Every
+    /// other move is judged through the link.
+    fn move_link(&mut self, unit: &Unit, sources: &[&Arg], verb: &str) {
+        self.move_from(unit, sources, verb, !unit.followed);
+    }
+
+    /// [`Checker::move_away`]; `itself` says the program moves a link it is
+    /// given (see [`Checker::move_link`]).
+    fn move_from(&mut self, unit: &Unit, sources: &[&Arg], verb: &str, itself: bool) {
         for source in sources {
-            // A move takes the name: a link the caller named is moved, not
-            // what it points to.
             let scope = unit.scope();
-            let place =
+            let place = if itself {
                 self.resolver
-                    .place_name(scope.dir, source, unit.shell, scope.hidden, Access::Item);
+                    .place_name(scope.dir, source, unit.shell, scope.hidden, Access::Item)
+            } else {
+                self.place(unit.shell, scope, source, Access::Item)
+            };
             match place {
                 place if place.harmless() => {}
                 Place::Registry => {

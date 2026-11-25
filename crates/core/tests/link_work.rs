@@ -15,8 +15,8 @@
 //! removed, or made ten times larger, fails.
 
 use milo_guards_core::testing::{
-    link_work, posix, work_of_each, MOST_BUILD, MOST_HOPS, MOST_LINKS, MOST_ROUNDS, MOST_TARGET,
-    MOST_WORK,
+    link_work, posix, work_of_each, MOST_BUILD, MOST_HOPS, MOST_LINKS, MOST_PARTS, MOST_ROUNDS,
+    MOST_TARGET, MOST_WORK, PART_BYTES,
 };
 use milo_guards_core::{Flavour, Link, Paths, Place, Resolver, Sensitivity, Spelling};
 
@@ -31,6 +31,11 @@ const TARGET: usize = 4_096;
 
 /// The most links held, as written here.
 const LINKS: usize = 262_144;
+
+/// The most parts of the links' names and targets held, as written here,
+/// and the bytes of a part that count as one part more.
+const PARTS: usize = 1_048_576;
+const BYTES: usize = 64;
 
 /// The most work the build of the tree spends, as written here.
 const BUILD: usize = 33_554_432;
@@ -57,6 +62,8 @@ fn the_bounds_are_the_ones_written_here() {
     assert_eq!(MOST_HOPS, HOPS);
     assert_eq!(MOST_TARGET, TARGET);
     assert_eq!(MOST_LINKS, LINKS);
+    assert_eq!(MOST_PARTS, PARTS);
+    assert_eq!(PART_BYTES, BYTES);
     assert_eq!(MOST_BUILD, BUILD);
     assert_eq!(MOST_ROUNDS, ROUNDS);
 }
@@ -305,6 +312,46 @@ fn more_links_than_are_held_hold_none() {
     let paths = many_links(LINKS + 1);
     assert_eq!(place(&paths, "src/main.rs"), Place::Unknown);
     assert_eq!(place(&many_links(1_000), "src/main.rs"), Place::Inside);
+}
+
+#[test]
+fn links_of_more_parts_than_are_held_hold_none() {
+    // Links of 21 parts each: the four of `/home/me/work/repo`, a name of
+    // 16 (its bytes count once for each 64, and once more), and a target
+    // of one; then one in `/data` of four parts to `/`, which has none, to
+    // make up the bound, and one of five to pass it. Past the bound no link
+    // is held, in any order; at it, every one is.
+    let name = format!("{:0>width$}", "", width = 15 * BYTES);
+    let count = (PARTS - 4) / 21;
+    assert_eq!(count * 21 + 4, PARTS);
+    let links: Vec<Link> = (0..count)
+        .map(|at| {
+            Link::new(
+                format!("/home/me/work/repo/{at:0>6}{name}"),
+                format!("/d{at}"),
+            )
+        })
+        .collect();
+    for (last, want) in [
+        ("/data/a/b/c", Place::Inside),
+        ("/data/a/b/c/d", Place::Unknown),
+    ] {
+        let mut list = links.clone();
+        list.push(Link::new(last, "/"));
+        assert_eq!(
+            place(&posix().with_links(list.clone()), "src/main.rs"),
+            want,
+            "{last}"
+        );
+        if want == Place::Unknown {
+            list.reverse();
+            assert_eq!(
+                place(&posix().with_links(list), "src/main.rs"),
+                want,
+                "{last}"
+            );
+        }
+    }
 }
 
 #[test]
