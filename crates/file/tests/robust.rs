@@ -204,6 +204,81 @@ fn random_paths_with_hostile_named_secrets_never_panic() {
     }
 }
 
+/// Machines that name drive mounts the caller may get wrong: a mount at the
+/// root, an empty one, a relative one, a Windows one, one at the workspace,
+/// a Windows home that is no Windows path, and all of them at once.
+fn hostile_mounts() -> Vec<Paths> {
+    let mut machines = Vec::new();
+    for (paths, at) in [
+        (posix(), "/home/me/work/repo"),
+        (windows(), r"C:\Users\me\dev\repo"),
+    ] {
+        let mounts = ["/", "", "mnt", "/mnt", r"C:\mnt", at];
+        for mount in mounts {
+            machines.push(paths.clone().with_drive_mounts([mount]));
+        }
+        machines.push(paths.clone().with_windows_home("/home/me"));
+        machines.push(
+            paths
+                .with_drive_mounts(mounts)
+                .with_drive_mounts(["/cygdrive"])
+                .with_windows_home(r"C:\Users\me"),
+        );
+    }
+    machines
+}
+
+#[test]
+fn random_paths_with_hostile_mounts_never_panic() {
+    let machines = hostile_mounts();
+    let mut random = Lcg(13);
+    for _ in 0..300 {
+        let length = random.next() % 14;
+        let path: Vec<&str> = (0..length)
+            .map(|_| {
+                let pieces = ["mnt", "c", "C", "d", "..", "cygdrive", "Users", "*", "**"];
+                if random.next().is_multiple_of(3) {
+                    pieces[random.next() % pieces.len()]
+                } else {
+                    PIECES[random.next() % PIECES.len()]
+                }
+            })
+            .collect();
+        let path = path.join(if random.next().is_multiple_of(2) {
+            ""
+        } else {
+            "/"
+        });
+        for paths in &machines {
+            for access in [Access::Read, Access::Write] {
+                let assessment = judge(access, &path, paths);
+                assert_eq!(assessment, judge(access, &path, paths), "{path:?}");
+                assert_eq!(assessment.is_safe(), assessment.findings().is_empty());
+                let unreadable = path.is_empty()
+                    || path.contains(['\0', '\n', '*', '`'])
+                    || path.starts_with(' ');
+                if unreadable {
+                    assert!(
+                        assessment
+                            .findings()
+                            .iter()
+                            .any(|finding| finding.rule == Rule::Unreadable),
+                        "{access:?} {path:?}: {assessment:?}"
+                    );
+                }
+            }
+        }
+    }
+    // A long path through a mount, and a thousand `..` after one, return on
+    // each.
+    let long = format!("/mnt/c/{}", "d/".repeat(MAX_PATH_LEN / 2 - 4));
+    let climbing = format!("/mnt/c/{}", "../".repeat(1_000));
+    for paths in &machines {
+        let _ = judge(Access::Read, &long, paths);
+        let _ = judge(Access::Write, &climbing, paths);
+    }
+}
+
 #[test]
 fn a_path_too_long_is_not_read() {
     for machine in machines() {

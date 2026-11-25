@@ -3700,6 +3700,24 @@ any `cd`), the home directory and the workspace folders. The path model is
 core's; see [Core](core.md). This guard adds what only a shell's syntax gives
 a path.
 
+How the machine spells another system's drives is the caller's to pass,
+and core's to read ([Core](core.md#drive-mounts)). **Naming it never makes
+an answer less serious**: a line is judged on the `Paths` as given and as
+spelled (`Paths::as_spelled`), from one split, and keeps every finding of
+both; `effect` is the most cautious of what each judging says on its own and
+of what they say together, so one never hides the other's `unknown`, and
+`effect_paths` lists paths only when that is reads-only. On WSL, with the
+mount named (`Paths::with_drive_mounts(["/mnt"])`), `cat
+/mnt/c/Users/me/.ssh/id_rsa` is `read_secret` and `rm -rf /mnt/c` deletes the
+root of a disk; with the Windows home named too
+(`Paths::with_windows_home`), `rm -rf /mnt/c/Users/me` deletes your home
+directory. On Windows, Git Bash's mount (`/`) is read in a POSIX shell's line
+written from `/` (`cat /c/Users/me/.ssh/id_rsa`) or climbing above the drive
+(`cat ../../../../../c/Users/me/.ssh/id_rsa`); PowerShell and cmd spell a
+drive as Windows does, so a mount changes none of theirs. Without a mount or
+a Windows home, every line is judged as it was. The cases are in
+`tests/cases/drives.cases`.
+
 - `~` is the home directory. `~user` is another user's, which the spelling
   does not say, so it is unknown.
 - `$HOME`, `%USERPROFILE%` and `$env:TEMP` are the places they name.

@@ -175,6 +175,7 @@ pub(crate) fn explanation(command: &str, shell: Shell, reading: &Reading) -> Exp
         split,
         judged,
         resolver,
+        ..
     } = reading;
     let Judged {
         found,

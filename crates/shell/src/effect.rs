@@ -98,6 +98,18 @@ pub(crate) enum Kind {
     Unknown,
 }
 
+/// How cautious a caller that lets reads in the workspace through must be
+/// of an [`Effect`]: reads in the workspace, reads beyond it, changes,
+/// unknown.
+pub(crate) fn rank(effect: Effect) -> u8 {
+    match effect {
+        Effect::ReadsOnly(Reach::Workspace) => 0,
+        Effect::ReadsOnly(Reach::Beyond) => 1,
+        Effect::Changes => 2,
+        Effect::Unknown => 3,
+    }
+}
+
 /// The effect of a line already split and judged by the rules. `classify`
 /// uses the same `split` and `findings`, so the two answers cannot disagree
 /// about what the units are.

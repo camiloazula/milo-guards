@@ -1,7 +1,7 @@
 //! A `file:` URL: the path it names, placed through core's resolver like any
 //! other path.
 
-use milo_guards_core::{Flavour, Paths, Place, Resolver, Spelling};
+use milo_guards_core::{Flavour, Paths, Place, Resolver, Sensitivity, Spelling};
 use percent_encoding::percent_decode_str;
 use url::Url;
 
@@ -60,16 +60,47 @@ pub(crate) fn judge(url: &Url, paths: &Paths) -> (String, String) {
     let words = if path.chars().any(char::is_control) {
         "a path only known when it runs"
     } else {
-        // A path the caller named both protected and secret is protected
-        // to the resolver; a fetch of it reads the secret.
-        let resolver = Resolver::new(paths);
-        let spelled = Spelling::Plain(&path);
-        match resolver.place(spelled, flavour) {
-            place @ Place::Protected(_) => resolver
-                .named_secret(spelled, flavour)
-                .unwrap_or_else(|| place.words()),
-            place => place.words(),
+        let (place, words) = placed(&Resolver::new(paths), &path, flavour);
+        // With a drive mount or a Windows home named, the path is also
+        // placed as spelled, and the more telling words are kept: a key's,
+        // then any other sensitive or protected place's, then any place's
+        // that is not the agent's own.
+        match paths.as_spelled() {
+            Some(as_spelled) => {
+                let (other, other_words) = placed(&Resolver::new(&as_spelled), &path, flavour);
+                if telling(other) > telling(place) {
+                    other_words
+                } else {
+                    words
+                }
+            }
+            None => words,
         }
     };
     (format!("reads {words}"), shown(path))
+}
+
+/// How much a place's words tell: a key's most, then any other sensitive
+/// or protected place's, then any place's that is not the agent's own.
+fn telling(place: Place) -> u8 {
+    match place {
+        Place::Sensitive(_, Sensitivity::Secret) => 3,
+        Place::Sensitive(..) | Place::Protected(_) => 2,
+        place if !place.harmless() => 1,
+        _ => 0,
+    }
+}
+
+/// Where `path` lands on `resolver`, and the words a reason gives it: a
+/// path the caller named both protected and secret is protected to the
+/// resolver, and a fetch of it reads the secret.
+fn placed(resolver: &Resolver, path: &str, flavour: Flavour) -> (Place, &'static str) {
+    let spelled = Spelling::Plain(path);
+    match resolver.place(spelled, flavour) {
+        place @ Place::Protected(_) => match resolver.named_secret(spelled, flavour) {
+            Some(words) => (Place::Sensitive(words, Sensitivity::Secret), words),
+            None => (place, place.words()),
+        },
+        place => (place, place.words()),
+    }
 }

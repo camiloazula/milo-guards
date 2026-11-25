@@ -11,7 +11,11 @@
 //! the working directory, `~` as the home directory, `..` applied, and the
 //! Windows spellings (drives, shares, long paths, short names, any case)
 //! read as Windows reads them, whatever host the guard runs on. Nothing is
-//! read from the disk, so a symlink is judged by its own name.
+//! read from the disk, so a symlink is judged by its own name, and a POSIX
+//! spelling of a Windows drive (WSL's `/mnt/c`) as a folder of this
+//! machine's, unless the caller names the mount with
+//! [`Paths::with_drive_mounts`]: then a path through it is judged where it
+//! lands, and as spelled.
 //!
 //! - A **read** is safe wherever it lands, except a key or a credential, or
 //!   a file the caller named as one with [`Paths::with_secrets`]
@@ -168,6 +172,26 @@ pub const MAX_PATH_LEN: usize = 4096;
 /// ```
 #[must_use = "the assessment is the answer: it says whether the access is safe"]
 pub fn judge(access: Access, path: &str, paths: &Paths) -> Assessment {
+    let found = judge_on(access, path, paths);
+    // With a drive mount or a Windows home named, the path is also judged
+    // as spelled, and every finding of either is kept: naming how this
+    // machine spells another system's drives never makes an answer less
+    // serious.
+    let Some(spelled) = paths.as_spelled() else {
+        return found;
+    };
+    // One finding to a rule, as in each judging: the path's own first.
+    let mut findings = found.findings().to_vec();
+    for finding in judge_on(access, path, &spelled).findings() {
+        if !findings.iter().any(|known| known.rule == finding.rule) {
+            findings.push(finding.clone());
+        }
+    }
+    risky(findings)
+}
+
+/// [`judge`] on `paths` alone.
+fn judge_on(access: Access, path: &str, paths: &Paths) -> Assessment {
     let resolver = Resolver::new(paths);
     let flavour = resolver.flavour();
     let share = network(path, flavour);

@@ -29,7 +29,8 @@
 //! A declaration is `paths NAME FIELDS`, as the shell guard's: `base=MACHINE`,
 //! or `cwd=` and `home=`; `workspace=` (one for each folder, after the
 //! base's), `folder=` or `file=` (a protected path) and `secret_folder=` or
-//! `secret_file=` (a secret the caller names), each followed by its `words=`.
+//! `secret_file=` (a secret the caller names), each followed by its `words=`;
+//! `drive_mount=` for each folder drives are mounted in, and `windows_home=`.
 
 #![allow(
     dead_code,
@@ -370,6 +371,10 @@ fn declaration(
             (true, true) => paths.with_secrets([Secret::folder(named.path, named.words)]),
             (true, false) => paths.with_secrets([Secret::file(named.path, named.words)]),
         };
+    }
+    paths = paths.with_drive_mounts(declared.drive_mounts);
+    if let Some(home) = declared.windows_home {
+        paths = paths.with_windows_home(home);
     }
     Ok((declared.name, paths))
 }

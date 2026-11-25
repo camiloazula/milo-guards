@@ -22,7 +22,10 @@
 //!   guards' own table does not list (a project's `.env`, a password vault),
 //!   with the words a reason calls it by (`Secret::file`, `Secret::folder`),
 //!   added through [`Paths::with_secrets`]. Reading one is a finding, even
-//!   inside the workspace, as reading a key is.
+//!   inside the workspace, as reading a key is. How the machine spells
+//!   another system's drives the caller says too: the folders it mounts
+//!   them in ([`Paths::with_drive_mounts`], WSL's `/mnt`) and, on WSL, the
+//!   Windows home ([`Paths::with_windows_home`]).
 //! - [`Assessment`]: [`Safe`](Assessment::Safe), or
 //!   [`Risky`](Assessment::Risky) with a [`Finding`] for each reason.
 //! - [`Finding`]: the rule that found it, a reason a prompt can show, what

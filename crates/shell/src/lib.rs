@@ -252,9 +252,46 @@ struct Reading {
     split: unit::Split,
     judged: detect::Judged,
     resolver: path::Resolver,
+    /// With a drive mount or a Windows home named, the line judged on the
+    /// paths as spelled too: `judged` keeps every finding of each, so naming
+    /// how this machine spells another system's drives never makes an answer
+    /// less serious.
+    spelled: Option<Spelled>,
+}
+
+/// A line judged on the paths as given and as spelled, each on its own.
+struct Spelled {
+    /// The findings on the paths as given, before those as spelled joined
+    /// them.
+    own: Vec<Finding>,
+    /// The resolver of the paths as spelled, and its findings.
+    resolver: path::Resolver,
+    found: Vec<Finding>,
 }
 
 impl Reading {
+    /// What the line does: with the paths as spelled too, the most cautious
+    /// of what each judging says on its own and of what they say together,
+    /// so that one never hides the other's `Unknown`.
+    fn effect(&self) -> Effect {
+        let merged = effect::of(&self.split, &self.judged.found, &self.resolver);
+        let Some(spelled) = &self.spelled else {
+            return merged;
+        };
+        [
+            effect::of(&self.split, &spelled.own, &self.resolver),
+            effect::of(&self.split, &spelled.found, &spelled.resolver),
+        ]
+        .into_iter()
+        .fold(merged, |most, effect| {
+            if effect::rank(effect) > effect::rank(most) {
+                effect
+            } else {
+                most
+            }
+        })
+    }
+
     fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
         let split = unit::split(
             command,
@@ -270,11 +307,28 @@ impl Reading {
         if effect {
             resolver.keep(paths);
         }
-        let judged = detect::findings(&split, &resolver);
+        let mut judged = detect::findings(&split, &resolver);
+        let spelled = paths.as_spelled().map(|as_spelled| {
+            let mut spelled = path::Resolver::new(&as_spelled);
+            spelled.made(&split.drives);
+            if effect {
+                spelled.keep(&as_spelled);
+            }
+            let other = detect::findings(&split, &spelled);
+            let found = other.found.clone();
+            let own = judged.found.clone();
+            judged.merge(other);
+            Spelled {
+                own,
+                resolver: spelled,
+                found,
+            }
+        });
         Self {
             split,
             judged,
             resolver,
+            spelled,
         }
     }
 }
@@ -327,8 +381,7 @@ fn assessed(findings: Vec<Finding>) -> Assessment {
 /// ```
 #[must_use = "the effect is the answer: it says whether the line only reads"]
 pub fn effect(command: &str, shell: Shell, paths: &Paths) -> Effect {
-    let reading = Reading::new(command, shell, paths, true);
-    effect::of(&reading.split, &reading.judged.found, &reading.resolver)
+    Reading::new(command, shell, paths, true).effect()
 }
 
 /// Show how `command`, run by `shell` with the directories in `paths`, was
@@ -473,6 +526,9 @@ pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
 #[must_use = "the paths are the answer: they are what the line reads"]
 pub fn effect_paths(command: &str, shell: Shell, paths: &Paths) -> Option<Vec<ReadPath>> {
     let reading = Reading::new(command, shell, paths, true);
+    if !matches!(reading.effect(), Effect::ReadsOnly(_)) {
+        return None;
+    }
     effect::paths(&reading.split, &reading.judged.found, &reading.resolver)
 }
 

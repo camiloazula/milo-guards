@@ -21,3 +21,11 @@ workspace = true
 [features]
 # The table checker and the sample directories guards test themselves with.
 testing = []
+
+
+# The work counts are read through `testing`; core depends on nothing, so
+# this test is built when the feature is on (`--all-features`, as the gate
+# runs), and `cargo test -p milo-guards-core` builds the others as before.
+[[test]]
+name = "mount_work"
+required-features = ["testing"]

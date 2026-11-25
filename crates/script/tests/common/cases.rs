@@ -368,6 +368,10 @@ fn declaration(
             (true, false) => paths.with_secrets([Secret::file(named.path, named.words)]),
         };
     }
+    paths = paths.with_drive_mounts(declared.drive_mounts);
+    if let Some(home) = declared.windows_home {
+        paths = paths.with_windows_home(home);
+    }
     Ok((declared.name, paths))
 }
 

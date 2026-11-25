@@ -110,7 +110,9 @@ Every guard keeps these five promises.
    clock or the network. It never starts a process or a thread and never
    writes to the terminal. It takes text and the `Paths` it is given, and it
    returns an answer. Paths are judged by how they are spelled, never by what
-   is on disk, so a Windows line is judged the same on every host.
+   is on disk, so a Windows line is judged the same on every host; how the
+   machine spells another system's drives (WSL's `/mnt/c`) is the caller's
+   to pass in `Paths`.
 2. **Deterministic.** The same input gives the same answer, on every run and
    on every machine.
 3. **No policy.** A guard says what it found. It never decides to ask, to
