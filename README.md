@@ -203,6 +203,7 @@ current as the code.
 use milo_guards::file::{judge, Access};
 use milo_guards::script::{self, Language};
 use milo_guards::shell::{classify, effect, Effect, Reach, Shell};
+use milo_guards::url;
 use milo_guards::{Paths, Protected, Secret};
 
 // Where the agent works, and what your tool keeps for itself.
@@ -247,6 +248,12 @@ let line = verdict.findings()[0].target.as_deref().unwrap_or_default();
 assert!(classify(line, Shell::Posix, &paths).is_safe());
 assert!(!verdict.is_safe());
 
+// A fetch is judged by its host; once connected, and before the request is
+// sent, by the address it reached, since a public name's DNS can point at
+// your own machine (behind a proxy, enforce it at the proxy instead).
+assert!(url::judge("https://docs.rs/url", &paths).is_safe());
+assert_eq!(url::judge_address("127.0.0.1").findings()[0].rule.name(), "local_address");
+
 // The files you know hold a secret, which the guards' own table does not list.
 let paths = paths.with_secrets([Secret::file("/home/me/work/app/.env", "the project's environment file")]);
 let verdict = classify("cat .env", Shell::Posix, &paths);
@@ -254,10 +261,12 @@ assert_eq!(verdict.findings()[0].reason, "reads the project's environment file")
 assert_eq!(judge(Access::Read, ".env", &paths).findings()[0].reason, "reads the project's environment file");
 ```
 
-The other guards read the same way. `url::judge(url, &paths)` judges a URL,
-`secrets::find(text)` reads a text and `secrets::find_spans(text)` gives the
-byte ranges to scrub, and `code::read` and `code::understand` read a snippet of
-Python or JavaScript. Every example in the crate's documentation is a test too;
+The other guards read the same way. `url::judge(url, &paths)` judges a URL;
+it does no lookup, so `url::judge_address(address)` judges the address the
+fetch then connected to, before the request is sent, with the same tables
+(its documentation says where that address must come from). `secrets::find(text)` reads a
+text and `secrets::find_spans(text)` gives the byte ranges to scrub, and
+`code::read` and `code::understand` read a snippet of Python or JavaScript. Every example in the crate's documentation is a test too;
 `cargo doc --open` shows them all, one per guard.
 
 A finding has four fields: `rule`, the enum value with its wire name; `reason`,

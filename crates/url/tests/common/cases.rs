@@ -3,8 +3,10 @@
 //! CONTRIBUTING.md; the reading of it is shared with the other guards (see
 //! [`format`]).
 //!
-//! A case is `[@PATHS] ANSWER... | URL`:
+//! A case is `[@PATHS] ANSWER... | URL`, or `address ANSWER... | ADDRESS`:
 //!
+//! - `address` says the text is an address the caller connected to, judged
+//!   by `judge_address`, with no paths;
 //! - `@PATHS` names the machine a `file:` URL's path is placed on: `@posix`,
 //!   `@macos`, `@windows`, or a `paths` declaration earlier in the file.
 //!   Without it, the URL is judged on `posix`;
@@ -16,7 +18,7 @@
 //!   comma separated.
 //!
 //! Every case is also held to what every answer keeps: a finding that the
-//! URL is unreadable carries no target, so no copy of it.
+//! URL or the address is unreadable carries no target, so no copy of it.
 //!
 //! A declaration is `paths NAME FIELDS`: `base=MACHINE`, or `cwd=` and
 //! `home=`; `workspace=` (one for each folder, after the base's);
@@ -38,7 +40,7 @@ use std::path::PathBuf;
 
 use format::{Record, Word};
 use milo_guards_core::RuleName;
-use milo_guards_url::{judge, Finding, Paths, Protected, Rule, Secret};
+use milo_guards_url::{judge, judge_address, Assessment, Finding, Paths, Protected, Rule, Secret};
 
 use super::{macos, posix, windows};
 
@@ -49,8 +51,21 @@ pub struct Case {
     pub at: String,
     pub paths: Paths,
     pub expect: Expect,
-    /// The URL judged, decoded.
+    /// The URL judged, decoded; for an address case, the address.
     pub url: String,
+    /// Whether the text is an address, judged by `judge_address`.
+    pub address: bool,
+}
+
+impl Case {
+    /// The answer the guard gives the case's text.
+    pub fn judged(&self) -> Assessment {
+        if self.address {
+            judge_address(&self.url)
+        } else {
+            judge(&self.url, &self.paths)
+        }
+    }
 }
 
 /// What a case expects of its URL.
@@ -147,23 +162,29 @@ pub fn parse(file: &str, source: &str) -> Result<Vec<Case>, Vec<String>> {
     format::parse(file, source).and_then(|records| cases(&records))
 }
 
-/// The key a repeated case shares with the first: the paths, the URL judged
-/// and the answer.
+/// The key a repeated case shares with the first: what is judged (a URL on
+/// its paths, or an address), the text judged and the answer.
 pub fn key(case: &Case) -> (String, String, Expect) {
-    (
-        format!("{:?}", case.paths),
-        case.url.clone(),
-        case.expect.clone(),
-    )
+    (judged_on(case), case.url.clone(), case.expect.clone())
 }
 
-/// One line for a case: where it is, the paths, the answer and the URL as
-/// Rust writes a string, tab separated.
+/// What a case is judged on: `address` for an address, else its paths.
+fn judged_on(case: &Case) -> String {
+    if case.address {
+        "address".to_string()
+    } else {
+        format!("{:?}", case.paths)
+    }
+}
+
+/// One line for a case: where it is, the paths (`address` for an address),
+/// the answer and the URL or the address as Rust writes a string, tab
+/// separated.
 pub fn dumped(case: &Case) -> String {
     format!(
-        "{}\t{:?}\t{}\t{:?}",
+        "{}\t{}\t{}\t{:?}",
         case.at,
-        case.paths,
+        judged_on(case),
         case.expect.spelled(),
         case.url
     )
@@ -173,12 +194,9 @@ pub fn dumped(case: &Case) -> String {
 /// and one when a finding that the URL is unreadable carries a target.
 pub fn wrong(case: &Case) -> Vec<String> {
     let Case {
-        at,
-        paths,
-        expect,
-        url,
+        at, expect, url, ..
     } = case;
-    let assessment = judge(url, paths);
+    let assessment = case.judged();
     let findings = assessment.findings();
     let mut wrong = Vec::new();
     if findings
@@ -264,12 +282,13 @@ fn cases(records: &[Record]) -> Result<Vec<Case>, Vec<String>> {
                     .map_err(|why| vec![why])
             }
             (None, _) => Err(vec!["a case with no `| URL`".to_string()]),
-            (Some(url), _) => case(&record.words, &machines).map(|(paths, expect)| {
+            (Some(url), _) => case(&record.words, &machines).map(|(paths, expect, address)| {
                 cases.push(Case {
                     at: record.at.clone(),
                     paths,
                     expect,
                     url: url.clone(),
+                    address,
                 });
             }),
         };
@@ -316,11 +335,15 @@ fn declaration(
     Ok((declared.name, paths))
 }
 
-/// The paths and answer of a case's words.
-fn case(words: &[Word], machines: &HashMap<String, Paths>) -> Result<(Paths, Expect), Vec<String>> {
-    let (machine, answer) = match words.first() {
-        Some(Word::Bare(head)) if head.starts_with('@') => (&head[1..], &words[1..]),
-        _ => ("posix", words),
+/// The paths and answer of a case's words, and whether it is an address.
+fn case(
+    words: &[Word],
+    machines: &HashMap<String, Paths>,
+) -> Result<(Paths, Expect, bool), Vec<String>> {
+    let (machine, answer, address) = match words.first() {
+        Some(Word::Bare(head)) if head.starts_with('@') => (&head[1..], &words[1..], false),
+        Some(Word::Bare(head)) if head == "address" => ("posix", &words[1..], true),
+        _ => ("posix", words, false),
     };
     let paths = machines
         .get(machine)
@@ -338,6 +361,14 @@ fn case(words: &[Word], machines: &HashMap<String, Paths>) -> Result<(Paths, Exp
             refused.push(format!("`{name}` twice"));
             continue;
         }
+        if name == "address" && value.is_none() {
+            refused.push("`address` must come first".to_string());
+            continue;
+        }
+        if address && name.starts_with('@') && value.is_none() {
+            refused.push(format!("an address is judged with no paths: `{name}`"));
+            continue;
+        }
         if let Err(why) = add(&mut expect, name, value) {
             refused.push(why);
         }
@@ -348,7 +379,7 @@ fn case(words: &[Word], machines: &HashMap<String, Paths>) -> Result<(Paths, Exp
         }
     }
     if refused.is_empty() {
-        Ok((paths, expect))
+        Ok((paths, expect, address))
     } else {
         Err(refused)
     }

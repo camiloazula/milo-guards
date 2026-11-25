@@ -92,6 +92,7 @@ finds=local_address | http://203.0.113.9/
 finds=local_address | http://198.18.0.1/
 finds=local_address | http://198.19.255.255/
 finds=local_address | http://192.0.0.8/
+finds=local_address | http://192.88.99.1/
 finds=local_address | http://224.0.0.1/
 finds=local_address | http://239.255.255.250/
 finds=local_address | http://240.0.0.1/

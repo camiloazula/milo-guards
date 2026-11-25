@@ -10,6 +10,7 @@ credentials, a URL that carries a password, and a scheme that is not the
 web. The classic way past such a check is a differently spelled address
 (`http://2130706433/`, `http://0x7f.1/`, `http://[::ffff:127.0.0.1]/`), so
 the guard judges the host a WHATWG URL parser reads, never the text: `judge`.
+The address a fetch connected to is judged the same way: `judge_address`.
 
 - **The parser decides the host.** Decimal, octal, hex and shortened IPv4,
   IPv6 with an IPv4 inside, percent-escapes, full-width digits, international
@@ -19,7 +20,14 @@ the guard judges the host a WHATWG URL parser reads, never the text: `judge`.
   in none of the special ranges. A host this cannot place is a finding, never
   safe.
 - **No lookup.** A name is judged by its spelling alone; nothing here touches
-  the network. A `file:` URL's path is placed against the `Paths` the caller
+  the network. A public name whose DNS points at your own machine is safe to
+  `judge`, so once you have connected, and before you send the request,
+  judge the address the connection went to with `judge_address`: the same
+  tables, the same reading, the same findings. An address you resolved
+  yourself counts only if you connect to that literal and never to the name
+  again; behind an HTTP or SOCKS proxy the peer is the proxy, so enforce it
+  there, or hand the proxy a judged literal. A redirect is judged again,
+  URL and address. A `file:` URL's path is placed against the `Paths` the caller
   passes, like any other path.
 
 ## Install
@@ -58,6 +66,27 @@ assert_eq!(finding.target.as_deref(), Some("127.0.0.1"));
 let assessment = judge("https://me:hunter2@example.com/", &paths);
 assert_eq!(assessment.findings()[0].rule, Rule::Credentials);
 assert_eq!(assessment.findings()[0].target.as_deref(), Some("https://…@example.com/"));
+```
+
+The address a fetch connected to, as text (`169.254.169.254`, `[::1]:443`,
+`fe80::1%eth0`), with `judge`'s rules and reasons. A name or anything else
+that is not an address is `unreadable`, and a text with a `%` is never safe:
+
+```rust
+use milo_guards_url::{judge_address, Rule};
+
+assert!(judge_address("93.184.216.34:443").is_safe());
+
+// The public name's DNS answered with the metadata service.
+let assessment = judge_address("169.254.169.254");
+assert_eq!(assessment.findings()[0].rule, Rule::Metadata);
+
+// IPv4 inside IPv6 is judged by the IPv4 address inside.
+let assessment = judge_address("::ffff:127.0.0.1");
+assert_eq!(assessment.findings()[0].rule, Rule::LocalAddress);
+assert_eq!(assessment.findings()[0].reason, "fetches your own machine");
+
+assert_eq!(judge_address("localhost").findings()[0].rule, Rule::Unreadable);
 ```
 
 ## Contract

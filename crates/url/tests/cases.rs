@@ -130,6 +130,51 @@ fn a_paths_declaration_names_the_paths_a_case_is_judged_on() {
 }
 
 #[test]
+fn an_address_case_is_judged_by_judge_address_with_no_paths() {
+    let cases = read(concat!(
+        "address safe | 8.8.8.8\n",
+        "address rules=local_address target=\"[::1]\" first=local_address | [::1]:443\n",
+        "safe | 8.8.8.8\n",
+        "address finds=unreadable | example.com\n",
+        "finds=unreadable | example.com\n",
+    ));
+    let address: Vec<bool> = cases.iter().map(|case| case.address).collect();
+    assert_eq!(address, [true, true, false, true, false]);
+    assert_eq!(cases[1].url, "[::1]:443");
+    assert_eq!(cases[1].expect.target.as_deref(), Some("[::1]"));
+    // `8.8.8.8` is no URL, and is safe as an address.
+    let wrong: Vec<Vec<String>> = cases.iter().map(cases::wrong).collect();
+    assert!(wrong[0].is_empty() && wrong[1].is_empty() && wrong[3].is_empty());
+    assert!(wrong[2][0].contains("expected safe"), "{:?}", wrong[2]);
+    assert!(wrong[4].is_empty(), "{:?}", wrong[4]);
+    let dumped = cases::dumped(&cases[0]);
+    assert!(dumped.contains("\taddress\tsafe\t\"8.8.8.8\""), "{dumped}");
+    // The same text as an address and as a URL are two cases, in one file
+    // or across files.
+    assert_ne!(cases::key(&cases[3]), cases::key(&cases[4]));
+    for (source, why) in [
+        (
+            "address @posix safe | 8.8.8.8\n",
+            "an address is judged with no paths: `@posix`",
+        ),
+        (
+            "@posix address safe | 8.8.8.8\n",
+            "`address` must come first",
+        ),
+        ("safe address | 8.8.8.8\n", "`address` must come first"),
+        ("address | 8.8.8.8\n", "a case with no answer"),
+        ("address=yes safe | 8.8.8.8\n", "an unknown field `address`"),
+        (
+            "address safe | 8.8.8.8\naddress safe | 8.8.8.8\n",
+            "t.cases:2: repeats the case at t.cases:1",
+        ),
+    ] {
+        let got = refused(source);
+        assert!(got.contains(why), "{source:?}: wanted {why:?}, got {got:?}");
+    }
+}
+
+#[test]
 fn a_malformed_line_is_refused() {
     for (source, why) in [
         ("safe x\n", "t.cases:1: a case with no `| URL`"),

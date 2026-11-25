@@ -142,6 +142,40 @@ which is a minor bump.
   nested `python3 -c` on Windows that the shell guard's cmd reading only
   calls `unknown`.
 
+The URL guard judges the address a fetch connected to, with its own tables
+(#308): a new public function, which is a minor bump.
+
+- `milo_guards_url::judge_address(address)`, re-exported as
+  `milo_guards::url::judge_address`, judges one IP address the caller
+  resolved a name to or connected to, given as text: `local_address` or
+  `metadata`, with the reason and target `judge` gives the same address as a
+  URL's host, or safe. It is for what `judge` cannot see without a lookup: a
+  public name whose DNS points at this machine, the local network or a
+  metadata service. Judge the URL, then the address of the connection
+  actually used, before any byte of the request is sent; an address the
+  caller resolved itself only when it connects to that literal and never to
+  the name again; behind an HTTP or SOCKS proxy, at the proxy. A redirect is
+  judged again, URL and address. No rule is new, and it takes no `Paths`.
+- It reads the address with the parser `judge` reads a host with, so every
+  spelling is read and answered alike: `judge_address(a)` is
+  `judge("http://a/")` whenever that URL's host is an address (and
+  `judge("http://[a]/")` for IPv6 with no brackets), but on the cautious
+  side: a text holding `/`, `?`, `#`, `\` or `@` (`8.8.8.8/32`,
+  `user@127.0.0.1`) is `unreadable` here, and a zone is read only on an
+  address that is a finding. Mapped, compatible,
+  NAT64 and 6to4 addresses are judged by the IPv4 address inside, and
+  Teredo is not public. An IPv4 address spelled any way but four plain
+  decimal numbers (`0x7f.1`, `2130706433`, `127.0.0.1.`) is judged by the
+  address read and is `unreadable` as well.
+- Around the address it reads the white space `judge` trims, a port after
+  an IPv4 address or a bracketed IPv6 one (`127.0.0.1:80`, `[::1]:443`),
+  brackets, and an IPv6 zone (`fe80::1%eth0`), which is not judged and is
+  read only on an address that is a finding: a text with a `%` is never
+  safe. A name (`localhost`), a URL, an empty text and anything else that is
+  not an address is `unreadable`, never safe.
+- No answer of `judge` changed: it and `judge_address` share the code that
+  reads a text, judges an address and checks its spelling.
+
 ## 0.1.4 (2026-11-22)
 
 What the URL guard answers for a few `file:` URLs and odd spellings, nothing

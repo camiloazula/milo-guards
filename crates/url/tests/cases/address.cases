@@ -1,0 +1,234 @@
+# An address the caller resolved a name to or connected to, judged by
+# `judge_address`: what only an address meets (a port, brackets, a zone, an
+# IPv6 address with no brackets, a text that is not an address), and the
+# answers an address shares with a URL's host, which `tests/address.rs` also
+# holds to `judge`'s for every host of the other case files. The format is
+# in CONTRIBUTING.md.
+
+# A public address is safe, whatever its port; a port is not judged.
+address safe | 93.184.216.34
+address safe | 93.184.216.34:443
+address safe | 8.8.8.8:
+address safe | 8.8.8.8:0
+address safe | 8.8.8.8:00080
+address safe | 8.8.8.8:65535
+address safe | 2606:2800:220:1:248:1893:25c8:1946
+address safe | [2606:2800:220:1:248:1893:25c8:1946]
+address safe | [2001:4860:4860::8888]:443
+address safe | [2001:4860:4860::8888]:
+address safe | 2001:4860:4860:0:0:0:0:8888
+address safe | 2001:4860:4860::8888
+address safe | 2A00:1450::1
+address safe | ::ffff:8.8.8.8
+address safe | ::ffff:808:808
+address safe | 64:ff9b::808:808
+address safe | 2002:808:808::
+# White space around an address is trimmed, as around a URL.
+address safe | \s8.8.8.8\n
+address safe | \t2001:4860:4860::8888\s
+
+# This machine, its network, an address in no public range and a metadata
+# service, in `judge`'s words, with the address as the parser writes it.
+address rules=local_address first=local_address reason="fetches your own machine" target="127.0.0.1" | 127.0.0.1
+address rules=local_address first=local_address target="127.0.0.1" | 127.0.0.1:8080
+address rules=local_address first=local_address reason="fetches your own machine" target="[::1]" | ::1
+address rules=local_address first=local_address target="[::1]" | [::1]
+address rules=local_address first=local_address target="[::1]" | [::1]:443
+address rules=local_address first=local_address target="[::1]" | 0:0:0:0:0:0:0:1
+address rules=local_address first=local_address target="[::]" | ::
+address rules=local_address first=local_address target="0.0.0.0" | 0.0.0.0
+address rules=local_address first=local_address reason="fetches a machine on your own network" target="192.168.1.1" | 192.168.1.1
+address rules=local_address | 10.0.0.5:5432
+address rules=local_address | 172.16.0.1
+address rules=local_address | 100.64.0.1
+address rules=local_address first=local_address target="[fd12:3456:789a::1]" | FD12:3456:789A::1
+address rules=local_address | fe80::1
+address rules=local_address first=local_address reason="fetches an address that is not on the public internet" | 192.0.2.1
+address rules=local_address first=local_address reason="fetches an address that is not on the public internet" | 192.88.99.1
+address rules=local_address | 192.88.99.255
+address rules=local_address | 2001:db8::1
+address rules=local_address | ff02::1
+address rules=local_address | 255.255.255.255
+address first=metadata reason="fetches the cloud metadata service (AWS, Google Cloud, Azure, DigitalOcean and OpenStack), which hands out credentials" target="169.254.169.254" | 169.254.169.254
+address rules=metadata | 169.254.169.254:80
+address rules=metadata first=metadata target="[fd00:ec2::254]" | fd00:ec2::254
+address rules=metadata | [fd00:ec2::254]:80
+address rules=metadata | 169.254.170.2
+address rules=metadata | 100.100.100.200
+address rules=metadata | 192.0.0.192
+address rules=metadata | 168.63.129.16
+
+# An IPv4 address inside an IPv6 one is judged by the IPv4 inside, with no
+# brackets too: mapped, compatible, NAT64 and 6to4. Teredo is not public.
+address rules=local_address first=local_address target="[::ffff:7f00:1]" | ::ffff:127.0.0.1
+address rules=local_address | ::FFFF:127.0.0.1
+address rules=local_address | ::ffff:7f00:1
+address rules=local_address | ::127.0.0.1
+address rules=local_address | ::ffff:192.168.1.1
+address rules=local_address | 64:ff9b::7f00:1
+address rules=local_address | 64:ff9b::192.168.1.1
+address rules=local_address | 2002:7f00:1::
+address rules=local_address | 2002:c0a8:101::1
+address rules=metadata first=metadata target="[::ffff:a9fe:a9fe]" | ::ffff:169.254.169.254
+address rules=metadata | [::ffff:169.254.169.254]:80
+address rules=metadata | ::169.254.169.254
+address rules=metadata | 64:ff9b::a9fe:a9fe
+address rules=metadata | 2002:a9fe:a9fe::
+address rules=local_address first=local_address reason="fetches an address that is not on the public internet" | 2001:0:4136:e378:8000:63bf:3fff:fdd2
+address rules=local_address | 2001::808:808
+
+# An IPv4 address spelled any way but four plain decimal numbers is judged
+# by the address the parser reads, and is unreadable as well, as `judge`
+# says of the same host: other clients read it differently.
+address rules=local_address,unreadable | 0x7f.1
+address rules=local_address,unreadable | 0x7f000001
+address rules=local_address,unreadable | 2130706433
+address rules=local_address,unreadable | 017700000001
+address rules=local_address,unreadable | 127.1
+address rules=local_address,unreadable | 0177.0.0.1
+address rules=local_address,unreadable | 127.000.000.001
+address rules=local_address,unreadable | 127.0.0.1.
+address rules=local_address,unreadable | 127.0.0.1.:80
+address rules=local_address,unreadable | 0x7f.1:8080
+address rules=local_address,unreadable | １２７.０.０.１
+address rules=local_address,unreadable | 127。0。0。1
+address rules=local_address,unreadable | 0
+address rules=local_address,unreadable | 0x
+address first=local_address target="127.0.0.1" | 127.0.0.1\u{ad}
+address rules=local_address,unreadable | %31%32%37.0.0.1
+address finds=unreadable reason="is spelled in a way clients read differently" | %31%32%37.0.0.1
+address rules=local_address,unreadable | 127%2e0%2e0%2e1
+address rules=metadata,unreadable | 0xa9fea9fe
+address rules=metadata,unreadable | 2852039166
+address rules=metadata,unreadable | 169.254.43518
+address rules=metadata,unreadable | 169.254.169.254.
+# A public address so spelled is unreadable alone.
+address rules=unreadable first=unreadable reason="spells an address in a form clients read differently" | 134744072
+address rules=unreadable | 8.8.8.8.
+address rules=unreadable | 8.8.8
+address rules=unreadable | 010.0.0.1
+address rules=unreadable | 8.8.8.08
+address rules=unreadable | ８.８.８.８
+address rules=unreadable | 8.8.8.8\u{ad}
+address rules=unreadable | %38.8.8.8
+
+# A zone names a link of this machine and is not judged: the address is.
+# It is read only on an address that is a finding: a text with a `%` is
+# never safe.
+address rules=local_address first=local_address target="[fe80::1]" | fe80::1%eth0
+address rules=local_address | fe80::1%25en0
+address rules=local_address | fe80::1%2
+address rules=local_address | fe80::1%en0.100
+address rules=local_address | fe80::1%br-1a2b_3
+address rules=local_address | [fe80::1%eth0]
+address rules=local_address first=local_address target="[fe80::1]" | [fe80::1%eth0]:443
+address rules=local_address | ff02::1%lo0
+address rules=local_address | ::1%lo
+address rules=unreadable first=unreadable reason="is spelled in a way clients read differently" | 2606:2800:220:1:248:1893:25c8:1946%eth0
+address rules=unreadable | [2606:2800:220:1:248:1893:25c8:1946%eth0]:443
+address rules=unreadable | ::ffff:8.8.8.8%eth0
+address rules=unreadable | 2606:4700::1%25
+address rules=unreadable | 2606:4700::1%40127.0.0.1
+address rules=unreadable | [2606:4700::1%40127.0.0.1]:80
+address rules=unreadable | ::ffff:8.8.8.8%40169.254.169.254
+address rules=unreadable | 2606:4700::1%00
+address rules=unreadable | 2606:4700::1%0a
+address rules=unreadable | 2606:4700::1%09
+address rules=unreadable | 2606:4700::1%20
+address rules=unreadable | 2606:4700::1%2f..
+address rules=unreadable | 2606:4700::1%23x
+address rules=unreadable | 2606:4700::1%3f
+address rules=unreadable | 2606:4700::1%5c
+address rules=unreadable | 2606:4700::1%5d
+address rules=unreadable | 2606:4700::1%3a80
+address rules=local_address | fe80::1%40127.0.0.1
+address rules=local_address | fe80::1%25
+# A zone that is not letters, digits, `-`, `_` and `.`, and a zone on an
+# IPv4 address, are not read.
+address rules=unreadable first=unreadable reason="is not an address" | fe80::1%
+address rules=unreadable | fe80::1%eth0:443
+address rules=unreadable | fe80::1%eth0%1
+address rules=unreadable | fe80::1%eth/0
+address rules=unreadable | fe80::1%ｅｔｈ０
+address rules=unreadable | [fe80::1%]:443
+address rules=unreadable | [fe80::1%eth0
+address rules=unreadable | 127.0.0.1%eth0
+address rules=unreadable | 127.0.0.1%25
+
+# An IPv6 address with no brackets has no port: every colon is part of it.
+address rules=local_address first=local_address target="[::1:80]" | ::1:80
+address rules=local_address | fe80::1:443
+address rules=unreadable | ::ffff:127.0.0.1:80
+address rules=unreadable | 1:2:3:4:5:6:7:8:443
+# An IPv4-compatible address followed by what looks like a port: as dotted
+# IPv4 it does not parse; in groups, every group is read as part of the
+# address, and the address those groups spell is the one judged.
+address rules=unreadable | ::127.0.0.1:80
+address rules=unreadable | ::8.8.8.8:443
+address rules=local_address first=local_address reason="fetches an address that is not on the public internet" target="[::808:808:443]" | ::808:808:443
+address rules=local_address first=local_address reason="fetches an address that is not on the public internet" target="[::7f00:1:80]" | ::7f00:1:80
+# Two groups after `::` are the IPv4-compatible spelling of an address, and
+# are judged by it: this is `8.8.8.8`, not `::808` with a port.
+address safe | ::808:808
+
+# A port is digits, none included, up to 65535.
+address rules=unreadable | 127.0.0.1:65536
+address rules=unreadable | 127.0.0.1:99999999999999999999
+address rules=unreadable | 127.0.0.1:-1
+address rules=unreadable | 127.0.0.1:+80
+address rules=unreadable | 127.0.0.1:http
+address rules=unreadable | 127.0.0.1:８０
+address rules=unreadable | 127.0.0.1:80:80
+address rules=unreadable | 8.8.8.8:\s443
+address rules=unreadable | [::1]:65536
+address rules=unreadable | [::1]x
+address rules=unreadable | [::1]:80:80
+address rules=unreadable | [::1]]
+address rules=unreadable | [::1]/
+
+# What is not an address is unreadable, never safe, and carries no copy of
+# itself: an empty text, a name, a URL, an address that does not parse.
+address rules=unreadable first=unreadable reason="is empty" |
+address rules=unreadable first=unreadable reason="is empty" | \s\t\n
+address rules=unreadable first=unreadable reason="is not an address" | localhost
+address rules=unreadable | example.com
+address rules=unreadable | metadata.google.internal
+address rules=unreadable | metadata
+address rules=unreadable | localhost:80
+address rules=unreadable | example.com:443
+address rules=unreadable | 127.0.0.1.nip.io
+address rules=unreadable | http://127.0.0.1/
+address rules=unreadable | //127.0.0.1
+address rules=unreadable | user@127.0.0.1
+address rules=unreadable | 127.0.0.1/8
+address rules=unreadable | 127.0.0.1#
+address rules=unreadable | 127.0.0.1?
+address rules=unreadable | 127.0.0.1\\
+address rules=unreadable | 8.8.8.8,127.0.0.1
+address rules=unreadable | 8.8.8.8\s127.0.0.1
+address rules=unreadable | [::1
+address rules=unreadable | ::1]
+address rules=unreadable | [[::1]]
+address rules=unreadable | []
+address rules=unreadable | [127.0.0.1]
+address rules=unreadable | [127.0.0.1]:80
+address rules=unreadable | 1.2.3.4.5
+address rules=unreadable | 256.1.1.1
+address rules=unreadable | 1.2.3.256
+address rules=unreadable | 4294967296
+address rules=unreadable | 09.0.0.1
+address rules=unreadable | foo.1
+address rules=unreadable | ::g
+address rules=unreadable | :::
+address rules=unreadable | 1:2:3:4:5:6:7:8:9
+address rules=unreadable | ::ffff:１２７.0.0.1
+address rules=unreadable | ::ｆｆｆｆ:127.0.0.1
+address rules=unreadable | ١٢٧.٠.٠.١
+address rules=unreadable | ١.١.١.١
+address rules=unreadable | 1.2.3.4\u{200d}
+address rules=unreadable | \u{a0}127.0.0.1
+address rules=unreadable | 127.0.0.1\u{3000}
+address rules=unreadable first=unreadable reason="holds a control character" | 127.0.0.1\u{0}
+address rules=unreadable | 127.\t0.0.1
+address rules=unreadable | ::1\n::2
+address rules=unreadable | 8.8.8.8\u{85}

@@ -6,6 +6,7 @@ caller lets run unasked. The shell guard never sees it.
 
 ```rust
 judge(url, &paths) -> Assessment
+judge_address(address) -> Assessment
 ```
 
 `paths` comes from `Paths::new(cwd, home, workspaces)` and is there for a
@@ -13,7 +14,9 @@ judge(url, &paths) -> Assessment
 The answer is `Safe`, or `Risky` with every finding: a rule, a reason a prompt
 can show, and the part of the URL it is about. The guard reads the text and
 never fetches anything: it does no lookup, touches neither the network nor the
-file system, and reads no environment.
+file system, and reads no environment. `judge_address` judges the address a
+fetch connected to, which the caller knows and the guard cannot: see
+[The address a fetch connected to](#the-address-a-fetch-connected-to).
 
 **The guard judges the address, never the page.** What a page says is not an
 input a guard can see. Exfiltration by shell is the shell guard's; running a
@@ -56,7 +59,7 @@ A wire name never changes once a caller uses it. `Rule` is exhaustive, with
 | `credentials` | `sends a user name or a password in the URL` | the URL with the user-info replaced by `…`, built from what the parser read, so no spelling of the password is left |
 | `local_file` | `reads {where the path lands}`: `reads your SSH keys`, `reads a path inside the workspace` | the path, with escapes undone |
 | `scheme` | `uses the ftp scheme, which is not a web page` | the scheme |
-| `unreadable` | what is wrong: `is empty`, `holds a control character`, `cannot be read as a URL` | none: what cannot be read may hold a password |
+| `unreadable` | what is wrong: `is empty`, `holds a control character`, `cannot be read as a URL`, and for `judge_address`, `is not an address` | none: what cannot be read may hold a password |
 
 A URL can have several findings, in the order it reads: the scheme, the
 user-info, the host (the path for a `file:` URL), then a spelling problem.
@@ -207,6 +210,73 @@ to find a form where two clients could read two hosts. Such a URL is
   `127.0.0.1`, which clients also read differently. A local address spelled so
   has `local_address` as well.
 
+## The address a fetch connected to
+
+`judge_address(address)` judges one IP address a fetch connects to, given
+as text, by the same tables and the same reading as a URL's host: `local_address` or `metadata` with the reason and target `judge`
+gives that host, or safe. It takes no `Paths`, as an address places no path,
+and answers the crate's `Assessment`, so a caller's policy for `judge`'s rules
+holds for it unchanged. The address is text, not a `std::net` type, so the
+guard's source still never names `std::net`, and every spelling the parser
+reads in a URL's host is read here too.
+
+### Where the address comes from
+
+The answer is only as good as the address it is given:
+
+- **The address of the connection actually used.** Judge it after the
+  connection is made and before any byte of the request is sent; after the
+  response is too late. Where a client tries several addresses (IPv4 and
+  IPv6 raced), it is the one the connection was made to.
+- **An address the caller resolved itself, only with pinning.** Resolve the
+  name once, judge every address the lookup gave, and connect to a judged
+  address as a literal, never to the name again. A second lookup, the
+  client's own or a library's, can answer another address (DNS rebinding).
+- **Not behind a proxy.** Through an HTTP or SOCKS proxy the connection's
+  peer is the proxy, and the proxy resolves the destination unseen, so this
+  check cannot help: enforce it at the proxy, or resolve, judge and hand the
+  proxy the judged literal.
+- **Each redirect again.** A redirect's URL goes through `judge`, and the
+  address of each connection it opens through `judge_address`.
+
+### What it reads
+
+The text is trimmed of the white space `judge` trims, and held to the same
+limits (empty, a control character, longer than 8 192 bytes). What is left
+is split from what can be around an address, and the address read by the URL
+parser's host reader (`Host::parse`, the one `judge` reads a host with), then
+judged by the same functions and spelling check:
+
+| Text | Answer |
+| --- | --- |
+| a plain address: `93.184.216.34`, `2001:4860:4860::8888` (with no brackets), `::ffff:8.8.8.8` | safe when public |
+| `127.0.0.1`, `::1`, `10.0.0.5`, `fe80::1` | `local_address`, the target `127.0.0.1`, `[::1]` as a URL writes the host |
+| `169.254.169.254`, `fd00:ec2::254` | `metadata` |
+| mapped, compatible, NAT64 and 6to4 (`::ffff:127.0.0.1`, `::127.0.0.1`, `64:ff9b::7f00:1`, `2002:7f00:1::`) | judged by the IPv4 address inside, as in a URL; Teredo is not public |
+| an IPv4 address spelled any way but four plain decimal numbers: octal, hex, short, one number, a trailing dot, leading zeros, full-width digits, percent-escapes (`0x7f.1`, `2130706433`, `127.1`, `127.0.0.1.`, `%31%32%37.0.0.1`) | the address the parser reads, judged, and `unreadable` as well, as `judge` says of that host; a public one so spelled is `unreadable` alone |
+| a port after an IPv4 address or an IPv6 one in brackets (`127.0.0.1:80`, `[::1]:443`) | the address judged, the port not: digits, none included, up to 65535, as the URL parser reads a port |
+| brackets (`[::1]`) | the IPv6 address inside |
+| a zone (`fe80::1%eth0`, `[fe80::1%25en0]:443`) on an address that is a finding | the address judged, the zone not: it names a link of this machine. It is letters, digits, `-`, `_` and `.`; any other zone is `unreadable`. The finding is the address's alone: no `unreadable` is added for the `%`, as `judge` adds one for a `%` in a host |
+| a zone on a public address | `unreadable`: a zone is read only on an address that is already a finding, and a text with a `%` is never safe |
+| an IPv6 address with no brackets and a port (`::1:80`) | read as an address, every colon part of it: `::1:80` is an address that is not on the public internet |
+| what is not an address: an empty text, a name (`localhost`, `example.com`, `metadata.google.internal`), a URL, a name or an address with a path, a query or user-info, a zone on an IPv4 address, a digit the parser does not map to ASCII (Arabic-Indic digits), white space or a control character inside, a text over 8 192 bytes | `unreadable`, with no target |
+
+So `judge_address(a)` is `judge("http://a/")` whenever that URL's host is an
+address, and `judge("http://[a]/")` for an IPv6 address with no brackets,
+except on the cautious side: a text that holds what a URL holds around its
+host (`/`, `?`, `#`, `\`, `@`: `8.8.8.8/32`, `8.8.8.8?x`,
+`user@127.0.0.1`) is `unreadable` here, where the URL may be safe or have
+another finding; and a zone, which is no part of a URL to the parser
+(`judge` calls `[fe80::1%25en0]` unreadable), is read here on an address
+that is a finding and is `unreadable` on a public one. `tests/address.rs`
+holds the two to it for every host of every case file, as the parser writes
+it and as the case spells it, and holds every non-public address of the
+case files, with a port appended and no brackets, to never being safe;
+`tests/robust.rs` holds the two to it for random text.
+
+A name is never looked up and never judged here: it is `judge`'s, as a URL's
+host.
+
 ## Dependency
 
 The guard's own parser is the [`url`](https://crates.io/crates/url) crate (MIT
@@ -223,7 +293,22 @@ through its octets and groups.
 
 - **No lookup.** A public name whose own DNS points at a private address, or
   at a metadata service, is safe: telling it needs the network. A caller that
-  must stop it checks the address it connects to.
+  must stop it judges the URL with `judge`, then the address of the
+  connection actually used with `judge_address`, after the connection is
+  made and before any byte of the request is sent, and holds the fetch to
+  both answers. DNS rebinding (a name that answers a public address to one
+  lookup and a private one to the next) is stopped only by that address, or
+  by pinning: resolve once, judge every address the lookup gave, and connect
+  to a judged literal, never to the name again. Behind an HTTP or SOCKS
+  proxy the check cannot help, as the peer is the proxy and the proxy
+  resolves the name unseen: enforce it at the proxy, or hand the proxy a
+  judged literal. A redirect's URL is judged again, and the address of each
+  connection it opens; see
+  [Where the address comes from](#where-the-address-comes-from).
+- **A translating network's own prefix.** A network that translates IPv6 to
+  IPv4 under an operator's own prefix carries a private IPv4 address inside
+  a public-looking IPv6 one, which no table can see: only NAT64's well-known
+  prefix is read for the IPv4 address inside.
 - **The address is the guard's, not the connection's.** A redirect, a
   proxy or a page that fetches another is the caller's business.
 - **The list of names is what is known.** The local endings and the rebinding
@@ -235,7 +320,9 @@ through its octets and groups.
   with a leading zero, a percent-encoded host, an address in a documentation
   range, a name with `ß`, `ς` or a joiner (`https://faß.de/`, which is
   `unreadable` for the differential alone), a URL with no scheme (`example.com`)
-  or longer than 8 192 bytes.
+  or longer than 8 192 bytes; and to `judge_address`, a name, a public
+  address spelled any way but four plain decimal numbers, a public address
+  with a zone, and a text holding `/`, `?`, `#`, `\` or `@`.
 - **An odd but public IPv6** (a compatible address with a public IPv4 inside,
   `::1.2.3.4`) is safe, as a client reaches nothing local by it.
 - Ports are not judged: `http://example.com:22/` is safe.
@@ -248,8 +335,13 @@ test file of its name: `tests/cases/urls.cases` has what is safe, what is
 risky and under which rule, the reasons and the targets (and `tests/urls.rs`
 holds every answer of it to never show a password); `spellings.cases` is
 every spelling a reviewer tried, each a permanent case; `file.cases` is the
-`file:` URLs. Every case is also held to carry no target on a finding that
-the URL is unreadable. `tests/cases.rs` tests the runner. `tests/names.rs`
-checks the wire names and `Rule::ALL`, and `tests/robust.rs` feeds noise and
-very long URLs and checks that nothing panics, an unreadable URL is never
-safe and carries no copy of itself, and a password is never shown.
+`file:` URLs; `address.cases` is what only `judge_address` meets (ports,
+brackets, zones, IPv6 with no brackets, what is not an address), each line
+starting `address`, and `tests/address.rs` holds `judge_address` to `judge`'s
+finding for every address that is a URL's host in any case file. Every case
+is also held to carry no target on a finding that the URL or the address
+is unreadable. `tests/cases.rs` tests the runner. `tests/names.rs` checks
+the wire names and `Rule::ALL`, and `tests/robust.rs` feeds noise and very
+long URLs and addresses and checks that nothing panics, an unreadable URL or
+address is never safe and carries no copy of itself, an address is judged as
+the host of a URL with it, and a password is never shown.
