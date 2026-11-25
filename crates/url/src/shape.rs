@@ -7,11 +7,13 @@
 //! authority starts, a percent sign in the host, an IPv4 address spelled any
 //! way but four plain decimal numbers.
 
+/// The reason of a spelling that two clients may read as two hosts.
+pub(crate) const ODD: &str = "is spelled in a way clients read differently";
+
 /// What is odd about how `text` (an `http` or `https` URL, `scheme` its
 /// scheme) is spelled, or `None` when it is the plain `scheme://host…`.
 /// `ipv4` is whether the parser read the host as an IPv4 address.
 pub(crate) fn odd(text: &str, scheme: &str, ipv4: bool) -> Option<&'static str> {
-    const ODD: &str = "is spelled in a way clients read differently";
     let Some(rest) = text.get(scheme.len() + 1..) else {
         return Some(ODD);
     };
@@ -34,6 +36,15 @@ pub(crate) fn odd(text: &str, scheme: &str, ipv4: bool) -> Option<&'static str> 
     }
     let authority = &after[..end];
     let host = authority.rsplit('@').next().unwrap_or(authority);
+    odd_host(host, ipv4)
+}
+
+/// What is odd about how a host is written, `host` as written with or
+/// without its port, or `None` when every client reads it as the parser
+/// does. `ipv4` is whether the parser read it as an IPv4 address. The URL
+/// guard reads the host of an `http` or `https` URL with it, and
+/// `judge_address` the address it is given, so the two never differ on one.
+pub(crate) fn odd_host(host: &str, ipv4: bool) -> Option<&'static str> {
     // A percent-encoded host is read by the parser and left alone by a
     // client that treats the host as plain text.
     if host.contains('%') {

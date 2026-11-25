@@ -41,7 +41,7 @@
 //! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads, and whether the reads stay in the workspace; `shell::explain` shows how the line was read, unit by unit, with what each found |
 //! | `code` (default) | `code` | not a guard: Python or JavaScript code, read for the acts it is certain to do (`code::read`) and for whether it is understood in full (`code::understand`); the shell guard reads inline code with it |
 //! | `file` (default) | `file` | one read or write of a path through a file API |
-//! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info |
+//! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info; `url::judge_address` judges the address the fetch connected to, with the same tables |
 //! | `script` (default) | `script` | Python or JavaScript code an agent runs directly, with no shell line around it, act by act with the shell guard's rules and reasons; a program it starts is `run_program`, with its command line for the shell guard, and the code is `unknown` beside it |
 //! | `secrets` | `secrets` | a text: the keys, tokens, passwords and personal data in it, and where; `secrets::find_spans` gives the ranges to scrub |
 //!
@@ -189,6 +189,25 @@
 //! # }
 //! ```
 //!
+//! The guard does no lookup, so a public name whose DNS points at this
+//! machine is safe to `judge`. The caller makes the connection: it judges
+//! the address the connection went to as well, before it sends the request,
+//! with the same tables and reasons (`url::judge_address` says where the
+//! address must come from: pinning, proxies, redirects):
+//!
+//! ```
+//! # #[cfg(feature = "url")] {
+//! use milo_guards::url::{judge_address, Rule};
+//!
+//! assert!(judge_address("93.184.216.34").is_safe());
+//!
+//! let assessment = judge_address("[::ffff:169.254.169.254]:80");
+//! assert_eq!(assessment.findings()[0].rule, Rule::Metadata);
+//! let assessment = judge_address("fe80::1%eth0");
+//! assert_eq!(assessment.findings()[0].rule, Rule::LocalAddress);
+//! # }
+//! ```
+//!
 //! A text is read for what it must not carry, with the `secrets` feature (off
 //! by default). A finding never holds the secret, and its span says where it
 //! is, so a caller can scrub it:
@@ -295,7 +314,13 @@ pub use milo_guards_secrets as secrets;
 /// drift from the code. Only rustdoc's doctest pass reads the file, so
 /// building this crate never needs the README: a build that vendors only
 /// this crate's folder still works.
-#[cfg(all(doctest, feature = "shell", feature = "file", feature = "script"))]
+#[cfg(all(
+    doctest,
+    feature = "shell",
+    feature = "file",
+    feature = "url",
+    feature = "script"
+))]
 #[allow(
     clippy::disallowed_macros,
     reason = "the README include is read by rustdoc's doctest pass only"

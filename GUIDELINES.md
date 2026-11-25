@@ -34,7 +34,8 @@ that guards build on, and the front door:
   read or write of a path through a file API. [Its design](docs/design/file.md).
 - `crates/url` (`milo-guards-url`) - the URL guard, `judge`. It reads a URL with
   a WHATWG parser and judges the host the parser reads, never the spelling,
-  with its scheme and user-info. [Its design](docs/design/url.md).
+  with its scheme and user-info; `judge_address` judges the address a fetch
+  connected to with the same tables. [Its design](docs/design/url.md).
 - `crates/secrets` (`milo-guards-secrets`) - the secrets guard, `find`. It reads
   a text with a table of credential shapes and returns what it holds and where,
   masked, never the secret. [Its design](docs/design/secrets.md).

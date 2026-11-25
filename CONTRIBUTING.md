@@ -224,8 +224,10 @@ write@home rules=write_sensitive first=write_sensitive reason="writes to a shell
 
 The URL guard's case is `[@PATHS] ANSWER... | URL`: no first word but the
 paths, `posix` without them, no `effect=`, and `target="..."` beside
-`reason=` (the target of the same finding). Every case is also held to carry
-no target on a finding that the URL is unreadable. The secrets guard's case
+`reason=` (the target of the same finding). A case whose first word is
+`address` is `address ANSWER... | ADDRESS`, judged by `judge_address`, with
+no paths. Every case is also held to carry no target on a finding that the
+URL or the address is unreadable. The secrets guard's case
 is `ANSWER... | TEXT`: no paths, no `effect=`, `target=` as the URL guard's,
 `span="..."` (the text has one span, and it covers exactly this) and
 `covers="..."` (every byte of the first place this is in the text is in a
@@ -235,6 +237,7 @@ for one, in order and apart. Their dumps are the same command with
 
 ```text
 first=local_address target="127.0.0.1" | http://2130706433/
+address rules=local_address first=local_address target="[::1]" | [::1]:443
 @windows first=local_file reason="reads a file from another machine" | file://server/share/x
 rules=generic_secret span="F4kePass9" | password=F4kePass9&x=1
 covers="F4kePassw0rdZ" | machine api.fake.test login fakeuser password F4kePassw0rdZ
