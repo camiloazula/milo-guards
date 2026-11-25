@@ -21,7 +21,7 @@ on, and the front door.
 Package names start with `milo-guards-`. Folder names drop the prefix.
 
 The front door has no logic of its own. It re-exports the types every guard
-shares: `Paths` with its `Protected`, `Assessment`, `Finding` and the trait
+shares: `Paths` with its `Protected` and `Secret`, `Assessment`, `Finding` and the trait
 `RuleName`. It does not
 re-export `Place`: a caller reads a finding's rule and reason, never where a
 path landed. It re-exports each guard as a module behind a cargo feature:

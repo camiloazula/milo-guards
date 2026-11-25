@@ -1192,13 +1192,35 @@ impl Checker<'_> {
         let name = super::named_in_unknown_folder(arg);
         let arg = name.as_ref().unwrap_or(arg);
         let text = arg.known().filter(|text| *text != "-")?;
+        // A secret the caller named is in its words, before a name that
+        // looks like one, and also where it is protected too, read as the
+        // name written (`-d @sec[prod].json`); after a `cd` the guard cannot
+        // follow, a name may be one wherever it is.
         // A wildcard in the name of a file the shell does not expand is a
-        // letter: it names no secret.
-        let named = text.rsplit(['/', '\\']).next().unwrap_or(text);
-        if !glob && glob::has_wildcard(named) {
+        // letter: it names no other secret.
+        let last = text.rsplit(['/', '\\']).next().unwrap_or(text);
+        let letter = !glob && glob::has_wildcard(last);
+        let named = self
+            .resolver
+            .named_secret(unit.dir.as_ref(), arg, unit.shell)
+            .or_else(|| {
+                (!letter)
+                    .then(|| {
+                        self.resolver.named_from_unknown_folder(
+                            unit.dir.as_ref(),
+                            arg,
+                            unit.shell,
+                            unit.hidden,
+                        )
+                    })
+                    .flatten()
+            });
+        if named.is_none() && letter {
             return None;
         }
-        let words = if is_environ(text) {
+        let words = if let Some(words) = named {
+            Some(words)
+        } else if is_environ(text) {
             Some(ENVIRONMENT)
         } else if let Some(words) = secret_name(text, unit.shell, unit.hidden, glob) {
             Some(words)
@@ -1209,14 +1231,25 @@ impl Checker<'_> {
                 Place::Sensitive(words, Sensitivity::Secret) => Some(words),
                 Place::Home { .. } if home => Some(HOME),
                 Place::Top(ROOT) if home => Some(HOME),
+                // A pattern the shell expands can pick a secret its folder's
+                // place does not say (`keys/*`, `~/.netr*`), a protected one
+                // among them, as for a read.
                 // From a folder only known when it runs, a name may be one
                 // in the home directory, which that folder may be.
-                _ => crate::path::in_unknown_folder(unit.dir.as_ref(), arg, unit.shell).and_then(
-                    |homed| match self.place(unit.shell, unit.scope(), &homed, Access::Item) {
-                        Place::Sensitive(words, Sensitivity::Secret) => Some(words),
-                        _ => None,
-                    },
-                ),
+                _ => (glob && glob::has_wildcard(text))
+                    .then(|| {
+                        self.resolver
+                            .picks_secret(unit.dir.as_ref(), arg, unit.shell, unit.hidden)
+                    })
+                    .flatten()
+                    .or_else(|| {
+                        let homed =
+                            crate::path::in_unknown_folder(unit.dir.as_ref(), arg, unit.shell)?;
+                        match self.place(unit.shell, unit.scope(), &homed, Access::Item) {
+                            Place::Sensitive(words, Sensitivity::Secret) => Some(words),
+                            _ => None,
+                        }
+                    }),
             }
         };
         let words = words.or_else(|| {

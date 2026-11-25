@@ -68,7 +68,7 @@ pub use effect::{Effect, How, Reach, ReadPath};
 pub use explain::{
     ArgExplanation, ArgKind, Explanation, PipelineStage, RedirectExplanation, UnitExplanation,
 };
-pub use milo_guards_core::{Paths, Protected, ProtectedKind};
+pub use milo_guards_core::{Paths, Protected, ProtectedKind, Secret};
 
 /// The shell that runs the line, whose grammar splits it.
 ///
@@ -150,9 +150,11 @@ pub enum Rule {
     SystemSettings,
     /// Reads a key or a credential: a file a program the guard knows opens,
     /// or a `<` redirect, that lands on a place core marks as holding one,
-    /// as the file guard's rule of the same name does for the same file; also
-    /// a disk, and what the kernel serves. Not the repository's history, not
-    /// a shell startup file, and not a file named only when the line runs.
+    /// or on a secret the caller named in `Paths::secrets` (in the caller's
+    /// words), as the file guard's rule of the same name does for the same
+    /// file; also a disk, and what the kernel serves. Not the repository's
+    /// history, not a shell startup file, and not a file named only when the
+    /// line runs.
     /// `effect` still calls such a line reads-only, as it does for
     /// [`Elevated`](Rule::Elevated): the line only reads.
     ReadSecret,
@@ -169,7 +171,8 @@ pub enum Rule {
     /// known when it runs, a listing, a substitution or an object it does not
     /// follow. It may be any process, the ones `stop_system` names included.
     StopUnknown,
-    /// Sends a key, a credential or the environment off the machine.
+    /// Sends a key, a credential, a secret the caller named in
+    /// `Paths::secrets`, or the environment off the machine.
     SendSecret,
     /// Deletes data in a database.
     DropData,

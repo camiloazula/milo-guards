@@ -131,6 +131,21 @@ What sets the guards apart:
 - **Your own files, in your own words.** Name the paths your tool keeps for
   itself, such as its settings or its rules, as protected. A finding about
   them says "deletes the agent's settings", in the words you gave.
+- **Your own secrets, too.** The guards know where keys and credentials live
+  (SSH keys, cloud logins, the system's password hashes), not a project's
+  `.env`, a token in its own files or a password vault. Name the files that
+  hold a secret on your machine, by absolute path, and a read of one is
+  `read_secret` ("reads the project's environment file") and sending one
+  `send_secret`, inside the workspace too. A recursive read or copy of a
+  folder that holds one (`grep -r KEY .`, `tar czf x.tgz .`) is not a
+  finding, as for the guards' own keys; `effect` says a line that only reads
+  so reads beyond the workspace, and so, once a secret is named in the
+  workspace, does every reader that walks it (`git status`, `git log`, `find
+  .`, `rg`). A folder handed whole to a sender (`scp -r app host:`) and a
+  one-level listing handed to a reader (`ls | xargs cat`, `Get-ChildItem |
+  Get-Content`) are not findings yet either, and `effect` says the listing
+  reads in the workspace. A relative or `~` path names nothing you mean: give
+  the path whole.
 - **No secret in a finding.** The secrets guard reports a masked target such as
   `… (14 chars)` and the byte ranges of what it found, so you can scrub the
   text before it goes anywhere.
@@ -178,7 +193,7 @@ current as the code.
 ```rust
 use milo_guards::file::{judge, Access};
 use milo_guards::shell::{classify, effect, Effect, Reach, Shell};
-use milo_guards::{Paths, Protected};
+use milo_guards::{Paths, Protected, Secret};
 
 // Where the agent works, and what your tool keeps for itself.
 let paths = Paths::new("/home/me/work/app", "/home/me", ["/home/me/work/app"])
@@ -209,6 +224,12 @@ assert_eq!(effect("./script.sh", Shell::Posix, &paths), Effect::Unknown);
 assert!(judge(Access::Write, "src/main.rs", &paths).is_safe());
 let verdict = judge(Access::Read, "~/.ssh/id_ed25519", &paths);
 assert_eq!(verdict.findings()[0].reason, "reads your SSH keys");
+
+// The files you know hold a secret, which the guards' own table does not list.
+let paths = paths.with_secrets([Secret::file("/home/me/work/app/.env", "the project's environment file")]);
+let verdict = classify("cat .env", Shell::Posix, &paths);
+assert_eq!(verdict.findings()[0].reason, "reads the project's environment file");
+assert_eq!(judge(Access::Read, ".env", &paths).findings()[0].reason, "reads the project's environment file");
 ```
 
 The other guards read the same way. `url::judge(url, &paths)` judges a URL,

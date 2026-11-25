@@ -10,7 +10,8 @@ judge(access, path, &paths) -> Assessment
 `access` is an `Access`, `Read` or `Write`. An edit, a create, an append and a
 rename's target are all `Write`: the guard has no finer verbs. `path` is the
 one argument as the agent wrote it. `paths` comes from `Paths::new(cwd, home,
-workspaces)`, with `with_protected` for what the caller gates with. The answer
+workspaces)`, with `with_protected` for what the caller gates with and
+`with_secrets` for the files it knows hold a secret. The answer
 is `Safe`, or `Risky` with every finding: a rule, a reason a prompt can show,
 and the path as written.
 
@@ -28,14 +29,14 @@ tool name.
 
 ## What it judges
 
-A **read** is safe wherever it lands, except a key or a credential. An agent
-reads widely, and reading is what a caller lets run unasked. A **write** is safe
+A **read** is safe wherever it lands, except a key or a credential, core's own
+or one the caller names. An agent reads widely, and reading is what a caller lets run unasked. A **write** is safe
 inside a workspace folder, to a temporary file and to the null device, and
 nowhere else.
 
 | Wire name | What it finds |
 | --- | --- |
-| `read_secret` | A read of a key or a credential: a place core marks `Secret`, or a path under one, or a disk. |
+| `read_secret` | A read of a key or a credential: a place core marks `Secret` (a secret the caller names among them), or a path under one, or a disk. |
 | `write_outside` | A write beyond the workspace: outside it, a system folder, the home directory, the workspace folder itself, a temporary folder itself, a disk. |
 | `write_sensitive` | A write to a key, a credential, a shell startup file, a file a tool runs on its own, or the repository's history. |
 | `write_protected` | A write to a path the caller protects, in the caller's words. |
@@ -47,7 +48,8 @@ guard's: a rule added later breaks each caller's `match`, so the caller
 decides.
 
 Reasons follow the verb of the access: `reads your SSH keys`, `reads the
-system's password hashes`, `reads a disk, and every key on it`, `writes to a
+system's password hashes`, `reads the project's environment file` (in a
+caller's words), `reads a disk, and every key on it`, `writes to a
 path outside the workspace`, `writes to your home directory`, `writes to the
 whole workspace`, `writes to a shell startup file`, `writes to a file a tool
 runs on its own`, `writes to the repository's history`, `writes to the
@@ -65,7 +67,7 @@ name more than one file`, `is a path only known when it runs`.
 | `Disk` | `read_secret`: the bytes of a disk hold every key on it, and `\\.\C:\x` and `\\?\GLOBALROOT\...` name a file by another route. |
 | A device or a kernel file (core's `Resolver::kernel`) | `read_secret`, whatever it holds: anything under `/dev` except `null`, `zero`, `random`, `urandom`, `tty`, `stdin`, `stdout`, `stderr` and descriptors 0 to 2, and anything under `/proc` except the machine's own facts (`cpuinfo`, `meminfo`, `version`, `loadavg`, `uptime`, `filesystems`). `/proc/self/environ` holds the agent's own API keys, `/dev/mem` and `/dev/loop0` hold every file, and `/proc/self/root` and `cwd` lead anywhere. They are `read_secret` and not `unreadable`: the guard can read the path (it knows what it is) and what it leads to is as risky as the secrets it can reach, so the caller's policy for secrets is the one that applies. |
 | `Sensitive(_, Startup)`, `Sensitive(_, History)` | Safe: a startup file is read for what it says, the history is everyday work. |
-| `Protected` | Safe: reading the caller's own settings is not what it gates. |
+| `Protected` | Safe: reading the caller's own settings is not what it gates. A path the caller also names a secret is `read_secret`, in the secret's words (core's `Resolver::named_secret`). |
 | `Unknown` | `unreadable`. |
 | anything else | Safe, wherever it lands. |
 
@@ -73,6 +75,28 @@ What counts as a secret is core's table of places known to hold one, with its
 `Sensitivity` kind, never a match on words: see [Core](core.md#what-core-judges).
 Reading the repository's history and the caller's own settings stays safe on
 purpose.
+
+A caller that knows which files hold a secret on its machine names them,
+`Paths::with_secrets([Secret::file("/home/me/work/app/.env", "the project's
+environment file")])` or `Secret::folder` for a folder, and core answers each
+as it answers a key, `Sensitive(words, Secret)` in the caller's words, before
+the workspace it sits in. A read of one is `read_secret` (`reads the project's
+environment file`), however it is spelled, as a protected path is compared:
+without case on every host, in either canonical spelling, by a Windows short
+name, with the trailing dots and spaces Windows drops. A write to one is
+`write_sensitive`, as a write to a key is. A path both protected and secret
+keeps `write_protected` for a write, and a read of it is `read_secret` in the
+secret's words, so naming a path twice loses neither finding. A file API's
+path is one literal path, so a bracket is a character of a named path's name:
+`app/[id]/secret.json` reads the secret named there (and a write to it is
+`write_sensitive`), and a protected path with a bracket in its name is that
+path: a write is `write_protected` and a read is safe, as a read of any
+protected path is (core's `named_protected`). A bracket class that picks a
+protected path by the pattern and not by its name (`~/.ag[e]nt/x`) is
+`unreadable`, as before. A Mac's `/private/tmp`, `/private/var` and
+`/private/etc` are `/tmp`, `/var` and `/etc` for a named or a protected path,
+and a folder named `/private` holds both.
+The cases are in `tests/cases/named_secrets.cases`.
 
 The shell guard gives the same answer for the same file: `cat <path>` is its
 `read_secret` exactly when a read of `<path>` is this guard's. A test in the
@@ -156,20 +180,23 @@ A file API takes one literal path, so these are `unreadable`, never judged:
 ## Spellings it holds against
 
 Every spelling a review could try is a permanent case in the tests
-(`tests/cases/posix.cases`, `windows.cases`, `protected.cases`); core's own
+(`tests/cases/posix.cases`, `windows.cases`, `protected.cases`,
+`named_secrets.cases`); core's own
 rows are in `crates/core/tests`.
 
 - **Case**: a Mac and Windows ignore it. The home directory, the sensitive
-  places and the protected paths compare without case on every host, by Unicode
+  places, the protected paths and the secrets a caller names compare without
+  case on every host, by Unicode
   simple fold (`.ſsh` is `.ssh`). The workspace compares as spelled on POSIX,
   so another case is judged outside: a false alarm on a write, never a miss.
 - **Unicode normal forms**: APFS and HFS+ open `é` as one character and as
   `e` and a combining accent as one name, and HFS+ keeps the second on disk.
-  The home directory, the sensitive places and the protected paths compare in
-  either canonical spelling on every host; names whose marks differ stay
+  The home directory, the sensitive places, the protected paths and the
+  secrets a caller names compare in either canonical spelling on every host; names whose marks differ stay
   apart.
-- **Windows short names** (`SSH~1`, `CAMILO~1`, `AGENT~1`, `GIT~1`), for the
-  home directory, the sensitive places, protected paths and `.git`.
+- **Windows short names** (`SSH~1`, `CAMILO~1`, `AGENT~1`, `GIT~1`, `ENV~1`),
+  for the home directory, the sensitive places, protected paths, the secrets a
+  caller names and `.git`.
 - **`/` against `\`, doubled and trailing separators, `.`, `..`**, and `..`
   climbing out of the workspace (and past the root, which stays the root).
 - **`~`, relative, rooted (`\Users\me`) and drive-relative (`C:x`)** paths.
@@ -264,7 +291,11 @@ Not covered, on purpose, and what to do:
   is not `OneDrive\Documents`.
 - **What is not in the table.** Core lists places known to hold secrets. A
   `.env` file, a token in a project's own files, a browser's cookie store, a
-  password manager's vault are not in it: a read of them is safe. Nor is a
+  password manager's vault are not in it: a read of them is safe unless the
+  caller names it, a path at a time, with `Paths::with_secrets`
+  (`Secret::file` or `Secret::folder` and the words a reason calls it by);
+  then a read is `read_secret`. A name alone (`.env` anywhere below the
+  workspace, a file that does not exist yet) cannot be named. Nor is a
   path as another system spells it: WSL's `/mnt/c/Users/...` on a POSIX
   machine, Git Bash's `/c/Users/...` on a Windows one, each read as the system
   it runs on reads it. A secret in a text is the business of a
@@ -279,7 +310,8 @@ Not covered, on purpose, and what to do:
 The cases are in case files, one for each thing they check (the format is in
 [CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)): `tests/cases/posix.cases`
 (a POSIX machine and a Mac), `windows.cases`, `protected.cases`,
-`startup.cases` (the files a tool runs on its own) and `limits.cases` (what
+`named_secrets.cases` (the secrets a caller names), `startup.cases` (the files
+a tool runs on its own) and `limits.cases` (what
 the guard does not see), each checked by the test file of its name. A case is
 a read or a write of a path and the answer it must get, safe or the rules it
 must find, over core's `testing::posix()`, `macos()` and `windows()` or a

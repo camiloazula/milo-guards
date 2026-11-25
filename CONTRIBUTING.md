@@ -152,6 +152,8 @@ posix finds=delete reason="deletes your home directory" | tar -cf x.tar ~ --remo
 posix safe | cd sub <<EOF > out.txt\nx\nEOF
 paths home cwd=/home/me home=/home/me workspace=/home/me
 posix@home finds=delete | rm -rf .ssh
+paths env base=posix secret_file=/home/me/work/repo/.env words="the project's environment file"
+posix@env finds=read_secret reason="reads the project's environment file" | cat .env
 ```
 
 The words before ` | ` say how the line is judged and what it must get. The
@@ -175,8 +177,11 @@ command line, and it may hold anything, a ` | ` included.
   with `classify`; and every finding's reason and `instead` are each one
   plain sentence, with no trailing period.
 - **A `paths` line** names a machine: `base=MACHINE`, or `cwd=` and `home=`;
-  then `workspace=` for each workspace folder (added to the base's), and
-  `folder=` or `file=` for a protected path, each followed by its `words=`.
+  then `workspace=` for each workspace folder (added to the base's),
+  `folder=` or `file=` for a protected path, and `secret_folder=` or
+  `secret_file=` for a secret the caller names (`Paths::secrets`), each
+  followed by its `words=`. Every guard reads a `paths` line the same way
+  (`format::declaration` in the shared reading).
 - **Escapes.** A backslash starts one of `\\` (a backslash), `\n`, `\t`, `\r`,
   `\s` (a space) and `\u{HEX}` (any character), and `\"` in a quoted value.
   A Windows path doubles its backslashes, as in a Rust string. Any other
@@ -187,7 +192,8 @@ raw tab, carriage return or other control character, a space at the start or
 end of a line or of a command line (write `\s`), an unknown escape, an unknown
 word, field, shell, rule, effect or paths name, an answer that is not whole
 (no answer, `safe` with a rule, `reason` or `instead` without its one rule,
-a field twice), a case without its `| LINE`, and a case that repeats another (the
+a field twice, a `words=` with no path before it, a named path without its
+`words=`), a case without its `| LINE`, and a case that repeats another (the
 same shell, paths, line and answer). A missing file fails its test, and
 `tests/cases.rs` fails for a case file no test file checks and for a case
 that repeats one in another file checked in the same build (a test file that
@@ -246,9 +252,9 @@ that a folder is read whole. The answer is one or more questions asked of the
 `holds_workspace`, `home`, `holds_home`, or `top:`, `secret:`, `startup:`,
 `history:` and `protected:` with the words); `startup=`, `below=`
 (`startup_below`), `picks=` (`picks_secret`), `holds=` (`holds_protected`),
-`kernel=` and `git=` give the words or `none`; `absolute=` and `opened=` the
-path or `none`; `reaches=` (`reaches_secret`) and `network=` give `yes` or
-`no`. The code reader's case is `WHAT ANSWER... | CODE`: `WHAT` is
+`named=` (`named_secret`), `kernel=` and `git=` give the words or `none`;
+`absolute=` and `opened=` the path or `none`; `reaches=` (`reaches_secret`)
+and `network=` give `yes` or `no`. The code reader's case is `WHAT ANSWER... | CODE`: `WHAT` is
 `python`, `javascript`, `python2` (`understand_python2`) or `module` (a
 module specifier), and the answer is `acts="..."` (the acts `read` finds,
 as `tests/common` spells them),

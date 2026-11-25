@@ -175,8 +175,11 @@ meant to be read. Its path is percent-decoded and placed through core's
 resolver like any path, so `file:///home/me/.ssh/id_rsa` `reads your SSH keys`
 and `file:///home/me/work/repo/x.rs` `reads a path inside the workspace`. The
 place only sharpens the words: the path of a caller's protected file reads in
-the caller's words, and one the resolver cannot place reads `a path only known
-when it runs`. A Windows machine (the home directory has a drive) reads
+the caller's words, and so does a secret the caller names (`Paths::secrets`:
+`file:///home/me/work/repo/.env` `reads the project's environment file`), in
+the secret's words where the path is also protected, since a fetch reads it
+(core's `Resolver::named_secret`); one the resolver cannot place reads `a path
+only known when it runs`. A Windows machine (the home directory has a drive) reads
 `/C:/Users` as `C:/Users`. A `file:` URL with a host names a file on another
 machine, which a Windows client reaches over the network: `reads a file from
 another machine`, and the host is judged too.

