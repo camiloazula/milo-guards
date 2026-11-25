@@ -110,8 +110,12 @@ crates depend on each other and how that is enforced is in
   exception is the shell inside the steps of `.github/workflows/release.yml`,
   which decides whether a tag is a release and which crates are still to
   publish: a Rust tool there would be compiled in the job that holds the
-  publishing token. No other workflow and no file of the repository holds a
-  script. [Releasing](CONTRIBUTING.md#releasing)
+  publishing token. The other is the few lines of PowerShell that
+  `tools/grammar-check` hands `pwsh` to reach PowerShell's own parser, which
+  only PowerShell (or .NET) can call; they are embedded in its Rust, take
+  every line as data and run none. No other workflow and no file of the
+  repository holds a script. [Releasing](CONTRIBUTING.md#releasing),
+  [Shell](docs/design/shell.md#the-grammars-beside-the-real-shells)
 
 ### Tests
 

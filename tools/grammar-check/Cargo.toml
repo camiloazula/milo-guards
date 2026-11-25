@@ -1,0 +1,99 @@
+[package]
+name = "grammar-check"
+description = "Holds the shell guard's grammars to how the real shells parse each line of its case files, without running one."
+# A tool of this repository, never published: it starts the real shells,
+# which no crate under `crates/` may do. It is a package of its own, which
+# the workspace excludes (`exclude` in the root `Cargo.toml`), so no gate of
+# the workspace builds it, `just test` on Windows and macOS never starts a
+# shell, and `just package`, `just publish` and the release workflow never
+# see it. `just grammars` formats, lints, tests and runs it.
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.99"
+publish = false
+# The tool; `hold-output-open` below is a program its tests start.
+default-run = "grammar-check"
+
+# Its own workspace, so cargo reads it apart from the one around it, with its
+# own `Cargo.lock`. `crates/guards/tests/contract.rs` holds every package
+# that lock names to the version the workspace's `Cargo.lock` holds it at,
+# so it builds what the gates build and `just advisories` audits, and its
+# lints below to the workspace's, word for word.
+[workspace]
+
+# A program the tests start, which leaves a copy of itself holding its
+# output open (`tests/room.rs`); it is never installed.
+[[bin]]
+name = "hold-output-open"
+path = "tests/fixtures/hold_output_open.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "grammar-check"
+path = "src/main.rs"
+
+[dependencies]
+# The guard's reading of a line: `explain` for the programs and words it
+# read, and its `testing` feature for how the grammar read the line itself
+# (`testing::grammar`), which is not for callers and may change with the
+# guard.
+milo-guards-shell = { path = "../../crates/shell", features = ["testing"] }
+
+# The workspace's `[workspace.lints]`, copied: a package outside the
+# workspace cannot inherit them.
+[lints.rust]
+# `unsafe_code = forbid`: no guard needs unsafe, and a crate that ever does
+# must downgrade this consciously rather than slip it in.
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+elided_lifetimes_in_paths = "allow"  # part of rust_2018_idioms; pure style, very noisy, no bug value
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+# Every public item is documented: docs.rs is where a caller reads a guard
+# first, and `just lint` denies warnings, so an undocumented `pub` item does
+# not build.
+missing_docs = "warn"
+# `cargo llvm-cov` sets `cfg(coverage)`; the timing tests skip themselves there.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+
+[lints.clippy]
+# Strict-but-sensible bar across the workspace. `pedantic` catches "you
+# should know better as a Rust dev" issues; a hand-picked slice of
+# `restriction` catches leftover scaffolding (todo/dbg) and forces a
+# conscious choice around panicking APIs. The whole `restriction` and
+# `nursery` groups stay off (too many false positives for a stable bar).
+pedantic = { level = "warn", priority = -1 }
+# The one nursery lint with clear value.
+redundant_clone = "warn"
+module_name_repetitions = "allow"   # `shell::Shell` style is fine
+missing_errors_doc = "allow"         # we don't doc internal error variants
+missing_panics_doc = "allow"         # we don't doc internal panic conditions
+must_use_candidate = "allow"         # noisy on small accessors
+return_self_not_must_use = "allow"   # noisy for builder methods
+similar_names = "allow"              # `arg` / `args`, `dir` / `dirs`, etc.
+too_many_lines = "allow"             # a rule's table reads clearer in one place
+unused_self = "allow"                # often intentional for trait-shaped methods
+match_same_arms = "allow"            # explicit arms aid readability over fall-through
+items_after_statements = "allow"     # localised helper fns inside callers are fine
+match_wildcard_for_single_variants = "allow"  # forwards-compat against new variants
+assert_is_empty = "allow"            # new in 1.99: `assert!(v.is_empty())` would become `assert_eq!(v, [] as [T; 0])`, which reads worse
+needless_continue = "allow"          # explicit `continue` reads cleaner in long loops
+needless_pass_by_value = "allow"     # owned data passed in by design
+struct_field_names = "allow"         # repeated prefixes match domain vocabulary
+
+# --- hand-picked `restriction` lints (NOT the whole group) ---
+# Leftover scaffolding that must never reach a release build.
+dbg_macro = "deny"
+todo = "warn"                        # flag but don't block work-in-progress
+unimplemented = "deny"
+# Panicking APIs: force a conscious choice. A guard runs on every command an
+# agent sends, so a panic there fails the caller's turn. Tests are exempt via
+# `allow-{unwrap,expect,panic}-in-tests` in clippy.toml.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+# Misc correctness/clarity hardening with low false-positive rates.
+mem_forget = "deny"
+exit = "deny"                        # a library never ends the caller's process

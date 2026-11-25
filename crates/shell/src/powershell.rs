@@ -41,6 +41,9 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     let Some(first) = unit::parse(split, text, &language, unit::Recovery::Counted) else {
         return;
     };
+    // The first reading is the one that decides: a line read again with its
+    // variable paths quoted stays unreadable.
+    split.note_grammar(depth, &first);
     // A line the grammar cannot read stays unreadable, whatever else is found
     // in it. When it holds a word that is a variable and a path
     // (`$HOME\.ssh\id_rsa`), which the grammar fails on, it is also read again
