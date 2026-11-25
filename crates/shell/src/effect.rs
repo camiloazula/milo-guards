@@ -98,6 +98,18 @@ pub(crate) enum Kind {
     Unknown,
 }
 
+/// Whether `unit`, a program known as `key`, opens what it finds through the
+/// symbolic links it meets as it walks a folder (see `reach`).
+pub(crate) fn follows_links(unit: &Unit, key: &str) -> bool {
+    reach::follows_links(unit, key)
+}
+
+/// Whether a word of `args` is the short flag `short` or one of the long
+/// flags `long` (see `reach`).
+pub(crate) fn flagged(args: &[Arg], short: char, long: &[&str]) -> bool {
+    reach::flagged(args, short, long)
+}
+
 /// How cautious a caller that lets reads in the workspace through must be
 /// of an [`Effect`]: reads in the workspace, reads beyond it, changes,
 /// unknown.
@@ -183,6 +195,7 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
         resolver,
         producers,
         beyond: Cell::new(false),
+        lost: Cell::new(false),
         landed: collect.then(|| RefCell::new(Vec::new())),
         followed: RefCell::default(),
         stage: Cell::new(None),
@@ -241,6 +254,7 @@ fn read(split: &Split, findings: &[Finding], resolver: &Resolver, collect: bool)
             }
         }
     }
+    seen.unknown |= context.lost.get();
     let effect = seen.effect(context.beyond.get());
     Read {
         effect,

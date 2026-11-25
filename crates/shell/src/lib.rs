@@ -68,7 +68,7 @@ pub use effect::{Effect, How, Reach, ReadPath};
 pub use explain::{
     ArgExplanation, ArgKind, Explanation, PipelineStage, RedirectExplanation, UnitExplanation,
 };
-pub use milo_guards_core::{Paths, Protected, ProtectedKind, Secret};
+pub use milo_guards_core::{Link, Links, Paths, Protected, ProtectedKind, Secret};
 
 /// The shell that runs the line, whose grammar splits it.
 ///
@@ -252,44 +252,45 @@ struct Reading {
     split: unit::Split,
     judged: detect::Judged,
     resolver: path::Resolver,
-    /// With a drive mount or a Windows home named, the line judged on the
-    /// paths as spelled too: `judged` keeps every finding of each, so naming
-    /// how this machine spells another system's drives never makes an answer
-    /// less serious.
+    /// With a link, a drive mount or a Windows home named, the line judged
+    /// on each other set of the paths too (`Paths::also_judged_on`):
+    /// `judged` keeps every finding of each, so naming what only the disk
+    /// can say never makes an answer less serious.
     spelled: Option<Spelled>,
 }
 
-/// A line judged on the paths as given and as spelled, each on its own.
+/// A line judged on the paths as given and on each other set, each on its
+/// own.
 struct Spelled {
-    /// The findings on the paths as given, before those as spelled joined
-    /// them.
+    /// The findings on the paths as given, before the others joined them.
     own: Vec<Finding>,
-    /// The resolver of the paths as spelled, and its findings.
-    resolver: path::Resolver,
-    found: Vec<Finding>,
+    /// The resolver of each other set, and its findings.
+    others: Vec<(path::Resolver, Vec<Finding>)>,
 }
 
 impl Reading {
-    /// What the line does: with the paths as spelled too, the most cautious
-    /// of what each judging says on its own and of what they say together,
-    /// so that one never hides the other's `Unknown`.
+    /// What the line does: with other sets of the paths too, the most
+    /// cautious of what each judging says on its own and of what they say
+    /// together, so that one never hides another's `Unknown`.
     fn effect(&self) -> Effect {
         let merged = effect::of(&self.split, &self.judged.found, &self.resolver);
         let Some(spelled) = &self.spelled else {
             return merged;
         };
-        [
-            effect::of(&self.split, &spelled.own, &self.resolver),
-            effect::of(&self.split, &spelled.found, &spelled.resolver),
-        ]
-        .into_iter()
-        .fold(merged, |most, effect| {
-            if effect::rank(effect) > effect::rank(most) {
-                effect
-            } else {
-                most
-            }
-        })
+        std::iter::once(effect::of(&self.split, &spelled.own, &self.resolver))
+            .chain(
+                spelled
+                    .others
+                    .iter()
+                    .map(|(resolver, found)| effect::of(&self.split, found, resolver)),
+            )
+            .fold(merged, |most, effect| {
+                if effect::rank(effect) > effect::rank(most) {
+                    effect
+                } else {
+                    most
+                }
+            })
     }
 
     fn new(command: &str, shell: Shell, paths: &Paths, effect: bool) -> Self {
@@ -308,21 +309,24 @@ impl Reading {
             resolver.keep(paths);
         }
         let mut judged = detect::findings(&split, &resolver);
-        let spelled = paths.as_spelled().map(|as_spelled| {
-            let mut spelled = path::Resolver::new(&as_spelled);
-            spelled.made(&split.drives);
-            if effect {
-                spelled.keep(&as_spelled);
-            }
-            let other = detect::findings(&split, &spelled);
-            let found = other.found.clone();
+        let others = paths.also_judged_on();
+        let spelled = (!others.is_empty()).then(|| {
             let own = judged.found.clone();
-            judged.merge(other);
-            Spelled {
-                own,
-                resolver: spelled,
-                found,
-            }
+            let others = others
+                .iter()
+                .map(|other| {
+                    let mut resolver = path::Resolver::new(other);
+                    resolver.made(&split.drives);
+                    if effect {
+                        resolver.keep(other);
+                    }
+                    let found = detect::findings(&split, &resolver);
+                    let each = found.found.clone();
+                    judged.merge(found);
+                    (resolver, each)
+                })
+                .collect();
+            Spelled { own, others }
         });
         Self {
             split,
@@ -419,10 +423,11 @@ pub fn explain(command: &str, shell: Shell, paths: &Paths) -> Explanation {
 /// any other line.
 ///
 /// A guard never touches the disk, so [`effect`] places each read by how it
-/// is spelled, and a symbolic link in the workspace that points out of it
-/// (`link -> ~/.ssh`, then `cat link/id_rsa`) is [`Reach::Workspace`]. A caller
-/// that can check the disk needs the places the line reads, and how the
-/// program reaches from each: a pattern is expanded by the shell, a recursive
+/// is spelled and through the links the caller names ([`Paths::with_links`]);
+/// a symbolic link in the workspace it is not told of, pointing out of it
+/// (`link -> ~/.ssh`, then `cat link/id_rsa`), is [`Reach::Workspace`]. A
+/// caller that can check the disk needs the places the line reads, and how
+/// the program reaches from each: a pattern is expanded by the shell, a recursive
 /// search walks a folder, and either can cross a link that a bare path would
 /// not show. This is the list [`effect`] judged, from the same reading, not a
 /// second one.

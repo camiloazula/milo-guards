@@ -66,6 +66,20 @@ impl Checker<'_> {
                         &picks,
                     );
                 });
+                // `find -L` follows the links it meets: what `-delete`
+                // removes below a folder includes what the links the caller
+                // names there land on.
+                let follows = args
+                    .iter()
+                    .any(|arg| matches!(arg.known(), Some("-L" | "-follow") | None));
+                if follows && args.iter().any(|arg| arg.known() == Some("-delete")) {
+                    for target in &crate::launch::find_starts(args) {
+                        if let Some(words) = self.resolver.linked(unit.dir.as_ref(), target, shell)
+                        {
+                            self.add(Rule::Delete, format!("deletes {words}"), Some(target));
+                        }
+                    }
+                }
                 // `-fprint FILE` and its kin write the file as `>` would,
                 // and `-fprintf FILE FORMAT` writes any text it is given.
                 for file in find_outputs(args) {

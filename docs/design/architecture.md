@@ -35,7 +35,7 @@ advisories` audits, and in it only `src/room.rs` (and a program its tests
 start) names `process`, and it has no target outside `src/` and `tests/`.
 
 The front door has no logic of its own. It re-exports the types every guard
-shares: `Paths` with its `Protected` and `Secret`, `Assessment`, `Finding` and the trait
+shares: `Paths` with its `Protected`, `Secret`, `Links` and `Link`, `Assessment`, `Finding` and the trait
 `RuleName`. It does not
 re-export `Place`: a caller reads a finding's rule and reason, never where a
 path landed. It re-exports each guard as a module behind a cargo feature:
@@ -126,8 +126,8 @@ Every guard keeps these five promises.
    writes to the terminal. It takes text and the `Paths` it is given, and it
    returns an answer. Paths are judged by how they are spelled, never by what
    is on disk, so a Windows line is judged the same on every host; how the
-   machine spells another system's drives (WSL's `/mnt/c`) is the caller's
-   to pass in `Paths`.
+   machine spells another system's drives (WSL's `/mnt/c`), and the links on
+   the disk, are the caller's to pass in `Paths`.
 2. **Deterministic.** The same input gives the same answer, on every run and
    on every machine.
 3. **No policy.** A guard says what it found. It never decides to ask, to

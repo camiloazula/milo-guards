@@ -423,8 +423,10 @@ command line, and it may hold anything, a ` | ` included.
   `folder=` or `file=` for a protected path, and `secret_folder=` or
   `secret_file=` for a secret the caller names (`Paths::secrets`), each
   followed by its `words=`; `drive_mount=` for each folder the machine
-  mounts drives in (`Paths::drive_mounts`), and `windows_home=`
-  (`Paths::windows_home`). Every guard reads a `paths` line the same way
+  mounts drives in (`Paths::drive_mounts`), `windows_home=`
+  (`Paths::windows_home`), and `link=` for each link the caller resolved
+  (`Paths::links`), followed by its `to=` (an empty `to=` is a target the
+  guard cannot place). Every guard reads a `paths` line the same way
   (`format::declaration` in the shared reading).
 - **Escapes.** A backslash starts one of `\\` (a backslash), `\n`, `\t`, `\r`,
   `\s` (a space) and `\u{HEX}` (any character), and `\"` in a quoted value.
@@ -438,9 +440,10 @@ end of a line or of a command line (write `\s`), an unknown escape, an unknown
 word, field, shell, rule, effect or paths name, an answer that is not whole
 (no answer, `safe` with a rule, `reason` or `instead` without its one rule,
 a field twice, a `words=` with no path before it, a named path without its
-`words=`, `windows_home=` twice), a case without its `| LINE`, and a case
-that repeats another (the same shell, paths, line and answer). A missing
-file fails its test, and
+`words=`, a `to=` with no `link=` before it, a `link=` without its `to=`,
+`windows_home=` twice), a case without its `| LINE`, and a case that
+repeats another (the same shell, paths, line and answer). A missing file
+fails its test, and
 `tests/cases.rs` fails for a case file no test file checks and for a case
 that repeats one in another file checked in the same build (a test file that
 starts `#![cfg(...)]`, as `tests/inline_off.rs` does, is checked in another,

@@ -2,8 +2,9 @@
 //! (`/home/me`) and Windows ones (`C:\Users\me`, `\\server\share`),
 //! whatever the host. Windows paths compare without case, as Windows does.
 //! Nothing reads the file system, so a symlink is judged by its own name,
-//! and a POSIX spelling of a Windows drive by its own, unless the caller
-//! names the mount (`Paths::drive_mounts`): see `mount`.
+//! unless the caller names it (`Paths::links`, see `land`), and a POSIX
+//! spelling of a Windows drive by its own, unless the caller names the mount
+//! (`Paths::drive_mounts`, see `mount`).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -11,10 +12,24 @@ use std::path::PathBuf;
 use crate::spelling::glob::{self, Shape, WILDCARDS};
 use crate::{canonical, Paths, Place, ProtectedKind, Sensitivity};
 
+mod land;
 mod mount;
 
+use std::sync::Arc;
+
+use land::{Held, Landed};
+pub(crate) use land::{Prepared, MOST_LINKS};
+#[cfg(any(feature = "testing", test))]
+pub(crate) use land::{MOST_BUILD, MOST_HOPS, MOST_ROUNDS, MOST_TARGET};
 pub(crate) use mount::MOST_WORK;
 use mount::{Budget, Mounts, Picked};
+
+/// What macOS links to the root: see [`Loc::firm`].
+const MAC_LINKS: [&[&str]; 3] = [
+    &["System", "Volumes", "Data"],
+    &["Volumes", "Macintosh HD"],
+    &["Volumes", "Macintosh HD - Data"],
+];
 
 /// How a path is spelled: what its separators are, and whether it can name
 /// a drive or a share. It follows the system the path will be used on, not
@@ -72,7 +87,7 @@ struct Loc {
     parts: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Root {
     /// `/`.
     Unix,
@@ -230,15 +245,10 @@ impl Loc {
 
     /// How many leading parts are one of the links.
     fn link(&self) -> Option<usize> {
-        const LINKS: [&[&str]; 3] = [
-            &["System", "Volumes", "Data"],
-            &["Volumes", "Macintosh HD"],
-            &["Volumes", "Macintosh HD - Data"],
-        ];
         if !matches!(self.root, Root::Unix) {
             return None;
         }
-        LINKS
+        MAC_LINKS
             .iter()
             .find(|link| {
                 link.len() <= self.parts.len()
@@ -292,6 +302,22 @@ impl Loc {
             _ => None,
         }
     }
+}
+
+/// Whether `home` (already [`firm`](Loc::firm)) is a Mac's: under `/Users`, or
+/// the root user's, `/var/root` or `/private/var/root`.
+fn is_mac(home: &Loc) -> bool {
+    matches!(home.root, Root::Unix)
+        && match home.parts.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            [users, ..] if users.eq_ignore_ascii_case("Users") => true,
+            [var, root] => var.eq_ignore_ascii_case("var") && root.eq_ignore_ascii_case("root"),
+            [private, var, root] => {
+                private.eq_ignore_ascii_case("private")
+                    && var.eq_ignore_ascii_case("var")
+                    && root.eq_ignore_ascii_case("root")
+            }
+            _ => false,
+        }
 }
 
 /// A part of a Windows path as Windows names it. `.` and `..` are read
@@ -1059,6 +1085,14 @@ struct Cut {
     loc: Loc,
     /// The text of each part from the first wildcard part on, for a pattern.
     tail: Option<Vec<String>>,
+    /// Whether a link the caller named moved it.
+    moved: bool,
+    /// The link a path with no wildcard ends at, when it ends at one (see
+    /// `land`).
+    itself: Option<Loc>,
+    /// Whether it is a name a link lends the place (see `Landed::lent`):
+    /// it counts only for what it means by name.
+    lent: bool,
 }
 
 /// Whether a path written from the working directory can be a secret (see
@@ -1091,8 +1125,10 @@ pub struct Resolver {
     windows_home: Option<Loc>,
     /// The folders drives are mounted in (see `mount`).
     tree: Mounts,
-    /// Whether any mount is named: without one, a path lands where its
-    /// spelling says, as it always has.
+    /// The links the caller has resolved (see `land`), when it names any.
+    links: Option<Arc<Prepared>>,
+    /// Whether any mount or link is named: without one, a path lands where
+    /// its spelling says, as it always has.
     landing: bool,
     /// The work this resolver's walks may still spend (see `mount`).
     budget: Budget,
@@ -1141,17 +1177,7 @@ impl Resolver {
         // workspace, the working directory and the temporary folders are only
         // on a Mac: its home is under `/Users` (or root's, `/var/root`).
         let home = Loc::absolute(&paths.home.to_string_lossy()).firm();
-        let mac = matches!(home.root, Root::Unix)
-            && match home.parts.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-                [users, ..] if users.eq_ignore_ascii_case("Users") => true,
-                [var, root] => var.eq_ignore_ascii_case("var") && root.eq_ignore_ascii_case("root"),
-                [private, var, root] => {
-                    private.eq_ignore_ascii_case("private")
-                        && var.eq_ignore_ascii_case("var")
-                        && root.eq_ignore_ascii_case("root")
-                }
-                _ => false,
-            };
+        let mac = is_mac(&home);
         let absolute = |text: &std::path::Path| {
             let loc = Loc::absolute(&text.to_string_lossy());
             if mac {
@@ -1179,8 +1205,14 @@ impl Resolver {
         } else {
             Root::Unix
         };
-        let tree = Mounts::new(&paths.drive_mounts, &slash, mac);
-        let landing = tree.any();
+        let links = (!paths.links.is_empty()).then(|| paths.links.prepared(paths));
+        let mut tree = Mounts::new(&paths.drive_mounts, &slash, mac);
+        // A mount's folder is also where it lands through the links: a
+        // drive is a folder of it there too.
+        for place in links.iter().flat_map(|links| links.mount_places()) {
+            tree.add(place, &slash);
+        }
+        let landing = tree.any() || links.is_some();
         let mounts: Vec<Loc> = if cwd.windows() {
             paths
                 .drive_mounts
@@ -1200,8 +1232,15 @@ impl Resolver {
                 return loc;
             }
             let mapping = matches!(loc.root, Root::Unix).then_some(Root::Unix);
-            tree.land(loc.clone(), mapping, None, &building)
-                .unwrap_or(loc)
+            match &links {
+                Some(links) => links
+                    .tree()
+                    .land(&tree, loc.clone(), mapping, None, &building)
+                    .map_or(loc, |landed| landed.loc),
+                None => tree
+                    .land(loc.clone(), mapping, None, &building)
+                    .unwrap_or(loc),
+            }
         };
         let spelled_home = home.clone();
         let home = land(home).firm();
@@ -1305,7 +1344,7 @@ impl Resolver {
         // Windows machine judges it. Without the Windows home, its drive is
         // `C:`, and the folders under `C:\Users` are homes, as they always
         // are on Windows, so a key in any of them is one.
-        if !home.windows() && (windows_home.is_some() || landing) {
+        if !home.windows() && (windows_home.is_some() || tree.any()) {
             let drive = Loc::at(
                 windows_home
                     .as_ref()
@@ -1344,6 +1383,7 @@ impl Resolver {
             spelled_home,
             windows_home,
             tree: tree.clone(),
+            links: links.clone(),
             landing,
             budget: Budget::new(MOST_WORK),
             letters,
@@ -1401,10 +1441,22 @@ impl Resolver {
         // is not clear: a plain name there may be the secret. A workspace
         // that holds a mount's folder is not clear either: a plain name there
         // may be a drive (`c/Users` from `/mnt`).
+        // A workspace the caller names a link in, or one a link lands in
+        // (through other links or not), is not clear either: a plain name
+        // there may go through the link to anywhere, or be a name another
+        // link lends a key.
         let mounted = |workspace: &Workspace| {
             landing
                 && (tree.holds_mount(&workspace.loc, &building)
-                    || tree.holds_mount(&workspace.spelled, &building))
+                    || tree.holds_mount(&workspace.spelled, &building)
+                    || links.as_ref().is_some_and(|links| {
+                        links.tree().overflow()
+                            || links.tree().links_at_or_below(&workspace.loc, &building)
+                            || links
+                                .tree()
+                                .links_at_or_below(&workspace.spelled, &building)
+                            || links.tree().lands_at_or_below(&workspace.loc, &building)
+                    }))
         };
         let own = |workspace: &Workspace| {
             !workspace.holds_sensitive && workspace.loc.holds(&landed_cwd) && !mounted(workspace)
@@ -1472,6 +1524,20 @@ impl Resolver {
             (Place::Inside, Some(words)) => Place::Sensitive(words, Sensitivity::Startup),
             (place, _) => place,
         }
+    }
+
+    /// As [`place_hidden`](Self::place_hidden), for what acts on a name
+    /// itself (a delete, a rename, `unlink`): a path that ends at a link the
+    /// caller named is the link, not what it points to, and a pattern reads
+    /// the links it can pick as names. Without a link named it is
+    /// `place_hidden`.
+    // Not API: a question the guards ask of the links, which may change in
+    // any release.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn place_name(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Place {
+        self.place_following(path, flavour, hidden, true, Writes::No, false)
+            .0
     }
 
     /// The words of a file a tool runs on its own that a write to `path` is,
@@ -1868,8 +1934,23 @@ impl Resolver {
         holding: bool,
         writes: Writes,
     ) -> (Place, Option<&'static str>) {
+        self.place_following(path, flavour, hidden, holding, writes, true)
+    }
+
+    /// [`place_as`](Self::place_as), where `follow` says whether a path that
+    /// ends at a link is read through it (a read, a write) or is the link
+    /// itself (a delete, a move).
+    fn place_following(
+        &self,
+        path: Spelling<'_>,
+        flavour: Flavour,
+        hidden: bool,
+        holding: bool,
+        writes: Writes,
+        follow: bool,
+    ) -> (Place, Option<&'static str>) {
         let mut readings = self
-            .readings(path, flavour, hidden, holding, writes)
+            .readings(path, flavour, hidden, holding, writes, follow)
             .into_iter();
         let mut best = readings.next().unwrap_or((Place::Unknown, None));
         let mut words = best.1;
@@ -1896,7 +1977,7 @@ impl Resolver {
     /// a pattern.
     #[must_use]
     pub fn places(&self, path: Spelling<'_>, flavour: Flavour, hidden: bool) -> Vec<Place> {
-        self.readings(path, flavour, hidden, true, Writes::No)
+        self.readings(path, flavour, hidden, true, Writes::No, true)
             .into_iter()
             .map(|(place, _)| place)
             .collect()
@@ -1909,16 +1990,22 @@ impl Resolver {
         hidden: bool,
         holding: bool,
         writes: Writes,
+        follow: bool,
     ) -> Vec<(Place, Option<&'static str>)> {
         let mut places = Vec::new();
-        self.place_one(path, flavour, hidden, holding, writes, &mut places);
+        self.place_one(
+            path,
+            flavour,
+            hidden,
+            (holding, writes, follow),
+            &mut places,
+        );
         for variant in climbing(path.text(), flavour) {
             self.place_one(
                 respell(path, &variant),
                 flavour,
                 hidden,
-                holding,
-                writes,
+                (holding, writes, follow),
                 &mut places,
             );
         }
@@ -1939,8 +2026,7 @@ impl Resolver {
         path: Spelling<'_>,
         flavour: Flavour,
         hidden: bool,
-        holding: bool,
-        writes: Writes,
+        (holding, writes, follow): (bool, Writes, bool),
         places: &mut Vec<(Place, Option<&'static str>)>,
     ) {
         if let Spelling::Plain(text) = path {
@@ -1969,18 +2055,58 @@ impl Resolver {
         let named = self.named_literally(path, flavour);
         for cut in self.cuts(path, text, flavour) {
             let Some(cut) = cut else {
-                // Past the budget: only known when it runs.
+                // Through more links than any system follows, a link that
+                // cannot be read or placed, or past the budget: only known
+                // when it runs.
                 places.push((Place::Unknown, None));
                 continue;
             };
-            places.push(self.place_cut(&cut, named, text, flavour, hidden, holding, writes));
-            for reading in self.picked(path, &cut, flavour, hidden) {
+            // What acts on the name itself (a delete, a move) acts on the
+            // link a path ends at, not on what it points to.
+            let unfollowed = !follow && cut.itself.is_some();
+            if !unfollowed {
+                let found = self.place_cut(&cut, named, text, flavour, hidden, holding, writes);
+                // A name a link lends counts only for what it means by name:
+                // a key, a protected path, a file that runs on its own.
+                // Where the name is otherwise (beyond the workspace, a system
+                // folder, a share) is not where the file is.
+                if !cut.lent || meant_by_name(found) {
+                    places.push(found);
+                }
+            }
+            // A path that ends at a link is also the link itself, which a
+            // delete or a rename acts on: the more serious of the two wins.
+            if let Some(itself) = &cut.itself {
+                let link = Cut {
+                    loc: itself.clone(),
+                    tail: None,
+                    moved: false,
+                    itself: None,
+                    lent: false,
+                };
+                places.push(self.place_cut(&link, None, text, flavour, hidden, holding, writes));
+            }
+            // A pattern a program expands for what acts on the names reads
+            // the links it meets as names: only a drive in a mount is read
+            // through.
+            let picked = if follow {
+                self.picked(path, &cut, flavour, hidden)
+            } else {
+                self.picked_drives(path, &cut, flavour, hidden)
+            };
+            for reading in picked {
                 let Some((loc, tail)) = reading else {
                     places.push((Place::Unknown, None));
                     continue;
                 };
                 let text = tail.as_ref().map(|tail| tail.join("/")).unwrap_or_default();
-                let cut = Cut { loc, tail };
+                let cut = Cut {
+                    loc,
+                    tail,
+                    moved: true,
+                    itself: None,
+                    lent: false,
+                };
                 places.push(self.place_cut(&cut, None, &text, flavour, hidden, holding, writes));
             }
         }
@@ -2005,6 +2131,13 @@ impl Resolver {
         writes: Writes,
     ) -> (Place, Option<&'static str>) {
         let (loc, tail) = (&cut.loc, cut.tail.as_deref());
+        // Where a link lands may be a device: `/dev/null` through a link
+        // is the null device.
+        if cut.moved && tail.is_none() && matches!(loc.root, Root::Unix) {
+            if let Some(device) = device(&loc.render(), Flavour::Posix) {
+                return (device, None);
+            }
+        }
         let pattern = tail.is_some();
         // A pattern is judged by the folder before its first wildcard part,
         // and what it can pick is read from its parts below.
@@ -2046,48 +2179,152 @@ impl Resolver {
             .filter(|part| part.contains(WILDCARDS))
             .collect();
         let mut cuts: Vec<Option<Cut>> = Vec::new();
-        let mut seen: HashSet<(String, Option<Vec<String>>)> = HashSet::new();
-        let spelled = path.with(marked.as_deref().unwrap_or(text));
-        for landed in self.landings(spelled, flavour) {
-            match landed {
-                Some(loc) => {
-                    let cut = cut_of(loc, &wildcards);
-                    if seen.insert((cut.loc.key(), cut.tail.clone())) {
-                        cuts.push(Some(cut));
-                    }
+        let mut seen: HashSet<(String, Option<Vec<String>>, bool)> = HashSet::new();
+        let mut push = |cut: Option<Cut>, cuts: &mut Vec<Option<Cut>>| match cut {
+            Some(cut) => {
+                if seen.insert((cut.loc.key(), cut.tail.clone(), cut.lent)) {
+                    cuts.push(Some(cut));
                 }
-                None => {
-                    if !cuts.iter().any(Option::is_none) {
-                        cuts.push(None);
-                    }
+            }
+            None => {
+                if !cuts.iter().any(Option::is_none) {
+                    cuts.push(None);
+                }
+            }
+        };
+        let spelled = path.with(marked.as_deref().unwrap_or(text));
+        // Once a link's name holds a wildcard character, a pattern is also
+        // the path its text spells.
+        let literal =
+            marked.is_some() && self.links.as_ref().is_some_and(|links| links.tree().wild());
+        for (landings, marks) in [(self.landings(spelled, flavour), true)]
+            .into_iter()
+            .chain(literal.then(|| (self.landings(path, flavour), false)))
+        {
+            for landed in landings {
+                let Some(landed) = landed else {
+                    push(None, &mut cuts);
+                    continue;
+                };
+                let mut first = cut_of(landed.loc, &wildcards, marks);
+                first.moved = landed.hopped;
+                if first.tail.is_none() {
+                    first.itself = landed.itself;
+                }
+                push(Some(first), &mut cuts);
+                for name in landed.names {
+                    let mut cut = cut_of(name, &wildcards, marks);
+                    cut.moved = true;
+                    push(Some(cut), &mut cuts);
+                }
+                for name in landed.lent {
+                    let mut cut = cut_of(name, &wildcards, marks);
+                    cut.moved = true;
+                    cut.lent = true;
+                    push(Some(cut), &mut cuts);
                 }
             }
         }
         cuts
     }
 
-    /// Every place `path` lands: with its `..` applied, and each drive in a
-    /// mount read as the drive (see `mount`); and, for a relative POSIX path
-    /// on Windows, also walked from each drive mount's folder above the
-    /// drive (Git Bash's `..` from `C:\` is `/`, where a Windows program's
-    /// is `C:\`). The guard does not know which program reads it, so each is
-    /// a place the path may land. Without a mount named, only the path as
-    /// spelled, its `..` applied. `None` among them for a landing past the
-    /// budget.
-    fn landings(&self, path: Spelling<'_>, flavour: Flavour) -> Vec<Option<Loc>> {
+    /// Every place `path` lands, each a landing: with its `..` applied, and
+    /// each drive in a mount read as the drive (see `mount`); and, for a
+    /// relative POSIX path on Windows, also walked from each drive mount's
+    /// folder above the drive (Git Bash's `..` from `C:\` is `/`, where a
+    /// Windows program's is `C:\`). With a link named (see `land`), walked
+    /// part by part, a `..` after a link climbing from where it points (as a
+    /// system opens a path, and a shell's `cd -P` goes); walked with its
+    /// `..` applied to the text first (as Windows applies them, and a shell's
+    /// `cd` goes); and, for each `..` after the first link, with the `..`
+    /// before it applied to the text and the rest walked (a `cd` the shell
+    /// went to by the text, then a path opened from there). The guard does
+    /// not know which program reads it, so each is a place the path may
+    /// land. Without a mount or a link named, only the path as spelled, its
+    /// `..` applied. `None` among them for a landing that cannot be
+    /// finished.
+    fn landings(&self, path: Spelling<'_>, flavour: Flavour) -> Vec<Option<Landed>> {
         let spelled = self.locate_dots(path, flavour, false);
         if !self.landing {
-            return vec![Some(spelled)];
+            return vec![Some(Landed::plain(spelled))];
         }
-        let mut landings =
-            self.tree
-                .lands(spelled, self.mapping(path, flavour), None, &self.budget);
+        let mapping = self.mapping(path, flavour);
         let relative =
             matches!(path, Spelling::Plain(text) if !text.starts_with(flavour.separators()));
-        if self.cwd.windows() && flavour == Flavour::Posix && relative {
+        let git_bash = self.cwd.windows() && flavour == Flavour::Posix && relative;
+        let Some(links) = self.links.as_ref().map(|links| links.tree()) else {
+            let mut landings: Vec<Option<Landed>> = self
+                .tree
+                .lands(spelled, mapping, None, &self.budget)
+                .into_iter()
+                .map(|landed| landed.map(Landed::plain))
+                .collect();
+            if git_bash {
+                for folder in &self.mounts {
+                    landings.extend(
+                        self.tree
+                            .lands(
+                                self.locate_dots(path, flavour, true),
+                                None,
+                                Some((folder.clone(), self.cwd.root.clone())),
+                                &self.budget,
+                            )
+                            .into_iter()
+                            .map(|landed| landed.map(Landed::plain)),
+                    );
+                }
+            }
+            return landings;
+        };
+        let kept = self.locate_dots(path, flavour, true);
+        let walked = links.land(
+            &self.tree,
+            kept.clone(),
+            mapping.clone(),
+            None,
+            &self.budget,
+        );
+        let first = walked.as_ref().and_then(|landed| landed.first_hop);
+        // Where one mount's folder is below another's, the walk through the
+        // mounts alone reads each (see `mount`): a path no link is on lands
+        // there too.
+        let overlapping: Vec<Option<Landed>> = if self.tree.any() {
+            self.tree
+                .lands(spelled.clone(), mapping.clone(), None, &self.budget)
+                .into_iter()
+                .skip(1)
+                .map(|landed| landed.map(Landed::plain))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut landings = vec![
+            walked,
+            links.land(&self.tree, spelled, mapping.clone(), None, &self.budget),
+        ];
+        landings.extend(overlapping);
+        if let Some(first) = first {
+            for (at, part) in kept.parts.iter().enumerate().skip(first) {
+                if part != ".." {
+                    continue;
+                }
+                let mut raw = Loc::at(kept.root.clone());
+                for part in &kept.parts[..at] {
+                    if part == ".." {
+                        raw.parts.pop();
+                    } else {
+                        raw.parts.push(part.clone());
+                    }
+                }
+                raw.parts.extend(kept.parts[at..].iter().cloned());
+                landings.push(links.land(&self.tree, raw, mapping.clone(), None, &self.budget));
+            }
+        }
+        if git_bash {
             for folder in &self.mounts {
-                landings.extend(self.tree.lands(
-                    self.locate_dots(path, flavour, true),
+                landings.push(links.land(
+                    &self.tree,
+                    kept.clone(),
                     None,
                     Some((folder.clone(), self.cwd.root.clone())),
                     &self.budget,
@@ -2098,13 +2335,22 @@ impl Resolver {
     }
 
     /// Every location `path` names, each made absolute and landed (see
-    /// [`landings`](Self::landings)): `None` among them for a landing past
-    /// the budget.
+    /// [`landings`](Self::landings)), with each name it has on the way, each
+    /// a link lends it and the link it ends at: `None` among them for a
+    /// landing that cannot be finished.
     fn locations(&self, path: Spelling<'_>, flavour: Flavour) -> Vec<Option<Loc>> {
-        self.landings(path, flavour)
-            .into_iter()
-            .map(|landed| landed.map(Loc::firm))
-            .collect()
+        let mut locations = Vec::new();
+        for landed in self.landings(path, flavour) {
+            let Some(landed) = landed else {
+                locations.push(None);
+                continue;
+            };
+            locations.push(Some(landed.loc.firm()));
+            locations.extend(landed.names.into_iter().map(|name| Some(name.firm())));
+            locations.extend(landed.lent.into_iter().map(|name| Some(name.firm())));
+            locations.extend(landed.itself.map(|itself| Some(itself.firm())));
+        }
+        locations
     }
 
     /// The readings of a pattern cut at `cut` whose parts can pick a drive
@@ -2112,7 +2358,15 @@ impl Resolver {
     /// the drive lands, with what is left of the pattern there; `None` for
     /// one past the budget. Empty for a path that is no pattern, and when no
     /// mount is named.
-    fn picked(&self, path: Spelling<'_>, cut: &Cut, flavour: Flavour, hidden: bool) -> Vec<Picked> {
+    /// [`picked`](Self::picked), of the drives in a mount alone: a link a
+    /// pattern can pick is read as a name.
+    fn picked_drives(
+        &self,
+        path: Spelling<'_>,
+        cut: &Cut,
+        flavour: Flavour,
+        hidden: bool,
+    ) -> Vec<Picked> {
         let Some(tail) = cut.tail.as_deref().filter(|_| self.landing) else {
             return Vec::new();
         };
@@ -2129,6 +2383,36 @@ impl Resolver {
             &matches,
             &self.budget,
         )
+    }
+
+    fn picked(&self, path: Spelling<'_>, cut: &Cut, flavour: Flavour, hidden: bool) -> Vec<Picked> {
+        let Some(tail) = cut.tail.as_deref().filter(|_| self.landing) else {
+            return Vec::new();
+        };
+        let hidden = hidden || flavour == Flavour::Windows;
+        let matches = |part: &str, name: &str, windows: bool| {
+            pattern_matches(part, name, flavour, hidden, windows)
+        };
+        let mapping = self.mapping(path, flavour);
+        match &self.links {
+            Some(links) => links.tree().picked(
+                &self.tree,
+                &cut.loc,
+                tail,
+                mapping.as_ref(),
+                &self.letters,
+                &matches,
+                &self.budget,
+            ),
+            None => self.tree.picked(
+                &cut.loc,
+                tail,
+                mapping.as_ref(),
+                &self.letters,
+                &matches,
+                &self.budget,
+            ),
+        }
     }
 
     /// The words of a key or a credential that a pattern can pick: `~/.s*/id_rsa`
@@ -2465,7 +2749,7 @@ impl Resolver {
             .into_iter()
             .next()
             .flatten()
-            .map(Loc::firm)
+            .map(|landed| landed.loc.firm())
     }
 
     /// The work of placing `path` once (see `testing::mount_work`): what
@@ -2481,6 +2765,180 @@ impl Resolver {
         let before = resolver.budget.left();
         let place = resolver.place(path, flavour);
         (before - resolver.budget.left(), place)
+    }
+
+    /// The work of placing `path` once (see `testing::link_work`): what
+    /// [`place`](Self::place) spends of a fresh budget, how many places it
+    /// reads the path as, and whether the tree of links this resolver reads
+    /// is the one kept with the links (not one built for the call).
+    #[cfg(any(feature = "testing", test))]
+    pub(crate) fn link_work(
+        paths: &Paths,
+        path: Spelling<'_>,
+        flavour: Flavour,
+    ) -> (usize, usize, bool) {
+        let resolver = Self::new(paths);
+        let kept = match (paths.links.kept(), &resolver.links) {
+            (Some(kept), Some(used)) => Arc::ptr_eq(kept, used),
+            _ => false,
+        };
+        let before = resolver.budget.left();
+        let readings = resolver
+            .readings(path, flavour, false, true, Writes::No, true)
+            .len();
+        (before - resolver.budget.left(), readings, kept)
+    }
+
+    /// The work each call of `place` on one resolver spends, in turn: the
+    /// budget is the resolver's, shared by every question asked of it.
+    #[cfg(any(feature = "testing", test))]
+    pub(crate) fn work_of_each(
+        paths: &Paths,
+        spellings: &[&str],
+        flavour: Flavour,
+    ) -> (Vec<usize>, Vec<Place>) {
+        let resolver = Self::new(paths);
+        let mut work = Vec::new();
+        let mut places = Vec::new();
+        for text in spellings {
+            let before = resolver.budget.left();
+            places.push(resolver.place(Spelling::Plain(text), flavour));
+            work.push(before - resolver.budget.left());
+        }
+        (work, places)
+    }
+
+    /// Whether some place `path` may land cannot be told: it goes through
+    /// more links than any system follows, through a link that cannot be
+    /// read or placed, or past the work one resolver may spend. A guard that
+    /// lets a read of a place only known when it runs through says this one
+    /// is not safe, since the caller said a link is on its way.
+    // Not API: a question the guards ask of the links, which may change in
+    // any release.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lost(&self, path: Spelling<'_>, flavour: Flavour) -> bool {
+        if self.links.is_none()
+            || matches!(path, Spelling::Plain(text) if device(text, flavour).is_some())
+        {
+            return false;
+        }
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return false;
+        }
+        let text = path.text();
+        // Each landing, and for a pattern each link it can pick.
+        self.cuts(path, text, flavour).iter().any(|cut| match cut {
+            None => true,
+            Some(cut) => self
+                .picked(path, cut, flavour, true)
+                .iter()
+                .any(Option::is_none),
+        })
+    }
+
+    /// Whether `path`, read literally (a wildcard a character of a name),
+    /// goes through a link the caller named: a link may be named `[x]`, so a
+    /// path that spells such a name is the one path through it.
+    // Not API: a question the guards ask of the links, which may change in
+    // any release.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn through_link(&self, path: Spelling<'_>, flavour: Flavour) -> bool {
+        self.links.is_some()
+            && self
+                .landings(path, flavour)
+                .iter()
+                .flatten()
+                .any(|landed| landed.hopped)
+    }
+
+    /// Whether a link the caller named takes `path` to another machine, a
+    /// share (`\\server\share`), where its spelling does not say so: where
+    /// it lands, never a name a link lends it. Reading it offers the user's
+    /// login to the server, as reading the share by its own name does.
+    // Not API: a question the guards ask of the links, which may change in
+    // any release.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lands_on_share(&self, path: Spelling<'_>, flavour: Flavour) -> bool {
+        if self.links.is_none() || network(path.text(), flavour) {
+            return false;
+        }
+        if matches!(path, Spelling::Plain(text) if device(text, flavour).is_some()) {
+            return false;
+        }
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return false;
+        }
+        self.landings(path, flavour)
+            .iter()
+            .flatten()
+            .any(|landed| matches!(landed.loc.root, Root::Unc(_)))
+    }
+
+    /// Whether a link the caller named has a wildcard or a brace in its
+    /// name (`[x]`, `{a,b}`): then a word that spells that name is the one
+    /// path through it, not a pattern.
+    // Not API: a question the guards ask of the links, which may change in
+    // any release.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn wild_links(&self) -> bool {
+        self.links.as_ref().is_some_and(|links| links.tree().wild())
+    }
+
+    /// The words of what a link the caller named at or below `path` lands
+    /// on, for a tool that follows the links it meets (`grep -R`, `find -L`,
+    /// `chown -RL`, `shutil.copytree`): a key or a credential, a protected
+    /// path, the home directory, a folder holding it, the root of a disk, a
+    /// disk, a place only known when it runs, or a place that, read all the
+    /// way down, reaches a key. `None` when no link at or below it does, and
+    /// for a tool that does not follow links (`grep -r`, `rm -rf`, `mv`,
+    /// `chown -R`), which the guard asks no such thing of. What each folder
+    /// holds is worked out once, when the tree is built, so this costs a
+    /// lookup for each part of the path, whatever the number of links.
+    // Not API: a question the guards ask of the links, which may change in
+    // any release.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn linked_holder(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        let links = self.links.as_ref()?.tree();
+        let long = self.plain(path, flavour);
+        let path = long.as_deref().map_or(path, Spelling::Plain);
+        if self.elsewhere(path, flavour) || known_when_run(path, flavour) {
+            return None;
+        }
+        let text = path.text();
+        let mut found: Option<Held> = None;
+        // A pattern holds what is below the folder it starts in: it may pick
+        // the folder a link is in.
+        for cut in self.cuts(path, text, flavour) {
+            let Some(cut) = cut else {
+                return Some(Place::Unknown.words());
+            };
+            if cut.lent {
+                continue;
+            }
+            if let Some(held) = links.held(&cut.loc, &self.budget) {
+                found = Some(found.map_or(held, |known| known.max(held)));
+            }
+        }
+        let held = found?;
+        let serious = matches!(
+            held.place,
+            Place::Sensitive(_, Sensitivity::Secret)
+                | Place::Protected(_)
+                | Place::Home { .. }
+                | Place::Top("the root of the disk")
+                | Place::Disk
+                | Place::Unknown
+        );
+        (serious || held.reaches).then(|| held.place.words())
     }
 
     /// Where the drive mounts are read for `path`: on a POSIX machine every
@@ -3114,7 +3572,7 @@ fn respell<'b>(path: Spelling<'_>, text: &'b str) -> Spelling<'b> {
 
 /// The most parts of one pattern that are read as `.` and `..`: each makes
 /// three readings, so more would be too many to read.
-const MOST_CLIMBING: usize = 4;
+pub(crate) const MOST_CLIMBING: usize = 4;
 
 /// The other readings of a POSIX pattern with parts that can match `..`: a
 /// part that starts with a literal dot and matches `..` (`.*`, `.?`, `.[.]`,
@@ -3659,10 +4117,19 @@ fn mark_wildcards(text: &str, flavour: Flavour) -> Option<String> {
     )
 }
 
+/// Whether `found`, the place a name a link lends a path gives it, means
+/// something by the name alone: a key or another sensitive place, a
+/// protected path, a file a tool runs on its own.
+fn meant_by_name(found: (Place, Option<&'static str>)) -> bool {
+    matches!(found.0, Place::Sensitive(..) | Place::Protected(_)) || found.1.is_some()
+}
+
 /// `loc` cut at its first wildcard part (see [`Resolver::cuts`]): each part
 /// [`mark_wildcards`] marked is one, and `wildcards` gives its text back.
-fn cut_of(mut loc: Loc, wildcards: &[&str]) -> Cut {
-    let first = loc.parts.iter().position(|part| part.starts_with(WILDCARD));
+fn cut_of(mut loc: Loc, wildcards: &[&str], marks: bool) -> Cut {
+    let first = marks
+        .then(|| loc.parts.iter().position(|part| part.starts_with(WILDCARD)))
+        .flatten();
     let tail = first.map(|at| {
         loc.parts[at..]
             .iter()
@@ -3680,7 +4147,13 @@ fn cut_of(mut loc: Loc, wildcards: &[&str]) -> Cut {
     if let Some(at) = first {
         loc.parts.truncate(at);
     }
-    Cut { loc, tail }
+    Cut {
+        loc,
+        tail,
+        moved: false,
+        itself: None,
+        lent: false,
+    }
 }
 
 #[cfg(test)]

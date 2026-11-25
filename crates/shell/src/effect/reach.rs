@@ -38,6 +38,9 @@ pub(super) struct Manner {
     pub(super) hidden: bool,
     pub(super) deep: bool,
     pub(super) walk: Walk,
+    /// Whether a deep read opens what it finds through the links it meets,
+    /// so a folder holds what the links the caller names below it land on.
+    pub(super) follows: bool,
 }
 
 impl Manner {
@@ -46,6 +49,7 @@ impl Manner {
         Self {
             deep: false,
             walk: Walk::No,
+            follows: false,
             ..self
         }
     }
@@ -78,6 +82,7 @@ pub(super) fn how(unit: &Unit, key: &str, paths: bool) -> Manner {
         hidden: unit.hidden,
         deep,
         walk,
+        follows: deep && follows_links(unit, key),
     }
 }
 
@@ -106,6 +111,13 @@ impl Context<'_> {
         // Once a read is beyond the workspace the answer is settled, unless
         // the paths are asked for: those are every read, so each is kept.
         if self.beyond.get() && self.landed.is_none() {
+            return;
+        }
+        // A read the guard could not finish placing (too many links, a link
+        // it cannot place, past the work the line may spend) is of a place
+        // only known when it runs: not beyond, not known.
+        if place == Place::Unknown && self.resolver.lost(None, from, shell) {
+            self.lost.set(true);
             return;
         }
         if let (Some(landed), Some(text)) = (&self.landed, from.known()) {
@@ -145,6 +157,7 @@ impl Context<'_> {
         // secret that the place of the folder does not say.
         let pattern = from.known().is_some_and(glob::has_wildcard);
         let beyond = beyond
+            || (how.follows && self.resolver.linked(None, from, shell).is_some())
             || ((how.deep || pattern)
                 && self
                     .resolver
@@ -160,6 +173,12 @@ impl Context<'_> {
                     how.hidden,
                     true,
                 ));
+        // Past the work the line may spend, a pattern or a deep read may
+        // reach anything: not beyond, not known.
+        if beyond && self.resolver.lost(None, from, shell) {
+            self.lost.set(true);
+            return;
+        }
         if beyond {
             self.beyond.set(true);
             if self.landed.is_none() {
@@ -952,7 +971,20 @@ fn only_listed(args: &[Arg], flags: &Flags) -> bool {
 /// and everything in PowerShell and cmd included, is taken to follow them.
 /// `find -H` and `grep -O` follow only the folder named on the command line,
 /// which is the root, and stay on the list.
-fn follows_links(unit: &Unit, key: &str) -> bool {
+/// Whether a word of `args` is the short flag `short` (alone or in a bundle,
+/// `-RL`) or one of the long flags `long`; a word only known when it runs
+/// may be one.
+pub(super) fn flagged(args: &[Arg], short: char, long: &[&str]) -> bool {
+    args.iter().any(|arg| match arg.known() {
+        None => true,
+        Some(text) => match text.strip_prefix("--") {
+            Some(name) => long.contains(&name.split('=').next().unwrap_or_default()),
+            None => text.starts_with('-') && text.len() > 1 && text[1..].contains(short),
+        },
+    })
+}
+
+pub(super) fn follows_links(unit: &Unit, key: &str) -> bool {
     if unit.shell != Shell::Posix {
         return true;
     }
@@ -969,6 +1001,23 @@ fn follows_links(unit: &Unit, key: &str) -> bool {
                 .iter()
                 .any(|arg| arg.known().is_none_or(|text| text == "--no-index"));
         }
+        // Each copies or packs the links it meets as links, unless a flag
+        // says to follow them: `tar -h`, `cp -L`, `rsync -L` (and `-k`, `-K`
+        // for links to folders), `zip` without `-y` (it follows them unless
+        // told not to). A lower-case `cp -r` follows them on macOS and the
+        // BSDs, where GNU's does not: it is read as following, the cautious
+        // side, unless `-P` says otherwise.
+        "tar" | "gtar" | "bsdtar" => return flagged(args, 'h', &["dereference"]),
+        "cp" => {
+            return flagged(args, 'L', &["dereference"])
+                || (flagged(args, 'r', &[]) && !flagged(args, 'P', &["no-dereference"]))
+        }
+        "rsync" => {
+            return flagged(args, 'L', &["copy-links"])
+                || flagged(args, 'k', &["copy-dirlinks"])
+                || flagged(args, 'K', &["keep-dirlinks"])
+        }
+        "zip" => return !flagged(args, 'y', &["symlinks"]),
         _ => return true,
     };
     !only_listed(args, flags)

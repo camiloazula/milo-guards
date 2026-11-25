@@ -1017,7 +1017,15 @@ impl Checker<'_> {
                         self.resolver
                             .place_picked(scope.dir, &arg, unit.shell, scope.hidden, picks)
                     }
-                    None => self.place(unit.shell, scope, &arg, Access::Item),
+                    // A delete acts on the name: a link the caller named is
+                    // deleted, not what it points to.
+                    None => self.resolver.place_name(
+                        scope.dir,
+                        &arg,
+                        unit.shell,
+                        scope.hidden,
+                        Access::Item,
+                    ),
                 };
                 match place {
                     place if place.harmless() => {}
@@ -1045,7 +1053,12 @@ impl Checker<'_> {
     /// change.
     fn move_away(&mut self, unit: &Unit, sources: &[&Arg], verb: &str) {
         for source in sources {
-            let place = self.place(unit.shell, unit.scope(), source, Access::Item);
+            // A move takes the name: a link the caller named is moved, not
+            // what it points to.
+            let scope = unit.scope();
+            let place =
+                self.resolver
+                    .place_name(scope.dir, source, unit.shell, scope.hidden, Access::Item);
             match place {
                 place if place.harmless() => {}
                 Place::Registry => {
@@ -1436,7 +1449,19 @@ impl Checker<'_> {
     }
 
     fn permissions(&mut self, unit: &Unit, targets: &[&Arg], verb: &str) {
+        // `chown -RL` and `chmod -RL` follow the links they meet: a folder
+        // holds what the links below it land on. Without `-L` they change
+        // the links, not what they point to.
+        let follows = unit.shell == Shell::Posix
+            && crate::effect::flagged(&unit.args, 'L', &["dereference"])
+            && crate::effect::flagged(&unit.args, 'R', &["recursive"]);
         for target in targets {
+            if follows {
+                if let Some(words) = self.resolver.linked(unit.dir.as_ref(), target, unit.shell) {
+                    self.add(Rule::Permissions, format!("{verb} {words}"), Some(target));
+                    continue;
+                }
+            }
             match self.place(unit.shell, unit.scope(), target, Access::Item) {
                 place if place.harmless() => {}
                 Place::Workspace { exact: true } => {}

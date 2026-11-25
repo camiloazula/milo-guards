@@ -11,9 +11,10 @@ judge(access, path, &paths) -> Assessment
 rename's target are all `Write`: the guard has no finer verbs. `path` is the
 one argument as the agent wrote it. `paths` comes from `Paths::new(cwd, home,
 workspaces)`, with `with_protected` for what the caller gates with,
-`with_secrets` for the files it knows hold a secret, and `with_drive_mounts`
+`with_secrets` for the files it knows hold a secret, `with_drive_mounts`
 and `with_windows_home` for how this machine spells another system's drives
-(see [Drive mounts](#drive-mounts)). The answer
+(see [Drive mounts](#drive-mounts)), and `with_links` for the links it has
+resolved (see [Links](#links)). The answer
 is `Safe`, or `Risky` with every finding: a rule, a reason a prompt can show,
 and the path as written.
 
@@ -22,7 +23,7 @@ with core's path model (see [Core](core.md)): relative to the working
 directory, `~` as the home directory, `.` and `..` applied, and Windows
 spellings read as Windows reads them whatever host the guard runs on. A
 symlink is judged by its own name, and WSL's `/mnt/c` as a folder of this
-machine's unless the caller names the mount.
+machine's, unless the caller names the link or the mount.
 
 The guard only reports. What to do about a finding is the caller's choice. The
 rule `write_protected` exists so that a caller can refuse a write to what it
@@ -194,6 +195,45 @@ makes an answer less serious.**
 Without a mount or a Windows home, every answer is what it was. The cases
 are in `tests/cases/drives.cases`.
 
+### Links
+
+The guard reads no disk, so it cannot tell a link from a folder. The caller
+can, and names the links it found, `Paths::with_links([Link::new(path,
+target)])`; core then reads every place a path may land (see
+[Core](core.md#links)). The path is judged on the `Paths` as given and on
+each of `Paths::also_judged_on` (without links or mounts, and without links
+but with the mounts), and every finding of each is kept, one to a rule:
+**naming a link never makes an answer less serious.**
+
+- A read or a write through a link is judged where it lands as well: with
+  `keys` in the workspace a link to `~/.ssh`, a read of `keys/id_rsa` is
+  `read_secret` (`reads your SSH keys`) and a write to `keys/authorized_keys`
+  `write_sensitive`; a write through a link into a protected path is
+  `write_protected`, into a startup file `write_sensitive`, out of the
+  workspace `write_outside`.
+- A name a link lends what it lands on counts for what the name means by
+  itself: with `~/.ssh` a link to `dotfiles/ssh` in the workspace, a read of
+  `dotfiles/ssh/id_rsa` is a read of your SSH keys, and with `.git/hooks` a
+  link to `scripts/hooks`, a write to `scripts/hooks/pre-commit` is a write
+  to a git hook. A link into the workspace from beside it (`~/current`, a
+  web server's folder, a share) makes no file of the workspace beyond it.
+- A `..` after a link is read as Windows applies it (to the text), as a
+  POSIX system climbs it (from where the link points), and, after each link,
+  with the `..` before it applied to the text: each is a place the path may
+  land. A path that ends at a link is also the link itself.
+- A path through more links than any system follows (63), through a link
+  that cannot be read or placed, or past the work a call may spend is
+  `unreadable`. A target is the link's own text, absolute or relative to its
+  folder, as the system hands it over (a junction's `\??\C:\x` included);
+  one that lands on a share adds `network_share`, where the path lands,
+  never for a name a link lends it. A bracket in a link's name is that name:
+  `[x]/id_rsa` through a link `[x]` is the one path through it.
+- A write to a folder that holds a link is judged as a write to the folder:
+  a file API does not follow the links below it.
+
+Without a link named, every answer is what it was. The cases are in
+`tests/cases/resolved_links.cases`.
+
 ### Not one literal path
 
 A file API takes one literal path, so these are `unreadable`, never judged:
@@ -312,11 +352,18 @@ Not covered, on purpose, and what to do:
   write to one is safe here. `lefthook.json` and `lefthook.toml` are not
   either (a `*.json` pattern would otherwise be a finding); `lefthook.yml` and
   `lefthook.yaml` are.
-- **Symlinks.** A symlink is judged by its own name, so a link in the
-  workspace to `~/.ssh` and a Windows junction are the caller's to refuse
-  (the caller who can read the disk can resolve first, and hand the result in).
-  The links the system itself makes are read by name: a Mac's links to the
-  root and the kernel's `/proc/self/root`.
+- **Links the caller does not name.** A symlink or a Windows junction the
+  caller does not pass in `Paths::with_links` is judged by its own name, so
+  a link in the workspace to `~/.ssh` is the workspace's until the caller
+  names it ([Links](#links)): the caller that can read the disk names the
+  links it finds in the workspace folders. The links the system itself makes
+  are read by name: a Mac's links to the root and the kernel's
+  `/proc/self/root`.
+- **How a folder compares names.** A named link's name compares as its
+  system usually compares names: without case on Windows and on a Mac, with
+  case elsewhere. A volume set the other way (a case-sensitive one on a Mac,
+  a case-insensitive folder on Linux) is not known to the guard: a caller
+  with one names the link by the spelling the paths will use, or by each.
 - **Places that are findings though they are not secrets**: `/dev`, `/dev/fd`
   and `/proc/self/status` are `read_secret` (the whitelist is of what is safe),
   and a workspace directly under `/home` is another user's home directory to
@@ -370,7 +417,8 @@ The cases are in case files, one for each thing they check (the format is in
 (a POSIX machine and a Mac), `windows.cases`, `protected.cases`,
 `named_secrets.cases` (the secrets a caller names), `startup.cases` (the files
 a tool runs on its own), `drives.cases` (the drive mounts and the Windows
-home a caller names) and `limits.cases` (what
+home a caller names), `resolved_links.cases` (the links a caller names) and
+`limits.cases` (what
 the guard does not see), each checked by the test file of its name. A case is
 a read or a write of a path and the answer it must get, safe or the rules it
 must find, over core's `testing::posix()`, `macos()` and `windows()` or a

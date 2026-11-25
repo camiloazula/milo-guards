@@ -60,22 +60,24 @@ pub(crate) fn judge(url: &Url, paths: &Paths) -> (String, String) {
     let words = if path.chars().any(char::is_control) {
         "a path only known when it runs"
     } else {
-        let (place, words) = placed(&Resolver::new(paths), &path, flavour);
-        // With a drive mount or a Windows home named, the path is also
-        // placed as spelled, and the more telling words are kept: a key's,
-        // then any other sensitive or protected place's, then any place's
-        // that is not the agent's own.
-        match paths.as_spelled() {
-            Some(as_spelled) => {
-                let (other, other_words) = placed(&Resolver::new(&as_spelled), &path, flavour);
-                if telling(other) > telling(place) {
-                    other_words
-                } else {
-                    words
-                }
+        let resolver = Resolver::new(paths);
+        let (mut place, mut words) = placed(&resolver, &path, flavour);
+        // With a link, a drive mount or a Windows home named, the path is
+        // also placed on each other set of the paths, and the more telling
+        // words are kept: a key's, then any other sensitive or protected
+        // place's, then any place's that is not the agent's own.
+        for other in paths.also_judged_on() {
+            let (other, other_words) = placed(&Resolver::new(&other), &path, flavour);
+            if telling(other) > telling(place) {
+                (place, words) = (other, other_words);
             }
-            None => words,
         }
+        // A link the caller named may land on another machine, which says
+        // more than any place that is not a sensitive one.
+        if telling(place) < 2 && resolver.lands_on_share(Spelling::Plain(&path), flavour) {
+            words = "a file from another machine";
+        }
+        words
     };
     (format!("reads {words}"), shown(path))
 }

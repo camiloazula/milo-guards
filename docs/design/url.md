@@ -188,7 +188,13 @@ only known when it runs`. A Windows machine (the home directory has a drive) rea
 ([Core](core.md#drive-mounts)): on WSL with `/mnt` named,
 `file:///mnt/c/Users/me/.ssh/id_rsa` `reads your SSH keys`. The path is
 placed as spelled too, and the more telling words are kept: a key's, then
-those of any place that is not the agent's own. A `file:` URL with a host
+those of any place that is not the agent's own. A link the caller names
+(`Paths::links`) is followed: the path is placed where it lands, and the more telling words of every reading are kept. A link that
+lands on a share says `reads a file from another machine` unless a reading
+names a sensitive place; a name a link lends never makes a path a share's.
+The URL's own dot segments are the URL parser's, applied before the path is
+placed, so `file:///repo/keys/..` is the URL of `/repo/`, whatever `keys`
+links to; the target is the path as the URL spells it. A `file:` URL with a host
 names a file on another machine, which a Windows client reaches over the
 network: `reads a file from another machine`, and the host is judged too.
 

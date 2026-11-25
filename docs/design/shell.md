@@ -3718,6 +3718,38 @@ drive as Windows does, so a mount changes none of theirs. Without a mount or
 a Windows home, every line is judged as it was. The cases are in
 `tests/cases/drives.cases`.
 
+The links the caller has resolved are its to pass too, and core's to read
+([Core](core.md#links)); a line is judged on each of
+`Paths::also_judged_on` as well, so a link never takes away what a mount
+says, and `effect` is the most cautious of what each judging says on its
+own and of what they say together. A path through a link the caller names
+(`Paths::with_links`) is judged where it lands by every rule that places
+one: a read, a send, a write, a delete and `effect`. A `cd` goes by the text
+unless `-P` (or `set -o physical`) says otherwise, and a path after it is
+opened by the system, which climbs from where a link points: each place the
+`cd` may leave the shell is read with each reading of the path from there,
+so `cd p/lnk/../.. && cat p/lnk/../id_rsa`, after `pushd`, in a subshell,
+after `cd -L` and from a working directory that is itself through a link,
+reads the key through `p/lnk`. A pattern that can pick a link is read
+through it, and through the links past it (`cat */*/id_rsa`). A folder read,
+sent or changed whole holds what a link below it lands on only for a tool
+that follows the links it meets: `grep -R`, `find -L`, `cp -L`, `rsync -L`,
+`-k` and `-K`, `tar -h`, `scp -r`, `zip -r`, `chown -RL` and `chmod -RL`, a
+tool the guard does not know, and `cp -r`, which follows them on macOS and
+the BSDs (GNU's does not; reading it so is the cautious side); `grep -r`,
+`rm -rf`, `mv`, `chown -R` and `find -delete` act on the links themselves
+(`rm -rf .venv` with a link in it to `/usr/bin/python3` deletes the link).
+`rm`, `unlink` and `mv` of a path that is itself a link act on the link
+(`rm .venv/bin/python`), unless a trailing `/` goes through it, and a
+pattern they are given reads the links it can pick as names. A read or a send of a path through
+more links than any system follows, or through a link that cannot be read
+or placed, is `unknown`, `reads a path only known when it runs`. A brace in
+a link's name is that name when a word spells it (`cat '{a,b}/x'`), and
+only then is a brace word also read so. A working directory in a workspace
+with a link in it is not one whose plain names are all the agent's, so a
+plain name there is looked up in full. Without a link named, every line is
+judged as it was. The cases are in `tests/cases/resolved_links.cases`.
+
 - `~` is the home directory. `~user` is another user's, which the spelling
   does not say, so it is unknown.
 - `$HOME`, `%USERPROFILE%` and `$env:TEMP` are the places they name.

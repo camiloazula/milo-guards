@@ -256,7 +256,15 @@ read of it is a read of the secret. So is how the caller says the machine
 spells another system's drives ([Core](core.md#drive-mounts)): on WSL with
 the mount named (`Paths::drive_mounts`), `open('/mnt/c/Users/me/.ssh/id_rsa')`
 is `read_secret`, and the code is judged on the paths as spelled too, every
-finding of both kept. The cases are in `tests/cases/drives.cases`.
+finding of both kept. The cases are in `tests/cases/drives.cases`. A path
+through a link the caller names (`Paths::links`) is judged where it lands, a
+`chdir` into one included (`os.chdir('keys')` then `open('id_rsa')`, with
+`keys` a link to `~/.ssh`, is a read of a key), and a folder read whole
+holds what a link below it lands on: `shutil.copytree` follows the links it
+meets, and so does `shutil.make_archive` in the zip format for a link to a
+file; `tarfile`, `make_archive` in a tar format and Node's `fs.cp` copy
+them as links, a false alarm the guard accepts. `shutil.rmtree` acts on the links
+themselves. The cases are in `tests/cases/resolved_links.cases`.
 
 ## What cannot be read is risky
 

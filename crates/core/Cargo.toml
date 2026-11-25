@@ -29,3 +29,11 @@ testing = []
 [[test]]
 name = "mount_work"
 required-features = ["testing"]
+
+[[test]]
+name = "link_work"
+required-features = ["testing"]
+
+[[test]]
+name = "climbing_work"
+required-features = ["testing"]

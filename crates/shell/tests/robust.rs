@@ -16,7 +16,9 @@ use common::lines::{
     OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES,
 };
 use common::{check, disagreements, posix, windows};
-use milo_guards_shell::{classify, effect, explain, Effect, Paths, Protected, Rule, Secret, Shell};
+use milo_guards_shell::{
+    classify, effect, explain, Effect, Link, Paths, Protected, Rule, Secret, Shell,
+};
 use noise::{paths_for, wide_lines, Lcg, SHELLS};
 
 /// Whether `explain` finds `line` unreadable, its tree drawn and saying so.
@@ -280,6 +282,111 @@ fn random_lines_with_hostile_named_secrets_never_panic() {
                 let wrong = disagreements(*shell, paths, [line]);
                 assert!(wrong.is_empty(), "{shell:?} {line}: {wrong:?}");
             }
+        }
+    }
+}
+
+/// Machines that name links and drive mounts the caller may get wrong: a
+/// link at the root of the disk, an empty one, a relative one, a link to
+/// itself, to its own folder, to the root, links that loop and a link that
+/// grows the path each time it is followed, a mount at the root and a
+/// relative one, a Windows home that is no Windows path, and all at once.
+fn hostile_links(paths: Paths, windows: bool) -> Vec<Paths> {
+    let (root, at, separator) = if windows {
+        ("C:\\", r"C:\Users\me\dev\repo", "\\")
+    } else {
+        ("/", "/home/me/work/repo", "/")
+    };
+    let link = |name: &str| format!("{at}{separator}{name}");
+    let links = [
+        Link::new(root, "/tmp"),
+        Link::new("", ""),
+        Link::new("repo/x", "y"),
+        Link::new(link("self"), "self"),
+        Link::new(link("up"), ".."),
+        Link::new(link("top"), root),
+        Link::new(link("a"), "b"),
+        Link::new(link("b"), link("a")),
+        Link::new(link("grow"), format!("grow{separator}grow")),
+        Link::new(link("*"), "/home/me/.ssh"),
+        Link::new(link("keys"), "/home/me/.ssh"),
+    ];
+    let mut machines: Vec<Paths> = links
+        .iter()
+        .map(|link| paths.clone().with_links([link.clone()]))
+        .collect();
+    for mount in ["/", "", "mnt", "/mnt"] {
+        machines.push(paths.clone().with_drive_mounts([mount]));
+    }
+    machines.push(paths.clone().with_windows_home("/home/me"));
+    machines.push(
+        paths
+            .with_links(links)
+            .with_drive_mounts(["/", "/mnt", "/cygdrive"])
+            .with_windows_home(r"C:\Users\me"),
+    );
+    machines
+}
+
+#[test]
+fn random_lines_with_hostile_links_never_panic() {
+    let machines = [
+        (Shell::Posix, hostile_links(posix(), false)),
+        (Shell::PowerShell, hostile_links(windows(), true)),
+        (Shell::Cmd, hostile_links(windows(), true)),
+    ];
+    let mut random = Lcg(13);
+    for _ in 0..150 {
+        let length = random.next() % 24;
+        let line: Vec<&str> = (0..length)
+            .map(|_| {
+                let pieces = [
+                    "self", "up/", "top", "a/x", "b", "grow", "keys/", "/mnt/c", "*/",
+                ];
+                if random.next().is_multiple_of(3) {
+                    pieces[random.next() % pieces.len()]
+                } else {
+                    PIECES[random.next() % PIECES.len()]
+                }
+            })
+            .collect();
+        let line = line.join(if random.next().is_multiple_of(2) {
+            " "
+        } else {
+            ""
+        });
+        for (shell, each) in &machines {
+            for paths in each {
+                let _ = classify(&line, *shell, paths);
+                let _ = effect(&line, *shell, paths);
+                let wrong = disagreements(*shell, paths, [line.as_str()]);
+                assert!(wrong.is_empty(), "{shell:?}: {wrong:?}");
+            }
+        }
+    }
+    // And the lines through the links, on each of them: a loop or a link
+    // that grows the path is not safe to write through.
+    for (shell, each) in &machines {
+        for paths in each {
+            for line in [
+                "cat keys/id_rsa",
+                "cat */id_rsa",
+                "echo x > a/x",
+                "echo x > grow/x",
+                "rm -rf self",
+                "cd up && cat .ssh/id_rsa",
+                "cat /mnt/c/Users/me/.ssh/id_rsa",
+                "cat /c/../../../x",
+            ] {
+                let _ = classify(line, *shell, paths);
+                let _ = effect(line, *shell, paths);
+                let wrong = disagreements(*shell, paths, [line]);
+                assert!(wrong.is_empty(), "{shell:?} {line}: {wrong:?}");
+            }
+        }
+        let all = each.last().expect("the machine with every link");
+        for line in ["echo x > a/x", "echo x > grow/x", "echo x > self"] {
+            assert!(!classify(line, *shell, all).is_safe(), "{shell:?} {line}");
         }
     }
 }

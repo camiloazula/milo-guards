@@ -75,7 +75,7 @@ mod judge;
 pub mod testing;
 
 pub use milo_guards_code::Language;
-pub use milo_guards_core::{Paths, Protected, ProtectedKind, Secret};
+pub use milo_guards_core::{Link, Links, Paths, Protected, ProtectedKind, Secret};
 
 /// What [`judge`] concluded about a piece of code: safe, or risky with every
 /// finding.
@@ -254,12 +254,12 @@ pub const MAX_LEN: usize = milo_guards_code::MAX_LEN;
 #[must_use = "the assessment is the answer: it says whether the code is safe"]
 pub fn judge(language: Language, code: &str, paths: &Paths) -> Assessment {
     let mut findings = judge::judge(language, code, paths).findings;
-    // With a drive mount or a Windows home named, the code is also judged on
-    // the paths as spelled, and every finding of either is kept: naming how
-    // this machine spells another system's drives never makes an answer less
-    // serious.
-    if let Some(spelled) = paths.as_spelled() {
-        for finding in judge::judge(language, code, &spelled).findings {
+    // With a link, a drive mount or a Windows home named, the code is also
+    // judged on each other set of the paths (`Paths::also_judged_on`), and
+    // every finding of each is kept: naming what only the disk can say never
+    // makes an answer less serious.
+    for other in paths.also_judged_on() {
+        for finding in judge::judge(language, code, &other).findings {
             if !findings.contains(&finding) {
                 findings.push(finding);
             }

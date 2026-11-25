@@ -129,7 +129,7 @@ impl Checker<'_> {
         // a POSIX shell spells a brace list out into more words).
         let unit = received(unit);
         let spelled;
-        let unit: &Unit = match spelled_args(&unit, self.split) {
+        let unit: &Unit = match spelled_args(&unit, self.split, self.resolver.wild_links()) {
             Some(args) => {
                 spelled = Unit {
                     args,
@@ -151,6 +151,7 @@ impl Checker<'_> {
         let own = Reach {
             recursive: found || recursive(unit, key),
             found,
+            follows: crate::effect::follows_links(unit, key),
         };
         for place in places {
             match place.as_ref() {
@@ -159,6 +160,7 @@ impl Checker<'_> {
                     let reach = Reach {
                         recursive: own.recursive || down.is_some(),
                         found: found || down == Some(true),
+                        follows: own.follows,
                     };
                     for each in handed {
                         self.secret_in(&scope, &each, &place, reach);
@@ -179,7 +181,18 @@ impl Checker<'_> {
         let each: &[Arg] = if one_path(arg, scope.shell) {
             std::slice::from_ref(arg)
         } else {
-            spelled = candidates(arg, scope.shell, self.split);
+            spelled = {
+                let mut spelled = candidates(arg, scope.shell, self.split);
+                // A link the caller named may be named with braces, and a
+                // quoted word is that name.
+                if self.resolver.wild_links()
+                    && arg.known().is_some_and(|text| text.contains('{'))
+                    && !spelled.contains(arg)
+                {
+                    spelled.push(arg.clone());
+                }
+                spelled
+            };
             &spelled
         };
         for candidate in each {
@@ -190,6 +203,17 @@ impl Checker<'_> {
                 self.add(Rule::ReadSecret, format!("reads {words}"), Some(written));
                 return;
             }
+            // Through more links than any system follows, a link the caller
+            // could not read, or past the work a line may spend: the read is
+            // of a place the line does not show.
+            if self.resolver.lost(scope.dir, candidate, scope.shell) {
+                self.add(
+                    Rule::Unknown,
+                    "reads a path only known when it runs".to_string(),
+                    Some(written),
+                );
+                return;
+            }
             // A folder read all the way down holds what is in it: the home
             // directory, a folder holding it, the root of the disk.
             if reach.recursive {
@@ -198,8 +222,13 @@ impl Checker<'_> {
                     _ => candidate.clone(),
                 };
                 let holds = [candidate, &parent].into_iter().find_map(|folder| {
-                    self.resolver
-                        .holder(scope.dir, folder, scope.shell, scope.hidden)
+                    self.resolver.holder(
+                        scope.dir,
+                        folder,
+                        scope.shell,
+                        scope.hidden,
+                        reach.follows,
+                    )
                 });
                 if let Some(words) = holds {
                     self.add(
@@ -255,6 +284,10 @@ struct Scope<'a> {
 struct Reach {
     recursive: bool,
     found: bool,
+    /// Whether the program opens what it finds through the links it meets
+    /// (`grep -R`, `find -L`, `cp -rL`): then a folder holds what the links
+    /// below it land on.
+    follows: bool,
 }
 
 /// Whether the program reads every folder below the ones it is given:
@@ -672,7 +705,7 @@ fn candidates(arg: &Arg, shell: Shell, split: &Split) -> Vec<Arg> {
 /// into the words it makes, which is what the program is given (`cp
 /// ~/.ssh/id_rsa{,.bak} /tmp` has three operands, not two); `None` when none
 /// has one.
-fn spelled_args(unit: &Unit, split: &Split) -> Option<Vec<Arg>> {
+fn spelled_args(unit: &Unit, split: &Split, literal: bool) -> Option<Vec<Arg>> {
     let braced = |arg: &Arg| match arg {
         Arg::Known(text) => text.contains('{'),
         Arg::Unknown(source) => source.contains(['{', '\'']),
@@ -693,6 +726,12 @@ fn spelled_args(unit: &Unit, split: &Split) -> Option<Vec<Arg>> {
         match list.filter(|list| !list.is_empty()) {
             Some(list) => {
                 changed = true;
+                // With a link named, a word with braces is also the name it
+                // spells: a link may be named so, and a quoted word is that
+                // name.
+                if literal && matches!(arg, Arg::Known(_)) && !list.contains(arg) {
+                    args.push(arg.clone());
+                }
                 args.extend(list);
             }
             None => args.push(arg.clone()),

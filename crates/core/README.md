@@ -14,8 +14,9 @@ not depend on what is being read:
 - **The directories everything is judged against.** `Paths`: the working
   directory, the home directory and the workspace folders, with the files
   the caller gates (`Protected`) and the ones it knows hold a secret
-  (`Secret`), and how the machine spells another system's drives (WSL's
-  `/mnt/c`, and the Windows home).
+  (`Secret`), how the machine spells another system's drives (WSL's
+  `/mnt/c`, and the Windows home), and the links the caller has resolved
+  (`Link`).
 - **The path model.** `Resolver` says where a path spelled out as text lands
   (`Place`), by its spelling alone, for POSIX and Windows (`Flavour`), on
   whatever host it runs.

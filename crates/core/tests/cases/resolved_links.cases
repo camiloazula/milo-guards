@@ -1,0 +1,361 @@
+# The links the caller has resolved (`Paths::links`): a path through one is
+# placed where it lands, each part walked in order as the system walks it,
+# so a `..` after a link climbs from where the link points. A path that ends
+# at a link is also the link itself, which a delete or a rename acts on, and
+# the more serious place wins. Without a link named, every path is placed as
+# it is spelled, as before.
+
+paths keys base=posix link=/home/me/work/repo/keys to=/home/me/.ssh
+paths keyfile base=posix link=/home/me/work/repo/id to=/home/me/.ssh/id_rsa
+paths relative base=posix link=/home/me/work/repo/keys to=../../.ssh
+paths outside base=posix link=/home/me/work/repo/data to=/data/x
+paths tmp base=posix link=/home/me/work/repo/out to=/tmp/out
+paths inner base=posix link=/home/me/work/repo/lib to=vendor/lib
+paths chain base=posix link=/home/me/work/repo/a to=/home/me/work/repo/b link=/home/me/work/repo/b to=/home/me/.ssh
+paths chain_relative base=posix link=/home/me/work/repo/a to=b/c link=/home/me/work/repo/b to=../../.aws
+paths below base=posix link=/home/me/work/repo/shared to=/data/shared link=/home/me/work/repo/shared/keys to=/home/me/.ssh
+paths below_landed base=posix link=/data/shared/keys to=/home/me/.ssh link=/home/me/work/repo/shared to=/data/shared
+paths loop base=posix link=/home/me/work/repo/a to=b link=/home/me/work/repo/b to=a
+paths self base=posix link=/home/me/work/repo/x to=x
+paths up base=posix link=/home/me/work/repo/up to=/home/me/work/other/deep
+paths agent base=posix folder=/home/me/.agent words="the agent's settings" link=/home/me/work/repo/agent to=/home/me/.agent
+paths env base=posix secret_file=/data/app/.env words="the app's environment file" link=/home/me/work/repo/app to=/data/app
+paths rc base=posix link=/home/me/work/repo/rc to=/home/me/.bashrc
+paths dotfile base=posix link=/home/me/.bashrc to=/home/me/work/repo/bashrc
+paths git base=posix link=/home/me/work/repo/g to=.git
+paths devices base=posix link=/home/me/work/repo/null to=/dev/null link=/home/me/work/repo/mem to=/dev/mem
+paths above base=posix link=/home/me/work to=/data/work
+paths mac_keys base=macos link=/Users/me/dev/repo/keys to=/Users/me/.ssh
+paths mac_tmp base=macos link=/private/tmp/ws/keys to=/Users/me/.ssh
+paths windows_keys base=windows link=C:\\Users\\me\\dev\\repo\\keys to=C:\\Users\\me\\.ssh
+paths windows_relative base=windows link=C:\\Users\\me\\dev\\repo\\keys to=..\\..\\.ssh
+paths windows_rooted base=windows link=C:\\Users\\me\\dev\\repo\\keys to=\\Users\\me\\.ssh
+paths wsl base=posix drive_mount=/mnt windows_home=C:\\Users\\me link=/home/me/work/repo/win to=/mnt/c/Users/me
+paths case base=posix link=/home/me/work/repo/Keys to=/home/me/.ssh
+paths climb base=posix link=/home/me/work/repo/p/lnk to=../deep/er/sub link=/home/me/work/repo/p/keys to=/home/me/.ssh
+paths windows_climb base=windows link=C:\\Users\\me\\dev\\repo\\j to=C:\\Users\\me\\dev\\repo\\a\\b\\c link=C:\\Users\\me\\dev\\repo\\keys to=C:\\Users\\me\\.ssh
+paths wsl_drive cwd=/mnt/c/Users/me/repo home=/home/me workspace=/mnt/c/Users/me/repo drive_mount=/mnt link=/mnt/c/Users/me/repo/keys to=/home/me/.ssh link=/mnt/c/Users/me/repo/up to=../..
+
+# A link to a folder: what is through it is where the folder is.
+posix@keys place="secret:your SSH keys" | keys/id_rsa
+posix@keys place="secret:your SSH keys" | /home/me/work/repo/keys/id_rsa
+posix@keys place="secret:your SSH keys" | ./src/../keys/id_rsa
+posix@keys home place="secret:your SSH keys" | work/repo/keys/id_rsa
+posix@keys into="secret:your SSH keys" | keys/authorized_keys
+posix@keys named=none | keys/id_rsa
+posix@keys place=inside | keysx/id_rsa
+posix@keys place=inside | src/keys/id_rsa
+# The link itself lands there too, and is also itself: the more serious wins.
+posix@keys place="secret:your SSH keys" | keys
+posix@keys place="secret:your SSH keys" | keys/
+# Without it, the same paths are the workspace's.
+posix place=inside | keys/id_rsa
+posix place=inside | keys
+
+# A link to a file.
+posix@keyfile place="secret:your SSH keys" | id
+posix@keyfile into="secret:your SSH keys" | id
+posix@keyfile place="secret:your SSH keys" | id/x
+posix@keyfile place=inside | id.pub
+
+# A relative target is read from the folder the link is in.
+posix@relative place="secret:your SSH keys" | keys/id_rsa
+posix@relative absolute=/home/me/work/repo/keys/id_rsa | keys/id_rsa
+
+# A `..` after a link is read both ways, the more serious winning: as a
+# POSIX system climbs it, from where the link points, and as the text
+# spells it, which is how Windows applies it and how a shell's `cd` goes.
+posix@keys place="secret:your SSH keys" | keys/../keys/id_rsa
+posix@keys place="secret:your SSH keys" | keys/../.ssh/id_rsa
+posix@keys place=home | keys/..
+posix@keys place=inside | keys/../work/repo/x
+posix place=inside | keys/../.ssh/id_rsa
+posix place=workspace | keys/..
+posix@up place=outside | up/../x
+posix@up place=inside | up/../../repo/x
+posix@up place=inside | up/x/../../x/../../repo/y
+# `absolute` and `opened` still say how the path is spelled.
+posix@up absolute=/home/me/work/repo/x | up/../x
+posix@up opened=/home/me/work/repo/up/../x | up/../x
+
+# A link whose target is outside the workspace, or in a temporary folder.
+posix@outside place=outside | data/x
+posix@outside into=outside | data/x
+posix@outside place=workspace | data/..
+posix@tmp place=in_temp | out/x
+posix@tmp place=in_temp | out
+# A link that points inside the workspace keeps its paths the agent's.
+posix@inner place=inside | lib/x.rs
+posix@inner place=inside | lib
+
+# A link whose target is another link is followed again.
+posix@chain place="secret:your SSH keys" | a/id_rsa
+posix@chain place="secret:your SSH keys" | b/id_rsa
+posix@chain place="secret:your SSH keys" | a
+posix@chain_relative place="secret:your AWS credentials" | a
+posix@chain_relative place="secret:your AWS credentials" | a/../credentials
+# A link below a link, named through the first or where it lands.
+posix@below place="secret:your SSH keys" | shared/keys/id_rsa
+posix@below place=outside | shared/other
+posix@below_landed place="secret:your SSH keys" | shared/keys/id_rsa
+posix@below_landed place="secret:your SSH keys" | /data/shared/keys/id_rsa
+# A path through more links than the system follows is known only when it
+# runs.
+posix@loop place=unknown | a
+posix@loop place=unknown | b/x
+posix@loop named=none | a
+posix@loop reaches=yes | a
+posix@self place=unknown | x
+posix@self place=inside | y
+
+# A write through a link into a protected or a sensitive place is one there.
+posix@agent place="protected:the agent's settings" | agent/config.json
+posix@agent into="protected:the agent's settings" | agent/config.json
+posix@agent holds="the agent's settings" | agent
+posix@env place="secret:the app's environment file" named="the app's environment file" | app/.env
+posix@env place=outside named=none | app/other
+posix@rc place="startup:a shell startup file" | rc
+posix@rc into="startup:a shell startup file" | rc
+posix@git place="history:the repository's history" | g/config
+# A link in a sensitive place is still that place to a delete of the link.
+posix@dotfile place="startup:a shell startup file" | /home/me/.bashrc
+posix@dotfile place="startup:a shell startup file" | bashrc
+# A link to a device is that device, and the kernel's files are read where
+# the link lands.
+posix@devices place=null | null
+posix@devices into=null | null
+posix@devices kernel="a device file" | mem
+posix@devices kernel=none | null
+
+# A link above the workspace moves the workspace with it.
+posix@above place=inside | x
+posix@above place=inside | /home/me/work/repo/x
+posix@above place=inside | /data/work/repo/x
+posix@above place=outside | /home/me/work/other/x
+
+# A pattern after a link is read from where the link points.
+posix@keys place="secret:your SSH keys" | keys/*
+posix@keys picks="your SSH keys" | keys/*
+posix@keys picks="your SSH keys" | keys/id_*
+posix@keys reaches=yes | keys/*
+# A pattern that can pick a link is read through it too, the most serious
+# reading winning.
+posix@keys place="secret:your SSH keys" | */id_rsa
+posix@keys picks="your SSH keys" | */id_rsa
+posix@keys picks="your SSH keys" | k*/id_*
+posix@keys reaches=yes | */id_rsa
+posix@keys place="secret:your SSH keys" | k*
+posix@keys picks="your SSH keys" | k?ys
+posix@keys place=inside | src/*/id_rsa
+posix@keys picks=none | x*/id_rsa
+posix@keys picks=none | .*/id_rsa
+posix@keys hidden picks=none | .*/id_rsa
+posix place=inside | */id_rsa
+posix picks=none | */id_rsa
+posix@agent place="protected:the agent's settings" | a*/config.json
+posix@outside place=outside | */x
+
+# A link on a Mac, spelled through the Mac's own links too, and named with
+# another case.
+posix@mac_keys place="secret:your SSH keys" | keys/id_rsa
+posix@mac_keys place="secret:your SSH keys" | KEYS/id_rsa
+posix@mac_keys place="secret:your SSH keys" | /System/Volumes/Data/Users/me/dev/repo/keys/id_rsa
+posix@mac_keys place="secret:your SSH keys" | /Volumes/Macintosh\sHD/Users/me/dev/repo/keys/id_rsa
+posix@mac_tmp place="secret:your SSH keys" | /tmp/ws/keys/id_rsa
+posix@mac_tmp place="secret:your SSH keys" | /private/tmp/ws/keys/id_rsa
+# Elsewhere a POSIX name compares with case.
+posix@case place="secret:your SSH keys" | Keys/id_rsa
+posix@case place=inside | keys/id_rsa
+
+# A link on Windows, named without case.
+windows@windows_keys place="secret:your SSH keys" | keys\\id_rsa
+windows@windows_keys place="secret:your SSH keys" | KEYS\\id_rsa
+windows@windows_keys place="secret:your SSH keys" | C:\\Users\\me\\dev\\repo\\keys\\id_rsa
+windows@windows_keys place="secret:your SSH keys" | \\\\?\\C:\\Users\\me\\dev\\repo\\keys\\id_rsa
+windows@windows_keys place="secret:your SSH keys" | keys.\\id_rsa
+windows@windows_keys place=outside | keys\\..\\..\\x
+windows@windows_keys place="secret:your SSH keys" | k*\\id_rsa
+windows@windows_relative place="secret:your SSH keys" | keys\\id_rsa
+windows@windows_rooted place="secret:your SSH keys" | keys\\id_rsa
+windows place=inside | keys\\id_rsa
+
+# A link to a mounted drive, on WSL.
+posix@wsl place=home | win
+posix@wsl place="secret:your SSH keys" | win/.ssh/id_rsa
+posix@wsl place=holds_home | win/..
+# On WSL a link on a mounted drive holds a POSIX path: `/home` is this
+# machine's, not the drive's.
+posix@wsl_drive place="secret:your SSH keys" | keys/id_rsa
+posix@wsl_drive place="secret:your SSH keys" | /mnt/c/Users/me/repo/keys/id_rsa
+posix@wsl_drive place="secret:your SSH keys" | up/other/.ssh/id_rsa
+posix@wsl_drive place=inside | src/main.rs
+
+# Where the two readings of a `..` after a link part: only the text's
+# reaches the key (as Windows and a shell's `cd` read it), or only the
+# system's.
+posix@climb place="secret:your SSH keys" | p/lnk/../keys/id_rsa
+posix@climb place="secret:your SSH keys" | p/lnk/../../../../.ssh/id_rsa
+posix place=inside | p/lnk/../keys/id_rsa
+windows@windows_climb place="secret:your SSH keys" | j\\..\\keys\\id_rsa
+windows@windows_climb place="secret:your SSH keys" | j\\..\\..\\..\\.ssh\\id_rsa
+windows place=inside | j\\..\\keys\\id_rsa
+
+# A link at a sensitive name that lands somewhere harmless: the path is
+# also read as it reads at each link it goes through, and where a link
+# lands also has the link's name, so a key by any of its names is a key.
+paths dotfiles base=posix link=/home/me/.ssh to=/home/me/work/repo/dotfiles/ssh link=/home/me/work/repo/.git/hooks to=../scripts/hooks link=/home/me/work/repo/.vscode to=config/vscode
+paths gitdir base=posix link=/home/me/work/repo/.git to=/home/me/work/repo/gitdir
+posix@dotfiles place="secret:your SSH keys" | /home/me/.ssh/id_rsa
+posix@dotfiles home place="secret:your SSH keys" | .ssh/id_rsa
+posix@dotfiles place="secret:your SSH keys" | dotfiles/ssh/id_rsa
+posix@dotfiles place="history:the repository's history" git="a git hook, which runs code" | .git/hooks/pre-commit
+posix@dotfiles git="a git hook, which runs code" | scripts/hooks/pre-commit
+posix@dotfiles into="startup:a file a tool runs on its own" | .vscode/tasks.json
+posix@dotfiles into="startup:a file a tool runs on its own" | config/vscode/tasks.json
+posix@gitdir place="history:the repository's history" | .git/config
+posix@gitdir git="the repository's history" | gitdir/config
+posix place=inside | dotfiles/ssh/id_rsa
+posix git=none | gitdir/config
+
+# Targets as systems hand them over. POSIX: `//` is the root; a Windows
+# spelling is a name. Windows: the raw forms a junction holds; a volume, a
+# device, a drive's own working directory and an empty target cannot be
+# placed; a share is a share.
+paths posix_targets base=posix link=/home/me/work/repo/k1 to=//home/me/.ssh link=/home/me/work/repo/k2 to=C:\\Users\\me\\.ssh link=/home/me/work/repo/e to=
+paths windows_targets base=windows link=C:\\Users\\me\\dev\\repo\\j1 to=\\??\\C:\\Users\\me\\.ssh link=C:\\Users\\me\\dev\\repo\\j2 to=\\\\?\\C:\\Users\\me\\.ssh link=C:\\Users\\me\\dev\\repo\\j3 to=\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\Users link=C:\\Users\\me\\dev\\repo\\j4 to=\\\\server\\share\\x link=C:\\Users\\me\\dev\\repo\\j5 to=C:..\\..\\.ssh link=C:\\Users\\me\\dev\\repo\\j6 to=\\\\.\\C:\\Users\\me\\.ssh link=C:\\Users\\me\\dev\\repo\\e to=
+posix@posix_targets place="secret:your SSH keys" | k1/id_rsa
+posix@posix_targets place=inside | k2/id_rsa
+posix@posix_targets place=unknown | e/x
+posix@posix_targets place=unknown | e
+windows@windows_targets place="secret:your SSH keys" | j1\\id_rsa
+windows@windows_targets place="secret:your SSH keys" | j2\\id_rsa
+windows@windows_targets place=unknown | j3\\x
+windows@windows_targets place=outside | j4\\y
+windows@windows_targets place=unknown | j5\\id_rsa
+windows@windows_targets place=unknown | j6\\id_rsa
+windows@windows_targets place=unknown | e\\x
+# A link named by a relative path is from the working directory, and one
+# named from `~` from the home directory.
+paths relative_names base=posix link=keys to=/home/me/.ssh link=~/work/repo/k6 to=/home/me/.aws
+posix@relative_names place="secret:your SSH keys" | keys/id_rsa
+posix@relative_names place="secret:your AWS credentials" | k6/credentials
+
+# A link whose name has a bracket, a star or braces is followed when the
+# path spells its name: a quoted word is that name.
+paths wild_names base=posix link=/home/me/work/repo/[x] to=/home/me/.ssh link=/home/me/work/repo/app/[id] to=/home/me/.aws link=/home/me/work/repo/a*b to=/home/me/.ssh link=/home/me/work/repo/{a,b} to=/home/me/.ssh
+posix@wild_names place="secret:your SSH keys" | [x]/id_rsa
+posix@wild_names place="secret:your AWS credentials" | app/[id]/credentials
+posix@wild_names place="secret:your SSH keys" | a*b/id_rsa
+posix@wild_names place="secret:your SSH keys" | {a,b}/id_rsa
+posix place=inside | [x]/id_rsa
+
+# The answer is the same in any order the links are named.
+paths order_one base=posix link=/home/me/work/repo/a to=/home/me/work/repo/x/y/z link=/home/me/work/repo/a/c to=/home/me/.ssh link=/home/me/work/repo/x/y to=/home/me/work/repo/q
+paths order_two base=posix link=/home/me/work/repo/x/y to=/home/me/work/repo/q link=/home/me/work/repo/a/c to=/home/me/.ssh link=/home/me/work/repo/a to=/home/me/work/repo/x/y/z
+paths order_deep base=posix link=/home/me/work/repo/a to=/home/me/work/repo/x/y/z/w link=/home/me/work/repo/x/y/z to=/home/me/work/repo/q link=/home/me/work/repo/a/c to=/home/me/.ssh
+posix@order_one place="secret:your SSH keys" | a/c/id_rsa
+posix@order_two place="secret:your SSH keys" | a/c/id_rsa
+posix@order_deep place="secret:your SSH keys" | a/c/id_rsa
+posix@order_deep place="secret:your SSH keys" | q/w/c/id_rsa
+
+# A pattern is read through every link it can pick, one past another, and
+# `**` through any number of names. A folder read or changed whole holds
+# what the links below it land on only for a tool that follows the links it
+# meets (`linked`, which a guard asks for one); for any other, the links
+# are what it acts on, and it reaches nothing through them.
+paths nested base=posix link=/home/me/work/repo/a to=/data/real link=/data/real/b to=/home/me/.ssh
+paths folder_links base=posix link=/home/me/work/repo/sub/deep to=/home/me/.aws link=/home/me/work/repo/sub/keys to=/home/me/.ssh
+posix@nested place="secret:your SSH keys" picks="your SSH keys" | */*/id_rsa
+posix@nested picks="your SSH keys" | ?/?/id_rsa
+posix@folder_links picks="your AWS credentials" | **/credentials
+posix@folder_links picks="your AWS credentials" | sub/**/credentials
+posix@folder_links deep reaches=no | sub
+posix@folder_links deep reaches=no | .
+posix@folder_links reaches=no | sub
+posix@folder_links place=inside | sub
+posix@folder_links into=inside | sub
+posix@folder_links linked="your SSH keys" | sub
+posix@folder_links linked="your SSH keys" | .
+posix@folder_links linked="your SSH keys" | s*
+posix@folder_links linked=none | src
+posix deep reaches=no | sub
+
+# A link's name by its Windows short name.
+paths short base=windows link=C:\\Users\\me\\dev\\repo\\mysecretkeys to=C:\\Users\\me\\.ssh
+windows@short place="secret:your SSH keys" | MYSECR~1\\id_rsa
+windows@short place="secret:your SSH keys" | mysecr~1\\id_rsa
+windows place=inside | MYSECR~1\\id_rsa
+
+# A `cd` the shell goes to by the text, then a path opened from there: the
+# `..` before a point applied to the text and the rest walked, at each `..`
+# after the first link. From a working directory that is itself through a
+# link, the same.
+paths cd_link base=posix link=/home/me/work/repo/p/lnk to=/home/me/.ssh/sub
+paths cwd_in_link cwd=/home/me/work/repo/p/lnk home=/home/me workspace=/home/me/work/repo link=/home/me/work/repo/p/lnk to=/home/me/.ssh/sub
+posix@cd_link place="secret:your SSH keys" | p/lnk/../../p/lnk/../id_rsa
+posix@cd_link place="secret:your SSH keys" | p/lnk/../id_rsa
+posix@cd_link place=outside | p/lnk/../../p/x
+posix@cwd_in_link place="secret:your SSH keys" | ../id_rsa
+posix@cwd_in_link place="secret:your SSH keys" | ../../p/lnk/../id_rsa
+
+# A link at or above a mount's folder: the mount is where its folder lands
+# through the link too.
+paths mnt_link base=posix drive_mount=/mnt windows_home=C:\\Users\\me link=/mnt to=/media
+paths run_link base=posix drive_mount=/run/mnt windows_home=C:\\Users\\me link=/run to=/var/run
+posix@mnt_link place="secret:your SSH keys" | /mnt/c/Users/me/.ssh/id_rsa
+posix@mnt_link place="secret:your SSH keys" | /media/c/Users/me/.ssh/id_rsa
+posix@run_link place="secret:your SSH keys" | /run/mnt/c/Users/me/.ssh/id_rsa
+posix@run_link place="secret:your SSH keys" | /var/run/mnt/c/Users/me/.ssh/id_rsa
+
+# A link into the workspace lends its name to what it lands on only for
+# what the name means by itself: a key, a protected path, a file that runs
+# on its own; never a place beyond the workspace, a system folder or a
+# share, so the workspace stays the agent's.
+paths current base=posix link=/home/me/current to=/home/me/work/repo
+paths site base=posix link=/var/www/site to=/home/me/work/repo/public
+paths share_home base=windows link=\\\\server\\share\\x to=C:\\Users\\me
+posix@current place=inside | src/main.rs
+posix@current place=workspace | .
+# Spelled through the link, the path is where its spelling is too.
+posix@current place=outside | /home/me/current/src/main.rs
+posix@site place=inside | public/index.html
+windows@share_home place=inside | README.md
+windows@share_home place="secret:your SSH keys" | C:\\Users\\me\\.ssh\\id_rsa
+posix@dotfile into="startup:a shell startup file" | bashrc
+
+# A relative link is read from the first workspace folder, whatever the
+# working directory, and an empty one names nothing.
+paths relative_link cwd=/home/me/work/repo/src home=/home/me workspace=/home/me/work/repo link=keys to=/home/me/.ssh link= to=/home/me/.ssh
+posix@relative_link place="secret:your SSH keys" | ../keys/id_rsa
+posix@relative_link place=inside | main.rs
+posix@relative_link place=inside | x
+
+# A workspace folder that is itself a link is the workspace by both names.
+paths workspace_link base=posix link=/home/me/work/repo to=/data/repo
+posix@workspace_link place=inside | /data/repo/src/main.rs
+posix@workspace_link place=inside | /home/me/work/repo/src/main.rs
+posix@workspace_link place=workspace | /data/repo
+posix@workspace_link place=inside | src/main.rs
+
+# Through a link the guard cannot place (`Link::unknown`), a path is lost.
+posix@loop lost=yes | a/x
+posix@loop lost=no | src/main.rs
+posix@keys lost=no | keys/id_rsa
+
+# A link named where another link lands (the spelling a caller walking the
+# disk reports) lends the first link's name too: `s/keys` is `~/.ssh/keys`,
+# and `.bare/hooks` is `.git/hooks`.
+paths lent_twice base=posix link=/home/me/.ssh to=/home/me/work/repo/s link=/home/me/work/repo/s/keys to=../k
+paths lent_twice_named base=posix link=/home/me/.ssh to=/home/me/work/repo/s link=/home/me/.ssh/keys to=../k
+paths bare base=posix link=/home/me/work/repo/.git to=.bare link=/home/me/work/repo/.bare/hooks to=../scripts/hooks
+posix@lent_twice place="secret:your SSH keys" | k/id_rsa
+posix@lent_twice_named place="secret:your SSH keys" | k/id_rsa
+posix@bare git="a git hook, which runs code" | scripts/hooks/pre-commit
+
+# A path that ends at a link is the link itself to what acts on the name
+# (`name`, as a delete asks), and what it points to through a trailing `/`.
+paths venv base=posix link=/home/me/work/repo/.venv/bin/python to=/usr/bin/python3 link=/home/me/work/repo/data to=/data/sets
+posix@venv place="top:a system folder" name=inside | .venv/bin/python
+posix@venv place=outside name=inside | data
+posix@venv name=outside | data/x
+posix@keys name="secret:your SSH keys" | keys/id_rsa

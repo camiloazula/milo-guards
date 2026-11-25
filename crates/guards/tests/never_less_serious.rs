@@ -1,22 +1,26 @@
-//! Naming how this machine spells another system's drives never makes an
-//! answer less serious.
+//! Naming what only the disk can say never makes an answer less serious.
 //!
-//! A caller that names drive mounts (`Paths::with_drive_mounts`) or a
-//! Windows home (`Paths::with_windows_home`) tells the guards where a path
-//! lands; it never takes a finding away. Every finding an input gets with
-//! nothing named, it still gets with any of them named, in every guard: each
-//! rule of the file guard's reads and writes, of the shell guard's lines and
-//! of the script guard's code; the shell's effect is never less cautious;
-//! and a `file:` URL whose reason names a sensitive or protected place,
-//! not only a key, still names one.
+//! A caller that names links (`Paths::with_links`), drive mounts
+//! (`Paths::with_drive_mounts`) or a Windows home (`Paths::with_windows_home`)
+//! tells the guards where a path lands; it never takes a finding away. Every
+//! finding an input gets with nothing named, it still gets with links
+//! named; and every finding it gets with mounts named, it still gets with
+//! links named beside them. In every guard: each rule of the file guard's
+//! reads and writes, of the shell guard's lines and of the script guard's
+//! code; the shell's effect is never less cautious; and a `file:` URL whose
+//! reason names a sensitive or protected place, not only a key, still names
+//! one.
 //!
 //! The inputs are every case of each guard's case files, on the machine the
 //! case names when it is a sample one, and a deterministic generated set of
-//! paths built from the names the hostile mounts below use, each read,
-//! written, deleted and sent. The machines name mounts a caller may get
-//! wrong or that make the most of a path a drive: WSL's, one at the root,
-//! one at the workspace and one above it, with a Windows home; and on
-//! Windows Git Bash's, Cygwin's and WSL's.
+//! paths built from the names the hostile links and mounts below use, each
+//! read, written, deleted and sent. The machines name links a caller may get
+//! wrong or that an attacker may plant: a key's folder linked into the
+//! workspace, the workspace linked from beside the home directory, the
+//! repository's history and a startup folder linked out of it, links that
+//! loop, one with an empty target, one the caller could not read, one named
+//! with a bracket, one at a mount's folder; and mounts that make the most of
+//! a path a drive, with a Windows home.
 
 #![cfg(all(
     feature = "shell",
@@ -41,7 +45,7 @@ use milo_guards::file::{self, Access};
 use milo_guards::script::{self, Language};
 use milo_guards::shell::{self, Shell};
 use milo_guards::shell::{Effect, Reach};
-use milo_guards::{url, Assessment, Paths, RuleName};
+use milo_guards::{url, Assessment, Link, Paths, RuleName};
 
 fn posix() -> Paths {
     Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
@@ -55,17 +59,89 @@ fn windows() -> Paths {
     )
 }
 
+/// A POSIX machine's links that move what matters to where it looks
+/// harmless, and back.
+fn posix_links() -> Vec<Link> {
+    let repo = "/home/me/work/repo";
+    vec![
+        Link::new("/home/me/.ssh", format!("{repo}/x")),
+        Link::new("/home/me/current", repo),
+        Link::new(format!("{repo}/.git"), "/tmp/g"),
+        Link::new(format!("{repo}/.vscode"), "/tmp/v"),
+        Link::new(format!("{repo}/keys"), "/home/me/.ssh"),
+        Link::new(format!("{repo}/p/lnk"), "/home/me/.ssh/sub"),
+        Link::new(format!("{repo}/a"), "b"),
+        Link::new(format!("{repo}/b"), "a"),
+        Link::new(format!("{repo}/e"), ""),
+        Link::unknown(format!("{repo}/u")),
+        Link::new(format!("{repo}/up"), ".."),
+        Link::new("/etc", "/tmp/etc"),
+        Link::new("/mnt", "/media"),
+        Link::new("/home/me/work", "/data/work"),
+        Link::new(format!("{repo}/[x]"), "/tmp"),
+        Link::new("", ""),
+    ]
+}
+
+/// A Windows machine's links, of the same kinds.
+fn windows_links() -> Vec<Link> {
+    let repo = r"C:\Users\me\dev\repo";
+    vec![
+        Link::new(r"C:\Users\me\.ssh", format!(r"{repo}\x")),
+        Link::new(format!(r"{repo}\.git"), r"C:\Windows\Temp\g"),
+        Link::new(format!(r"{repo}\keys"), r"C:\Users\me\.ssh"),
+        Link::new(format!(r"{repo}\j"), format!(r"{repo}\a\b\c")),
+        Link::new(format!(r"{repo}\a"), "b"),
+        Link::new(format!(r"{repo}\b"), "a"),
+        Link::new(format!(r"{repo}\e"), ""),
+        Link::new(format!(r"{repo}\s"), r"\\server\share"),
+        Link::new(r"\\server\share\x", r"C:\Users\me"),
+        Link::new(r"C:\Users\me\dev", r"D:\dev"),
+    ]
+}
+
 /// A POSIX machine with every mount that makes a path a drive: WSL's, one
 /// at the root, one at the workspace and one above it, and a Windows home.
-fn hostile_posix() -> Paths {
+fn mounted_posix() -> Paths {
     posix()
         .with_drive_mounts(["/mnt", "/", "/home/me/work/repo", "/home/me", "/home", ""])
         .with_windows_home(r"C:\Users\me")
 }
 
 /// A Windows machine with Git Bash's, Cygwin's and WSL's mounts.
-fn hostile_windows() -> Paths {
+fn mounted_windows() -> Paths {
     windows().with_drive_mounts(["/", "/cygdrive", "/mnt", r"C:\x"])
+}
+
+/// The four machines an input is judged on: nothing named, the links
+/// alone, the mounts alone, and the mounts with the links. Made once, so
+/// the tree of the links is built once and kept, as a caller's is.
+fn machines(on_windows: bool) -> &'static [Paths; 4] {
+    static POSIX: std::sync::OnceLock<[Paths; 4]> = std::sync::OnceLock::new();
+    static WINDOWS: std::sync::OnceLock<[Paths; 4]> = std::sync::OnceLock::new();
+    if on_windows {
+        WINDOWS.get_or_init(|| made(true))
+    } else {
+        POSIX.get_or_init(|| made(false))
+    }
+}
+
+fn made(on_windows: bool) -> [Paths; 4] {
+    if on_windows {
+        [
+            windows(),
+            windows().with_links(windows_links()),
+            mounted_windows(),
+            mounted_windows().with_links(windows_links()),
+        ]
+    } else {
+        [
+            posix(),
+            posix().with_links(posix_links()),
+            mounted_posix(),
+            mounted_posix().with_links(posix_links()),
+        ]
+    }
 }
 
 /// The records of every case file of `krate`.
@@ -164,26 +240,30 @@ fn shell_answer(line: &str, shell: Shell, paths: &Paths) -> BTreeSet<String> {
     answer
 }
 
-/// One input, judged with nothing named and with the hostile mounts named:
-/// `None` when every word of the first answer is in the second, else what
-/// the second lost.
+/// One input, judged on each of the four machines: `None` when every word
+/// of the answer with nothing named is in the answers with the links and
+/// with the mounts named, and every word of the answer with the mounts named
+/// is in the answer with the links named beside them; else what was lost.
 fn compare(
     what: &str,
     judge: &dyn Fn(&Paths) -> BTreeSet<String>,
     on_windows: bool,
 ) -> Option<String> {
-    let (plain, hostile) = if on_windows {
-        (windows(), hostile_windows())
-    } else {
-        (posix(), hostile_posix())
-    };
-    let (plain, hostile) = (judge(&plain), judge(&hostile));
-    let lost: Vec<&String> = plain.difference(&hostile).collect();
-    (!lost.is_empty()).then(|| format!("{what}: with mounts named, lost {lost:?}"))
+    let [plain, linked, mounted, both] = machines(on_windows);
+    let (plain, linked, mounted, both) = (judge(plain), judge(linked), judge(mounted), judge(both));
+    let lost: Vec<&String> = plain.difference(&linked).collect();
+    let lost_to_mounts: Vec<&String> = plain.difference(&mounted).collect();
+    let lost_mounted: Vec<&String> = mounted.difference(&both).collect();
+    (!lost.is_empty() || !lost_to_mounts.is_empty() || !lost_mounted.is_empty()).then(|| {
+        format!(
+            "{what}: with links named, lost {lost:?}; with mounts named, lost \
+             {lost_to_mounts:?}; with links beside mounts, lost {lost_mounted:?}"
+        )
+    })
 }
 
 #[test]
-fn every_finding_of_every_case_stays_with_mounts_named() {
+fn every_finding_of_every_case_stays_with_links_named() {
     let mut wrong = Vec::new();
     let mut compared = 0_usize;
     // The file guard: `read PATH` and `write PATH`.
@@ -298,12 +378,22 @@ impl Lcg {
 }
 
 #[test]
-fn every_finding_of_generated_paths_stays_with_hostile_mounts() {
-    const POSIX_PIECES: [&str; 22] = [
+fn every_finding_of_generated_paths_stays_with_hostile_links() {
+    const POSIX_PIECES: [&str; 32] = [
         "~",
         "/",
         "..",
         ".",
+        "keys",
+        "a",
+        "u",
+        "up",
+        "x",
+        "p/lnk",
+        "current",
+        "[x]",
+        "/etc",
+        "/home/me/work",
         "c",
         "C",
         "d",
@@ -323,10 +413,14 @@ fn every_finding_of_generated_paths_stays_with_hostile_mounts() {
         "/c",
         "/home/me/work/repo/c",
     ];
-    const WINDOWS_PIECES: [&str; 18] = [
+    const WINDOWS_PIECES: [&str; 22] = [
         "~",
         "C:",
         "..",
+        "keys",
+        "j",
+        "s",
+        "dev",
         "/",
         "c",
         "d",
@@ -380,6 +474,22 @@ fn every_finding_of_generated_paths_stays_with_hostile_mounts() {
                     &|paths| shell_answer(line, shell, paths),
                     windows,
                 ));
+            }
+            // A link is read in a PowerShell line too, as Windows spells it.
+            if windows {
+                let spelled = path.replace('/', "\\");
+                for line in [
+                    format!("Get-Content '{spelled}'"),
+                    format!("Set-Content '{spelled}' x"),
+                    format!("Remove-Item -Recurse '{spelled}'"),
+                ] {
+                    compared += 1;
+                    wrong.extend(compare(
+                        &line,
+                        &|paths| shell_answer(&line, Shell::PowerShell, paths),
+                        windows,
+                    ));
+                }
             }
             let quoted = path.replace('\\', "\\\\");
             for code in [

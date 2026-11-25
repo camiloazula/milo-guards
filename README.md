@@ -222,7 +222,7 @@ use milo_guards::file::{judge, Access};
 use milo_guards::script::{self, Language};
 use milo_guards::shell::{classify, effect, Effect, Reach, Shell};
 use milo_guards::url;
-use milo_guards::{Paths, Protected, Secret};
+use milo_guards::{Link, Paths, Protected, Secret};
 
 // Where the agent works, and what your tool keeps for itself.
 let paths = Paths::new("/home/me/work/app", "/home/me", ["/home/me/work/app"])
@@ -284,6 +284,11 @@ let paths = paths.with_drive_mounts(["/mnt"]).with_windows_home(r"C:\Users\me");
 let verdict = classify("cat /mnt/c/Users/me/.ssh/id_rsa", Shell::Posix, &paths);
 assert_eq!(verdict.findings()[0].reason, "reads your SSH keys");
 assert_eq!(judge(Access::Read, "/mnt/c/Users/me/.ssh/id_rsa", &paths).findings()[0].reason, "reads your SSH keys");
+
+// The links on the disk, you say too: a link you resolved is followed.
+let paths = paths.with_links([Link::new("/home/me/work/app/keys", "/home/me/.ssh")]);
+let verdict = judge(Access::Read, "keys/id_ed25519", &paths);
+assert_eq!(verdict.findings()[0].reason, "reads your SSH keys");
 ```
 
 The other guards read the same way. `url::judge(url, &paths)` judges a URL;
