@@ -4,6 +4,7 @@
 use super::wrappers::{runner, runner_in, running, running_package, DELETERS};
 use super::{after_options, after_options_by, is_stdin, join, Launch, Word};
 use crate::inline;
+use crate::located::Source;
 use crate::unit::{Arg, Reads, Unit};
 use crate::Shell;
 
@@ -137,7 +138,7 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else {
-            return Launch::Script(Shell::Posix, arg.clone());
+            return Launch::Script(Shell::Posix, arg.clone(), Source::arg(arg));
         };
         match text {
             "--" => break,
@@ -161,7 +162,7 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
             }
             _ => {
                 return if command {
-                    Launch::Script(Shell::Posix, arg.clone())
+                    Launch::Script(Shell::Posix, arg.clone(), Source::arg(arg))
                 } else if stdin || is_stdin(text) {
                     Launch::Reads(Reads::Shell)
                 } else {
@@ -171,11 +172,11 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
         }
     }
     match (command, iter.next()) {
-        (true, Some(script)) => Launch::Script(Shell::Posix, script.clone()),
+        (true, Some(script)) => Launch::Script(Shell::Posix, script.clone(), Source::arg(script)),
         (true, None) => Launch::Itself,
         (false, Some(Arg::Known(script))) if !stdin && !is_stdin(script) => Launch::Itself,
         (false, Some(script)) if !stdin && script.known().is_none() => {
-            Launch::Script(Shell::Posix, script.clone())
+            Launch::Script(Shell::Posix, script.clone(), Source::arg(script))
         }
         _ => Launch::Reads(Reads::Shell),
     }
@@ -187,7 +188,7 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
 pub(super) fn trap(args: &[Arg]) -> Launch {
     match trap_operands(args) {
         None => Launch::Itself,
-        Some((action, _)) => Launch::Script(Shell::Posix, action.clone()),
+        Some((action, _)) => Launch::Script(Shell::Posix, action.clone(), Source::arg(action)),
     }
 }
 
@@ -1248,7 +1249,8 @@ fn bun_subcommand(unit: &Unit, first: usize, input: bool) -> Launch {
         "exec" => {
             let rest = &args[first + 1..];
             after_options(rest, &BUN_VALUES).map_or(Launch::Itself, |at| {
-                let script = Launch::Script(Shell::Posix, join(&rest[at..]));
+                let script =
+                    Launch::Script(Shell::Posix, join(&rest[at..]), Source::joined(&rest[at..]));
                 runner_in("bun", args, first + 1 + at, script)
             })
         }
@@ -1353,7 +1355,7 @@ fn deno_launch(unit: &Unit, input: bool) -> Launch {
                         .filter_map(Arg::known)
                         .any(|text| text == "--eval") =>
                 {
-                    Launch::Script(Shell::Posix, join(&rest[at..]))
+                    Launch::Script(Shell::Posix, join(&rest[at..]), Source::joined(&rest[at..]))
                 }
                 _ => Launch::Itself,
             }

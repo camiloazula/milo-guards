@@ -45,7 +45,7 @@
 //!
 //! | Feature | Module | Judges |
 //! | --- | --- | --- |
-//! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads, and whether the reads stay in the workspace; `shell::explain` shows how the line was read, unit by unit, with what each found |
+//! | `shell` (default) | `shell` | a shell line: POSIX shell, PowerShell or cmd; `shell::effect` also says whether it only reads, and whether the reads stay in the workspace; `shell::explain` shows how the line was read, unit by unit, with what each found; `shell::locate` says where in the line each finding is |
 //! | `code` (default) | `code` | not a guard: Python or JavaScript code, read for the acts it is certain to do (`code::read`) and for whether it is understood in full (`code::understand`); the shell guard reads inline code with it |
 //! | `file` (default) | `file` | one read or write of a path through a file API |
 //! | `url` (default) | `url` | a URL an agent is about to fetch: its host as a parser reads it, its scheme, its user-info; `url::judge_address` judges the address the fetch connected to, with the same tables |

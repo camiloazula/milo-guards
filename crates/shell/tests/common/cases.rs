@@ -14,13 +14,17 @@
 //!   (the first finding), `lacks=RULES` (none of them), `reason="..."` (the
 //!   reason of the first finding of `first`, or of the one rule of
 //!   `finds`), `instead="..."` (what that finding says to do instead, or
-//!   `instead=none` for no advice), and
+//!   `instead=none` for no advice), `range="..."` (the text of the range
+//!   `locate` gives that same finding), `at=N` (where that range starts, in
+//!   bytes), `covering=target|part|line` (what it covers), and
 //!   `effect=reads_workspace|reads_beyond|changes|unknown`. Rules are their
 //!   wire names, comma separated.
 //!
 //! Every case also goes through [`super::disagreements`]: its `effect`,
-//! `explain` and `effect_paths` agree with `classify`. And every finding's
-//! reason and `instead` are each one plain sentence (see [`unsaid`]).
+//! `explain`, `effect_paths` and `locate` agree with `classify`, and the
+//! ranges `locate` gives are in the line and read as their targets (see
+//! [`super::misplaced`]). And every finding's reason and `instead` are each
+//! one plain sentence (see [`unsaid`]).
 //!
 //! A declaration is `paths NAME FIELDS`: `base=MACHINE`, or `cwd=` and
 //! `home=`; `workspace=` (one for each folder, after the base's);
@@ -43,7 +47,7 @@ use std::path::PathBuf;
 use format::{Record, Word};
 use milo_guards_core::RuleName;
 use milo_guards_shell::{
-    classify, effect, Effect, Link, Paths, Protected, Reach, Rule, Secret, Shell,
+    classify, effect, locate, Covers, Effect, Link, Paths, Protected, Reach, Rule, Secret, Shell,
 };
 
 use super::{disagreements, macos, posix, windows};
@@ -73,6 +77,12 @@ pub struct Expect {
     pub reason: Option<String>,
     /// What the finding of `reason` says to do instead.
     pub instead: Option<Instead>,
+    /// The text of the range `locate` gives the finding of `reason`.
+    pub range: Option<String>,
+    /// Where that range starts, in bytes.
+    pub at: Option<usize>,
+    /// What that range covers.
+    pub covers: Option<Covers>,
     pub effect: Option<Effect>,
 }
 
@@ -137,10 +147,29 @@ impl Expect {
             Some(Instead::Nothing) => words.push("instead=none".to_string()),
             None => {}
         }
+        if let Some(range) = &self.range {
+            words.push(format!("range={range:?}"));
+        }
+        if let Some(at) = self.at {
+            words.push(format!("at={at}"));
+        }
+        if let Some(covers) = self.covers {
+            words.push(format!("covering={}", covers_name(covers)));
+        }
         if let Some(effect) = self.effect {
             words.push(format!("effect={}", effect_name(effect)));
         }
         words.join(" ")
+    }
+}
+
+/// What a range covers, as a case file writes it.
+pub fn covers_name(covers: Covers) -> &'static str {
+    match covers {
+        Covers::Target => "target",
+        Covers::Part => "part",
+        Covers::Line => "line",
+        _ => "other",
     }
 }
 
@@ -281,6 +310,35 @@ pub fn wrong(case: &Case) -> Vec<String> {
             != Some(instead)
         {
             missed.push(format!("instead {instead:?}"));
+        }
+    }
+    if expect.range.is_some() || expect.at.is_some() || expect.covers.is_some() {
+        // The same finding, by its place among the line's: `locate` gives
+        // `classify`'s, in the same order.
+        let index = of.and_then(|of| {
+            findings
+                .iter()
+                .position(|finding| std::ptr::eq(finding, of))
+        });
+        let located = locate(line, *shell, paths);
+        let placed = index.and_then(|index| located.get(index));
+        let range = placed.map(|placed| placed.range.clone());
+        let text = range.clone().and_then(|range| line.get(range));
+        if let Some(want) = &expect.range {
+            if text != Some(want.as_str()) {
+                missed.push(format!("range {want:?}, got {text:?}"));
+            }
+        }
+        if let Some(want) = expect.at {
+            if range.as_ref().map(|range| range.start) != Some(want) {
+                missed.push(format!("at {want}, got {range:?}"));
+            }
+        }
+        if let Some(want) = expect.covers {
+            let got = placed.map(|placed| placed.covers);
+            if got != Some(want) {
+                missed.push(format!("covering {}, got {got:?}", covers_name(want)));
+            }
         }
     }
     if let Some(want) = expect.effect {
@@ -487,6 +545,22 @@ fn answer(expect: &mut Expect, name: &str, value: Option<&str>) -> Result<(), St
         ("reason", Some(value)) => expect.reason = Some(value.to_string()),
         ("instead", Some("none")) => expect.instead = Some(Instead::Nothing),
         ("instead", Some(value)) => expect.instead = Some(Instead::Says(value.to_string())),
+        ("range", Some(value)) => expect.range = Some(value.to_string()),
+        ("at", Some(value)) => {
+            expect.at = Some(
+                value
+                    .parse()
+                    .map_err(|_| format!("`at` takes a number of bytes, not `{value}`"))?,
+            );
+        }
+        ("covering", Some(value)) => {
+            expect.covers = Some(match value {
+                "target" => Covers::Target,
+                "part" => Covers::Part,
+                "line" => Covers::Line,
+                other => return Err(format!("an unknown covering `{other}`")),
+            });
+        }
         ("effect", Some(value)) => {
             expect.effect = Some(match value {
                 "reads_workspace" => Effect::ReadsOnly(Reach::Workspace),
@@ -497,9 +571,11 @@ fn answer(expect: &mut Expect, name: &str, value: Option<&str>) -> Result<(), St
             });
         }
         ("safe", Some(_)) => return Err("`safe` takes no value".to_string()),
-        ("finds" | "rules" | "first" | "lacks" | "reason" | "instead" | "effect", None) => {
-            return Err(format!("`{name}` takes a value: `{name}=...`"))
-        }
+        (
+            "finds" | "rules" | "first" | "lacks" | "reason" | "instead" | "range" | "at"
+            | "covering" | "effect",
+            None,
+        ) => return Err(format!("`{name}` takes a value: `{name}=...`")),
         (other, None) => return Err(format!("an unknown word `{other}`")),
         (other, Some(_)) => return Err(format!("an unknown field `{other}`")),
     }
@@ -529,7 +605,10 @@ fn whole(expect: &Expect) -> Result<(), String> {
         || expect.rules.is_some()
         || expect.first.is_some()
         || expect.reason.is_some()
-        || expect.instead.is_some();
+        || expect.instead.is_some()
+        || expect.range.is_some()
+        || expect.at.is_some()
+        || expect.covers.is_some();
     if expect.safe && (risky || !expect.lacks.is_empty()) {
         return Err("`safe` takes no other rule field".to_string());
     }
@@ -542,6 +621,9 @@ fn whole(expect: &Expect) -> Result<(), String> {
     for (field, given) in [
         ("reason", expect.reason.is_some()),
         ("instead", expect.instead.is_some()),
+        ("range", expect.range.is_some()),
+        ("at", expect.at.is_some()),
+        ("covering", expect.covers.is_some()),
     ] {
         if given
             && expect.first.is_none()

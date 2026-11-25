@@ -149,10 +149,13 @@ What sets the guards apart:
   Windows drives, shares, short names and any case, without touching the disk.
   A URL is judged by the host a WHATWG parser reads, so a decimal, octal or
   IPv6-mapped spelling of a local address is still local.
-- **Two more answers from the shell guard.** `effect` says whether a line only
+- **More answers from the shell guard.** `effect` says whether a line only
   reads, changes something or cannot be told, and whether its reads stay in the
   workspace. `explain` shows how the line was read, unit by unit, with what
-  each unit found.
+  each unit found. `locate` says where in the line each finding is, as a byte
+  range of the line you passed: the word the rule judged, as written, or the
+  command or nested script that holds what it is about, never a word found
+  because it reads the same.
 - **Your own files, in your own words.** Name the paths your tool keeps for
   itself, such as its settings or its rules, as protected. A finding about
   them says "deletes the agent's settings", in the words you gave.

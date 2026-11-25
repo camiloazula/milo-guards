@@ -5,6 +5,7 @@ use crate::launch::{
     after_run, find_targets, is_interpreter, is_node, is_stdin, options, own_args, powershell_file,
     uv_script, Options, BUN_VALUES, DENO_VALUES, SHELLS,
 };
+use crate::located::{Ident, Origin, Owned};
 use crate::path::{self, Access, Place, Resolver};
 use crate::powershell::Params;
 use crate::said::Said;
@@ -252,12 +253,21 @@ pub(crate) struct Judged {
     pub(crate) units: Vec<Vec<Finding>>,
     /// What each redirect's write produced, in the order of `Split::writes`.
     pub(crate) writes: Vec<Vec<Finding>>,
+    /// Where each of `found` came from, in step with it, when the line is
+    /// read for its ranges (see [`crate::located`]); empty otherwise.
+    pub(crate) origins: Vec<Origin>,
+    /// For each finding, what its rule judged when that was a word of the
+    /// line, as the rule first said it (see [`Checker::idents`]); empty
+    /// when the line is not read for its ranges.
+    pub(crate) idents: HashMap<Finding, Option<Ident>>,
 }
 
 impl Judged {
     /// These findings with every finding of `other`, a judging of the same
     /// split, that they do not hold already: for the line, for each unit and
-    /// for each redirect.
+    /// for each redirect. A finding `other` adds keeps where it came from
+    /// and what its rule judged there, in `other`'s reading of the same
+    /// split (see [`crate::located`]).
     pub(crate) fn merge(&mut self, other: Self) {
         fn add(into: &mut Vec<Finding>, from: Vec<Finding>) {
             for finding in from {
@@ -266,7 +276,17 @@ impl Judged {
                 }
             }
         }
-        add(&mut self.found, other.found);
+        let mut origins = other.origins.into_iter();
+        for finding in other.found {
+            let origin = origins.next();
+            if !self.found.contains(&finding) {
+                self.origins.extend(origin);
+                if let Some(ident) = other.idents.get(&finding) {
+                    self.idents.entry(finding.clone()).or_insert(*ident);
+                }
+                self.found.push(finding);
+            }
+        }
         add(&mut self.line, other.line);
         for (into, from) in self.units.iter_mut().zip(other.units) {
             add(into, from);
@@ -309,6 +329,10 @@ fn judge(
     checker.found.clone_from(&split.findings);
     checker.note_writes();
     checker.flow = checker.trace();
+    // Where each finding came from, when the line is read for its ranges:
+    // each step only adds to the end of `found`, so what it added is its.
+    let mut origins = Origins::new(split.placing.is_some());
+    origins.mark(&checker.found, Origin::Line);
     // What each step adds to `found` is what that step found: the findings
     // from `split.findings` come first, and are the line's own.
     let mut line = checker.found.clone();
@@ -334,11 +358,15 @@ fn judge(
             checker.once(before, mine);
         }
         checker.loose(at, before);
+        origins.mark(&checker.found, |_| Origin::Unit(at));
         units.push(checker.found[before..].to_vec());
     }
     // A read through `<` is not a unit's: it belongs to the line.
     let before = checker.found.len();
-    checker.redirected_reads();
+    for at in 0..split.reads.len() {
+        checker.redirected_read(at);
+        origins.mark(&checker.found, |_| Origin::Read(at));
+    }
     line.extend_from_slice(&checker.found[before..]);
     let mut writes: Vec<Vec<Finding>> = Vec::with_capacity(split.writes.len());
     // A redirect is written from each folder the line may be in, and a
@@ -381,33 +409,92 @@ fn judge(
             plain.1.extend_from_slice(&found);
         }
         writes.push(found);
+        let at = writes.len() - 1;
+        origins.mark(&checker.found, |_| Origin::Write(at));
     }
     // Inline code the guard did not read whole is `unknown`, but only where
     // nothing else was found: a line that already asks, or that the guard is
     // certain of (a delete, a write, a key), says so.
     if checker.found.is_empty() {
         let mut unread = split.unread.clone();
+        let mut importing = None;
         // Code that imports is read whole only where Python looks first for
         // what it imports: the workspace's own folders.
         if unread.is_empty() {
+            importing = split
+                .importing
+                .iter()
+                .position(|code| !checker.imports_in_workspace(code));
             unread.extend(
-                split
-                    .importing
-                    .iter()
-                    .find(|code| !checker.imports_in_workspace(code))
+                importing
+                    .and_then(|at| split.importing.get(at))
                     .map(|code| code.finding.clone()),
             );
         }
         line.extend_from_slice(&unread);
         checker.found.extend_from_slice(&unread);
+        match importing {
+            Some(at) => origins.mark(&checker.found, |_| Origin::Importing(at)),
+            None => origins.mark(&checker.found, Origin::Unread),
+        }
     }
     let mut seen = HashSet::new();
-    checker.found.retain(|finding| seen.insert(finding.clone()));
+    let mut origins = origins.list.into_iter();
+    let mut kept = Vec::new();
+    let whole = std::mem::take(&mut checker.whole);
+    let idents = checker.idents.take().unwrap_or_default();
+    checker.found.retain(|finding| {
+        let origin = origins.next();
+        let first = seen.insert(finding.clone());
+        if first {
+            kept.extend(origin.map(|origin| {
+                if whole.contains(finding) {
+                    Origin::Whole
+                } else {
+                    origin
+                }
+            }));
+        }
+        first
+    });
     Judged {
         found: checker.found,
         line,
         units,
         writes,
+        origins: kept,
+        idents,
+    }
+}
+
+/// Where each finding of a line came from, in step with the findings, as
+/// each step of [`judge`] adds them (see [`crate::located`]).
+struct Origins {
+    /// Whether they are kept: only when the line is read for its ranges.
+    on: bool,
+    list: Vec<Origin>,
+}
+
+impl Origins {
+    fn new(on: bool) -> Self {
+        Self {
+            on,
+            list: Vec::new(),
+        }
+    }
+
+    /// The findings of `found` past those already marked came from the step
+    /// that just ran: `origin` of each one's place in that step's list. A
+    /// step only ever adds to the end of `found`.
+    fn mark(&mut self, found: &[Finding], origin: impl Fn(usize) -> Origin) {
+        if !self.on {
+            return;
+        }
+        let first = self.list.len().min(found.len());
+        self.list.truncate(first);
+        for at in first..found.len() {
+            self.list.push(origin(at - first));
+        }
     }
 }
 
@@ -572,6 +659,122 @@ struct Checker<'a> {
     /// name it does not show, or runs `hash`, which ties a name to a file
     /// (see [`respells`]).
     respelled: bool,
+    /// The findings a unit's step says of the whole line (what its flow of
+    /// secrets comes to), for their ranges: no unit of it.
+    whole: Vec<Finding>,
+    /// When the line is read for its ranges: where in memory each unit's
+    /// arguments and program, and each redirect's file, are (see
+    /// [`Owners`]), the unit being judged, and what each finding's rule
+    /// judged (see [`Checker::add`]).
+    owners: Owners,
+    current: Option<Current>,
+    idents: Option<HashMap<Finding, Option<Ident>>>,
+    /// The arguments rules are judging by what they expand to (`{a,b}`, a
+    /// pattern, a variable's values), innermost last, each with what it is
+    /// (see [`Checker::judging`]).
+    standing: Vec<(Option<Owned>, String)>,
+}
+
+/// The unit [`Checker::unit`] is judging, which may be a copy of the one at
+/// `at` run from another folder: where its arguments and its program are
+/// in memory.
+#[derive(Clone, Copy)]
+struct Current {
+    args: usize,
+    len: usize,
+    program: usize,
+    at: usize,
+}
+
+/// What an argument handed to a rule is, by where it is in memory: each
+/// unit's arguments, each unit's program and each redirect's file of the
+/// split, sorted by where they start. A rule hands on the argument it
+/// judged by reference, so its address is that argument's, and no other
+/// argument has it: no two equal words are told apart by what they read
+/// as, but by which one the rule was handed.
+#[derive(Default)]
+struct Owners {
+    /// Where each starts and ends, and what it is.
+    spans: Vec<(usize, usize, Owner)>,
+}
+
+#[derive(Clone, Copy)]
+enum Owner {
+    Args(usize),
+    Program(usize),
+    Write(usize),
+    Read(usize),
+    Redirect(usize),
+}
+
+/// The size of an [`Arg`], which places one in a unit's arguments.
+const ARG: usize = size_of::<Arg>();
+
+/// Where `arg` is in memory.
+pub(super) fn address(arg: &Arg) -> usize {
+    std::ptr::from_ref(arg) as usize
+}
+
+impl Owners {
+    fn of(split: &Split) -> Self {
+        let mut spans = Vec::new();
+        for (at, unit) in split.units.iter().enumerate() {
+            if let (Some(first), false) = (unit.args.first(), unit.args.is_empty()) {
+                let start = address(first);
+                spans.push((start, start + unit.args.len() * ARG, Owner::Args(at)));
+            }
+            let program = address(&unit.program);
+            spans.push((program, program + ARG, Owner::Program(at)));
+        }
+        for (at, write) in split.writes.iter().enumerate() {
+            let target = address(&write.target);
+            spans.push((target, target + ARG, Owner::Write(at)));
+        }
+        for (at, read) in split.reads.iter().enumerate() {
+            let target = address(&read.target);
+            spans.push((target, target + ARG, Owner::Read(at)));
+        }
+        for (at, redirect) in split.redirects.iter().enumerate() {
+            let target = address(&redirect.target);
+            spans.push((target, target + ARG, Owner::Redirect(at)));
+        }
+        spans.sort_by_key(|(start, _, _)| *start);
+        Self { spans }
+    }
+
+    /// What the argument at `address` is, when it is one of the split's.
+    fn ident(&self, address: usize) -> Option<Owned> {
+        let at = self
+            .spans
+            .partition_point(|(start, _, _)| *start <= address);
+        let (start, end, owner) = *self.spans.get(at.checked_sub(1)?)?;
+        if address >= end || !(address - start).is_multiple_of(ARG) {
+            return None;
+        }
+        Some(match owner {
+            Owner::Args(unit) => Owned::Arg {
+                unit,
+                at: (address - start) / ARG,
+            },
+            Owner::Program(unit) => Owned::Program(unit),
+            Owner::Write(at) => Owned::Write(at),
+            Owner::Read(at) => Owned::Read(at),
+            Owner::Redirect(at) => Owned::Redirect(at),
+        })
+    }
+}
+
+impl Current {
+    fn ident(self, address: usize) -> Option<Owned> {
+        if address == self.program {
+            return Some(Owned::Program(self.at));
+        }
+        let offset = address.checked_sub(self.args)?;
+        (offset < self.len * ARG && offset.is_multiple_of(ARG)).then_some(Owned::Arg {
+            unit: self.at,
+            at: offset / ARG,
+        })
+    }
 }
 
 impl<'a> Checker<'a> {
@@ -600,7 +803,16 @@ impl<'a> Checker<'a> {
             respelled: split.declares_unread
                 || split.reassigned_any(|name| !leaves_programs(name))
                 || split.units.iter().any(respells),
+            whole: Vec::new(),
+            owners: Owners::default(),
+            current: None,
+            idents: None,
+            standing: Vec::new(),
         };
+        if split.placing.is_some() {
+            checker.owners = Owners::of(split);
+            checker.idents = Some(HashMap::new());
+        }
         for (at, unit) in split.units.iter().enumerate() {
             let Some(stage) = unit.stage else {
                 continue;
@@ -764,20 +976,113 @@ impl Checker<'_> {
         })
     }
 
+    /// Note a finding of `rule` about the whole line, which the step of a
+    /// unit says (see [`Checker::whole`]).
+    fn add_whole(&mut self, rule: Rule, said: impl Into<Said>) {
+        let finding = said.into().finding(rule, None);
+        self.whole.push(finding.clone());
+        self.found.push(finding);
+    }
+
     /// Note a finding of `rule` about `target`: its reason, and what to do
-    /// instead where there is a real way out (see [`Said`]).
+    /// instead where there is a real way out (see [`Said`]). When the line
+    /// is read for its ranges, `target` is told by where it is in memory:
+    /// an argument, the program or a redirect's file of the split, or of
+    /// the unit being judged (see [`Owners`]); anything else (a value the
+    /// rule made) is no word of the line.
     fn add(&mut self, rule: Rule, said: impl Into<Said>, target: Option<&Arg>) {
-        self.found.push(
-            said.into()
-                .finding(rule, target.map(|arg| arg.text().to_string())),
-        );
+        let finding = said
+            .into()
+            .finding(rule, target.map(|arg| arg.text().to_string()));
+        if let Some(idents) = self.idents.as_mut() {
+            let ident = target.and_then(|arg| {
+                let at = address(arg);
+                self.current
+                    .and_then(|current| current.ident(at))
+                    .or_else(|| self.owners.ident(at))
+                    .map(Ident::Is)
+                    .or_else(|| {
+                        // A value the argument being judged expands to: that
+                        // argument, which holds it, or is it.
+                        let (ident, text) = self.standing.last()?;
+                        let ident = (*ident)?;
+                        Some(if text == arg.text() {
+                            Ident::Is(ident)
+                        } else {
+                            Ident::Holds(ident)
+                        })
+                    })
+            });
+            idents.entry(finding.clone()).or_insert(ident);
+        }
+        self.found.push(finding);
+    }
+
+    /// What `arg` is, by where it is in memory, when the line is read for
+    /// its ranges.
+    fn ident_of(&self, arg: &Arg) -> Option<Owned> {
+        self.idents.as_ref()?;
+        let at = address(arg);
+        self.current
+            .and_then(|current| current.ident(at))
+            .or_else(|| self.owners.ident(at))
+    }
+
+    /// Run `judge`, which judges `arg` by what it expands to: a finding about
+    /// one of those values is about `arg` (see [`Checker::add`]).
+    fn judging<R>(&mut self, arg: &Arg, judge: impl FnOnce(&mut Self) -> R) -> R {
+        if self.idents.is_none() {
+            return judge(self);
+        }
+        let ident = self.ident_of(arg);
+        self.standing.push((ident, arg.text().to_string()));
+        let result = judge(self);
+        self.standing.pop();
+        result
+    }
+
+    /// [`Checker::add`] of a finding about `target`, a value read from the
+    /// argument `owned` (a secret a flow traced from the word that names
+    /// it, told when the flow read it): that argument is what it judged.
+    fn add_from(&mut self, rule: Rule, said: impl Into<Said>, target: &Arg, owned: Option<Owned>) {
+        let finding = said.into().finding(rule, Some(target.text().to_string()));
+        if let Some(idents) = self.idents.as_mut() {
+            let at = self.current.map(|current| current.at);
+            // The flow says which word it read the secret from, but not that
+            // the command it belongs to reads it (it takes a program's
+            // operands for what it reads): a word of the sending command, or
+            // a redirect's file, is that word; one of another command places
+            // the finding at both commands.
+            let ident = owned.map(|owned| match owned {
+                Owned::Arg { unit, .. } | Owned::Program(unit) if Some(unit) != at => {
+                    Ident::Spans(unit)
+                }
+                owned => Ident::Is(owned),
+            });
+            idents.entry(finding.clone()).or_insert(ident);
+        }
+        self.found.push(finding);
+    }
+
+    /// `changed`, what a finding became, keeps what `was` judged.
+    fn same_ident(&mut self, was: &Finding, changed: &Finding) {
+        if let Some(idents) = self.idents.as_mut() {
+            let ident = idents.get(was).copied().flatten();
+            idents.entry(changed.clone()).or_insert(ident);
+        }
     }
 
     /// Say of each finding from `before` on that only an option the line
     /// does not show makes the program do it (see [`hedged`]).
     fn hedge(&mut self, before: usize) {
+        let mut changes = Vec::new();
         for finding in self.found.iter_mut().skip(before) {
+            let was = self.idents.is_some().then(|| finding.clone());
             finding.reason = hedged(&finding.reason);
+            changes.extend(was.map(|was| (was, finding.clone())));
+        }
+        for (was, changed) in changes {
+            self.same_ident(&was, &changed);
         }
     }
 
@@ -840,7 +1145,11 @@ impl Checker<'_> {
             if mine.contains(&finding) {
                 continue;
             }
+            let was = self.idents.is_some().then(|| finding.clone());
             finding.reason.push_str(MOVED_OFF);
+            if let Some(was) = was {
+                self.same_ident(&was, &finding);
+            }
             if !self.found[own..].contains(&finding) {
                 self.found.push(finding);
             }
@@ -851,6 +1160,21 @@ impl Checker<'_> {
     /// a file the line wrote too, which a copy of it in another folder the
     /// line may be in leaves to the unit itself (see [`Unit::others`]).
     fn unit(&mut self, at: usize, unit: &Unit, runs: bool) {
+        let outer = self.current;
+        if self.idents.is_some() {
+            self.current = Some(Current {
+                args: unit.args.first().map_or(0, address),
+                len: unit.args.len(),
+                program: address(&unit.program),
+                at,
+            });
+        }
+        self.judge_unit(at, unit, runs);
+        self.current = outer;
+    }
+
+    /// [`Self::unit`], once the unit is the one being judged.
+    fn judge_unit(&mut self, at: usize, unit: &Unit, runs: bool) {
         self.called(unit);
         let Some(key) = unit.key() else {
             // A program only known when it runs may be a shell, or start one.
@@ -1001,6 +1325,22 @@ impl Checker<'_> {
         picks: Option<&dyn Fn(&str) -> bool>,
     ) {
         for target in targets {
+            self.judging(target, |checker| {
+                checker.delete_one(unit, target, verb, hidden, picks);
+            });
+        }
+    }
+
+    /// [`Checker::delete_picked`] of one target.
+    fn delete_one(
+        &mut self,
+        unit: &Unit,
+        target: &Arg,
+        verb: &str,
+        hidden: bool,
+        picks: Option<&dyn Fn(&str) -> bool>,
+    ) {
+        {
             let (found, listed_hidden) = self.expand(unit, target);
             let scope = Scope {
                 hidden: unit.hidden || listed_hidden || hidden,

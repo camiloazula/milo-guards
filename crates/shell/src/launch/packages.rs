@@ -6,6 +6,7 @@
 
 use super::wrappers::subcommand;
 use super::{after_assignments, after_options, join, Launch, MAX_FORKS};
+use crate::located::Source;
 use crate::unit::{Arg, Unit, MAX_LEN};
 use crate::Shell;
 
@@ -382,7 +383,7 @@ pub(super) fn line_runner(key: &str, unit: &Unit) -> Option<Launch> {
     let mut readings = lines
         .into_iter()
         .rev()
-        .map(|line| Launch::Script(shell, line));
+        .map(|line| Launch::Script(shell, line, Source::NONE));
     let last = readings.next()?;
     Some(readings.fold(last, |rest, line| {
         Launch::Either(Box::new(line), Box::new(rest))

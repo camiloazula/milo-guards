@@ -19,6 +19,7 @@ use milo_guards_core::{Flavour, Sensitivity};
 use super::files::remote;
 use super::Checker;
 use crate::launch::{code_options, is_interpreter, valued_options};
+use crate::located::Owned;
 use crate::path::{Access, Place};
 use crate::unit::{has_flag, operands, referenced, Arg, Nested, Stage, Unit};
 use crate::{Rule, Shell};
@@ -291,6 +292,11 @@ const LOST: &str = "a path only known when it runs";
 struct Hit {
     words: &'static str,
     target: String,
+    /// The argument of the line that names it, told by where it is in
+    /// memory while the argument is there to be told (see
+    /// [`Checker::add_from`]); none when no argument of the line does, or
+    /// the one that does is a copy made to judge it.
+    from: Option<Owned>,
 }
 
 /// Where the line reads secrets, and where what it reads goes, by unit
@@ -477,7 +483,7 @@ impl Checker<'_> {
                     .map(|(unit, key)| candidates(unit, &key))
                     .unwrap_or_default()
                     .into_iter()
-                    .map(move |from| (at, from))
+                    .map(move |from| (at, from.into_owned()))
             });
             let all: Vec<(usize, Arg)> = read.chain(inputs).collect();
             for (at, from) in all {
@@ -546,6 +552,7 @@ impl Checker<'_> {
                         Hit {
                             words: hit.words,
                             target: copy.target.clone(),
+                            from: None,
                         },
                     );
                     work.push(copy.to.clone());
@@ -563,6 +570,7 @@ impl Checker<'_> {
                         Hit {
                             words,
                             target: copy.target.clone(),
+                            from: None,
                         },
                     );
                     work.push(copy.to.clone());
@@ -909,6 +917,7 @@ impl Checker<'_> {
                     Hit {
                         words: hit.words,
                         target: file.to_string(),
+                        from: None,
                     },
                 ));
             }
@@ -1081,10 +1090,15 @@ impl Checker<'_> {
             return Some(Hit {
                 words: ENVIRONMENT,
                 target: key,
+                from: None,
             });
         }
         if let Some(target) = exports_secret_keys(unit, &key) {
-            return Some(Hit { words: GPG, target });
+            return Some(Hit {
+                words: GPG,
+                target,
+                from: None,
+            });
         }
         // `ls ~/.ssh | xargs cat`: the names the stage before lists.
         let listed =
@@ -1095,6 +1109,7 @@ impl Checker<'_> {
             };
         candidates(unit, &key)
             .iter()
+            .map(AsRef::as_ref)
             .chain(&listed)
             .find_map(|arg| self.secret_of(unit, arg, false, true, written))
             .or_else(|| self.archived(unit, &key, written))
@@ -1193,6 +1208,7 @@ impl Checker<'_> {
         glob: bool,
         written: &HashMap<String, Hit>,
     ) -> Option<Hit> {
+        let from = self.ident_of(arg);
         let name = super::named_in_unknown_folder(arg);
         let arg = name.as_ref().unwrap_or(arg);
         let text = arg.known().filter(|text| *text != "-")?;
@@ -1283,6 +1299,7 @@ impl Checker<'_> {
         Some(Hit {
             words,
             target: text.to_string(),
+            from,
         })
     }
 
@@ -1296,6 +1313,7 @@ impl Checker<'_> {
         .then(|| Hit {
             words: WORKSPACE,
             target: text.to_string(),
+            from: self.ident_of(arg),
         })
     }
 
@@ -1305,10 +1323,11 @@ impl Checker<'_> {
         } else {
             format!("sends {} off the machine", hit.words)
         };
-        self.add(
+        self.add_from(
             Rule::SendSecret,
             reason,
-            Some(&Arg::Known(hit.target.clone())),
+            &Arg::Known(hit.target.clone()),
+            hit.from,
         );
     }
 
@@ -1319,17 +1338,18 @@ impl Checker<'_> {
         if !self.flow.active {
             return;
         }
+        // What the line's flow comes to is the line's, whichever unit says
+        // it first.
         if self.flow.unfollowed {
             self.flow.unfollowed = false;
-            self.add(
+            self.add_whole(
                 Rule::Unreadable,
                 "writes a secret into files too many times to follow",
-                None,
             );
         }
         if self.flow.unlisted {
             self.flow.unlisted = false;
-            self.add(Rule::Unreadable, "names too many paths to read", None);
+            self.add_whole(Rule::Unreadable, "names too many paths to read");
         }
         // A call of a function or an alias sends what it is given when its
         // body sends. (A use of an alias with words of its own is followed
@@ -2307,10 +2327,10 @@ fn to_other_machine(arg: &Arg, unknown: bool, posix: bool) -> bool {
 /// that name a key it logs in with or are code an interpreter is given
 /// (`node -p 'process.env'`), and the value of each `name=value`; for `tar`
 /// and `zip` packing an archive, its members.
-fn candidates(unit: &Unit, key: &str) -> Vec<Arg> {
+fn candidates<'u>(unit: &'u Unit, key: &str) -> Vec<Cow<'u, Arg>> {
     // What an archive packs is its members, not its options' patterns.
     if let Some(archive) = archive(unit, key) {
-        return archive.members;
+        return archive.members.into_iter().map(Cow::Owned).collect();
     }
     let logs_in = KEY_USERS.contains(&key);
     let interprets = is_interpreter(key) || key.starts_with("python");
@@ -2334,13 +2354,14 @@ fn candidates(unit: &Unit, key: &str) -> Vec<Arg> {
                 continue;
             }
         }
-        found.push(arg.clone());
+        // The argument itself, which says which word names the secret.
+        found.push(Cow::Borrowed(arg));
         if let Some((_, value)) = text.split_once('=').filter(|(_, value)| !value.is_empty()) {
-            found.push(Arg::Known(value.to_string()));
+            found.push(Cow::Owned(Arg::Known(value.to_string())));
         }
     }
     if key == "tar" {
-        found.extend(tar_members(&unit.args));
+        found.extend(tar_members(&unit.args).into_iter().map(Cow::Owned));
     }
     found
 }

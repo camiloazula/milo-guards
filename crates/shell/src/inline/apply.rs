@@ -32,7 +32,13 @@ const ENVIRONED: &str = "starts a program with an environment set in the code";
 /// Read `pieces` of code in `language`, run `depth` levels deep, from the
 /// directory the interpreter is told to work in, and add what they do to the
 /// split.
-pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, depth: usize) {
+pub(crate) fn apply_all(
+    split: &mut Split,
+    unit: usize,
+    language: Language,
+    code: &Code,
+    depth: usize,
+) {
     let outer = split.dir_snapshot();
     match &code.dir {
         Some(dir @ Arg::Known(_)) => run(split, "cd", vec![flag("--"), dir.clone()], depth),
@@ -50,7 +56,10 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
             None,
         );
     }
-    for piece in &code.pieces {
+    for (at, piece) in code.pieces.iter().enumerate() {
+        // What each piece does is placed at the word it is in.
+        let source = code.sources.get(at).copied().unwrap_or_default();
+        split.launch(unit, source);
         match piece {
             Arg::Known(text) => apply(split, language, text, depth, false),
             other => split.problem(
@@ -77,6 +86,8 @@ pub(crate) fn apply_all(split: &mut Split, language: Language, code: &Code, dept
         }
         _ => None,
     };
+    // What the code as a whole comes to is placed at its first piece.
+    split.launch(unit, code.sources.first().copied().unwrap_or_default());
     match read {
         None => split.unread_code(code.pieces.first().map_or("", Arg::text)),
         // Python code looks in the folder it runs in first (an import, but
@@ -116,6 +127,14 @@ fn apply(split: &mut Split, language: Language, code: &str, depth: usize, unplac
     if !unit::within_limits(split, code, depth) {
         return;
     }
+    // What the code does is placed at the word that holds it.
+    split.enter_code();
+    read_code(split, language, code, depth, unplaced);
+    split.leave_code();
+}
+
+/// [`apply`], once the code is let be read.
+fn read_code(split: &mut Split, language: Language, code: &str, depth: usize, unplaced: bool) {
     let reading = reader::read(language, code);
     if reading.deep {
         split.problem(Rule::Unreadable, "nests too deeply to read", None);
@@ -324,7 +343,7 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
                         Some(at) => {
                             split.loose.insert(before + at, finding);
                         }
-                        None => split.findings.push(finding),
+                        None => split.add_finding(finding),
                     }
                 }
             }
@@ -444,7 +463,7 @@ fn opened(
             split.loose.insert(before + at, finding);
         }
         // The program was not added as itself: nothing says what the file is.
-        None => split.findings.push(finding),
+        None => split.add_finding(finding),
     }
 }
 

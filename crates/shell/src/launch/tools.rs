@@ -13,6 +13,7 @@ use super::{
     after_assignments, after_getopt, after_options, after_options_by, getopt_value, getopt_word,
     join, runs, shell_word, shell_words, subcommand, Launch, Word,
 };
+use crate::located::Source;
 use crate::unit::{Arg, Unit};
 use crate::Shell;
 
@@ -210,7 +211,7 @@ pub(super) fn script(args: &[Arg]) -> Launch {
 /// [`script`] with the options of `short` taking a value.
 fn script_with(args: &[Arg], short: &str) -> Launch {
     if let Some(line) = getopt_value(args, Some('c'), "command", short, SCRIPT_LONG) {
-        return Launch::Script(Shell::Posix, line);
+        return Launch::Script(Shell::Posix, line, Source::NONE);
     }
     let Some(file) = after_getopt(args, short, SCRIPT_LONG) else {
         return Launch::Itself;
@@ -616,7 +617,7 @@ pub(super) fn wsl(args: &[Arg]) -> Launch {
                     [] => Launch::Itself,
                     words => in_linux(
                         folder.as_ref(),
-                        Launch::Script(Shell::Posix, shell_words(words)),
+                        Launch::Script(Shell::Posix, shell_words(words), Source::NONE),
                     ),
                 };
             }
@@ -675,11 +676,11 @@ fn linux_line(words: &[Arg]) -> Launch {
     let plain = join(words);
     let quoted = windows_line(words);
     if quoted == plain {
-        Launch::Script(Shell::Posix, plain)
+        Launch::Script(Shell::Posix, plain, Source::NONE)
     } else {
         Launch::Either(
-            Box::new(Launch::Script(Shell::Posix, quoted)),
-            Box::new(Launch::Script(Shell::Posix, plain)),
+            Box::new(Launch::Script(Shell::Posix, quoted, Source::NONE)),
+            Box::new(Launch::Script(Shell::Posix, plain, Source::NONE)),
         )
     }
 }
@@ -878,7 +879,7 @@ fn guest_command(args: &[Arg], own: &[Arg], start: usize) -> Launch {
     let program = after_assignments(args, start);
     let launch = match args.get(program).and_then(Arg::known) {
         Some(text) if text.contains('=') => {
-            Launch::Script(Shell::Posix, guest_line(&args[start..]))
+            Launch::Script(Shell::Posix, guest_line(&args[start..]), Source::NONE)
         }
         _ => runs(args, Some(program)),
     };
@@ -1073,7 +1074,7 @@ pub(super) fn secrets_run(key: &str, unit: &Unit) -> Launch {
         };
         let own = &args[sub + 1..];
         if let Some(line) = getopt_value(own, None, "command", DOPPLER_SHORT, DOPPLER_LONG) {
-            return Launch::Script(system, line);
+            return Launch::Script(system, line, Source::NONE);
         }
         return runs(args, Some(start));
     }
@@ -1087,7 +1088,7 @@ pub(super) fn secrets_run(key: &str, unit: &Unit) -> Launch {
     let own = &args[from..];
     if command {
         if let Some(line) = getopt_value(own, None, "command", short, long) {
-            return Launch::Script(system, line);
+            return Launch::Script(system, line, Source::NONE);
         }
     }
     runs(args, after_getopt(own, short, long).map(|at| from + at))

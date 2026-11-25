@@ -91,7 +91,7 @@ impl Checker<'_> {
                 let search = has_switch(args, "s");
                 for target in &targets {
                     let before = self.found.len();
-                    self.delete(unit, &[target], "deletes");
+                    self.delete(unit, &[target.as_ref()], "deletes");
                     // `/s` deletes the names that match in every folder
                     // below too, as a search finds them (`del /s *.yaml`).
                     if search && self.found.len() == before {
@@ -103,12 +103,14 @@ impl Checker<'_> {
                     }
                 }
                 if search {
+                    let targets: Vec<Arg> = targets.into_iter().map(Cow::into_owned).collect();
                     self.search_deletes(unit, &targets);
                 }
             }
             "rd" | "rmdir" if shell == Shell::Cmd && has_switch(args, "s") => {
                 let targets = builtin(key, args);
-                self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
+                let targets: Vec<&Arg> = targets.iter().map(AsRef::as_ref).collect();
+                self.delete(unit, &targets, "deletes");
             }
             "remove-item" => {
                 let params = Params::read(args);
@@ -131,13 +133,14 @@ impl Checker<'_> {
                     {
                         let below: Vec<Arg> = targets
                             .iter()
-                            .filter_map(Arg::known)
+                            .filter_map(|target| target.known())
                             .filter(|text| glob::has_wildcard(text))
                             .map(|text| Arg::Known(path::found_below(text)))
                             .collect();
-                        targets.extend(below);
+                        targets.extend(below.into_iter().map(Cow::Owned));
                     }
-                    self.delete(unit, &targets.iter().collect::<Vec<_>>(), "deletes");
+                    let targets: Vec<&Arg> = targets.iter().map(AsRef::as_ref).collect();
+                    self.delete(unit, &targets, "deletes");
                 }
             }
             "patch" => self.patch(unit),
@@ -198,7 +201,7 @@ impl Checker<'_> {
                     .cloned()
                     .collect();
                 let operands = builtin(key, &kept);
-                let mut operands: Vec<&Arg> = operands.iter().collect();
+                let mut operands: Vec<&Arg> = operands.iter().map(AsRef::as_ref).collect();
                 if key == "move" && operands.len() >= 2 {
                     self.move_away(unit, &operands[..operands.len() - 1], "moves");
                 }
@@ -411,7 +414,7 @@ impl Checker<'_> {
             "ren" | "rename" if shell == Shell::Cmd => {
                 let operands = builtin(key, args);
                 if let [source, name, ..] = operands.as_slice() {
-                    self.rename(unit, &[source], Some(name));
+                    self.rename(unit, &[source.as_ref()], Some(name.as_ref()));
                 }
             }
             // `rename` is util-linux's or perl's; the others are only perl's.
@@ -841,7 +844,7 @@ pub(super) fn item_paths<'a>(unit: &'a Unit, params: &Params<'a>, names: &[&str]
 /// that can match `.git`, or a name it holds when the delete recurses, still
 /// takes it. A path whose last part holds no wildcard, or that ends in a
 /// drive or provider (`C:*`, `FileSystem::*`), is judged as written.
-fn narrowed(unit: &Unit, params: &Params<'_>, targets: Vec<&Arg>) -> Vec<Arg> {
+fn narrowed<'a>(unit: &Unit, params: &Params<'_>, targets: Vec<&'a Arg>) -> Vec<Cow<'a, Arg>> {
     let pattern = |filter: bool| {
         move |arg: &Arg| Pattern {
             arg: arg.clone(),
@@ -861,7 +864,7 @@ fn narrowed(unit: &Unit, params: &Params<'_>, targets: Vec<&Arg>) -> Vec<Arg> {
             .map(pattern(false)),
     );
     if patterns.is_empty() {
-        return targets.into_iter().cloned().collect();
+        return targets.into_iter().map(Cow::Borrowed).collect();
     }
     let recurses = params
         .named
@@ -887,7 +890,7 @@ fn narrowed(unit: &Unit, params: &Params<'_>, targets: Vec<&Arg>) -> Vec<Arg> {
             _ => false,
         });
     kept.extend(hidden_matches(&wild, &patterns, recurses));
-    kept
+    kept.into_iter().map(Cow::Owned).collect()
 }
 
 /// `items` without one given twice (the same argument, not the same text).
@@ -1173,15 +1176,19 @@ fn taken<'a>(program: &str, args: &'a [Arg]) -> Vec<&'a Arg> {
 /// which also end an argument at `,`, `;` and `=`: `rd /s /q x,C:\Users\me`
 /// is two folders. Each part is a switch `program` takes (see [`takes`]) or
 /// an operand of its own, so `/q;//evil/s` is the switch `/q` and a share.
-fn builtin(program: &str, args: &[Arg]) -> Vec<Arg> {
+fn builtin<'a>(program: &str, args: &'a [Arg]) -> Vec<Cow<'a, Arg>> {
     args.iter()
         .flat_map(|arg| match arg {
+            // A word cmd does not split is the argument itself.
+            Arg::Known(text) if !text.is_empty() && !text.contains([',', ';', '=']) => {
+                vec![Cow::Borrowed(arg)]
+            }
             Arg::Known(text) => text
                 .split([',', ';', '='])
                 .filter(|part| !part.is_empty())
-                .map(|part| Arg::Known(part.to_string()))
+                .map(|part| Cow::Owned(Arg::Known(part.to_string())))
                 .collect::<Vec<_>>(),
-            other => vec![other.clone()],
+            other => vec![Cow::Borrowed(other)],
         })
         .filter(|arg| !arg.known().is_some_and(|text| takes(program, text)))
         .collect()

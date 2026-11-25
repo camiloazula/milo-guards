@@ -20,11 +20,12 @@ It works in three steps:
 3. **Combine**: the line is safe only when no unit is risky, and a risky line
    carries every finding.
 
-Three functions answer three questions of the same reading: `classify`,
+Four functions answer four questions of the same reading: `classify`,
 whether the line is safe; `effect`, whether it only reads (and whether the
-reads stay in the workspace), changes something, or cannot be told; and
+reads stay in the workspace), changes something, or cannot be told;
 `explain`, how the line was read, unit by unit, drawn as a short tree for a
-person to see.
+person to see; and `locate`, where in the line each of `classify`'s findings
+is, as a byte range of the line as given.
 
 What cannot be read is risky: a program or a script known only when it runs,
 a line the grammar cannot parse, shells nested past a limit. Nothing here
@@ -72,6 +73,26 @@ assert_eq!(finding.target.as_deref(), Some("~"));
 assert_eq!(effect("git status", Shell::Posix, &paths), Effect::ReadsOnly(Reach::Workspace));
 assert_eq!(effect("mkdir build", Shell::Posix, &paths), Effect::Changes);
 assert_eq!(effect("./script.sh", Shell::Posix, &paths), Effect::Unknown);
+```
+
+Where each finding is, to underline it: the byte range of the line as given,
+the word as written (quotes and all), and inside the script a shell is
+handed when that is the line's own bytes.
+
+```rust
+use milo_guards_shell::{locate, Covers, Paths, Shell};
+
+let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"]);
+let line = "ls ~ && bash -c 'rm -rf ~'";
+let found = locate(line, Shell::Posix, &paths);
+let delete = &found[0];
+assert_eq!(delete.covers, Covers::Target);
+// The `~` the nested `rm` is given, not the one `ls` lists: a search of the
+// line for the target would find the wrong one.
+let start = line[..delete.range.start].chars().count();
+let width = line[delete.range.clone()].chars().count();
+let underline = format!("{}{}", " ".repeat(start), "^".repeat(width));
+assert_eq!(underline, "                        ^");
 ```
 
 ## Contract

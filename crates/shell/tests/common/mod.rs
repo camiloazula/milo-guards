@@ -5,7 +5,8 @@
 //! takes to (it alone reads the clock), (in [`cases`]) the runner of the case
 //! files in `tests/cases`, (in [`inline`]) the builder of nested inline code,
 //! and (in [`lines`]) the long lines both a test of an answer and a timed
-//! test build.
+//! test build; and the check that the ranges `locate` gives agree with
+//! `classify` and with the line ([`misplaced`]).
 
 #![allow(dead_code, unreachable_pub, unused_imports)]
 
@@ -19,8 +20,8 @@ use std::time::Duration;
 use milo_guards_core::testing;
 pub use milo_guards_core::testing::{macos, posix, windows};
 use milo_guards_shell::{
-    classify as judge, effect, effect_paths, explain, Effect, How, Paths, Reach, ReadPath, Rule,
-    Shell,
+    classify as judge, effect, effect_paths, explain, locate, Covers, Effect, How, Located, Paths,
+    Reach, ReadPath, Rule, Shell,
 };
 
 /// The format characters of Unicode 17.0 (category `Cf`), which the tree
@@ -135,8 +136,103 @@ pub fn disagreements<'a>(
                 .into_iter()
                 .chain(explained)
                 .chain(path_disagreement(shell, paths, line))
+                .chain(misplaced(shell, paths, line))
         })
         .collect()
+}
+
+/// What is wrong with the ranges [`locate`] gives `line`: every case of
+/// every case file, every row of every table and the random lines go
+/// through this.
+///
+/// - The findings are `classify`'s, in the same order.
+/// - Every range is inside the line and on its character boundaries, and
+///   is empty only when the line is.
+/// - A range that covers the line covers all of it.
+/// - A range that covers the finding's target reads as the target (see
+///   [`reads_as`]), and only a finding with a target has one.
+pub fn misplaced(shell: Shell, paths: &Paths, line: &str) -> Vec<String> {
+    let located = locate(line, shell, paths);
+    let assessment = judge(line, shell, paths);
+    let mut wrong = Vec::new();
+    let found: Vec<_> = located.iter().map(|at| at.finding.clone()).collect();
+    if found != assessment.findings() {
+        wrong.push(format!("locate and classify disagree: {line:?}"));
+    }
+    for at in &located {
+        if let Some(why) = misplaced_one(shell, paths, line, at) {
+            wrong.push(format!(
+                "{why}: {:?} at {:?} in {line:?}",
+                at.finding, at.range
+            ));
+        }
+    }
+    wrong
+}
+
+/// What is wrong with the range of one finding of `line` (see
+/// [`misplaced`]).
+fn misplaced_one(shell: Shell, paths: &Paths, line: &str, at: &Located) -> Option<String> {
+    let range = at.range.clone();
+    let Some(text) = line.get(range.clone()) else {
+        return Some("a range outside the line or off its characters".to_string());
+    };
+    if range.is_empty() && !line.is_empty() {
+        return Some("an empty range".to_string());
+    }
+    match at.covers {
+        Covers::Line if range != (0..line.len()) => {
+            Some("a line range that is not the line".to_string())
+        }
+        Covers::Target => match at.finding.target.as_deref() {
+            None => Some("a target range without a target".to_string()),
+            Some(target) if !reads_as(text, target, shell, paths) => {
+                Some(format!("a target range that does not read as {target:?}"))
+            }
+            Some(_) => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `text`, the range of a finding of `shell`, reads as `target`:
+/// its bytes are the target (a word with nothing to read in it, a part of
+/// the line the guard handed on as it is), or the guard, reading the text
+/// as one word, the way it reads every word, reads it as that one word and
+/// nothing else.
+///
+/// The word is read by `explain`, as the argument of a program that does
+/// nothing with it (`:`, `Write-Output`, a program cmd hands its line to),
+/// and as a line of its own, for a program or a wrapper: in the shell of the
+/// line, and in the other two, since a word of a script the line runs
+/// (`pwsh -c '…'`) is read in that script's shell.
+pub fn reads_as(text: &str, target: &str, shell: Shell, paths: &Paths) -> bool {
+    if text == target {
+        return true;
+    }
+    let shells = [shell, Shell::Posix, Shell::PowerShell, Shell::Cmd];
+    shells.iter().any(|&shell| {
+        let fronts: &[&str] = match shell {
+            Shell::Posix => &[": ", ""],
+            Shell::PowerShell => &["Write-Output ", ""],
+            _ => &["x ", "echo ", ""],
+        };
+        fronts.iter().any(|front| {
+            let read = explain(&format!("{front}{text}"), shell, paths);
+            // One word, read as the target: the program alone, or the one
+            // argument.
+            read.units.len() == 1
+                && read.units.first().is_some_and(|unit| {
+                    if front.is_empty() {
+                        unit.args.is_empty()
+                            && (unit.program == target
+                                || unit.wrappers.first().is_some_and(|w| w == target))
+                    } else {
+                        unit.args.len() == 1 && unit.args[0].written == target
+                    }
+                })
+        })
+    })
 }
 
 /// Whether `effect_paths` of `line` disagrees with `effect`: the paths are

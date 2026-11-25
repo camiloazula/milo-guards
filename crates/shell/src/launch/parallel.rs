@@ -6,6 +6,7 @@
 
 use super::interpreters::{interpreter, is_interpreter, shell, SHELLS};
 use super::{join, shell_word, Launch};
+use crate::located::Source;
 use crate::unit::{self, Arg, Reads, MAX_LEN};
 use crate::Shell;
 
@@ -437,7 +438,7 @@ fn run(command: &[Arg], options: &Options, sources: &[Vec<Value>], grouping: boo
         return values_as_lines(sources);
     }
     if command.iter().any(|word| word.known().is_none()) {
-        return Launch::Script(Shell::Posix, join(command));
+        return Launch::Script(Shell::Posix, join(command), Source::joined(command));
     }
     let words: Vec<&str> = command.iter().filter_map(Arg::known).collect();
     let joined = [words.join(" ")];
@@ -480,7 +481,11 @@ fn run(command: &[Arg], options: &Options, sources: &[Vec<Value>], grouping: boo
                 lines.push(line);
             }
         }
-        Ok(Launch::Script(Shell::Posix, Arg::Known(lines.join("\n"))))
+        Ok(Launch::Script(
+            Shell::Posix,
+            Arg::Known(lines.join("\n")),
+            Source::NONE,
+        ))
     };
     // The command's words as its shell gets them: with `-q` each word kept
     // whole, its values put in before it is quoted; otherwise joined with
@@ -516,7 +521,7 @@ fn values_as_lines(sources: &[Vec<Value>]) -> Launch {
             match value {
                 Value::Known(text) => words.push(text.as_str()),
                 Value::Later(text) => {
-                    return Launch::Script(Shell::Posix, Arg::Unknown(text.clone()));
+                    return Launch::Script(Shell::Posix, Arg::Unknown(text.clone()), Source::NONE);
                 }
                 Value::Input => return Launch::Reads(Reads::Shell),
             }
@@ -528,7 +533,7 @@ fn values_as_lines(sources: &[Vec<Value>]) -> Launch {
         }
         lines.push(line);
     }
-    Launch::Script(Shell::Posix, Arg::Known(lines.join("\n")))
+    Launch::Script(Shell::Posix, Arg::Known(lines.join("\n")), Source::NONE)
 }
 
 /// Whether `text` starts a source of values: `:::` (the words after it),

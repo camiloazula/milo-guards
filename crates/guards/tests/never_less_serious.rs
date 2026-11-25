@@ -240,6 +240,24 @@ fn shell_answer(line: &str, shell: Shell, paths: &Paths) -> BTreeSet<String> {
     answer
 }
 
+/// Where `locate` disagrees with `classify` for `line`, on each of the four
+/// machines: nothing named, the links, the mounts, and both. The readings
+/// of a line judged on the paths as spelled and with the mounts alone too
+/// give the same findings, in the same order, and each keeps a range inside
+/// the line, on its characters.
+fn located_apart(what: &str, line: &str, shell: Shell, on_windows: bool) -> Option<String> {
+    machines(on_windows).iter().find_map(|paths| {
+        let located = shell::locate(line, shell, paths);
+        let found: Vec<_> = located.iter().map(|at| at.finding.clone()).collect();
+        let classified = shell::classify(line, shell, paths);
+        let outside = located
+            .iter()
+            .any(|at| line.get(at.range.clone()).is_none());
+        (found != classified.findings() || outside)
+            .then(|| format!("{what}: locate and classify disagree on {paths:?}"))
+    })
+}
+
 /// One input, judged on each of the four machines: `None` when every word
 /// of the answer with nothing named is in the answers with the links and
 /// with the mounts named, and every word of the answer with the mounts named
@@ -300,6 +318,12 @@ fn every_finding_of_every_case_stays_with_links_named() {
         wrong.extend(compare(
             &format!("{}: {line}", record.at),
             &|paths| shell_answer(&line, shell, paths),
+            windows,
+        ));
+        wrong.extend(located_apart(
+            &format!("{}: {line}", record.at),
+            &line,
+            shell,
             windows,
         ));
     }
@@ -474,6 +498,7 @@ fn every_finding_of_generated_paths_stays_with_hostile_links() {
                     &|paths| shell_answer(line, shell, paths),
                     windows,
                 ));
+                wrong.extend(located_apart(line, line, shell, windows));
             }
             // A link is read in a PowerShell line too, as Windows spells it.
             if windows {
@@ -489,6 +514,7 @@ fn every_finding_of_generated_paths_stays_with_hostile_links() {
                         &|paths| shell_answer(&line, Shell::PowerShell, paths),
                         windows,
                     ));
+                    wrong.extend(located_apart(&line, &line, Shell::PowerShell, windows));
                 }
             }
             let quoted = path.replace('\\', "\\\\");
