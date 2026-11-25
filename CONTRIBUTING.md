@@ -120,8 +120,10 @@ Until then nothing keeps a red run from merging or from being released
 `just oldest-rust` by hand ([Releasing](#releasing)).
 `crates/guards/tests/ci_jobs.rs` holds each job to its recipes: `verify` to
 every recipe of `just verify` but `timing`, `timing` to `just timing`,
-`test` to `just test` alone, on those two systems, and `oldest-rust` to
-`just oldest-rust` alone, on Linux.
+`test` to `just test` alone, on those two systems, `oldest-rust` to
+`just oldest-rust` alone, on Linux, and `advisories` and `semver` each to
+the recipe of its name alone, on Linux, neither of which `just verify`
+runs (below).
 
 A timing test lives in its crate's `tests/timing.rs`, and only there. It
 reads the clock in an optimized build only, with
@@ -175,6 +177,86 @@ is over its bound before it fails, so one run on the runner shows them all.
 commit, so CI runs it as its own job and a failure there is not a code
 failure. Run it when you add or update a dependency.
 
+`just semver` is not part of `just verify` either: it needs the network.
+cargo-semver-checks builds the rustdoc JSON of each crate here and of its
+last release on crates.io, and fails on a change that breaks a caller's
+build (an item removed or renamed, a signature changed, a variant added to
+an exhaustive enum, which a new rule is) when the next release is not a
+minor bump. It takes about two minutes from a cold build. Between releases
+`Cargo.toml` still holds the last release's version, so the versions cannot
+say whether a minor bump is due; `next_bump` in the `justfile` says whether
+a change since the last release breaks a caller's build. Empty, none does,
+and the check allows a compatible release only (0.1.4 to 0.1.5); `minor`,
+one does, and it allows any change (0.1 to 0.2, which cargo-semver-checks
+calls major at `0.x`, as Cargo does). It is not the bump the next release
+makes: an addition makes that a minor one too, and leaves `next_bump`
+empty, so the Unreleased section can already call the next release a minor
+while it is. The pull request whose change breaks a caller's build sets it
+to `minor`, and says so in the Unreleased section of `CHANGELOG.md`. It
+stays `minor` until the release, whose commit empties it, since the version
+it bumps to then says the bump ([Releasing](#releasing)). `ci_jobs.rs`
+fails when it is `minor` and the Unreleased section is empty, as it is in
+that commit. That check is one-sided: `minor` set beside entries that break
+nothing passes it, and keeps the job green for the rest of the cycle. That
+is accepted: the release's own run of the recipe, read from the versions,
+still checks the bump it makes.
+
+CI's `semver` job runs `just semver` on every pull request and push to
+`main`. It is advisory: the ruleset on `main` does not require it, and a
+release runs the recipe by hand, where it must pass (`release.yml` does
+not run it). Read a red run on a pull request as: this change breaks a
+caller's build, and no change before it since the last release did. If the
+change is meant, set `next_bump` and write it in the changelog in the same
+pull request, and the job passes; if not, change it so it breaks nothing.
+Once `next_bump` is `minor`, no change needs a bigger bump at `0.x`, so the
+job passes on every pull request until the release, which checks the bump
+it makes. The job is read against `next_bump` rather than the versions
+alone because between releases the versions are the same, and every pull
+request after the first change that breaks a build would be red for a
+change that is not its own.
+
+What breaks no build passes it, and is judged by hand, in the changelog
+([Versions](README.md#versions)): an addition (a new type, function,
+feature or crate, a field of a `#[non_exhaustive]` struct such as `Paths`),
+which is a minor bump; a raise of `rust-version`, a minor bump too; a
+change of a rule's wire name, which never happens once a caller uses it
+([GUIDELINES.md](GUIDELINES.md)); and a change of what a guard answers,
+which is a patch. A crate that is not on crates.io yet
+(`milo-guards-script` today) has no release to compare with, so the recipe
+leaves it out (`--exclude`) until the release that publishes it.
+
+`just mutants <crate>` is not part of `just verify`, nor of CI. The
+coverage floor counts a line that runs, but a line that runs is not a line
+a test checks. cargo-mutants changes one place in the crate's code at a
+time (a `==` made `!=`, a `&&` made `||`, a match arm deleted, a function
+made to return a default), builds it, and runs the crate's tests: a change
+no test fails on is a missed mutant, a branch no case would catch going
+wrong. Run it by hand, one crate at a time, before a release and when a
+guard's rules change; a run of a crate's files that changed
+(`just mutants milo-guards-shell --file crates/shell/src/startup.rs`) or
+of a diff (`--in-diff`) is quicker. `crate` is a package's name, and the
+recipe refuses any other (cargo-mutants alone would test nothing and
+pass). It runs four jobs at once (`just jobs=2 mutants <crate>`, or
+`--jobs 2` among the flags, for fewer) and puts its report in
+`mutants.out` (`--output DIR` for another folder), whose `missed.txt` lists
+what it found. The URL guard's 183 mutants take about two minutes here at
+four jobs, and three to four minutes at two or three on a machine busy with
+other builds; the file guard has 57, the script guard 341, the secrets
+guard about 900, core 1,100, the code reader 1,900 and the shell guard
+18,000, each of which runs its whole test suite: many hours, so the shell
+guard is run by the files that changed.
+
+A missed mutant becomes one of three things. A case line, in the case file
+of what it checks: the input on which the changed code answers wrong, with
+the answer it must get (long input, as a name at a length limit, in the
+Rust test beside the others of its kind). A written reason, when no input a
+caller gives can tell it from the code as written: an entry in
+`exclude_re` in `.cargo/mutants.toml` that says which inputs would, so the
+next run does not report it again. Or a private report, when it shows a
+line the guard judges safe and should not: that is a vulnerability, so
+report it as [SECURITY.md](SECURITY.md) says, and write no case or reason
+for it in the open before the fix.
+
 Clippy reads `rust-version`, and in `just lint` its `incompatible_msrv`
 lint fails on a standard library API newer than it, in the library and, with
 `check-incompatible-msrv-in-tests` in `clippy.toml`, in the tests too. It
@@ -188,12 +270,21 @@ This is a library and ships no binary, so there is no notices file here. The
 third-party notices travel with the binaries of the programs that use it.
 
 `just verify` needs two tools beyond Rust, and `just advisories` needs the
-second. Install them once:
+second; `just semver` and `just mutants` need one each, at the version
+given here. Install them once:
 
 ```sh
 cargo install cargo-llvm-cov   # for just coverage
 cargo install cargo-deny       # for just deny and just advisories
+cargo install --locked cargo-semver-checks@0.51.0   # for just semver
+cargo install --locked cargo-mutants@27.1.0         # for just mutants
 ```
+
+CI's `semver` job installs the same cargo-semver-checks, and `ci_jobs.rs`
+fails when the two differ. It reads the rustdoc JSON of the pinned Rust,
+whose format changes with Rust's releases: when a bump of the pinned Rust
+makes it fail to read that JSON (it says which format it reads), bump it
+here and in the job together.
 
 ## Case files
 
@@ -409,15 +500,32 @@ its path. A release is:
    number: a new rule, a raise of `rust-version` or any other change to
    what a caller compiles against is a minor bump at `0.x`; a change to
    what a guard answers with the same API is a patch
-   ([Versions](README.md#versions)).
+   ([Versions](README.md#versions)). Before choosing, check:
+   - `next_bump` in the `justfile`: `minor` says a change since the last
+     release breaks a caller's build, so this release is a minor bump.
+   - The changelog's Unreleased section, for what `just semver` does not
+     see: an addition, a raise of `rust-version` or another change to what
+     a caller compiles against is a minor bump too.
+   - The `--exclude` list of `just semver` in the `justfile`: it names only
+     crates not yet on crates.io. Remove a crate an earlier release
+     published (`milo-guards-script`, once the release that adds it is
+     out), so it is checked against its release.
 2. Move the changelog's `Unreleased` section under the new version, with the
-   date, in `CHANGELOG.md`.
+   date, in `CHANGELOG.md`, and empty `next_bump` in the `justfile`: the
+   version now says the bump.
 3. `just verify` and `just oldest-rust`, then `just package`: every crate
    packaged and built from its package, as crates.io will build it, with
    the case files left out (`exclude` in each crate's manifest). The
    release workflow builds with the pinned Rust only, and the `oldest-rust`
    job is not yet a required check, so `just oldest-rust` here is what
    keeps a release from declaring a `rust-version` it does not build with.
+   Then `just semver`, which must pass: each crate against its last
+   release, with the bump read from the versions, so a patch that breaks a
+   caller's build fails it ([The gates](#the-gates)). It does not see what
+   breaks no build, which step 1 reads in the changelog. Run `just mutants`
+   on each guard whose rules changed since the last release too, and turn
+   each missed mutant into a case line, a written reason or a private
+   report ([The gates](#the-gates)).
 4. Merge, tag the merge commit `vX.Y.Z` and push the tag. Only the owner
    can create a release tag.
 5. The tag starts `.github/workflows/release.yml`, which does the rest. It
@@ -458,7 +566,10 @@ crates.io refuses a new crate from that token, and sets a trusted publisher
 only on a crate that exists. So the release that adds a crate to the
 workspace stops at it: publish the new crate by hand from the tagged commit
 (`cargo login`, then `cargo publish -p <crate> --locked`), give it the same
-trusted publisher, and run the `publish` job again for the rest.
+trusted publisher, and run the `publish` job again for the rest. Until it
+is on crates.io, `just semver` has no release to compare it with and leaves
+it out (`--exclude` in the `justfile`); the first pull request after that
+release removes the `--exclude`, so the crate is checked from then on.
 
 ## How a change reaches a caller
 

@@ -16,7 +16,10 @@
 # job uses the pinned one. It is advisory for now too. This is a library:
 # nothing here produces an artefact. Advisories are their own job, running
 # `just advisories`, because they change without a commit and must not be
-# confused with a code failure; the verify job does not run them.
+# confused with a code failure; the verify job does not run them. The
+# `semver` job runs `just semver`, each crate's public API against its last
+# release on crates.io, which needs the network too; it is advisory, and a
+# release runs the recipe by hand, where it must pass.
 name: CI
 
 on:
@@ -226,3 +229,49 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
 
       - run: just advisories
+
+  # `just semver` on Linux: each crate's public API against its last release
+  # on crates.io (cargo-semver-checks), which fails on a change that breaks a
+  # caller's build, unless `next_bump` in the justfile says a change since
+  # the last release already does. It needs the network, so the verify job
+  # does not run it. Advisory: the ruleset on `main` does not require it,
+  # and a red run on a pull request says its change is the first since the
+  # last release to break a caller's build, so the next release is a minor
+  # bump: the pull request says so in CHANGELOG.md and sets `next_bump`
+  # (CONTRIBUTING.md, The gates). release.yml does not run it: a release
+  # runs the recipe by hand after its version bump, where it must pass
+  # (CONTRIBUTING.md, Releasing).
+  semver:
+    name: semver
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # It reads the repository and crates.io, writes nothing and holds no
+    # secret.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # cargo-semver-checks builds rustdoc JSON with the pinned Rust, which
+      # the version below reads (CONTRIBUTING.md: a new Rust may need a
+      # newer one).
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.99.1"
+
+      # The version CONTRIBUTING.md installs locally (`ci_jobs.rs` checks
+      # they are the same), so a run here and one there read the API alike.
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
+        with:
+          tool: cargo-semver-checks@0.51.0
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      # `crates/guards/tests/ci_jobs.rs` checks the job runs this recipe
+      # alone.
+      - run: just semver
+        timeout-minutes: 20

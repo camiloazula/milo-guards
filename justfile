@@ -24,7 +24,8 @@ _default:
 # macOS in its `test` job. Advisories are not part of it: they change
 # without a commit, so they are their own recipe and their own CI job.
 # Nor is `oldest-rust`, which needs a second Rust: CI runs it in a job of
-# its own.
+# its own. Nor is `semver`, which needs the network as advisories do and
+# has a job of its own, nor `mutants`, which is run by hand.
 # Every check: format, clippy, tests with coverage, timing tests, doctests, rustdoc, the shell guard without its inline reader, dependencies.
 verify: format-check lint coverage timing doc-test doc no-inline deny
 
@@ -135,3 +136,64 @@ deny:
 # Dependency advisories (deny.toml): RustSec and yanked crates.
 advisories:
     cargo deny check advisories
+
+# Whether a change since the last release breaks a caller's build: empty
+# while none does, and `minor` from the pull request whose change does (it
+# says so in CHANGELOG.md's Unreleased section) to the release, whose
+# commit empties it again, since its version then says the bump
+# (CONTRIBUTING.md, Releasing). It is not the bump the next release makes:
+# an addition makes it a minor one too, and leaves this empty.
+# `crates/guards/tests/ci_jobs.rs` holds it to one of the two, and empty
+# when the Unreleased section is. That check is one-sided, and accepted so:
+# `minor` set beside entries that break nothing passes it, and keeps the
+# semver job green for the rest of the cycle.
+next_bump := ""
+
+# Needs the network (crates.io), so `just verify` does not run it; CI runs
+# it as its own job, advisory, and a release runs it by hand after its
+# version bump, where it must pass (release.yml does not run it). About two
+# minutes from a cold build. cargo-semver-checks builds the rustdoc JSON of
+# each crate here and of its last release on crates.io, and fails on a
+# change that breaks a caller's build (an item removed or renamed, a
+# signature changed, a variant added to an exhaustive enum, which a new
+# rule is) that the bump does not allow. At `0.x` it calls 0.1 to 0.2 a
+# major release, as Cargo does: `next_bump` set to `minor` is its
+# `--release-type major`, and empty, the bump is read from the versions,
+# the last release's to Cargo.toml's (none between releases: a compatible
+# 0.1.x). What breaks no build passes here (an addition, a raise of
+# `rust-version`, a rule's wire name, what a guard answers) and is judged by
+# hand (CONTRIBUTING.md, The gates). `milo-guards-script` is not on
+# crates.io yet, so it has no release to be compared with; the pull request
+# after the release that publishes it removes its `--exclude`.
+# The public API against the last release on crates.io: nothing breaks a caller's build unless `next_bump` allows it.
+semver:
+    cargo semver-checks --workspace --exclude milo-guards-script {{ if next_bump == "minor" { "--release-type major" } else { "" } }}
+
+# How many mutants `just mutants` builds and tests at once: `just jobs=2
+# mutants <crate>`, or `--jobs N` among its flags, which then wins.
+jobs := "4"
+
+# Not part of `verify`, nor of CI: a run builds the crate once for each
+# mutant and runs all its tests. The budget: the URL guard's 183 mutants
+# take about two minutes at four jobs here, and three to four at two or
+# three jobs on a machine busy with other builds; the file guard
+# has 57, the script guard 341, the secrets guard about 900, core and the
+# code reader 1,100 and 1,900, and the shell guard 18,000, each running its
+# whole suite, which is many hours: run it on what changed (`--file`,
+# `--in-diff`). So it is run by hand, one crate at a time, before a release
+# and when a guard's rules change (CONTRIBUTING.md, The gates). A missed
+# mutant becomes a case line, a written reason in `.cargo/mutants.toml`
+# (which holds the settings too), or a private report (SECURITY.md).
+# `crate` is a package of the workspace (`_member`): cargo-mutants itself
+# takes a name it does not find, tests nothing and passes. `flags` go to
+# cargo-mutants as they are (`--output DIR`, `--file crates/url/src/host.rs`,
+# `--in-diff changes.diff`).
+# Mutation testing of one crate (`just mutants milo-guards-url`): the changes to its code that no test of it fails on.
+mutants crate *flags: (_member crate)
+    cargo mutants --package {{crate}} {{ if flags =~ '(^|\s)(-j|--jobs)' { "" } else { "--jobs " + jobs } }} {{flags}}
+
+# Fails unless `crate` is the name of a package of the workspace: the
+# `name` of `crates/<folder>/Cargo.toml`, where the folder is the name
+# without `milo-guards-`, and `guards` for `milo-guards`.
+_member crate:
+    @{{ if path_exists(join(justfile_directory(), "crates", if crate == "milo-guards" { "guards" } else { trim_start_match(crate, "milo-guards-") }, "Cargo.toml")) != "true" { error("`" + crate + "` is not a package of the workspace") } else if read(join(justfile_directory(), "crates", if crate == "milo-guards" { "guards" } else { trim_start_match(crate, "milo-guards-") }, "Cargo.toml")) !~ ('(?m)^name = "' + crate + '"$') { error("`" + crate + "` is not a package of the workspace") } else { "true" } }}

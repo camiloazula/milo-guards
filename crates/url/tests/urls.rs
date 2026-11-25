@@ -38,12 +38,23 @@ fn no_answer_shows_a_password() {
     assert_eq!(with_one, 8, "the cases with a password");
 }
 
+/// A host name of `196 + last` bytes: three labels of 63 letters, one of
+/// `last`, and `com`.
+fn long_name(last: usize) -> String {
+    let name = format!("{0}.{0}.{0}.{1}.com", "a".repeat(63), "a".repeat(last));
+    assert_eq!(name.len(), 196 + last);
+    name
+}
+
 #[test]
-fn a_url_too_long_or_with_a_label_too_long_is_unreadable() {
+fn a_url_too_long_or_with_a_name_or_a_label_too_long_is_unreadable() {
     for url in [
         format!("https://example.com/{}", "a".repeat(8_200)),
         format!("http://example.com/{}", "a".repeat(70_000)),
         format!("https://{}.com/", "a".repeat(64)),
+        // A name of 254 bytes, one more than DNS carries.
+        format!("https://{}/", long_name(58)),
+        format!("https://{}./", long_name(58)),
     ] {
         let found: Vec<Rule> = judge(&url, &posix())
             .findings()
@@ -61,4 +72,13 @@ fn a_url_at_the_limit_is_read() {
     assert_eq!(at.len(), 8_192);
     assert!(judge(&at, &posix()).is_safe());
     assert!(!judge(&format!("{at}a"), &posix()).is_safe());
+    // A name of 253 bytes, the root's dot after it not counted, and a label
+    // of 63.
+    for url in [
+        format!("https://{}/", long_name(57)),
+        format!("https://{}./", long_name(57)),
+        format!("https://{}.com/", "a".repeat(63)),
+    ] {
+        assert!(judge(&url, &posix()).is_safe(), "{url}");
+    }
 }

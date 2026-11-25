@@ -1,0 +1,28 @@
+# cargo-mutants, run by `just mutants <crate>` (CONTRIBUTING.md, The gates).
+# It changes one place in a crate's code at a time (a `==` made `!=`, a
+# match arm deleted, a function made to return a default) and runs that
+# crate's tests: a change no test fails on is a missed mutant. A missed
+# mutant is a case line to add, in the case file of what it checks; or, when
+# no input tells it from the code as written, an entry below with the reason,
+# so the next run does not report it again.
+
+# The tests as `just test` runs them: every feature, so each crate's own
+# `testing` feature and the front door's `secrets` are built.
+all_features = true
+
+# A mutant is named as `cargo mutants --list` names it, `FILE:LINE:COLUMN:
+# WHAT in FUNCTION`; each entry matches any line and column, so it outlives
+# an edit above it, and names the one change it excuses.
+exclude_re = [
+    # The URL guard's `flavour` reads a home that starts with a letter and
+    # a colon as a Windows one: with `||`, a home that starts with a letter,
+    # or has a colon second, is one too. The two differ on exactly two kinds
+    # of home: one that starts with a letter not followed by a colon (`me`,
+    # a relative path, which `Paths` does not take: its paths are absolute),
+    # and one whose second character is a colon after something that is not
+    # a letter (`/:x`, a home in a folder at the root whose name starts with
+    # a colon). On every other home, a POSIX `/…`, a drive `C:…` and a share
+    # `\\…`, they agree. No caller gives either kind, so no case is written
+    # for a home no machine has.
+    '^crates/url/src/file\.rs:\d+:\d+: replace && with \|\| in flavour$',
+]
