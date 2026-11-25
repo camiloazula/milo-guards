@@ -7,7 +7,9 @@
 //! known and left, and the line. The versions are a comma-separated list,
 //! each a version (`3.2`, every 3.2) or a range (`4.0-5.1`, either end left
 //! open: `-3.2`, `5.0-`), so an entry seen on bash 3.2 and on 5.2 says
-//! `versions=3.2,5.2` and claims nothing of 4.x; without it, every version.
+//! `versions=3.2,5.2` and claims nothing of 4.x; without it, every version. A
+//! version is matched by as many of its numbers as the item gives: `5.3`
+//! holds 5.3.9.
 //! A split (both accept, the guard reads it otherwise) is never an entry: it
 //! is reported privately, as SECURITY.md says. An entry no difference
 //! matches, for a shell and version that ran, is stale and fails the run.
@@ -190,6 +192,11 @@ mod tests {
         let one = Versions::parse("5.9-5.9").unwrap();
         assert!(one.holds("5.9") && !one.holds("5.8.1"));
         assert!(Versions::ALL.holds("1") && !Versions::ALL.holds("x"));
+        // A version is matched by as many numbers as an item gives: `5.3`
+        // holds every 5.3 (5.3.9 is CI's bash), and no 5.4.
+        let ci = Versions::parse("3.2,5.3").unwrap();
+        assert!(ci.holds("5.3.9") && ci.holds("3.2.57") && ci.holds("5.3"));
+        assert!(!ci.holds("5.4.0") && !ci.holds("5.2.21") && !ci.holds("4.4.20"));
         let two = Versions::parse("3.2,5.2").unwrap();
         assert!(two.holds("3.2.57") && two.holds("5.2.21"));
         assert!(!two.holds("4.4.20") && !two.holds("5.1.16") && !two.holds("5.3"));

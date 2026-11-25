@@ -154,22 +154,33 @@ pub fn bash_parse<'a>(path: &'a Path, line: &'a str) -> Start<'a> {
 /// Ask bash at `path` whether it accepts `line`, in no-exec mode, in `room`.
 pub fn parse_bash(path: &Path, room: &Room, line: &str) -> Result<Verdict, Failure> {
     let finished = room.start(&bash_parse(path, line))?;
-    let error = first_error(&String::from_utf8_lossy(&finished.stderr));
-    match finished.code {
-        // A warning (a here-document that ends at the end of the text) is
-        // still a line bash accepts and runs.
-        Some(0) => Ok(Verdict::Accepts),
-        // bash ends a refused line with 2, and says why.
-        Some(2) => {
-            Ok(Verdict::Rejects(error.unwrap_or_else(|| {
+    verdict_of(finished.code, &String::from_utf8_lossy(&finished.stderr))
+        .map_err(|why| Failure::Start(format!("{} {why}", path.display())))
+}
+
+/// What bash's end says of a line: its exit code and what it printed.
+/// bash refuses a line with 2, and bash 5 an array assignment it cannot
+/// read with 1; bash 3.2 says `syntax error` of such an assignment and ends
+/// with 0. A syntax error is a refusal whatever the code; a warning alone
+/// (a here-document that ends at the end of the text) is a line bash
+/// accepts and runs.
+pub fn verdict_of(code: Option<i32>, stderr: &str) -> Result<Verdict, String> {
+    let error = first_error(stderr);
+    let syntax = stderr
+        .lines()
+        .find(|line| line.contains("syntax error"))
+        .and_then(first_error);
+    match code {
+        Some(0) => Ok(syntax.map_or(Verdict::Accepts, Verdict::Rejects)),
+        Some(1 | 2) => {
+            Ok(Verdict::Rejects(syntax.or(error).unwrap_or_else(|| {
                 "refuses the line, and says nothing".to_string()
             })))
         }
-        other => Err(Failure::Start(format!(
-            "{} ended with {other:?} on a line: {}",
-            path.display(),
+        other => Err(format!(
+            "ended with {other:?} on a line: {}",
             error.unwrap_or_default()
-        ))),
+        )),
     }
 }
 
@@ -210,6 +221,37 @@ mod tests {
             Some("line 2: syntax error near unexpected token `)'")
         );
         assert_eq!(first_error("\n  \n"), None);
+    }
+
+    #[test]
+    fn a_syntax_error_is_a_refusal_whatever_bash_ends_with() {
+        let refused = |line: &str| Verdict::Rejects(line.to_string());
+        let array = "/bin/bash: line 1: syntax error near unexpected token `;'\n/bin/bash: line 1: `x=(a; b)'\n";
+        // bash 3.2 ends with 0, bash 5 with 1, other refusals with 2.
+        for code in [0, 1, 2] {
+            assert_eq!(
+                verdict_of(Some(code), array),
+                Ok(refused("line 1: syntax error near unexpected token `;'"))
+            );
+        }
+        let warning = "/bin/bash: line 3: warning: here-document at line 1 delimited by end-of-file (wanted `EOF')\n";
+        assert_eq!(verdict_of(Some(0), warning), Ok(Verdict::Accepts));
+        assert_eq!(verdict_of(Some(0), ""), Ok(Verdict::Accepts));
+        assert_eq!(
+            verdict_of(
+                Some(2),
+                "/bin/bash: line 1: unexpected EOF while looking for matching `\"'\n"
+            ),
+            Ok(refused(
+                "line 1: unexpected EOF while looking for matching `\"'"
+            ))
+        );
+        assert_eq!(
+            verdict_of(Some(1), ""),
+            Ok(refused("refuses the line, and says nothing"))
+        );
+        assert!(verdict_of(None, "").is_err());
+        assert!(verdict_of(Some(126), "x").is_err());
     }
 
     #[test]

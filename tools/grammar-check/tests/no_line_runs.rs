@@ -75,11 +75,8 @@ fn twice(path: &Path, room: &Room, line: &str) -> Result<Finished, Failure> {
 /// What bash says of `line`, as the tool and without `-r`, which must agree.
 fn verdict(path: &Path, room: &Room, line: &str) -> Result<Verdict, Failure> {
     let finished = twice(path, room, line)?;
-    let error = shells::first_error(&String::from_utf8_lossy(&finished.stderr));
-    Ok(match finished.code {
-        Some(0) => Verdict::Accepts,
-        _ => Verdict::Rejects(error.unwrap_or_default()),
-    })
+    shells::verdict_of(finished.code, &String::from_utf8_lossy(&finished.stderr))
+        .map_err(Failure::Start)
 }
 
 /// A folder of the test's own, made new: canaries, a sourced file, rooms.

@@ -7455,7 +7455,9 @@ What each shell can say without running anything decides what is compared:
   (`$(< FILE)`, backticks, a here-string, a redirect), looks up no program or
   builtin, and its status is its parse (`! cmd` is 0, a list left unfinished
   at the end of the text is refused). So all it gives is accept or reject,
-  and its first error. A POSIX line is compared by that alone: bash gives no
+  and its first error. A syntax error is a refusal whatever bash ends with:
+  bash 3.2 reports one in an array assignment and ends with 0, bash 5 with
+  1. A POSIX line is compared by that alone: bash gives no
   tree, so a line both accept and the guard splits otherwise is not found
   here.
 - **zsh is not a second reading.** Its no-exec mode (`zsh -n`) still expands
@@ -7511,10 +7513,16 @@ and fails: no kind, no count and no line reaches its report. With
 The known differences are `tools/grammar-check/known.cases`, one to a line in
 the case-file format: the shell, the kind (`grammar_rejects` or
 `shell_rejects`; never a split), the versions of that shell it was seen on,
-its reason and the line. bash 3.2 (the bash of macOS) refuses syntax bash 5
-accepts (`coproc`, `[[ -v`), so an entry names the versions it was seen on, a
-list (`versions=3.2,5.2`) that claims nothing of the versions between, and is
-never widened to one it was not seen on: `--entries` prints each new
+its reason and the line. The two versions read some lines apart. bash 3.2
+(the bash of macOS) has no `coproc` and no `[[ -v`, and takes a parenthesis
+in a parameter expansion inside `$( )` as part of the substitution, all of
+which bash 5.3 (CI's) accepts; bash 5.3 parses the inside of a `$( )` while
+it reads the line, where 3.2 leaves it for when it runs, so it refuses a zsh
+glob qualifier there, and it refuses a `coproc` with no command, with a `!`
+after it, or with its group left open, which 3.2 reads as words. So an entry
+names the versions it was seen on, by major and minor (`versions=3.2,5.3`:
+every 3.2 and every 5.3, nothing between), and is never widened to one it was
+not seen on: `--entries` prints each new
 difference as an entry, its version filled in and its reason left to write,
 so the entries of the bash of CI's Linux runner come from that job's report.
 The tool fails on a difference on a line of the case files that is not on the
