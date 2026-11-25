@@ -213,6 +213,7 @@ bash shell_rejects versions=3.2,5.3 reason="a zsh glob qualifier such as (D), wh
 bash shell_rejects versions=3.2,5.3 reason="a zsh glob qualifier such as (D), whose parenthesis bash refuses; the guard reads it as zsh does" | rm -rf build/*(D)
 bash shell_rejects versions=3.2,5.3 reason="a zsh glob qualifier such as (D), whose parenthesis bash refuses; the guard reads it as zsh does" | rm -rf target*(D)
 bash shell_rejects versions=3.2,5.3 reason="a zsh glob qualifier such as (D), whose parenthesis bash refuses; the guard reads it as zsh does" | rm -rf x *git(D)
+bash shell_rejects versions=3.2,5.3 reason="a zsh glob qualifier such as (D), whose parenthesis bash refuses; the guard reads it as zsh does" | rm -rf ~/x*(D)
 bash shell_rejects versions=3.2,5.3 reason="a zsh glob qualifier such as (D), whose parenthesis bash refuses; the guard reads it as zsh does" | sudo rm -rf *git(D)
 bash shell_rejects versions=3.2,5.3 reason="a zsh glob qualifier such as (D), whose parenthesis bash refuses; the guard reads it as zsh does" | time eval rm -rf *git(D)
 bash shell_rejects versions=3.2,5.3 reason="a zsh glob qualifier such as (D), whose parenthesis bash refuses; the guard reads it as zsh does" | time rm -rf *git(D)
