@@ -92,3 +92,21 @@ paths env_both base=posix file=/home/me/work/repo/.env words="the agent's settin
 # A bracket in a named path's name is a character of it.
 paths bracket base=posix secret_file=/home/me/work/repo/app/[id]/secret.json words="the app's secret"
 @bracket rules=local_file first=local_file reason="reads the app's secret" | file:///home/me/work/repo/app/[id]/secret.json
+
+# A drive the caller says this machine mounts (`Paths::drive_mounts`) is the
+# drive's: on WSL `/mnt/c` is `C:\`. Without the mount it is a folder of
+# this machine's.
+paths wsl base=posix drive_mount=/mnt windows_home=C:\\Users\\me
+@wsl rules=local_file first=local_file reason="reads your SSH keys" target="/mnt/c/Users/me/.ssh/id_rsa" | file:///mnt/c/Users/me/.ssh/id_rsa
+@wsl rules=local_file first=local_file reason="reads your home directory" | file:///mnt/c/Users/me
+@wsl rules=local_file first=local_file reason="reads the Windows account database" | file:///mnt/c/Windows/System32/config/SAM
+@wsl rules=local_file first=local_file reason="reads the root of the disk" | file:///mnt/c/
+rules=local_file first=local_file reason="reads a path outside the workspace" | file:///mnt/c/Users/me/.ssh/id_rsa
+@wsl rules=local_file first=local_file reason="reads the root of the disk" | file:///mnt
+rules=local_file first=local_file reason="reads a top-level folder" | file:///mnt
+# Placed as spelled too, the more telling words are kept for every
+# sensitive place, not only a key: with a mount at `/home`, `/home/d` is a
+# drive, and as spelled it is still another user's startup file.
+paths home_mount base=posix drive_mount=/home
+@home_mount rules=local_file first=local_file reason="reads a shell startup file" | file:///home/d/.bashrc/x
+rules=local_file first=local_file reason="reads a shell startup file" | file:///home/d/.bashrc/x

@@ -10,8 +10,10 @@ judge(access, path, &paths) -> Assessment
 `access` is an `Access`, `Read` or `Write`. An edit, a create, an append and a
 rename's target are all `Write`: the guard has no finer verbs. `path` is the
 one argument as the agent wrote it. `paths` comes from `Paths::new(cwd, home,
-workspaces)`, with `with_protected` for what the caller gates with and
-`with_secrets` for the files it knows hold a secret. The answer
+workspaces)`, with `with_protected` for what the caller gates with,
+`with_secrets` for the files it knows hold a secret, and `with_drive_mounts`
+and `with_windows_home` for how this machine spells another system's drives
+(see [Drive mounts](#drive-mounts)). The answer
 is `Safe`, or `Risky` with every finding: a rule, a reason a prompt can show,
 and the path as written.
 
@@ -19,7 +21,8 @@ The guard never touches the disk. The path is resolved by its spelling alone
 with core's path model (see [Core](core.md)): relative to the working
 directory, `~` as the home directory, `.` and `..` applied, and Windows
 spellings read as Windows reads them whatever host the guard runs on. A
-symlink is judged by its own name.
+symlink is judged by its own name, and WSL's `/mnt/c` as a folder of this
+machine's unless the caller names the mount.
 
 The guard only reports. What to do about a finding is the caller's choice. The
 rule `write_protected` exists so that a caller can refuse a write to what it
@@ -155,6 +158,42 @@ folder, which fails anyway.
   `C:`) are one file, and the directories in `Paths` may be long paths too, as
   a canonical path on Windows is.
 
+### Drive mounts
+
+The guard reads no disk, so it cannot tell that `/mnt/c` is a Windows
+drive. The caller can, and says so in `Paths`; core then reads a path
+through the mount as the drive's (see [Core](core.md#drive-mounts)). The
+path is judged on the `Paths` as given and as spelled (`Paths::as_spelled`),
+and every finding of either is kept, one to a rule: **naming a mount never
+makes an answer less serious.**
+
+- **A drive this machine mounts**, `Paths::with_drive_mounts(["/mnt"])` on
+  WSL: a path through the mount is also judged where the drive's path
+  lands, so a read of `/mnt/c/Users/me/.ssh/id_rsa` is `read_secret` and a
+  write to `/mnt/c/Windows/x.dll` is a write to a system folder. A drive is
+  a folder of one letter in the mount's folder, in any case, and a `..`
+  above its root is the mount's folder again. The mount's own folder holds
+  every drive in it: a write to `/mnt` is a write to the root of a disk. A
+  mount is an absolute POSIX path (`//mnt/./` is `/mnt`); any other
+  spelling names none.
+- **The Windows home** is the caller's to name on WSL,
+  `Paths::with_windows_home(r"C:\Users\me")` (or `/mnt/c/Users/me`): then
+  that folder is a home directory (`writes to your home directory`), and its
+  keys, startup files and temporary folder are judged as a Windows home's
+  are. Without it, the drive is `C:`, and a key under any folder of
+  `C:\Users` is a key, as the folders there are always homes on Windows; the
+  user's own folder there is then no home directory.
+- As spelled, `/mnt/c/...` is still a folder of this machine's, and that
+  finding is kept: a write to `/mnt/c/Windows/Temp/x` is `write_outside`.
+- Git Bash's and MSYS2's `/c` and Cygwin's `/cygdrive/c` are mounts too, but
+  a file API on Windows takes a Windows path, where `/c` is a folder of the
+  drive: they change a POSIX shell's line (the shell guard's) and not this
+  guard's answer. This guard keeps a `Paths` spelled the Windows way; the
+  Git Bash spelling of `Paths` is for the lines a POSIX shell runs.
+
+Without a mount or a Windows home, every answer is what it was. The cases
+are in `tests/cases/drives.cases`.
+
 ### Not one literal path
 
 A file API takes one literal path, so these are `unreadable`, never judged:
@@ -259,6 +298,9 @@ each with its test row:
   (`/Users/me/DEV/repo/x` for a workspace `/Users/me/dev/repo`) is
   `write_outside` on a Mac, where it is the same folder.
 - A workspace named by its Windows short name is beyond the workspace.
+- A path a mount places on the drive keeps the finding it has as spelled:
+  `/mnt/c/Windows/Temp/x` is beyond the workspace, though it is the
+  system's temporary folder on the drive.
 
 ## Known limits
 
@@ -295,11 +337,27 @@ Not covered, on purpose, and what to do:
   caller names it, a path at a time, with `Paths::with_secrets`
   (`Secret::file` or `Secret::folder` and the words a reason calls it by);
   then a read is `read_secret`. A name alone (`.env` anywhere below the
-  workspace, a file that does not exist yet) cannot be named. Nor is a
-  path as another system spells it: WSL's `/mnt/c/Users/...` on a POSIX
-  machine, Git Bash's `/c/Users/...` on a Windows one, each read as the system
-  it runs on reads it. A secret in a text is the business of a
-  guard that reads text.
+  workspace, a file that does not exist yet) cannot be named. A secret in
+  a text is the business of a guard that reads text.
+- **WSL's spelling of a Windows drive, unless the caller names the mount.**
+  On a POSIX machine `/mnt/c/Users/...` is a folder of this machine's until
+  the caller passes the folder WSL mounts the drives in,
+  `Paths::with_drive_mounts(["/mnt"])` (or the `root` its `automount`
+  setting names), and then a key there is a key; the user's own Windows
+  folder is a home directory once the caller also passes it,
+  `Paths::with_windows_home(r"C:\Users\me")` ([Drive mounts](#drive-mounts)).
+- **Git Bash's spelling of a drive.** With the directories spelled the
+  Windows way (`C:\Users\me\dev\repo`), a file API reads Git Bash's
+  `/c/Users/...` as `C:\c\Users\...`, as Windows itself does, and a mount
+  the caller names does not change that. A caller whose file tool takes Git
+  Bash's or MSYS2's spellings converts the path first (`cygpath -w` gives
+  `C:\Users\...`) and passes the Windows spelling, with a `Paths` spelled
+  the Windows way: the Git Bash spelling of `Paths` is for the lines a
+  POSIX shell runs ([Drive mounts](#drive-mounts)).
+- **WSL with the workspace spelled as Windows spells it.** A workspace
+  spelled `C:\Users\me\repo` is not, as spelled, that of a working
+  directory spelled `/mnt/c/Users/me/repo`, so a write there stays beyond
+  the workspace; the caller spells the two alike.
 - **Windows reserved names** (`COM1`, `PRN`, `AUX`, `LPT1`) are not devices
   here: a write to one in the workspace is judged as a file.
 - **A relative working directory** puts every relative path outside the
@@ -311,7 +369,8 @@ The cases are in case files, one for each thing they check (the format is in
 [CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)): `tests/cases/posix.cases`
 (a POSIX machine and a Mac), `windows.cases`, `protected.cases`,
 `named_secrets.cases` (the secrets a caller names), `startup.cases` (the files
-a tool runs on its own) and `limits.cases` (what
+a tool runs on its own), `drives.cases` (the drive mounts and the Windows
+home a caller names) and `limits.cases` (what
 the guard does not see), each checked by the test file of its name. A case is
 a read or a write of a path and the answer it must get, safe or the rules it
 must find, over core's `testing::posix()`, `macos()` and `windows()` or a

@@ -16,7 +16,9 @@
 # job uses the pinned one. It is advisory for now too. This is a library:
 # nothing here produces an artefact. Advisories are their own job, running
 # `just advisories`, because they change without a commit and must not be
-# confused with a code failure; the verify job does not run them.
+# confused with a code failure; the verify job does not run them. The
+# `grammars` job runs `just grammars --require bash --entries`, the shell
+# guard's grammars beside bash; it is not part of the gate and not required.
 name: CI
 
 on:
@@ -226,3 +228,38 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
 
       - run: just advisories
+
+  # The shell guard's grammars beside the real shells: `just grammars`
+  # (CONTRIBUTING.md) hands every POSIX line of the case files, and a
+  # generated set, to bash in its no-exec mode and runs none of them; its
+  # tests, run first, show that on canary lines. bash comes with the runner
+  # (bash 5), and `--require bash` fails the job, rather than passing it
+  # green, if it is not there. PowerShell is not run here until its half has
+  # been run and read on a machine of a maintainer's (docs/design/shell.md),
+  # and zsh is not used: its no-exec mode still expands words. Not part of
+  # the gate and not a required check: its answer depends on bash's version,
+  # and a difference it finds is a time to look; `--entries` prints each new
+  # one as an entry of the known list, for whoever updates it. It has no
+  # cache, on purpose: it builds the tool and the shell guard once, and a
+  # cache shared with the gate's jobs would mix their builds.
+  grammars:
+    name: grammars
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt, clippy
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      # The report says which shell it compared against, at which version
+      # (`crates/guards/tests/ci_jobs.rs` checks the job runs this alone).
+      - run: just grammars --require bash --entries
+        timeout-minutes: 30

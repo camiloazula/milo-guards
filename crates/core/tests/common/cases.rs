@@ -290,8 +290,8 @@ pub fn head(words: &[Word]) -> Option<(&str, Option<&str>)> {
 
 /// What a `paths` line declares, as its words say it: each guard's runner
 /// makes its `Paths` of it, from `base` (looked up among the paths it knows)
-/// or from `cwd` and `home`, with the workspaces added and each named path
-/// in order.
+/// or from `cwd` and `home`, with the workspaces added, each named path in
+/// order, the drive mounts and the Windows home.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declaration {
     /// The name a case gives after an `@`.
@@ -308,6 +308,10 @@ pub struct Declaration {
     /// Each `folder=`, `file=`, `secret_folder=` and `secret_file=`, with
     /// its `words=`, in order.
     pub named: Vec<Named>,
+    /// Each `drive_mount=` (`Paths::drive_mounts`).
+    pub drive_mounts: Vec<PathBuf>,
+    /// `windows_home=` (`Paths::windows_home`).
+    pub windows_home: Option<PathBuf>,
 }
 
 /// A path a `paths` line names: protected (`folder=`, `file=`) or secret
@@ -325,7 +329,7 @@ pub struct Named {
 }
 
 /// The fields of a `paths` line that name a path.
-pub const PATH_FIELDS: [&str; 7] = [
+pub const PATH_FIELDS: [&str; 9] = [
     "cwd",
     "home",
     "workspace",
@@ -333,6 +337,8 @@ pub const PATH_FIELDS: [&str; 7] = [
     "file",
     "secret_folder",
     "secret_file",
+    "drive_mount",
+    "windows_home",
 ];
 
 /// The declaration a `paths` line's words make (the words after `paths`),
@@ -348,6 +354,8 @@ pub fn declaration(words: &[Word]) -> Result<Declaration, String> {
         home: None,
         workspaces: Vec::new(),
         named: Vec::new(),
+        drive_mounts: Vec::new(),
+        windows_home: None,
     };
     let mut pending: Vec<(bool, bool, PathBuf, Option<String>)> = Vec::new();
     for word in &words[1..] {
@@ -376,6 +384,11 @@ pub fn declaration(words: &[Word]) -> Result<Declaration, String> {
                         .to_string())
                 }
             },
+            "drive_mount" => declared.drive_mounts.push(PathBuf::from(value)),
+            "windows_home" if declared.windows_home.is_some() => {
+                return Err("`windows_home` twice in a `paths` declaration".to_string())
+            }
+            "windows_home" => declared.windows_home = Some(PathBuf::from(value)),
             other => {
                 return Err(format!(
                     "an unknown field `{other}` in a `paths` declaration"

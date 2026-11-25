@@ -1,0 +1,52 @@
+# How the machine spells another system's drives (`Paths::drive_mounts`):
+# on WSL, `/mnt/c` is `C:\`. With the mount named, a read or a write through
+# it is judged where the drive's path lands; with the Windows home named
+# too (`Paths::with_windows_home`), that folder is the home directory. A
+# file API on Windows takes a Windows path, so Git Bash's `/c` is a folder
+# of the drive to it, mount or not. The format is in CONTRIBUTING.md.
+
+paths wsl base=posix drive_mount=/mnt
+paths wsl_home base=posix drive_mount=/mnt windows_home=C:\\Users\\me
+paths wsl_work cwd=/mnt/c/Users/me/repo home=/home/me workspace=/mnt/c/Users/me/repo drive_mount=/mnt windows_home=C:\\Users\\me
+paths gitbash base=windows drive_mount=/
+
+# Without the mount, `/mnt/c` is a folder of this machine's (a read there
+# is in `limits.cases`).
+write rules=write_outside | /mnt/c/Users/me/.bashrc
+# With it, a key in any user's folder of the drive is a key, and the
+# system's own secrets are its.
+read@wsl rules=read_secret first=read_secret reason="reads your SSH keys" | /mnt/c/Users/me/.ssh/id_rsa
+read@wsl rules=read_secret | /mnt/c/Users/other/.aws/credentials
+read@wsl rules=read_secret first=read_secret reason="reads the Windows account database" | /mnt/c/Windows/System32/config/SAM
+read@wsl rules=read_secret | /mnt/C/users/ME/.SSH/id_rsa
+read@wsl rules=read_secret | ../../../../mnt/c/Users/me/.ssh/id_rsa
+read@wsl safe | /mnt/c/Users/me/Documents/notes.txt
+read@wsl safe | /mnt/d/Users/me/.ssh/id_rsa
+write@wsl rules=write_sensitive,write_outside first=write_sensitive reason="writes to your SSH keys" | /mnt/c/Users/me/.ssh/authorized_keys
+write@wsl rules=write_outside first=write_outside reason="writes to the root of the disk" | /mnt/c
+write@wsl rules=write_outside first=write_outside reason="writes to a system folder" | /mnt/c/Windows/x.dll
+# A path is judged as spelled too, and keeps that finding: a mount never
+# makes an answer less serious, so `/mnt/c/Windows/Temp`, a folder of this
+# machine's as spelled, is still beyond the workspace.
+write@wsl rules=write_outside | /mnt/c/Windows/Temp/x
+write@wsl rules=write_outside | /mnt/c/Users/me/x
+# The Windows home: its folder is the home directory, its startup files are
+# startup files, its temporary folder is one.
+write@wsl_home rules=write_outside first=write_outside reason="writes to your home directory" | /mnt/c/Users/me
+write@wsl_home rules=write_sensitive,write_outside first=write_sensitive reason="writes to your PowerShell profile" | /mnt/c/Users/me/Documents/PowerShell/Microsoft.PowerShell_profile.ps1
+write@wsl_home rules=write_outside | /mnt/c/Users/me/AppData/Local/Temp/x
+read@wsl_home rules=read_secret | ~/../../mnt/c/Users/me/.ssh/id_rsa
+# A workspace in a mounted drive is the agent's, however a path to it is
+# spelled.
+write@wsl_work safe | src/main.rs
+write@wsl_work safe | /mnt/c/Users/me/repo/src/main.rs
+write@wsl_work rules=write_sensitive first=write_sensitive reason="writes to the repository's history" | .git/config
+write@wsl_work rules=write_outside first=write_outside reason="writes to your home directory" | ..
+read@wsl_work rules=read_secret | ../.ssh/id_rsa
+read@wsl_work rules=read_secret | ~/.ssh/id_rsa
+# A file API on Windows reads `/c` as a folder of the drive.
+read@gitbash safe | /c/Users/me/.ssh/id_rsa
+# A mount's own folder holds every drive in it: a write to it is a write
+# to the root of a disk.
+write@wsl rules=write_outside first=write_outside reason="writes to the root of the disk" | /mnt
+write rules=write_outside first=write_outside reason="writes to a top-level folder" | /mnt

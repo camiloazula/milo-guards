@@ -272,6 +272,13 @@ let paths = paths.with_secrets([Secret::file("/home/me/work/app/.env", "the proj
 let verdict = classify("cat .env", Shell::Posix, &paths);
 assert_eq!(verdict.findings()[0].reason, "reads the project's environment file");
 assert_eq!(judge(Access::Read, ".env", &paths).findings()[0].reason, "reads the project's environment file");
+
+// How the machine spells another system's drives, you say: on WSL, the
+// folder the Windows drives are mounted in, and the Windows home.
+let paths = paths.with_drive_mounts(["/mnt"]).with_windows_home(r"C:\Users\me");
+let verdict = classify("cat /mnt/c/Users/me/.ssh/id_rsa", Shell::Posix, &paths);
+assert_eq!(verdict.findings()[0].reason, "reads your SSH keys");
+assert_eq!(judge(Access::Read, "/mnt/c/Users/me/.ssh/id_rsa", &paths).findings()[0].reason, "reads your SSH keys");
 ```
 
 The other guards read the same way. `url::judge(url, &paths)` judges a URL;

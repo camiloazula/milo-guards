@@ -254,6 +254,29 @@ pub(crate) struct Judged {
     pub(crate) writes: Vec<Vec<Finding>>,
 }
 
+impl Judged {
+    /// These findings with every finding of `other`, a judging of the same
+    /// split, that they do not hold already: for the line, for each unit and
+    /// for each redirect.
+    pub(crate) fn merge(&mut self, other: Self) {
+        fn add(into: &mut Vec<Finding>, from: Vec<Finding>) {
+            for finding in from {
+                if !into.contains(&finding) {
+                    into.push(finding);
+                }
+            }
+        }
+        add(&mut self.found, other.found);
+        add(&mut self.line, other.line);
+        for (into, from) in self.units.iter_mut().zip(other.units) {
+            add(into, from);
+        }
+        for (into, from) in self.writes.iter_mut().zip(other.writes) {
+            add(into, from);
+        }
+    }
+}
+
 pub(crate) fn findings(split: &Split, resolver: &Resolver) -> Judged {
     judge(split, resolver, data::Nest::default(), None)
 }

@@ -152,6 +152,86 @@ fn hostile_secrets(paths: Paths, windows: bool) -> Vec<Paths> {
     machines
 }
 
+/// Machines that name drive mounts the caller may get wrong: a mount at the
+/// root, an empty one, a relative one, one at the workspace, a Windows home
+/// that is no Windows path, and all at once.
+fn hostile_mounts(paths: &Paths, at: &str) -> Vec<Paths> {
+    let mounts = ["/", "", "mnt", "/mnt", at];
+    let mut machines: Vec<Paths> = mounts
+        .iter()
+        .map(|mount| paths.clone().with_drive_mounts([*mount]))
+        .collect();
+    machines.push(paths.clone().with_windows_home("/home/me"));
+    machines.push(
+        paths
+            .clone()
+            .with_drive_mounts(mounts)
+            .with_drive_mounts(["/cygdrive"])
+            .with_windows_home(r"C:\Users\me"),
+    );
+    machines
+}
+
+#[test]
+fn random_lines_with_hostile_mounts_never_panic() {
+    let on_windows = hostile_mounts(&windows(), r"C:\Users\me\dev\repo");
+    let machines = [
+        (Shell::Posix, hostile_mounts(&posix(), "/home/me/work/repo")),
+        // Git Bash: a POSIX line on Windows.
+        (Shell::Posix, on_windows.clone()),
+        (Shell::PowerShell, on_windows.clone()),
+        (Shell::Cmd, on_windows),
+    ];
+    let mut random = Lcg(13);
+    for _ in 0..150 {
+        let length = random.next() % 24;
+        let line: Vec<&str> = (0..length)
+            .map(|_| {
+                let pieces = ["/mnt/c", "/c/", "c/", "../", "/cygdrive/", "*/", "**/"];
+                if random.next().is_multiple_of(3) {
+                    pieces[random.next() % pieces.len()]
+                } else {
+                    PIECES[random.next() % PIECES.len()]
+                }
+            })
+            .collect();
+        let line = line.join(if random.next().is_multiple_of(2) {
+            " "
+        } else {
+            ""
+        });
+        for (shell, each) in &machines {
+            for paths in each {
+                let _ = classify(&line, *shell, paths);
+                let _ = effect(&line, *shell, paths);
+                let wrong = disagreements(*shell, paths, [line.as_str()]);
+                assert!(wrong.is_empty(), "{shell:?}: {wrong:?}");
+            }
+        }
+    }
+    // And the lines through the mounts, on each of them: a key through one
+    // is never safe to read on the machine with every mount.
+    for (shell, each) in &machines {
+        for paths in each {
+            for line in [
+                "cat /mnt/c/Users/me/.ssh/id_rsa",
+                "cat /mnt/*/Users/me/.ssh/id_rsa",
+                "cat /c/../../../x",
+                "cd /mnt/c && cat Users/me/.ssh/id_rsa",
+                "rm -rf /mnt/c/../c",
+                "echo x > c/x",
+            ] {
+                let _ = classify(line, *shell, paths);
+                let _ = effect(line, *shell, paths);
+                let wrong = disagreements(*shell, paths, [line]);
+                assert!(wrong.is_empty(), "{shell:?} {line}: {wrong:?}");
+            }
+        }
+    }
+    let all = machines[0].1.last().expect("the machine with every mount");
+    assert!(!classify("cat /mnt/c/Users/me/.ssh/id_rsa", Shell::Posix, all).is_safe());
+}
+
 #[test]
 fn random_lines_with_hostile_named_secrets_never_panic() {
     let machines = [

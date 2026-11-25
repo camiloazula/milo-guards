@@ -1,8 +1,9 @@
 //! What only the shell guard's own tests read, behind the `testing` feature:
-//! its tests turn it on (the crate's dev-dependency on itself). It is not
+//! its tests turn it on (the crate's dev-dependency on itself), and so does
+//! the repository's `tools/grammar-check`, which is never published. It is not
 //! part of the API and not for callers: it is hidden from the docs, and may
 //! change or go without notice. Nothing here changes what the guard does or
-//! answers; it reads counts the guard keeps anyway.
+//! answers; it reads what the guard keeps anyway.
 
 use crate::{assessed, Assessment, Paths, Reading, Shell};
 
@@ -34,6 +35,37 @@ pub struct Lexed {
     pub parsed: usize,
     /// What [`crate::classify`] answers for the line, from the same read.
     pub answer: Assessment,
+}
+
+/// How the grammar read a line itself, before any rule: what the tool in
+/// `tools/grammar-check` holds against how the real shells parse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Grammar {
+    /// The grammar read the line with no error.
+    Whole,
+    /// The grammar read it with an error, so the guard answers
+    /// `unreadable` ("cannot be read in full").
+    Error,
+    /// The line was never handed to its grammar: too long, too tangled, or
+    /// past a budget. The guard answers `unreadable` (or `unknown`).
+    NotRead,
+}
+
+/// Read `line` as [`crate::classify`] does, and say how the grammar read the
+/// line itself: the first parse of the text at depth 0 in the line's first
+/// read, after the guard's own preparation of it (continuations joined,
+/// PowerShell's spellings made ASCII), never a script nested in it. A line
+/// the guard reads again (one that makes a PowerShell drive, or turns
+/// `extendedglob` on before a body) parses the same text again; what is
+/// given is the first read's, the one every later read starts from.
+#[must_use]
+pub fn grammar(line: &str, shell: Shell, paths: &Paths) -> Grammar {
+    match Reading::new(line, shell, paths, false).split.grammar() {
+        Some(true) => Grammar::Whole,
+        Some(false) => Grammar::Error,
+        None => Grammar::NotRead,
+    }
 }
 
 /// Read `line` as [`crate::classify`] does, and say what its grammars'

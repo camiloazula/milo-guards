@@ -252,7 +252,11 @@ write or a change of mode of a protected path is `delete`, `overwrite` or
 `permissions` in the caller's words, inside the workspace too, and reading
 one is safe; a read of a named secret is `read_secret` in the caller's words;
 a path named both keeps its protected finding for a write or a delete, and a
-read of it is a read of the secret.
+read of it is a read of the secret. So is how the caller says the machine
+spells another system's drives ([Core](core.md#drive-mounts)): on WSL with
+the mount named (`Paths::drive_mounts`), `open('/mnt/c/Users/me/.ssh/id_rsa')`
+is `read_secret`, and the code is judged on the paths as spelled too, every
+finding of both kept. The cases are in `tests/cases/drives.cases`.
 
 ## What cannot be read is risky
 

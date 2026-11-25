@@ -6,7 +6,9 @@ use std::path::PathBuf;
 ///
 /// Build one with [`Paths::new`], add what the caller gates with through
 /// [`Paths::with_protected`], and the files it knows hold secrets through
-/// [`Paths::with_secrets`]. The struct is `#[non_exhaustive]`, so a
+/// [`Paths::with_secrets`]. How this machine spells another system's drives
+/// the caller says too ([`Paths::with_drive_mounts`], and on WSL
+/// [`Paths::with_windows_home`]). The struct is `#[non_exhaustive]`, so a
 /// field added later does not break a caller; the fields stay public to read
 /// and to set.
 ///
@@ -40,6 +42,25 @@ pub struct Paths {
     /// workspace folder, as reading a key core knows of is. See [`Secret`]
     /// for what is not.
     pub secrets: Vec<Secret>,
+    /// The folders this machine's POSIX paths show each Windows drive in, as
+    /// a folder named for its letter: `/mnt` on WSL (`/mnt/c` is `C:\`, or
+    /// the `root` WSL's `automount` setting names), `/` in Git Bash and MSYS2
+    /// (`/c`), `/cygdrive` in Cygwin. A POSIX path through one is also placed
+    /// where the drive's path lands. Each is an absolute POSIX path (from
+    /// `/`; its empty and `.` parts are dropped, so `//mnt/./` is `/mnt`):
+    /// any other spelling (empty, relative, from `~`, a Windows path) names
+    /// no mount, as a [`Secret`] that names nothing is none. Empty from
+    /// [`Paths::new`]: add to it with [`Paths::with_drive_mounts`].
+    pub drive_mounts: Vec<PathBuf>,
+    /// The user's Windows home directory, on a machine whose `home` is not
+    /// one (WSL): its keys and credentials are judged as a Windows home's
+    /// are, and the folder itself as a home directory. Spelled as Windows
+    /// spells it, from a drive (`C:\Users\me`), or through a drive mount
+    /// the caller names (`/mnt/c/Users/me`); any other spelling (a relative
+    /// one, `Users\me`, or `/mnt/c/Users/me` with no mount named) names no
+    /// Windows home. `None` from [`Paths::new`]: set it with
+    /// [`Paths::with_windows_home`].
+    pub windows_home: Option<PathBuf>,
 }
 
 /// A file or folder the caller gates with, and what a reason calls it.
@@ -232,6 +253,8 @@ impl Paths {
             workspaces: workspaces.into_iter().map(Into::into).collect(),
             protected: Vec::new(),
             secrets: Vec::new(),
+            drive_mounts: Vec::new(),
+            windows_home: None,
         }
     }
 
@@ -249,5 +272,87 @@ impl Paths {
     pub fn with_secrets(mut self, secrets: impl IntoIterator<Item = Secret>) -> Self {
         self.secrets.extend(secrets);
         self
+    }
+
+    /// These directories with `mounts` added to the folders this machine's
+    /// POSIX paths show a Windows drive in. Each call adds to the list.
+    ///
+    /// For the lines a POSIX shell runs in Git Bash or MSYS2 (the shell guard
+    /// with `Shell::Posix`), the caller spells the directories as Git Bash
+    /// does, from `/` (`/c/Users/me/dev/repo`), and names the mount `/`: then
+    /// a Git Bash path to the workspace is the workspace, and the drive's
+    /// keys, home and system folders are what they are on Windows. The file,
+    /// script and URL guards, and PowerShell and cmd lines, take Windows
+    /// paths, so for them the caller keeps directories spelled the Windows
+    /// way (`C:\Users\me\dev\repo`). A POSIX line judged on those is also
+    /// judged as spelled, where `/c/Users/me/dev/repo` is `C:\c\Users\...`,
+    /// beyond the workspace. On WSL, the working directory and the workspace
+    /// are spelled alike: a workspace spelled `C:\Users\me\repo` is not that
+    /// of a working directory spelled `/mnt/c/Users/me/repo`, as spelled.
+    ///
+    /// ```
+    /// use milo_guards_core::{Flavour, Paths, Place, Resolver, Sensitivity, Spelling};
+    ///
+    /// // Git Bash: the directories spelled as it spells them, its mount `/`.
+    /// let paths = Paths::new("/c/Users/me/dev/repo", "/c/Users/me", ["/c/Users/me/dev/repo"])
+    ///     .with_drive_mounts(["/"]);
+    /// let resolver = Resolver::new(&paths);
+    /// let place = |path| resolver.place(Spelling::Plain(path), Flavour::Posix);
+    /// assert_eq!(place("/c/Users/me/dev/repo/src/main.rs"), Place::Inside);
+    /// assert_eq!(
+    ///     place("/c/Users/me/.ssh/id_rsa"),
+    ///     Place::Sensitive("your SSH keys", Sensitivity::Secret)
+    /// );
+    /// assert_eq!(place("/c/Windows"), Place::Top("a system folder"));
+    /// ```
+    ///
+    /// ```
+    /// use milo_guards_core::{Flavour, Paths, Place, Resolver, Sensitivity, Spelling};
+    ///
+    /// // WSL: the Windows drives are under `/mnt`, the Windows home is `C:\Users\me`.
+    /// let paths = Paths::new("/home/me/work/repo", "/home/me", ["/home/me/work/repo"])
+    ///     .with_drive_mounts(["/mnt"])
+    ///     .with_windows_home(r"C:\Users\me");
+    /// let resolver = Resolver::new(&paths);
+    /// let place = |path| resolver.place(Spelling::Plain(path), Flavour::Posix);
+    /// assert_eq!(
+    ///     place("/mnt/c/Users/me/.ssh/id_rsa"),
+    ///     Place::Sensitive("your SSH keys", Sensitivity::Secret)
+    /// );
+    /// assert_eq!(place("/mnt/c/Users/me"), Place::Home { exact: true });
+    /// ```
+    #[must_use]
+    pub fn with_drive_mounts<M: Into<PathBuf>>(
+        mut self,
+        mounts: impl IntoIterator<Item = M>,
+    ) -> Self {
+        self.drive_mounts.extend(mounts.into_iter().map(Into::into));
+        self
+    }
+
+    /// These directories with the user's Windows home directory set to
+    /// `home`, for a machine whose own home directory is not it (WSL). A
+    /// later call replaces it.
+    #[must_use]
+    pub fn with_windows_home(mut self, home: impl Into<PathBuf>) -> Self {
+        self.windows_home = Some(home.into());
+        self
+    }
+
+    /// These directories as they are spelled: the same, with no drive mount
+    /// and no Windows home; `None` when neither is named. A guard judges its
+    /// input on both and keeps every finding of each, so naming how this
+    /// machine spells another system's drives never makes an answer less
+    /// serious. [`Resolver`](crate::Resolver) answers where a path lands on
+    /// the directories it is given (`/mnt/c/Windows/Temp/x` is a temporary
+    /// folder through the mount): a caller of it that wants the same must
+    /// ask it of these too, and keep the more serious answer.
+    #[must_use]
+    pub fn as_spelled(&self) -> Option<Self> {
+        (!self.drive_mounts.is_empty() || self.windows_home.is_some()).then(|| Self {
+            drive_mounts: Vec::new(),
+            windows_home: None,
+            ..self.clone()
+        })
     }
 }
