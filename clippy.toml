@@ -1,6 +1,14 @@
 # The minimum supported Rust version is `rust-version` in Cargo.toml, which
 # clippy reads: it stops clippy suggesting APIs newer than that version, and
-# `incompatible_msrv` fails on any it finds.
+# `incompatible_msrv` fails on any it finds. No `msrv` is set here, so that
+# version is named once (`crates/guards/tests/toolchain.rs` holds it). Clippy
+# does not see a language feature newer than it, or a dependency that needs a
+# newer Rust: `just oldest-rust` builds and tests with it for those.
+
+# Clippy skips test code for `incompatible_msrv` unless told: the tests are
+# built with the oldest supported Rust too, so an API newer than it fails
+# there as in the library.
+check-incompatible-msrv-in-tests = true
 
 # unwrap/expect/panic are idiomatic inside tests; only flag them in
 # production code paths.

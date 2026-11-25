@@ -6,6 +6,27 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+The crates declare an older Rust (#312): `rust-version` is 1.90, where it
+was 1.99, the Rust this repository's own checks are pinned to. Nothing a
+caller compiles against or a guard answers changed.
+
+- Every crate builds, and passes its tests, with Rust 1.90, against the
+  versions in this repository's `Cargo.lock`. 1.90 is what the newest
+  releases of `tree-sitter-language`, which the grammars build on, declare
+  (0.1.8 and 0.1.9), and a caller's default resolve picks one of them today
+  whatever the guards declare; the guards' own code and their other
+  dependencies build with 1.89 too.
+- A caller's lockfile picks its own versions, and every requirement on a
+  dependency is a range: if a later release of one needs a newer Rust,
+  hold it back (`cargo update -p <crate> --precise <version>`) or resolve
+  with `resolver = "3"`, which picks versions the caller's Rust supports.
+- CI builds the crates and runs their tests with Rust 1.90 in a job of its
+  own, advisory for now, and a release runs the same by hand (`just
+  oldest-rust`). `rust-version` is raised only when a dependency, a
+  language feature or a library API the code needs requires it, never
+  because a new Rust is out, and a raise is a minor bump
+  ([Versions](README.md#versions)).
+
 A caller names the files it knows hold a secret, and a read of one is a
 finding: a new type and a new field on `Paths`, which is a minor bump.
 

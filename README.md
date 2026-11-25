@@ -75,9 +75,10 @@ tag (`v0.1.4` is the latest):
 milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.4" }
 ```
 
-It needs Rust 1.99 or newer. If your program also links tree-sitter, it has
-to be on the 0.26 runtime: tree-sitter allows one version per lockfile, and
-the guards are on 0.26.
+The crates declare Rust 1.90, and are built and tested with it against the
+versions in this repository's `Cargo.lock` ([Versions](#versions)). If your
+program also links tree-sitter, it has to be on the 0.26 runtime:
+tree-sitter allows one version per lockfile, and the guards are on 0.26.
 
 ### Versions
 
@@ -89,6 +90,18 @@ compile time, where the caller decides what to do with the rule, and a
 caller pinned to `"0.1"` is never handed a rule it has no answer for. A
 guard that judges a line differently after a fix is a patch, since the API
 is the same, and the change is in [the changelog](CHANGELOG.md).
+
+The crates declare Rust 1.90 (`rust-version` in their manifests), and are
+built and tested with it against the versions in this repository's
+`Cargo.lock`. Your lockfile picks its own versions, and every requirement
+on a dependency is a range: if a later release of one needs a newer Rust
+than yours, hold it back (`cargo update -p <crate> --precise <version>`) or
+resolve with `resolver = "3"`, which picks the versions your Rust supports.
+`rust-version` is raised only when a dependency, a language feature or a
+library API the code needs requires it, never just because a new Rust is
+out, and **a raise is a minor bump**: a patch release never raises it. The
+newer Rust this repository's own checks are pinned to
+(`rust-toolchain.toml`) is not one a caller needs, and moves freely.
 
 The guards are a Rust library and ship no command-line program: a caller
 that is not written in Rust reaches them through a program of its own that
