@@ -379,7 +379,8 @@ guard's cases hold no value shaped like a real key, which its tests build in
 Rust so that none sits in the repository. The front door's
 `crates/guards/tests/everyday.rs` reads its `tests/cases/everyday.cases` with
 the shell guard's runner, and judges each line through
-`milo_guards::shell` too.
+`milo_guards::shell` too; `tests/everyday_answers.rs` reads the record of
+[the everyday answers](#the-everyday-answers) the same way.
 
 One case to a line, and nothing else on it:
 
@@ -542,6 +543,73 @@ and the runner, are in its `tests/common/cases.rs` (for the path model,
 `crates/core/tests/common/runner.rs`, which its tests call
 `common::cases`).
 
+## The everyday answers
+
+`crates/guards/tests/cases/everyday.cases` holds the everyday lines that
+must stay safe. The everyday answers are a larger set, about three thousand
+lines of what coding agents run all day, each with the answer the shell
+guard gives it today, safe or not. They are the measure of how often the
+guard asks about a harmless line (the false-alarm share: the lines it
+finds anything in), and of what a release changes in what it answers.
+
+- **The templates** are the source:
+  `crates/guards/tests/cases/everyday_answers.templates`, grouped by task
+  (building and testing, git, reading and searching, editing in the
+  workspace, running and inspecting, formatting, chains), for a POSIX
+  shell, PowerShell and cmd, each in its own idiom. Its header gives the
+  format: `group NAME`; `fill NAME | A | B` for a list of fillers;
+  `SHELL | TEMPLATE`, where `«NAME»` takes each filler of a list and
+  `«A|B»` each alternative written in it, and a template makes a line for
+  each way of filling its slots, at most 32. Nothing is random, so the same
+  templates always make the same lines; the lines are written here, never
+  copied from a transcript or a dataset, and hold no private data and no
+  secret.
+- **The record** is `everyday_answers.cases` beside them, in the case-file
+  format: every line the templates make, in their order, under a comment for
+  each group, as `SHELL safe | LINE` or `SHELL rules=… first=…
+  reason="…" | LINE` (every rule found, in order, and the reason of the
+  first). It is written by `just everyday-record`, never by hand: that
+  recipe sets `MILO_EVERYDAY_RECORD=1`, and without it the test that writes
+  the record (`record`, which `cargo test -- --ignored` also runs) only
+  prints the report.
+- **`just everyday`** judges the whole set and prints the report: the lines
+  of each shell, the share that is safe, the lines each rule is found on,
+  the same for each group, and every line whose answer is not the recorded
+  one (the answer it had, the one it gets, and the template that makes
+  it). It fails when one differs, when a line is made that is not recorded
+  or recorded that is not made, and when the record is not exactly what
+  `just everyday-record` would write.
+- **`just verify`** runs the same test, in `just coverage`, and checks the
+  record as the shell guard's runner checks every case file (each case gets
+  the answer it holds, and goes through the agreement checks). In the
+  instrumented build of `just coverage` its test file took three seconds
+  here on a quiet machine and eight on a busy one (most of it the agreement
+  checks over the record; the comparison alone under one). That cost is
+  held by a count, not by the clock: `MOST_LINES` in
+  `tests/everyday_answers.rs` (4,000) bounds the lines the templates may
+  make, and is raised only with a reason.
+
+To add lines, add templates or fillers: what an agent really runs, with
+realistic flags, paths inside the workspace and quoting, and harmless where
+it runs. Keep out a line that is risky on purpose, and do not tune a line
+to pass: write what an agent would run and record what the guard says. A
+line the guard finds risky is recorded, not dropped: a false alarm that is
+plainly a bug is an issue to open; one where the guard is right on
+reflection was not harmless, and is dropped. A line the guard calls safe
+that should not be is never written down: report it as
+[SECURITY.md](SECURITY.md) says. Then run `just everyday-record` and commit
+the templates and the record together.
+
+A change to a guard that moves an everyday answer fails the gate until the
+record is rewritten on purpose: run `just everyday-record`, read what it
+prints, and commit the record with the change. A reviewer reads the diff of
+`everyday_answers.cases`: each line that changed is an answer that moved. A
+line that turned risky is a new false alarm, which the pull request
+explains; one that turned safe is a false alarm fixed; a changed reason is a
+change to what a permission prompt shows; a line added or removed comes from
+a template the same pull request changes. The pull request gives the
+report's first line (the false-alarm share) before and after.
+
 ## Submitting a change
 
 - `main` takes pull requests only. The commits that set the repository up are
@@ -594,7 +662,15 @@ its path. A release is:
      out), so it is checked against its release.
 2. Move the changelog's `Unreleased` section under the new version, with the
    date, in `CHANGELOG.md`, and empty `next_bump` in the `justfile`: the
-   version now says the bump.
+   version now says the bump. What the changelog says about the answers
+   that changed comes from [the everyday answers](#the-everyday-answers),
+   not from memory: `git diff vPREVIOUS -- crates/guards/tests/cases/everyday_answers.cases`
+   is every everyday line whose answer moved since the last release (the
+   false alarms fixed, the new ones, the reasons reworded), beside the
+   lines that templates added or removed since then, which are changes to
+   the set and not to an answer, and `just
+   everyday` gives the false-alarm share the release leaves, overall and for
+   each shell.
 3. `just verify` and `just oldest-rust`, then `just package`: every crate
    packaged and built from its package, as crates.io will build it, with
    the case files left out (`exclude` in each crate's manifest). The

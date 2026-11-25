@@ -54,5 +54,5 @@ milo-guards-script = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The test kit of the shell guard's test helpers, which `tests/everyday.rs`
-# shares to run its case file.
+# and `tests/everyday_answers.rs` share to run their case files.
 milo-guards-core = { workspace = true, features = ["testing"] }

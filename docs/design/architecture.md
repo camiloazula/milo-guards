@@ -218,13 +218,20 @@ answer is not. There are three kinds of test, and each has its place:
   CONTRIBUTING.md names, and the justfile's `next_bump` it reads agrees
   with the changelog), `contract.rs` (the contract
   and the direction of the dependencies), `everyday.rs` (the everyday
-  commands stay safe, its lines in `tests/cases/everyday.cases`) and
+  commands stay safe, its lines in `tests/cases/everyday.cases`),
+  `everyday_answers.rs` (the answers of a few thousand everyday commands,
+  made by `tests/cases/everyday_answers.templates`, are the ones their
+  record, `tests/cases/everyday_answers.cases`, holds; `just everyday`
+  prints its report, and `just everyday-record` rewrites the record,
+  [CONTRIBUTING.md](../../CONTRIBUTING.md#the-everyday-answers)) and
   `toolchain.rs` (the places that name each of the two Rust versions
   agree: the pinned one the gate builds with, and `rust-version`, the
   oldest the crates support, which only the `oldest-rust` job installs).
 
 Some names are read by other files: `just no-inline` runs
-`crates/shell/tests/inline_off.rs` by name, `agree.rs` reads every case file
+`crates/shell/tests/inline_off.rs` by name, `just everyday` and `just
+everyday-record` run tests of `crates/guards/tests/everyday_answers.rs` by
+name, `agree.rs` reads every case file
 in the file guard's `tests/cases`, `agree_code.rs` every case file in the
 code reader's `tests/cases` and each `inline*` one in the shell guard's, and
 each guard's, core's and the code reader's `tests/cases.rs` holds

@@ -1,0 +1,1092 @@
+# The everyday commands of `tests/everyday_answers.rs`: what coding agents
+# run all day in a POSIX shell, in PowerShell and in cmd, by task, written
+# for this repository (no transcript, no dataset). Every line they make is
+# harmless where the agent works; the record beside this file,
+# `everyday_answers.cases`, holds what the shell guard answers for each, and
+# the share it asks about is the false-alarm share (CONTRIBUTING.md, "The
+# everyday answers").
+#
+# Read with the case files' reading, and so their escapes (`\\`, `\n`,
+# `\s`, ...):
+#
+# - `group NAME`: the templates after it are in the group NAME;
+# - `fill NAME | A | B | ...`: the fillers of the list NAME (a filler holds
+#   no ` | `); a second `fill` of a name adds to it;
+# - `SHELL | TEMPLATE`: `«NAME»` takes each filler of the list NAME,
+#   `«A|B|C»` each of its alternatives (one may be empty), and the template
+#   makes a line for each way of filling its slots, at most 32.
+#
+# A line two templates of one shell make is refused: write each once.
+
+# ---- The fillers of POSIX lines ----
+
+fill rs_file | src/lib.rs | src/main.rs | src/parser/mod.rs
+fill rs_any | src/lib.rs | src/config.rs | crates/core/src/lib.rs | build.rs
+fill py_file | app/main.py | app/models.py | tests/test_api.py | scripts/migrate.py
+fill ts_file | src/index.ts | src/components/Button.tsx | src/lib/api.ts | test/app.test.ts
+fill go_dir | ./internal/store | ./pkg/api | ./cmd/server
+fill manifest | package.json | Cargo.toml | pyproject.toml | go.mod
+fill doc | README.md | CHANGELOG.md | docs/architecture.md | CONTRIBUTING.md
+fill log | build.log | logs/dev.log | test-output.txt
+fill branch | main | feature/login | fix/parser-crash | release/2.3
+fill new_branch | feature/rate-limit | fix/null-check | chore/bump-deps | docs/readme
+fill grep_word | TODO | FIXME | 'unwrap()' | console.log
+fill crate | serde | anyhow | tokio | clap
+fill ws_crate | core | cli | server | parser
+fill rust_test | parses_empty_input | round_trip | config::tests::defaults | handles_unicode
+fill npm_pkg | lodash | zod | vitest | @types/node
+fill py_pkg | requests | pytest | httpx | pydantic | ruff
+fill py_test | tests/ | tests/test_api.py::test_login | tests/unit
+fill npm_script | build | test | lint | format | dev | typecheck | e2e | storybook
+fill js_script | scripts/build.js | dist/index.js | server.js | scripts/gen-types.mjs
+fill local_url | http://localhost:3000 | http://localhost:3000/health | http://127.0.0.1:8000/api/items | http://localhost:8080/actuator/health
+fill web_url | https://example.com | https://docs.rs/serde/latest/serde/ | https://registry.npmjs.org/zod | https://api.github.com/repos/rust-lang/rust/releases/latest
+fill build_dir | target | dist | build | node_modules | coverage | .next | __pycache__ | .pytest_cache | .turbo
+fill sub | frontend | backend | packages/web | crates/cli
+fill msg | 'fix: handle empty input' | "chore: bump dependencies" | 'test: cover the parser edge cases'
+fill pod | api-7d9f8b6c5-x2kqp | worker-5c4d9 | deploy/api | statefulset/db
+fill proc | node | python | cargo | vite | webpack
+
+# ---- POSIX: building and testing ----
+
+group rust
+
+posix | cargo «build|check|test|clippy|doc»
+posix | cargo «build|test» --release
+posix | cargo «test|clippy|build» --workspace --all-features
+posix | cargo test -p «ws_crate»
+posix | cargo test -p core «-- --nocapture|--lib|--test integration»
+posix | cargo test «rust_test»
+posix | cargo test round_trip «-- --exact|-- --nocapture»
+posix | cargo run -- «--help|--port 8080|--config config/dev.toml»
+posix | cargo run«| --release| --bin server| --example demo»
+posix | cargo clippy --all-targets«| --all-features» -- -D warnings
+posix | cargo fmt«| --all| -- --check| --all --check»
+posix | cargo add «crate»
+posix | cargo add «serde --features derive|tokio --features full|insta --dev»
+posix | cargo remove «crate»
+posix | cargo «update|update -p serde|update --dry-run|tree|tree -d|tree -i syn|tree --depth 1»
+posix | cargo «bench|bench --bench parse|doc --no-deps|doc --no-deps --open|metadata --format-version 1 --no-deps»
+posix | cargo «nextest run|nextest run --workspace|llvm-cov|llvm-cov --html|expand parser|udeps|deny check|audit|outdated|machete»
+posix | cargo build --target «x86_64-unknown-linux-musl|wasm32-unknown-unknown|aarch64-apple-darwin»
+posix | cargo install --path «crates/cli|.»
+posix | cargo install «cargo-nextest|cargo-watch|ripgrep» --locked
+posix | RUST_BACKTRACE=«1|full» cargo test «rust_test»
+posix | RUST_LOG=«debug|info,my_crate=trace|warn» cargo run
+posix | cargo watch -x «check|test|'run -- serve'»
+posix | rustc --version && cargo --version
+posix | rustup «show|update|target add wasm32-unknown-unknown|component add clippy rustfmt|toolchain list|override set nightly»
+posix | cargo +nightly «fmt|miri test|udeps»
+posix | ./target/debug/app «--help|--version|serve --port 8080»
+posix | ./target/release/server --help
+posix | cargo test --doc
+posix | cargo build --timings
+
+group javascript
+
+posix | npm «install|ci|test|ls|outdated|audit|ls --depth=0|prune|dedupe|doctor|pack --dry-run|version patch --no-git-tag-version»
+posix | npm run «npm_script»
+posix | npm install «npm_pkg»«| --save-dev»
+posix | npm «uninstall|view» «npm_pkg»
+posix | npm test -- «--watch=false|--coverage|src/lib/api.test.ts|-t 'renders the button'»
+posix | npm run build -- --«mode production|watch»
+posix | npm init -y
+posix | npm audit fix
+posix | npm exec -- «tsc --noEmit|eslint .»
+posix | pnpm «install|build|test|lint|dev|-r build|--filter web dev|add -D vitest|install --frozen-lockfile|why react|up --latest|store prune»
+posix | yarn«| install| build| test| lint| dev| add zod| add -D prettier| why lodash| install --immutable| workspaces info»
+posix | bun «install|test|run dev|run build|add hono|x vitest|run src/index.ts|build ./src/index.ts --outdir dist»
+posix | npx «tsc --noEmit|eslint .|prettier --check .|prettier --write src|vitest run|jest --coverage|playwright test|tsx scripts/seed.ts|turbo run build|next build|vite build|prisma generate|prisma migrate dev|storybook build|depcheck»
+posix | npx vitest run «ts_file»
+posix | npx tsc --noEmit -p «tsconfig.json|packages/web/tsconfig.json|tsconfig.build.json»
+posix | «./|»node_modules/.bin/«tsc|eslint|vitest|jest|prettier» --version
+posix | node «js_script»
+posix | node --«test|test test/|inspect server.js|watch server.js»
+posix | node -e 'console.log(process.versions)'
+posix | node -p "require('./package.json').version"
+posix | tsc«| --noEmit| -p tsconfig.json| --build| --watch»
+posix | deno «test|task dev|run --allow-net server.ts|fmt|lint|check main.ts»
+posix | corepack enable && pnpm install
+posix | nvm use && npm ci
+
+group python
+
+posix | python -m pytest «-q|-x|-vv»
+posix | python -m pytest tests/test_api.py::test_login
+posix | pytest «py_test»
+posix | pytest «-k parse|--lf|--cov=app|-n auto»
+posix | pip install «py_pkg»
+posix | pip install «-r requirements.txt|-r requirements-dev.txt|-e .|-e '.[dev]'|--upgrade pip|-U pip setuptools wheel»
+posix | pip «list|freeze|show requests|check|list --outdated»
+posix | pip freeze > requirements.lock
+posix | python«|3» -m venv .venv
+posix | source .venv/bin/activate && «pytest -q|pip install -r requirements.txt|python app/main.py»
+posix | . .venv/bin/activate
+posix | .venv/bin/«python -m pytest|pip install -e .|python scripts/migrate.py|ruff check .»
+posix | uv «sync|run pytest|add httpx|add --dev pytest-cov|lock|pip install -r requirements.txt|run python scripts/migrate.py|venv|pip list|tree|python install 3.12»
+posix | poetry «install|run pytest|add requests|add --group dev ruff|lock --no-update|show --tree|build|env info|check|run python -m app»
+posix | python«|3» «py_file»
+posix | python«|3» -m «app|http.server 8000|pip list|json.tool package.json|unittest discover -s tests|compileall app|pydoc json»
+posix | ruff «check .|check --fix .|format .|format --check .|check app tests --select I --fix»
+posix | mypy «.|app|app --strict|--install-types --non-interactive»
+posix | black «.|--check .|--diff app|app tests»
+posix | isort «.|--check-only --diff .»
+posix | flake8 «app|.»
+posix | pylint «app|app/models.py»
+posix | pyright«| app»
+posix | python3 -c 'import sys; print(sys.version)'
+posix | python3 -c "import django; print(django.get_version())"
+posix | python -c 'import json; print(json.load(open("package.json"))["version"])'
+posix | tox«| -e py312| -e lint| -p»
+posix | nox -s «tests|lint»
+posix | python manage.py «runserver|migrate|makemigrations|test|shell -c 'print(1)'|check|collectstatic --noinput|showmigrations»
+posix | flask --app app run«| --debug»
+posix | uvicorn app.main:app «--reload|--port 8001|--host 127.0.0.1 --port 8000»
+posix | jupyter nbconvert --to script «notebooks/eda.ipynb|analysis.ipynb»
+posix | hatch «run test|build|env show»
+posix | conda «list|env list»
+posix | pre-commit run «--all-files|ruff --all-files»
+
+group go
+
+posix | go «build ./...|test ./...|vet ./...|mod tidy|mod download|run ./cmd/server|test -race ./...|generate ./...|mod verify|mod why github.com/pkg/errors|list ./...|version|env GOPATH|work sync»
+posix | go test «-v|-cover|-count=1|-run TestParse|-bench=. -benchmem» ./...
+posix | go test «go_dir»/...
+posix | go get «github.com/stretchr/testify@latest|golang.org/x/sync|-u ./...»
+posix | go install «golang.org/x/tools/cmd/goimports@latest|github.com/golangci/golangci-lint/cmd/golangci-lint@v1.59.1»
+posix | go tool «cover -html=coverage.out|pprof cpu.prof»
+posix | go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
+posix | gofmt «-l .|-w .|-d internal»
+posix | goimports -w «.|internal»
+posix | golangci-lint run«| ./...| --fix»
+posix | staticcheck ./...
+
+group native
+
+posix | make«| test| build| lint| clean| check| -j8| -j$(nproc)| help»
+posix | make -C «docs|build|tools»«| clean»
+posix | cmake -S . -B build«| -DCMAKE_BUILD_TYPE=Release| -G Ninja| -DCMAKE_EXPORT_COMPILE_COMMANDS=ON»
+posix | cmake --build build«| --config Release| -j 8| --target tests| --parallel»
+posix | ctest --test-dir build«| --output-on-failure| -R parser| -j4»
+posix | ninja -C build«| test»
+posix | meson «setup build|compile -C build|test -C build»
+posix | ./configure«| --prefix=$PWD/install| --enable-debug»
+posix | autoreconf -fi
+posix | gcc -Wall -O2 -o build/app src/main.c
+posix | clang++ -std=c++20 -g -o build/test tests/test_main.cpp
+posix | bazel «build //...|test //...|query //src/...|run //cmd:server»
+posix | zig «build|build test|fmt src»
+
+group jvm
+
+posix | ./gradlew «build|test|clean build|:app:test|check|dependencies|bootRun|test --tests '*ParserTest'»
+posix | gradle «build|test|wrapper»
+posix | mvn «test|package|clean install|verify|dependency:tree|-DskipTests package|-Dtest=ParserTest test»
+posix | ./mvnw «test|clean verify|spring-boot:run|-B package»
+posix | java -jar «target/app-1.0.jar|build/libs/app.jar»«| --server.port=8081»
+posix | java -version && javac -version
+posix | kotlinc src/Main.kt -include-runtime -d build/main.jar
+posix | sbt «compile|test|run|'testOnly *ParserSpec'»
+
+group dotnet_swift
+
+posix | dotnet «build|test|run|restore|format|watch run|--info»
+posix | dotnet add package «Serilog|Newtonsoft.Json|xunit»
+posix | dotnet test --filter «Category=Unit|FullyQualifiedName~Parser»
+posix | dotnet new «console -n Demo|xunit -n Core.Tests|gitignore»
+posix | swift «build|test|run|package resolve|test --filter ParserTests|build -c release|package update|package describe»
+posix | xcodebuild -scheme «App|AppTests» -destination 'platform=iOS Simulator,name=iPhone 15' «build|test»
+posix | xcodebuild «-list|-showsdks|-version|-project App.xcodeproj -showBuildSettings»
+posix | xcrun simctl «list devices|boot 'iPhone 15'|list runtimes»
+posix | swiftlint«| --fix| lint --strict»
+posix | swift-format «lint -r Sources|format -i -r Sources»
+posix | pod install
+posix | xcodebuild -workspace App.xcworkspace -scheme App -configuration Debug build
+
+group other_languages
+
+posix | bundle «install|exec rspec|exec rails test|exec rubocop -a»
+posix | rails «server|test|routes»
+posix | rspec spec/models/user_spec.rb
+posix | composer «install|dump-autoload|test»
+posix | php artisan «migrate|test|serve|route:list»
+posix | vendor/bin/phpunit«| --filter ParserTest»
+posix | mix «test|deps.get|compile|format|phx.server»
+posix | stack «build|test»
+posix | cabal «build|test»
+posix | dart «pub get|test|analyze|format .»
+posix | flutter «pub get|test|analyze»
+posix | terraform «fmt|validate|plan|init|output»
+posix | helm «lint ./charts/api|template api ./charts/api|dependency update ./charts/api»
+
+# ---- POSIX: git ----
+
+group git_read
+
+posix | git «status|status -sb|status --short|diff|diff --staged|diff --cached|diff --stat|diff HEAD|show|show --stat HEAD|branch|branch -a|branch -vv|branch --show-current|remote -v|stash list|tag|rev-parse HEAD|rev-parse --abbrev-ref HEAD|describe --tags|shortlog -sn|reflog -10|log -1»
+posix | git log «--oneline -20|--oneline --graph --all|--oneline --decorate -n 15|-p -3|--stat -5|--format='%h %an %s' -10|--since='2 weeks ago' --oneline|origin/main..HEAD --oneline|--merges --oneline -5»
+posix | git log --oneline -- «rs_file»
+posix | git log «-p|--follow --oneline» -- src/lib.rs
+posix | git diff «branch»...HEAD
+posix | git diff main...HEAD «--stat|--name-only»
+posix | git diff HEAD~1 -- «src/|tests/|package.json»
+posix | git diff «HEAD~3 HEAD|origin/main» -- src/
+posix | git blame «|-L 10,40 »«rs_any»
+posix | git show «HEAD~1|abc1234|HEAD:src/lib.rs|v1.2.0 --stat»
+posix | git grep -n «grep_word»«| -- '*.rs'»
+posix | git ls-files«| '*.rs'| --others --exclude-standard| -m»
+posix | git ls-files | wc -l
+posix | git config «--get user.email|--list --show-origin|user.name|--get remote.origin.url|--global --get core.editor»
+posix | git remote get-url origin
+posix | git rev-list --count «HEAD|main..HEAD»
+posix | git merge-base HEAD origin/main
+posix | git diff --name-only «HEAD~1|origin/main» | xargs «wc -l|ls -la»
+posix | git log --oneline | head -«5|20»
+posix | git diff --check
+posix | git check-ignore -v «target/debug|node_modules|.env»
+posix | git count-objects -vH
+posix | git cat-file -p HEAD
+posix | git worktree list
+posix | git status --porcelain | wc -l
+posix | git -C ../«other-repo|repo-docs» log --oneline -5
+posix | git --no-pager «log --oneline -10|diff --stat|show --name-only»
+
+group git_write
+
+posix | git add «rs_file»
+posix | git add «.|-A|-u|src/ tests/|--all|-N src/new.rs|Cargo.toml Cargo.lock»
+posix | git commit -m «msg»
+posix | git commit -am «msg»
+posix | git add -A && git commit -m «msg»
+posix | git commit «--amend --no-edit|--amend -m 'fix: handle empty input'|--fixup HEAD~1|-v|--allow-empty -m 'ci: trigger'»
+posix | git checkout «branch»
+posix | git checkout -b «new_branch»«| origin/main»
+posix | git switch «branch»
+posix | git switch -c «new_branch»
+posix | git switch -
+posix | git stash«| push -m 'wip: parser'| pop| apply| show -p| push --include-untracked| list --stat»
+posix | git fetch«| --all --prune| origin| origin main| --tags| upstream»
+posix | git pull«| --rebase| --ff-only| origin main| --rebase origin main»
+posix | git push«| -u origin HEAD| origin HEAD| --set-upstream origin feature/rate-limit| --tags| origin v1.2.0»
+posix | git push -u origin «new_branch»
+posix | git rebase «main|origin/main|--continue|--abort|--skip»
+posix | git merge «--no-ff feature/login|--abort|origin/main|--ff-only origin/main|main»
+posix | git cherry-pick «abc1234|--continue|--abort|-x 9f8e7d6»
+posix | git restore --staged «rs_file»
+posix | git reset«| HEAD~1| --soft HEAD~1| HEAD src/lib.rs| --mixed HEAD~2»
+posix | git worktree «add ../wt-login feature/login|add -b fix/typo ../wt-typo|prune|remove ../wt-login|add ../wt-review origin/main»
+posix | git branch «new_branch»
+posix | git branch -m «old-name new-name|feature/rate-limit»
+posix | git branch -d «feature/login|fix/parser-crash»
+posix | git branch --set-upstream-to=origin/«main|feature/login»
+posix | git tag «v1.2.0|-a v1.3.0 -m 'Release 1.3.0'»
+posix | git submodule «update --init --recursive|status|sync»
+posix | git lfs «pull|ls-files|track '*.psd'»
+posix | git clone «https://github.com/rust-lang/rustlings.git|git@github.com:org/service.git|--depth 1 https://github.com/vitejs/vite.git vendor/vite»
+posix | git init«| -b main»
+posix | git remote add «upstream https://github.com/org/repo.git|origin git@github.com:me/repo.git»
+posix | git mv «src/old.rs src/new.rs|docs/a.md docs/guide.md»
+posix | git rm --cached «.env.local|-r node_modules»
+posix | git bisect «start|good|bad|reset|good v1.2.0»
+posix | git apply «patches/fix.patch|--check patches/fix.patch»
+posix | git format-patch -1 HEAD -o patches/
+posix | git notes add -m 'reviewed'
+posix | git config user.email 'me@example.com'
+posix | git config --local core.autocrlf input
+posix | git gc --auto
+posix | git update-index --assume-unchanged config/local.yml
+
+group github
+
+posix | gh pr «list|status|view|view 42|view 42 --comments|diff 42|checks|checks 42 --watch|list --state merged --limit 5|view --web»
+posix | gh issue «list|view 17|list --label bug|view 17 --comments|status»
+posix | gh run «list|view 123456|view 123456 --log-failed|watch|list --workflow ci.yml»
+posix | gh «repo view|repo view --web|release list|release view v1.2.0|auth status|workflow list|browse|search code 'fn parse'|api repos/{owner}/{repo}/pulls|api user --jq .login»
+posix | gh pr checkout «42|feature/login»
+posix | gh pr view 42 --json title,body,files
+posix | gh repo clone «org/service|cli/cli»«| vendor/cli»
+
+# ---- POSIX: reading and searching ----
+
+group read
+
+posix | ls«| -la| -lah| -R»
+posix | ls -la «src|tests|target/debug|node_modules/.bin»
+posix | ls -la «.github/workflows|scripts|~/.cargo/bin|/tmp»
+posix | cat «rs_file»
+posix | cat «manifest»
+posix | cat «doc»
+posix | cat -n «rs_any»
+posix | head «-n 20 |»«py_file»
+posix | head -c 500 «log»
+posix | tail «-n 50|-f|-100|-n +20» build.log
+posix | tail -f logs/dev.log
+posix | less «doc»
+posix | bat «rs_file»
+posix | grep «-rni|-rl» TODO src/
+posix | grep -rn «grep_word» src/
+posix | grep -rn «grep_word» «.|tests/»
+posix | grep -rn 'fn main' --include='*.rs' .
+posix | grep -rn 'def test_' --include='*.py' .
+posix | grep -rn 'import React' --include='*.tsx' .
+posix | grep -rn '#\\[test\\]' --include='*.rs' .
+posix | grep -c «grep_word» src/lib.rs
+fill grep_alternation | 'error|warning' | '^(fn|pub fn) ' | 'TODO|FIXME'
+posix | grep -E «grep_alternation» «log»
+posix | grep -n 'version' «manifest»
+posix | grep -n '"name"' package.json
+posix | grep -n 'edition' Cargo.toml
+posix | grep -v '^#' «.env.example|config/app.conf|.gitignore»
+posix | rg «grep_word»
+posix | rg TODO «src|-l|-C 3»
+posix | rg «TODO|FIXME» «-g '*.ts'|-n --hidden|--stats»
+posix | rg «'fn \\w+\\('|'useEffect\\('|'class \\w+Error'|'TODO\\(\\w+\\)'» src
+posix | rg --files«| -g '*.md'| src| --hidden -g '!.git'»
+posix | rg -l «'serde'|'tokio::'|'from requests'»«| crates»
+posix | find . -name «'*.rs'|'*.py'|'*.test.ts'|'Cargo.toml'|'*.snap'»
+posix | find src -name '*.rs' -type f
+posix | find . -type f -name '«*.ts|*.go|*.md»' -not -path './node_modules/*'
+posix | find . -maxdepth «1|2|3» -type «d|f»
+posix | find «src|.» -newer «Cargo.lock|package.json» -type f
+posix | find . -name '*.py' -mtime -1
+posix | find . -type d -name «node_modules|__pycache__|target» -prune
+posix | find . -size +1M -type f -not -path './.git/*'
+posix | find . -empty -type d
+posix | fd «parser|config|test»
+posix | fd parser «-e rs|-t f|-H»
+posix | fd -e «rs|md|ts|py»
+posix | fd -e rs «src|-x wc -l»
+posix | wc «-l|-w» «rs_file»
+posix | wc -l «src/*.rs|src/**/*.ts|*.md|tests/*.py»
+posix | find src -name '*.rs' | xargs wc -l
+posix | find src -name '*.rs' | xargs wc -l | sort -n
+posix | find src -name '*.rs' | xargs wc -l | tail -1
+posix | sort «|-u |-n |-r |-t, -k2 »data/users.csv
+posix | sort data/words.txt | uniq -c | sort -rn | head«| -20»
+posix | cut -d, -f«1|2,3|1-3» data/users.csv
+posix | sed -n '«1,40p|100,140p|/fn main/,/^}/p|$p|5p»' «src/lib.rs|build.rs»
+posix | sed -n '«1,80p|/^## /p»' «doc»
+posix | awk «'{print $1}'|'NR<=10'|'/ERROR/ {print}'|'{s+=$3} END {print s}'|-F: '{print $1}'» build.log
+posix | awk -F, '«NR>1 {print $2}|{print NF}|$3 > 100»' data/users.csv
+posix | jq «.|'.scripts'|'.dependencies'|-r '.version'|'keys'|-r '.name'» package.json
+posix | jq «.compilerOptions|'.compilerOptions.paths'» tsconfig.json
+posix | jq '.devDependencies | keys' package.json
+fill jq_filter | .[].name | map(select(.active)) | length | .[0] | map(.email) | sort_by(.name)
+posix | jq '«jq_filter»' data/users.json
+posix | jq -r '.packages[] | .name' «cargo-metadata.json|target/metadata.json»
+posix | tree«| -L 2| -L 3 -I node_modules| src| -d| -a -I .git| --gitignore»
+posix | du -sh «target|node_modules|.git|dist|*|.»
+posix | du -h --max-depth=1 . | sort -h
+posix | df -h«| .»
+posix | file «target/release/app|assets/logo.png|data/dump.bin»
+posix | stat «Cargo.lock|package-lock.json|build.log»
+posix | diff «-u |-r |»«a/config.json b/config.json|expected.txt actual.txt|tests/snapshots/old.snap tests/snapshots/new.snap»
+posix | cmp «a.bin b.bin|out/1.bin out/2.bin»
+posix | xxd «assets/logo.png|data/dump.bin» | head«| -20»
+posix | hexdump -C target/release/app | head
+posix | strings target/release/app | grep «version|panic»
+posix | «pwd|realpath .|realpath src/lib.rs|basename $PWD|dirname src/parser/mod.rs»
+posix | md5sum «dist/app.tar.gz|Cargo.lock»
+posix | shasum -a 256 «dist/app.tar.gz|target/release/app»
+posix | column -t -s, data/users.csv
+posix | nl -ba «rs_file» | sed -n '«20,60p|1,30p»'
+posix | tac «log» | head
+posix | comm -12 <(sort a.txt) <(sort b.txt)
+posix | od -c «data/sample.txt|.editorconfig» | head
+posix | readlink -f «node_modules/.bin/tsc|target»
+posix | cat .nvmrc .node-version 2>/dev/null
+posix | cat ~/.gitconfig
+
+# ---- POSIX: editing inside the workspace ----
+
+group edit
+
+posix | mkdir -p «src/utils|tests/fixtures|docs/adr|scripts|.github/workflows|crates/cli/src|app/api/v1|public/images»
+posix | mkdir «src/models|tests/e2e»
+posix | touch «src/utils/mod.rs|tests/__init__.py|src/lib/api.test.ts|.env.local|docs/adr/0002-use-postgres.md|CHANGELOG.md»
+posix | cp «src/config.rs src/config.rs.bak|.env.example .env|-r templates/ build/templates|-r fixtures tests/fixtures|README.md docs/index.md|config/dev.toml config/test.toml»
+posix | cp -n «.env.example .env|config/defaults.yml config/local.yml»
+posix | mv «src/old.rs src/new.rs|tmp/report.html reports/|docs/draft.md docs/guide.md|src/utils.ts src/lib/utils.ts|build/app dist/app»
+posix | rm -rf «build_dir»
+posix | rm «-r|-fr|-r -f» target
+posix | rm «src/old.rs|tests/tmp_test.py|build.log|-f *.orig|-f package-lock.json|-rf target/debug/incremental|-f src/*.bak|-rf dist/ build/|-rf node_modules package-lock.json|-f coverage/lcov.info»
+posix | rm -rf «./target|./dist|./node_modules/.cache|.next/cache»
+posix | rmdir «tests/fixtures/empty|docs/drafts»
+posix | sed -i «|'' |.bak »'s/old_name/new_name/g' src/lib.rs
+posix | sed -i 's/http:/https:/g' «src/config.rs|docs/guide.md»
+posix | sed -i 's/version = "1.0.0"/version = "1.1.0"/' Cargo.toml
+posix | sed -i 's/^edition = .*/edition = "2021"/' «Cargo.toml|crates/cli/Cargo.toml»
+posix | sed -i '/«console.log|debugger|^$»/d' «src/index.ts|src/lib/api.ts»
+posix | sed -i '1i // SPDX-License-Identifier: MIT' «src/index.ts|src/lib.rs»
+posix | perl -pi -e 's/«foo/bar|\\bOldName\\b/NewName|v1/v2»/g' src/lib.rs
+posix | echo «'node_modules/'|'target/'|'.env'|'*.log'|'.DS_Store'» >> .gitignore
+posix | echo «'hello'|$PATH|"build done"|test|'{}'» > out.txt
+posix | printf '%s\\n' a b c > list.txt
+posix | printf '%s,%s\\n' id name > data/sample.csv
+posix | cat > «src/config.json|.prettierrc|tests/fixtures/user.json» <<'EOF'\n{\n  "name": "test"\n}\nEOF
+posix | cat <<'EOF' > src/bin/hello.rs\nfn main() {\n    println!("hi");\n}\nEOF
+posix | cat <<'EOF' > app/greet.py\ndef greet(name: str) -> str:\n    return f"hello {name}"\nEOF
+posix | cat >> .env.local <<EOF\nDEBUG=1\nEOF
+posix | tee out.log < build.log
+posix | tee reports/summary.txt < reports/raw.txt
+posix | ln -s«|f» «target/release/app bin/app|.env.example .env»
+posix | chmod +x «scripts/build.sh|scripts/test.sh|bin/dev»
+posix | chmod «u+x|755» scripts/build.sh
+posix | tar «-czf dist/release.tar.gz -C build .|-xzf vendor.tgz -C vendor|-tzf dist/release.tar.gz|-cjf backups/src.tar.bz2 src|-xf fixtures.tar -C tests/fixtures»
+posix | unzip «-o fixtures.zip -d tests/fixtures|-l dist/site.zip|-q data.zip -d data»
+posix | zip -r «dist/site.zip public|backups/docs.zip docs|-q out/app.zip build»
+posix | gzip «-k data/dump.sql|-d data/dump.sql.gz|-9 logs/old.log»
+posix | patch -p1 < «patches/fix.patch|fix.diff»
+posix | truncate -s 0 «build.log|logs/dev.log»
+posix | dd if=/dev/urandom of=tests/fixtures/random.bin bs=1k count=16
+posix | install -m 755 target/release/app bin/app
+posix | mkdir -p tmp && cd tmp
+posix | mkdir -p /tmp/build-cache && cd /tmp/build-cache
+posix | mkdir -p "$TMPDIR/scratch" && cd "$TMPDIR/scratch"
+posix | mktemp -d
+posix | rm -rf /tmp/«build-cache|pytest-of-me|vite-cache»
+posix | cp -r «dist|build/web» /tmp/«preview|site»
+
+# ---- POSIX: running and inspecting ----
+
+group run
+
+posix | ./scripts/«setup.sh|test.sh|lint.sh|bootstrap|dev.sh|check-format.sh|release-notes.sh»
+posix | bash scripts/«setup.sh|test.sh|ci/run-tests.sh»
+posix | sh «./scripts/gen.sh|scripts/fetch-fixtures.sh»
+posix | ./«bin/dev|run_tests.sh|gradlew --version|manage.py check»
+posix | make dev & sleep 3 && curl -s «local_url»
+posix | node «server.js|dist/server.js|--env-file=.env server.js» &
+posix | npm run dev -- --port «3001|5174»
+posix | python -m http.server «8000|9000» --directory «dist|public»
+posix | docker «ps|ps -a|images|info|version|stats --no-stream|network ls|volume ls|system df|ps --format '{{.Names}}\\t{{.Status}}'»
+posix | docker compose «ps|up -d|up --build|logs -f web|logs --tail=100 api|build|restart web|stop|pull|config|exec db psql -U postgres|run --rm web npm test|down|top»
+posix | docker-compose «up -d|ps|logs api»
+posix | docker build -t «myapp|myapp:dev|api:latest» «.|-f docker/Dockerfile .»
+posix | docker run --rm «myapp npm test|-p 8080:8080 myapp|-it python:3.12 python --version|-v $PWD:/app -w /app node:20 npm ci»
+posix | docker «logs api|logs -f --tail 50 web|exec -it db psql -U postgres|exec api env|inspect api|port web|top api|cp api:/app/logs ./logs»
+posix | docker «stop|restart» «api|web»
+posix | kubectl «get pods|get pods -n staging|get svc|get deployments -o wide|top pods|get events --sort-by=.lastTimestamp|explain deployment.spec|config current-context|config get-contexts|get nodes|get ingress -A|api-resources|version --client»
+posix | kubectl describe «pod»
+posix | kubectl get deploy/api -o yaml
+posix | kubectl logs «pod»
+posix | kubectl logs deploy/api «--tail=100|-f|--previous»
+posix | kubectl get pods -l app=api -o jsonpath='{.items[*].metadata.name}'
+posix | kubectl port-forward svc/api «8080:80|5432:5432»
+posix | kubectl rollout status deploy/api
+posix | kubectl diff -f k8s/
+posix | curl «-fsSL|-I|-sS» http://localhost:3000/health
+posix | curl -s «local_url»
+posix | curl -s «local_url» | jq .
+posix | curl -s http://localhost:3000/api/items | «head -20|jq '.status'|python3 -m json.tool»
+posix | curl -fsSL «web_url» -o «page.html|tmp/page.html»
+posix | curl -fsSL «web_url» | head -40
+posix | curl -X POST http://localhost:3000/api/items -H 'Content-Type: application/json' -d '{"name":"test"}'
+posix | curl -X POST http://127.0.0.1:8000/graphql -H 'Content-Type: application/json' -d '{"query":"{ items { id } }"}'
+posix | curl -s -o /dev/null -w '%{http_code}' «local_url»
+posix | curl -L https://github.com/org/repo/archive/refs/tags/v1.0.0.tar.gz -o vendor/repo.tar.gz
+posix | curl -L https://example.com/data.csv -o data/data.csv
+posix | wget «-qO-|--spider» «web_url»
+posix | wget -q http://localhost:8080/health -O -
+posix | wget -q https://example.com/data.csv -O data/download.csv
+posix | http «:3000/health|GET localhost:8000/api/items|POST :3000/api/items name=test»
+posix | ps «aux|-ef|aux --sort=-%mem|-o pid,cmd -p 4242»
+posix | ps aux | grep «proc»
+posix | ps aux | grep «proc» | grep -v grep
+posix | pgrep -fl «proc»
+posix | top -b -n 1 | head -20
+posix | env
+posix | env | «sort|grep -i node|grep RUST|wc -l»
+posix | printenv «PATH|HOME|NODE_ENV|VIRTUAL_ENV|CARGO_HOME»
+posix | echo «$PATH|$SHELL|$NODE_ENV|$?|$PWD»
+posix | which «node|python3|cargo|pnpm|docker»
+posix | command -v «node|python3|go»
+posix | type «npm|cargo|ll»
+posix | «node|python3|go|java|rustc|docker|kubectl» --version
+posix | go version && node --version
+posix | lsof «-i :3000|-i :8080|-i tcp:5432|-nP -iTCP -sTCP:LISTEN|-p 4242|+D target»
+posix | lsof -ti «:3000|:5173|:8000»
+posix | kill «4242|-9 4242|-TERM 31337|%1»
+posix | pkill -f «'node server.js'|vite|'cargo watch'|'uvicorn app.main:app'|'next dev'»
+posix | killall «node|vite»
+posix | uname -a
+posix | «sw_vers|nproc|whoami|hostname|date -u +%Y-%m-%dT%H:%M:%SZ|ulimit -n|free -h|sysctl -n hw.ncpu»
+posix | sleep 2 && curl -s «local_url»
+posix | time «cargo build|npm run build|pytest -q|go test ./...»
+posix | timeout 60 «npm test|cargo test|pytest -x|./target/debug/app serve»
+posix | open «http://localhost:3000|coverage/index.html|target/doc/my_crate/index.html|.»
+posix | xdg-open «http://localhost:5173|coverage/index.html»
+posix | psql «-h localhost -U postgres -c 'select 1'|-d app_dev -c '\\dt'|-h localhost -U app -d app_dev -c 'select count(*) from users'»
+posix | sqlite3 «db.sqlite3|data/app.db» «'.tables'|'.schema users'|'select count(*) from users;'»
+posix | redis-cli «ping|info server»
+posix | mysql -u root -e 'show databases'
+posix | nc -zv localhost «3000|5432|6379»
+posix | ping -c 3 «localhost|example.com»
+posix | dig +short «example.com|api.github.com»
+posix | ssh -T git@github.com
+posix | brew «list|outdated|install jq»
+posix | apt list --installed 2>/dev/null | grep «python|node»
+posix | systemctl --user status «redis|postgresql»
+posix | journalctl --user -u «api|redis» -n 50
+posix | tmux «ls|new -d -s dev 'npm run dev'»
+posix | nohup npm run dev > «dev.log|logs/dev.log» 2>&1 &
+posix | jobs -l
+posix | wait
+
+group format_lint
+
+posix | prettier «--check|--write|--list-different» .
+posix | prettier --write «src|'src/**/*.ts'|'**/*.{md,json,yml}'»
+posix | eslint «.|src --ext .ts,.tsx|--fix .|--max-warnings=0 src|src/lib/api.ts»
+posix | npx eslint «. --fix|src --cache»
+posix | rustfmt «rs_file»«| --check»
+posix | clang-format «-i|--dry-run --Werror» «src/main.c|src/*.cpp|include/app.h»
+posix | clang-tidy src/main.cpp -- -Iinclude
+posix | shellcheck «scripts/*.sh|scripts/build.sh|-x scripts/test.sh»
+posix | shfmt «-w|-d|-l» scripts
+posix | markdownlint «'**/*.md'|README.md docs/»
+posix | yamllint «.|.github/workflows»
+posix | hadolint «Dockerfile|docker/api.Dockerfile»
+posix | actionlint
+posix | stylelint '«src/**/*.css|**/*.scss»'
+posix | biome «check .|format --write .|lint src»
+posix | typos«| --write-changes»
+posix | codespell «|-w »«docs|src»
+posix | taplo fmt«| Cargo.toml| --check»
+posix | editorconfig-checker
+posix | buf «lint|format -w|generate»
+posix | sqlfluff lint «migrations|sql/»
+posix | tflint«| --recursive»
+posix | ktlint«| -F» 'src/**/*.kt'
+posix | rubocop«| -a| app/models»
+
+# ---- POSIX: chains and pipelines of the above ----
+
+group chains
+
+posix | cargo fmt && cargo clippy«| --all-targets» -- -D warnings && cargo test
+posix | cargo build && ./target/debug/«app --help|server --port 8080|cli parse tests/fixtures/sample.txt»
+fill test_filter | tail -30 | head -50 | grep -E 'test result|FAILED' | tee test.log | grep -n panicked
+posix | cargo test 2>&1 | «test_filter»
+fill build_grep | grep -E '^(error|warning)' | grep -c warning | grep -A 5 'error\\['
+posix | cargo build 2>&1 | «build_grep»
+posix | npm ci && npm run build && npm test
+posix | npm run build && npm run «lint|test|e2e|preview»
+posix | npm test 2>&1 | «tail -40|tee test.log|grep -i fail»
+posix | npm run lint -- --fix && git diff --stat
+posix | pnpm install && pnpm «build|test|-r lint»
+posix | git add -A && git commit -m «'wip'|'fix: lint'» && git push
+posix | git fetch origin && git rebase origin/main
+posix | git stash && git pull --rebase && git stash pop
+posix | git checkout main && git pull && git checkout -b «new_branch»
+posix | git diff --stat && git diff «src/|--staged»
+posix | git status && git log --oneline -5
+posix | git add «rs_file» && git commit -m 'fix: handle empty input'
+posix | cd «sub» && npm test
+posix | cd frontend && «npm install|make|git status»
+posix | cd frontend && npm run «build|dev|lint»
+posix | cd ../«repo-docs|other-repo» && git status
+posix | (cd frontend && npm test)
+posix | (cd crates/cli && cargo check)
+posix | (cd backend && go test ./...)
+posix | pushd frontend && npm ci && popd
+posix | pushd crates/cli && cargo build && popd
+posix | cd build && cmake .. && make -j«4|8»
+posix | mkdir -p build && cd build && cmake .. && make
+posix | mkdir -p build && cd build && cmake .. -G Ninja && ninja
+posix | python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+posix | test -f .env || cp .env.example .env
+posix | [ -d node_modules ] || npm install
+posix | [ -f Cargo.lock ] && cargo build --locked
+posix | if [ -f package.json ]; then npm test; fi
+posix | for f in «tests/*.py|src/*.rs|scripts/*.sh»; do echo "$f"; «wc -l "$f"|head -3 "$f"»; done
+posix | for d in crates/*/; do (cd "$d" && cargo check); done
+posix | for d in packages/*/; do (cd "$d" && npm test); done
+posix | while read -r f; do wc -l "$f"; done < files.txt
+posix | grep -rn «grep_word» src | wc -l
+posix | grep -rn TODO src | «head -20|sort»
+posix | grep -rn TODO src | cut -d: -f1 | sort -u
+posix | find . -name '*.py' | xargs grep -l «'import requests'|'TODO'»
+posix | find . -name '*.ts' | xargs grep -l «'useState'|'TODO'»
+posix | find src -name '*.rs' -exec grep -l «'unsafe'|'todo!'|'unwrap'» {} +
+posix | find . -name «'*.log'|'*.tmp'|'*.orig'|'.DS_Store'» -delete
+posix | find . -name '__pycache__' -type d -exec rm -rf {} +
+posix | find . -name '*.rs' | xargs rustfmt --check
+posix | cat package.json | jq «.scripts|.dependencies»
+posix | cat tsconfig.json | jq .compilerOptions
+posix | ls -la «src|dist» | grep «-v total|'^d'»
+posix | ls «src|tests» | wc -l
+posix | ps aux | grep «node|python» | awk '{print $2}'
+posix | docker compose up -d && docker compose logs -f «api|web»
+posix | docker compose down && docker compose up -d --build
+posix | docker build -t myapp . && docker run --rm -p 8080:8080 myapp
+posix | export NODE_ENV=test && npm test
+posix | NODE_ENV=production npm run build
+posix | CI=1 npm test
+posix | DEBUG=app:* npm start
+posix | PORT=3001 npm start
+posix | «DATABASE_URL=postgres://localhost/app_test|PYTHONPATH=.» pytest -q
+posix | env «PORT=8081|RUST_LOG=debug» cargo run
+posix | set -e; cargo build; cargo test
+posix | set -o pipefail && cargo test 2>&1 | tee test.log
+posix | echo "$(date): build ok" >> build.log
+posix | diff <(cargo run -q -- --help) docs/help.txt
+posix | cargo run -q -- --help > docs/help.txt
+posix | npm run build > build.log 2>&1 && tail -5 build.log
+posix | curl -s «local_url» > tmp/response.json && jq . tmp/response.json
+posix | git log --format='%H' -1 > «.git-sha|build/VERSION»
+posix | sort -u .gitignore -o .gitignore
+posix | sort -u words.txt -o words.txt
+posix | cargo test && git add -A && git commit -m «msg»
+posix | make clean && make«| -j8» && make test
+posix | rm -rf node_modules && npm install
+posix | rm -rf node_modules package-lock.json && npm install
+posix | rm -rf dist && npm run build
+posix | rm -rf target && cargo build
+posix | go mod tidy && go build ./... && go test ./...
+posix | ruff check --fix . && ruff format . && pytest -q
+posix | black . && isort . && flake8 app
+posix | yes | npx «create-vite@latest app --template react-ts|shadcn@latest init»
+posix | xargs -n1 echo < «files.txt|list.txt»
+posix | echo «'{"a":1}'|'[1,2,3]'» | jq «.|length»
+posix | printf 'y\\n' | npx playwright install
+posix | seq 1 «5|10» | xargs -I{} echo item-{}
+posix | watch -n «2|5» «'kubectl get pods'|'docker compose ps'|'ls -la dist'»
+
+# ---- The fillers of Windows lines ----
+
+fill cs_file | src\\Api\\Program.cs | src\\Core\\Parser.cs | tests\\Core.Tests\\ParserTests.cs | src\\Api\\Controllers\\UsersController.cs
+fill win_file | README.md | package.json | appsettings.json | .\\src\\index.ts | src\\Core\\Core.csproj
+fill win_log | build.log | logs\\app.log | TestResults\\results.trx
+fill win_build_dir | bin | obj | dist | build | node_modules | TestResults | .vs | out | coverage | publish
+fill win_sub | frontend | src\\Api | tools\\gen | packages\\web | docs
+fill ps_proc | node | dotnet | python | Code | msbuild
+fill ps_pattern | 'TODO' | 'async void' | 'class \\w+Controller' | 'ConnectionString' | 'Console.WriteLine'
+fill win_msg | "fix: handle empty input" | "feat: add rate limiting" | "chore: bump packages" | 'test: cover the parser'
+fill win_url | http://localhost:5000/health | http://localhost:3000 | https://localhost:7001/swagger/index.html | http://127.0.0.1:8080/api/items
+
+# ---- PowerShell ----
+
+group build
+
+powershell | dotnet «build|test|restore|run|clean|format|format --verify-no-changes|watch run|--info|--list-sdks|tool restore|list package --outdated|build -c Release|test --no-build|test --logger trx»
+powershell | dotnet run --project «src\\Api|src\\Api\\Api.csproj»
+powershell | dotnet build src\\Api\\Api.csproj
+powershell | dotnet «build|test» tests\\Core.Tests
+powershell | dotnet test --filter «Category=Unit|FullyQualifiedName~Parser|'Name=Parses_Empty_Input'»
+powershell | dotnet add «package Serilog|package Newtonsoft.Json|src\\Api reference src\\Core\\Core.csproj|package Microsoft.EntityFrameworkCore --version 8.0.4»
+powershell | dotnet new «classlib -n Core -o src\\Core|xunit -n Core.Tests -o tests\\Core.Tests|sln -n App|gitignore|webapi -n Api -o src\\Api»
+powershell | dotnet sln add «src\\Core\\Core.csproj|tests\\Core.Tests\\Core.Tests.csproj»
+powershell | dotnet publish -c Release -o «.\\publish|.\\out»
+powershell | dotnet ef «migrations add AddUsers|database update|migrations list»
+powershell | cargo «build|test|check|clippy|run|fmt --check»«| --release»
+powershell | npm «install|ci|test|run build|run dev|run lint|run typecheck|outdated»
+powershell | npm install «zod|-D vitest|typescript --save-dev»
+powershell | npx «tsc --noEmit|eslint .|prettier --check .|vitest run|playwright test»
+powershell | pnpm «install|build|test|dev»
+powershell | yarn«| install| build| test»
+powershell | py «-m pytest|-m pytest -q|-m pip install -r requirements.txt|-3.12 -m venv .venv|--list|scripts\\migrate.py»
+powershell | python -m «pytest|pip install -e .|venv .venv|http.server 8000»
+powershell | .\\.venv\\Scripts\\«Activate.ps1|python.exe -m pytest|pip.exe install -r requirements.txt»
+powershell | go «build ./...|test ./...|vet ./...|mod tidy»
+powershell | .\\gradlew.bat «build|test|assemble»
+powershell | mvn «test|package|-DskipTests package»
+powershell | cmake -S . -B build «-G 'Visual Studio 17 2022'|-G Ninja|-A x64»
+powershell | cmake --build build --config «Release|Debug»
+powershell | ctest --test-dir build -C «Release|Debug» --output-on-failure
+powershell | msbuild «App.sln|App.sln /p:Configuration=Release|src\\Api\\Api.csproj /t:Rebuild»
+powershell | nuget restore App.sln
+powershell | Invoke-Pester«| -Path .\\tests| -Output Detailed| .\\tests\\Build.Tests.ps1»
+powershell | Invoke-ScriptAnalyzer -Path «.\\scripts|.\\build.ps1»«| -Recurse»
+powershell | .\\build.ps1«| -Configuration Release| -Target Test»
+powershell | & .\\scripts\\«test.ps1|setup.ps1 -Verbose|lint.ps1»
+powershell | swift build
+powershell | flutter «pub get|test»
+
+group git
+
+powershell | git «status|status -sb|diff|diff --staged|diff --stat|log --oneline -20|log --oneline --graph --all|show --stat|branch|branch -a|branch --show-current|remote -v|stash list|fetch|fetch --all --prune|pull|pull --rebase|rev-parse HEAD|worktree list»
+powershell | git add «.|-A|-u»
+powershell | git add «cs_file»
+powershell | git commit -m «win_msg»
+powershell | git add -A; git commit -m «win_msg»
+powershell | git «checkout|switch» «main|feature/login|develop»
+powershell | git «checkout -b|switch -c» «feature/rate-limit|fix/null-check»
+powershell | git push«| -u origin HEAD| -u origin feature/rate-limit»
+powershell | git rebase «main|origin/main|--continue|--abort»
+powershell | git stash«| pop| push -m 'wip'»
+powershell | git log --oneline -n 10 | Select-Object -First «3|5»
+powershell | git diff --name-only | ForEach-Object { «Get-Item $_|Write-Output $_» }
+powershell | git branch --merged | Select-String -NotMatch 'main'
+powershell | git status --porcelain | Measure-Object -Line
+powershell | git grep -n «ps_pattern»
+powershell | git worktree add ..\\«wt-login feature/login|wt-review origin/main»
+powershell | gh pr «list|view 42|checks|status|diff 42»
+powershell | gh run «list|view 123456 --log-failed»
+
+group read
+
+powershell | Get-ChildItem«| -Recurse| -Force| -Name| -Directory| -File»
+powershell | Get-ChildItem «src|.\\tests|-Path .\\src\\Api»
+powershell | Get-ChildItem -Recurse -Filter «*.cs|*.ps1|*.json|*.csproj|*.md»«| -File»
+powershell | Get-ChildItem -Recurse -Include *.cs,*.csproj | Select-Object -ExpandProperty FullName
+powershell | Get-ChildItem -Recurse -File | Sort-Object Length -Descending | Select-Object -First «10|20» FullName, Length
+powershell | Get-ChildItem «src|.» -Recurse | Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-1) }
+powershell | Get-ChildItem -Recurse -Directory -Filter «bin|obj|node_modules» | Select-Object FullName
+powershell | «gci|ls|dir»«| src| -Recurse *.cs»
+powershell | Get-Content «win_file»
+powershell | Get-Content README.md «-Head 20|-Tail 50|-TotalCount 40|-Raw»
+powershell | Get-Content «cs_file»
+powershell | Get-Content «win_log» -Tail «20|100»«| -Wait»
+powershell | «cat|type|gc» «README.md|package.json|.\\src\\Core\\Parser.cs»
+powershell | Select-String -Path 'src\\*.cs' -Pattern «ps_pattern»
+powershell | Select-String -Path «'.\\*.md'|'src\\**\\*.ts'» -Pattern 'TODO'
+powershell | Get-ChildItem -Recurse -Filter *.cs | Select-String -Pattern «ps_pattern»
+powershell | Get-ChildItem -Recurse *.cs | Select-String «'TODO'|'HACK'» | Select-Object -First 20
+powershell | sls «'TODO'|'FIXME'» «*.md|src\\*.ts»
+powershell | (Get-Content package.json | ConvertFrom-Json).«scripts|dependencies|version»
+powershell | Get-Content .\\appsettings.json | ConvertFrom-Json | Select-Object -ExpandProperty «Logging|ConnectionStrings|AllowedHosts»
+powershell | Get-Content «win_file» | Measure-Object -Line -Word
+powershell | (Get-Content «cs_file»).Count
+powershell | Get-Content «cs_file» | Select-Object -Skip 10 -First 20
+powershell | Get-Item «.\\src|package.json|.\\bin\\Debug» | Format-List
+powershell | Test-Path «.\\node_modules|.\\.venv|.\\bin\\Release|package-lock.json»
+powershell | Resolve-Path «.\\src|..\\shared»
+powershell | «Get-Location|pwd|$PWD.Path|Split-Path -Leaf (Get-Location)»
+powershell | Get-FileHash «.\\dist\\app.zip|.\\publish\\Api.dll»«| -Algorithm SHA256»
+powershell | Compare-Object (Get-Content expected.txt) (Get-Content actual.txt)
+powershell | Compare-Object (Get-Content .\\a\\config.json) (Get-Content .\\b\\config.json)
+powershell | Get-ItemProperty «.\\publish\\Api.dll|package.json» | Select-Object Name, Length, LastWriteTime
+powershell | (Get-Item .\\publish\\Api.dll).VersionInfo
+powershell | Get-ChildItem -Recurse -File | Measure-Object -Property Length -Sum
+powershell | Get-ChildItem *.json | ForEach-Object { $_.Name }
+powershell | Format-Hex «.\\assets\\logo.png|.\\data\\dump.bin» | Select-Object -First 5
+powershell | tree /F «src|.\\tests»
+powershell | rg «'TODO'|'async void'» «src|-t cs»
+powershell | Import-Csv «.\\data\\users.csv|data\\report.csv» | Select-Object -First «5|10»
+powershell | Import-Csv .\\data\\users.csv | Where-Object { $_.Active -eq 'true' } | Measure-Object
+powershell | [xml](Get-Content «src\\Core\\Core.csproj|App.config») | Select-Object -ExpandProperty Project
+powershell | Get-Content package.json -Raw | ConvertFrom-Json | ConvertTo-Json -Depth «3|5»
+powershell | Get-ChildItem -Recurse -Filter *.cs | Group-Object Directory | Sort-Object Count -Descending
+powershell | Get-ChildItem Env:
+powershell | Get-ChildItem Env: | «Sort-Object Name|Where-Object Name -Like 'DOTNET*'»
+
+group edit
+
+powershell | New-Item -ItemType Directory -Path «src\\Utils|tests\\Fixtures|.\\docs\\adr|.\\scripts»«| -Force»
+powershell | New-Item -ItemType File -Path «src\\Utils\\Guard.cs|.\\docs\\notes.md|.env.local|tests\\Fixtures\\empty.json»«| -Force»
+powershell | «mkdir|md» «src\\Utils|tests\\Fixtures|out»
+powershell | ni «notes.md|src\\Utils\\Text.cs»«| -Force»
+powershell | Set-Content -Path notes.md -Value 'hello'
+powershell | Set-Content -Path .\\out\\version.txt -Value $env:GITHUB_SHA
+powershell | Set-Content -Path src\\version.txt -Value '1.2.0'
+powershell | Add-Content -Path .gitignore -Value «'bin/'|'obj/'|'*.user'»
+powershell | Add-Content -Path «build.log|.\\docs\\notes.md» -Value 'done'
+powershell | 'hello' | Out-File -FilePath .\\out\\hello.txt
+powershell | '{}' | Out-File out.json -Encoding utf8
+powershell | $version | Out-File .\\build\\VERSION
+powershell | «'build done'|Get-Date» >> «build.log|.\\logs\\build.log»
+powershell | dotnet test > «test.log|TestResults\\out.txt» 2>&1
+powershell | Copy-Item «appsettings.json appsettings.Development.json|.\\src\\* .\\backup -Recurse|.env.example .env|README.md .\\docs\\index.md|-Path .\\assets -Destination .\\dist\\assets -Recurse»
+powershell | Move-Item «old.txt new.txt|.\\src\\Old.cs .\\src\\New.cs|.\\out\\report.html .\\reports\\|-Path .\\draft.md -Destination .\\docs\\guide.md»
+powershell | Rename-Item «.\\src\\Old.cs New.cs|notes.txt notes.md»
+powershell | Remove-Item -Recurse -Force «win_build_dir»
+powershell | Remove-Item «.\\out\\*.tmp|build.log|.\\src\\Old.cs|.\\TestResults -Recurse|*.log -Force»
+powershell | Remove-Item -Path «.\\bin|.\\obj|.\\dist» -Recurse -Force -ErrorAction SilentlyContinue
+powershell | Get-ChildItem -Recurse -Directory -Include bin,obj | Remove-Item -Recurse -Force
+powershell | Get-ChildItem -Filter «*.log|*.tmp» | Remove-Item
+powershell | rm -r -fo «node_modules|dist|bin»
+powershell | (Get-Content src\\version.txt) -replace '1.0.0', '1.1.0' | Set-Content src\\version.txt
+powershell | (Get-Content package.json) -replace '"version": "1.0.0"', '"version": "1.1.0"' | Set-Content package.json
+powershell | (Get-Content .\\src\\Api\\appsettings.json) -replace 'Debug', 'Information' | Set-Content .\\src\\Api\\appsettings.json
+powershell | (Get-Content .\\src\\Core\\Parser.cs) -replace 'OldName','NewName' | Set-Content .\\src\\Core\\Parser.cs
+powershell | Expand-Archive -Path «.\\vendor.zip|.\\fixtures.zip» -DestinationPath «.\\vendor|.\\tests\\Fixtures»«| -Force»
+powershell | Compress-Archive -Path «.\\dist\\*|.\\publish\\*» -DestinationPath «.\\release.zip|.\\out\\app.zip» -Force
+powershell | Set-Content -Path .\\src\\Hello.cs -Value @'\nnamespace Demo;\n\npublic static class Hello { }\n'@
+powershell | Set-Content -Path .\\docs\\notes.md -Value @'\n# Notes\n\n- the parser rejects empty input\n'@
+powershell | @'\n{\n  "name": "demo"\n}\n'@ | Set-Content «package.json|.\\tests\\Fixtures\\user.json»
+powershell | $content = Get-Content «package.json|.\\appsettings.json» -Raw; $content.Length
+powershell | $json = Get-Content package.json -Raw | ConvertFrom-Json; $json.version = '1.1.0'; $json | ConvertTo-Json -Depth 10 | Set-Content package.json
+powershell | Invoke-WebRequest https://example.com/data.csv -OutFile .\\data\\data.csv
+powershell | Invoke-WebRequest https://raw.githubusercontent.com/github/gitignore/main/VisualStudio.gitignore -OutFile .gitignore
+powershell | New-Item -ItemType SymbolicLink -Path .\\bin\\app.exe -Target .\\publish\\Api.exe
+
+group run
+
+powershell | Get-Process«| node| dotnet| -Name node| -Id 4242»
+powershell | Get-Process -Name «ps_proc» | Select-Object Id, ProcessName, CPU
+powershell | Get-Process | Sort-Object CPU -Descending | Select-Object -First «5|10»
+powershell | Get-Process | Where-Object { $_.ProcessName -like '«node*|dotnet*»' }
+powershell | Stop-Process -Id «4242|31337»«| -Force»
+powershell | Stop-Process -Name «node|dotnet|Api»«| -Force»
+powershell | Get-Process «node|dotnet» | Stop-Process«| -Force»
+powershell | Get-NetTCPConnection -LocalPort «3000|5000|5432»«| -State Listen»
+powershell | Get-NetTCPConnection -LocalPort «3000|5000» | Select-Object OwningProcess
+powershell | netstat -ano | Select-String «':3000'|':5000'»
+powershell | netstat -ano | findstr «:3000|:5000|LISTENING»
+powershell | «$env:PATH|$env:USERPROFILE|$env:NODE_ENV|$env:ASPNETCORE_ENVIRONMENT|$env:PATH -split ';'»
+powershell | $env:NODE_ENV = 'test'; npm test
+powershell | $env:ASPNETCORE_ENVIRONMENT = 'Development'; dotnet run
+powershell | $env:RUST_LOG = 'debug'; cargo run
+powershell | [Environment]::GetEnvironmentVariable(«'PATH'|'JAVA_HOME'»«|, 'User'»)
+powershell | Get-Command «node|python|cargo|dotnet|git»«| -All»
+powershell | where.exe «node|python|git»
+powershell | (Get-Command «node|dotnet»).Source
+powershell | «node|python|dotnet|cargo|git» --version
+powershell | Invoke-WebRequest «win_url» «-UseBasicParsing|-Method Head»
+powershell | (Invoke-WebRequest «win_url» -UseBasicParsing).StatusCode
+powershell | Invoke-RestMethod «http://localhost:5000/api/items|http://localhost:3000/api/health|https://api.github.com/repos/PowerShell/PowerShell/releases/latest»
+powershell | Invoke-RestMethod -Uri http://localhost:5000/api/items -Method Post -ContentType 'application/json' -Body '{"name":"test"}'
+powershell | $body = @{ name = 'test' } | ConvertTo-Json; Invoke-RestMethod -Uri http://localhost:5000/api/items -Method Post -ContentType 'application/json' -Body $body
+powershell | «iwr|irm» «http://localhost:5000/health|https://example.com»
+powershell | curl.exe «-s|-I|-sS -o NUL -w '%{http_code}'» «win_url»
+powershell | docker «ps|ps -a|images|compose ps|compose up -d|compose logs -f api|compose down|build -t myapp .|stats --no-stream»
+powershell | kubectl «get pods|get svc|logs deploy/api --tail=100|describe pod api-7d9f8b6c5-x2kqp|config current-context»
+powershell | «$PSVersionTable|$PSVersionTable.PSVersion|Get-Date|[System.Environment]::OSVersion|[Environment]::ProcessorCount|$Host.Version|whoami|hostname»
+powershell | Get-ComputerInfo -Property «OsName|WindowsVersion|CsProcessors»
+powershell | Get-ExecutionPolicy«| -List»
+powershell | Get-Module -ListAvailable «Pester|PSScriptAnalyzer|Az*»
+powershell | Get-Help «Get-ChildItem|Select-String»«| -Examples»
+powershell | Start-Process «http://localhost:5000|.\\coverage\\index.html|code -ArgumentList '.'»
+powershell | Start-Process dotnet -ArgumentList 'run --project src\\Api' -NoNewWindow
+powershell | Start-Sleep -Seconds «2|5»; Invoke-WebRequest «win_url» -UseBasicParsing
+powershell | Start-Job { dotnet run --project src\\Api } | Out-Null
+powershell | Get-Job | Receive-Job
+powershell | Measure-Command { «dotnet build|npm run build|cargo build» }
+powershell | Get-Service«| postgresql*| MSSQL*| docker»
+powershell | Get-EventLog -LogName Application -Newest «10|20»
+powershell | Get-WinEvent -LogName Application -MaxEvents 20
+powershell | Test-NetConnection localhost -Port «5000|5432|1433»
+powershell | Resolve-DnsName «example.com|api.github.com»
+powershell | winget «list|search ripgrep|show Git.Git»
+powershell | choco list --local-only
+powershell | scoop «list|install ripgrep»
+powershell | sqlcmd -S localhost -Q «'SELECT @@VERSION'|'SELECT name FROM sys.databases'»
+powershell | Write-Host «'Build done'|"Version: $version"|'---'»
+powershell | Write-Output «$env:COMPUTERNAME|(Get-Date -Format o)»
+powershell | Clear-Host
+
+group chains
+
+powershell | dotnet build; if ($LASTEXITCODE -eq 0) { dotnet test }
+powershell | dotnet restore && dotnet build && dotnet test
+powershell | npm ci; npm run build; npm test
+powershell | Set-Location «win_sub»; ls
+powershell | Set-Location frontend; «npm test|npm run build»
+powershell | Set-Location src\\Api; dotnet build
+powershell | cd frontend; npm install
+powershell | cd tools\\gen; dotnet test
+powershell | cd docs; git status
+powershell | Push-Location frontend; npm test; Pop-Location
+powershell | Push-Location src\\Api; dotnet run; Pop-Location
+powershell | if (-not (Test-Path .\\node_modules)) { npm install }
+powershell | if (Test-Path .\\bin) { Remove-Item .\\bin -Recurse -Force }
+powershell | if (Test-Path .\\dist) { Remove-Item .\\dist -Recurse -Force }
+powershell | if (Test-Path .\\node_modules) { Remove-Item .\\node_modules -Recurse -Force }
+powershell | foreach ($p in Get-ChildItem tests -Filter *.csproj -Recurse) { dotnet test $p.FullName }
+powershell | Get-ChildItem -Recurse -Filter *.csproj | ForEach-Object { dotnet build $_.FullName }
+powershell | Get-ChildItem -Filter *.md | ForEach-Object { «Write-Output $_.Name|(Get-Content $_).Count» }
+powershell | 1..«3|5» | ForEach-Object { Invoke-WebRequest http://localhost:5000/health -UseBasicParsing | Select-Object StatusCode }
+powershell | git status --short | ForEach-Object { $_.Substring(3) }
+powershell | Get-Content .\\files.txt | ForEach-Object { Get-Item $_ }
+powershell | Get-ChildItem -Recurse -Filter *.cs | Select-String 'TODO' | Group-Object Path | Select-Object Name, Count
+powershell | dotnet test 2>&1 | Select-String «'Failed'|'Passed!'|'error'»
+powershell | npm test 2>&1 | Select-Object -Last «20|40»
+powershell | cargo build 2>&1 | Tee-Object -FilePath build.log
+powershell | dotnet build | Out-File build.log
+powershell | $env:CI = 'true'; npm test
+powershell | $sw = [Diagnostics.Stopwatch]::StartNew(); dotnet build; $sw.Elapsed
+powershell | try { dotnet build } catch { Write-Error $_ }
+powershell | $ErrorActionPreference = 'Stop'; dotnet test
+powershell | Get-ChildItem .\\src -Recurse -Filter *.cs | Measure-Object | Select-Object -ExpandProperty Count
+powershell | (Get-ChildItem -Recurse -Filter *.cs | Get-Content | Measure-Object -Line).Lines
+powershell | Get-Content .\\.env.example | ForEach-Object { $_.Split('=')[0] }
+powershell | dotnet --list-sdks | Select-String «'8.0'|'9.0'»
+powershell | Get-ChildItem *.zip | Expand-Archive -DestinationPath .\\vendor -Force
+powershell | Get-ChildItem .\\TestResults -Filter *.trx | Select-Object -Last 1 | Get-Content
+powershell | [IO.File]::ReadAllText(«'package.json'|'.\\appsettings.json'»)
+powershell | [IO.Path]::Combine('src', 'Api', 'Program.cs')
+powershell | [guid]::NewGuid()
+powershell | Get-Random -Minimum 1000 -Maximum 9999
+
+# ---- cmd ----
+
+group build
+
+cmd | dotnet «build|test|restore|run|clean|format|build -c Release|test --no-build|publish -c Release -o publish»
+cmd | dotnet run --project src\\Api
+cmd | dotnet test tests\\Core.Tests
+cmd | cargo «build|test|check|clippy|run»«| --release»
+cmd | npm «install|ci|test|run build|run dev|run lint|outdated»
+cmd | npx «tsc --noEmit|eslint .|prettier --check .»
+cmd | yarn «install|build|test»
+cmd | pnpm «install|build|test»
+cmd | msbuild «App.sln|App.sln /p:Configuration=Release /m|src\\Api\\Api.csproj /t:Rebuild|App.sln /t:Clean»
+cmd | nmake«| /f Makefile.win| clean»
+cmd | cl /EHsc /W4 src\\main.cpp /Fe:build\\app.exe
+cmd | gradlew.bat «build|test|assemble|clean build»
+cmd | .\\gradlew.bat «build|test»
+cmd | mvnw.cmd «test|package|-DskipTests package»
+cmd | mvn «test|package»
+cmd | py «-m pytest|-m pytest -q|-m pip install -r requirements.txt|-m venv .venv|scripts\\migrate.py»
+cmd | python -m «pytest|pip install -e .|venv .venv|pip list»
+cmd | .venv\\Scripts\\«activate.bat|python.exe -m pytest|pip.exe install -r requirements.txt»
+cmd | go «build ./...|test ./...|vet ./...|mod tidy»
+cmd | cmake -S . -B build -G «"Visual Studio 17 2022"|Ninja|"NMake Makefiles"»
+cmd | cmake --build build --config «Release|Debug»
+cmd | ctest --test-dir build -C Release --output-on-failure
+cmd | nuget restore App.sln
+cmd | build.cmd«| Release| test»
+cmd | .\\build.cmd Release
+cmd | .\\scripts\\test.bat
+cmd | ..\\tools\\gen.exe --out src\\Generated
+cmd | .\\bin\\Debug\\net8.0\\Api.exe --urls http://localhost:5000
+cmd | bin\\Debug\\net8.0\\Api.exe --help
+cmd | call «build.bat|scripts\\setup.cmd|scripts\\test.bat Release»
+cmd | vcvars64.bat
+cmd | flutter «pub get|build windows»
+
+group git
+
+cmd | git «status|status -sb|diff|diff --staged|diff --stat|log --oneline -20|log --oneline --graph --all|show --stat|branch|branch -a|remote -v|stash list|fetch|pull|pull --rebase|rev-parse HEAD|worktree list»
+cmd | git add «.|-A|src\\Api\\Program.cs»
+cmd | git commit -m «"fix: handle empty input"|"feat: add rate limiting"|"chore: bump packages"»
+cmd | git add -A && git commit -m «"wip"|"fix: lint"»
+cmd | git «checkout|switch» «main|feature/login»
+cmd | git «checkout -b|switch -c» «feature/rate-limit|fix/null-check»
+cmd | git push«| -u origin HEAD| -u origin feature/rate-limit»
+cmd | git rebase «origin/main|--continue|--abort»
+cmd | git stash«| pop»
+cmd | git status | findstr «modified|"new file"|deleted»
+cmd | git log --oneline | findstr «fix|feat»
+cmd | git diff --name-only | findstr «.cs|.json»
+cmd | git branch | find /c /v ""
+cmd | gh pr «list|view 42|checks»
+
+group read
+
+cmd | dir«| /b| /s| /a| /o-d| /s /b *.cs| /a:d| /b /s *.csproj| /q| /w»
+cmd | dir «src|tests» «/b|/s»
+cmd | dir «src\\*.cs|*.json|bin\\Debug|.\\publish»«| /b»
+cmd | type «README.md|package.json|appsettings.json|src\\Core\\Parser.cs|build.log|.gitignore»
+cmd | type «build.log|README.md» | more
+cmd | type «build.log|logs\\app.log» | findstr /i «error|warn|exception»
+cmd | more «README.md|build.log»
+cmd | findstr «/s /i /n|/s /n|/i /n» TODO *.cs
+cmd | findstr /s /n «"async void"|ConnectionString» «*.cs|src\\*.cs»
+cmd | findstr /m /s Console.WriteLine *.cs
+cmd | findstr /m /s ConnectionString «*.cs|*.json»
+cmd | findstr /r /n «"^using"|"class.*Controller"» «src\\Api\\*.cs|src\\Core\\*.cs»
+cmd | find /c /v "" «build.log|src\\Core\\Parser.cs|README.md»
+cmd | find /i "error" «build.log|logs\\app.log»
+cmd | where «node|python|git|dotnet|msbuild»
+cmd | where /r src «*.cs|*.csproj»
+cmd | tree «|/f |/a »«src|.»
+cmd | fc «expected.txt actual.txt|/b a.bin b.bin|/n src\\a.cs src\\b.cs»
+cmd | comp a.bin b.bin /m
+cmd | certutil -hashfile «dist\\app.zip|publish\\Api.dll» SHA256
+cmd | echo «%CD%|%PATH%|%USERPROFILE%|%ERRORLEVEL%|%NODE_ENV%|%DATE% %TIME%»
+cmd | cd
+cmd | chdir
+cmd | vol
+cmd | attrib «README.md|src\\*.cs»
+cmd | rg «TODO|"async void"» «src|-t cs»
+cmd | forfiles /p src /s /m *.cs /c "cmd /c echo @path"
+
+group edit
+
+cmd | «mkdir|md» «src\\Utils|tests\\Fixtures|out|docs\\adr|build»
+cmd | type nul > «notes.md|src\\Utils\\Guard.cs|.env.local»
+cmd | echo hello > out.txt
+cmd | echo 1.2.0 > version.txt
+cmd | echo {} > tests\\Fixtures\\empty.json
+cmd | echo done > out\\status.txt
+cmd | echo «bin/|obj/|*.user|node_modules/» >> .gitignore
+cmd | echo.>> build.log
+cmd | copy «appsettings.json appsettings.Development.json|.env.example .env|README.md docs\\index.md|/y src\\config.json build\\config.json»
+cmd | copy /b «part1.bin+part2.bin out.bin|file1.txt+file2.txt combined.txt»
+cmd | xcopy «/e /i /y assets dist\\assets|/s /i src backup\\src|/y /q config\\*.json build\\config\\»
+cmd | robocopy «src backup\\src /e|assets dist\\assets /mir»
+cmd | move «old.txt new.txt|src\\Old.cs src\\New.cs|/y out\\report.html reports\\»
+cmd | «ren|rename» «notes.txt notes.md|src\\Old.cs New.cs»
+cmd | del «build\\*.obj|*.log|out\\*.tmp|TestResults\\*.trx|src\\Old.cs»
+cmd | del «/q|/f /q|/s /q» build\\*.obj
+cmd | rd /s /q «win_build_dir»
+cmd | rmdir /s /q «bin|obj|dist|node_modules»
+cmd | if exist bin rd /s /q bin
+cmd | if exist dist rd /s /q dist
+cmd | if exist node_modules rd /s /q node_modules
+cmd | dotnet test > «test.log|TestResults\\out.txt» 2>&1
+cmd | npm run build > build.log 2>&1
+cmd | tar «-xf vendor.zip -C vendor|-czf release.tgz dist|-tf release.tgz»
+cmd | powershell -NoProfile -Command "Expand-Archive -Path vendor.zip -DestinationPath vendor -Force"
+cmd | attrib -r «src\\generated\\*.cs|build\\*.*»
+
+group run
+
+cmd | tasklist«| /v| /fi "imagename eq node.exe"| /fi "pid eq 4242"| /m»
+cmd | tasklist | findstr «node|dotnet|python»
+cmd | taskkill /pid «4242|31337»«| /f| /t /f»
+cmd | taskkill /im «node.exe|dotnet.exe|Api.exe» /f
+cmd | netstat -ano | findstr «:3000|:5000|:5432|LISTENING»
+cmd | set«| PATH| NODE| DOTNET»
+cmd | set NODE_ENV=test&& npm test
+cmd | set ASPNETCORE_ENVIRONMENT=Development&& dotnet run
+cmd | set RUST_LOG=debug&& cargo run
+cmd | set PATH=%PATH%;%CD%\\bin
+cmd | «ver|whoami|hostname|systeminfo|date /t|time /t|echo %PROCESSOR_ARCHITECTURE%|wmic os get caption|wmic cpu get name»
+cmd | «node|python|dotnet|cargo|git|java» --version
+cmd | curl «-s|-I|-sS -o nul -w "%{http_code}"» «win_url»
+cmd | curl -s http://localhost:5000/api/items -H "Accept: application/json"
+cmd | curl -X POST http://localhost:5000/api/items -H "Content-Type: application/json" -d "{\\"name\\":\\"test\\"}"
+cmd | start «http://localhost:5000|coverage\\index.html|"" code .|"" dotnet run --project src\\Api»
+cmd | timeout /t «2|5» /nobreak
+cmd | timeout /t 3 && curl -s http://localhost:5000/health
+cmd | docker «ps|ps -a|images|compose up -d|compose ps|compose logs api|compose down|build -t myapp .»
+cmd | kubectl «get pods|get svc|logs deploy/api --tail=100»
+cmd | sc query «postgresql-x64-16|MSSQLSERVER|docker»
+cmd | net start | findstr /i «sql|postgres»
+cmd | ping -n 2 «localhost|example.com»
+cmd | nslookup «example.com|api.github.com»
+cmd | ipconfig«| /all»
+cmd | sqlcmd -S localhost -Q «"SELECT @@VERSION"|"SELECT name FROM sys.databases"»
+cmd | winget «list|search ripgrep»
+cmd | cls
+cmd | title Dev server
+cmd | pause
+
+group chains
+
+cmd | dotnet restore && dotnet build && dotnet test
+cmd | npm ci && npm run build && npm test
+cmd | cd «win_sub» && dir
+cmd | cd frontend && «npm test|npm install»
+cmd | cd src\\Api && dotnet build
+cmd | cd /d «%USERPROFILE%\\dev\\repo|C:\\Users\\me\\dev\\repo\\src» && «dotnet build|dir»
+cmd | pushd frontend && npm test && popd
+cmd | pushd src\\Api && dotnet run && popd
+cmd | if exist node_modules (npm run build) else (npm install && npm run build)
+cmd | if not exist out mkdir out
+cmd | if not exist build mkdir build
+cmd | if not exist .env copy .env.example .env
+cmd | if %ERRORLEVEL% neq 0 echo failed
+cmd | for %f in («*.csproj|tests\\*.csproj») do dotnet build "%f"
+cmd | for /r %f in («*.cs|*.json») do @echo %f
+cmd | for /d %d in («src\\*|tests\\*») do @echo %d
+cmd | for /f "tokens=5" %a in ('netstat -ano ^| findstr :3000') do @echo %a
+cmd | for /f %i in ('git rev-parse HEAD') do set SHA=%i
+cmd | dotnet build 2>&1 | findstr /i «error|warning»
+cmd | npm test 2>&1 | findstr /i «fail|pass»
+cmd | dir /s /b *.cs | find /c /v ""
+cmd | git status && git diff --stat
+cmd | git fetch && git rebase origin/main
+cmd | dotnet build || echo build failed
+cmd | cargo build && target\\debug\\«app.exe --help|app.exe --version»
+cmd | msbuild App.sln /p:Configuration=Release && dotnet test --no-build
+cmd | rd /s /q bin & dotnet build
+cmd | rd /s /q node_modules & npm install
+cmd | echo %DATE% %TIME% >> build.log && dotnet build >> build.log
+cmd | call .venv\\Scripts\\activate.bat && py -m pytest
+cmd | setlocal && set NODE_ENV=test && npm test
+cmd | type package.json | findstr version
+cmd | where node >nul 2>&1 || echo Node is not installed
