@@ -262,15 +262,15 @@ fn shells_of(paths: &Paths) -> &'static [Shell] {
 /// in every line that names it: each line they do not agree on, and how many
 /// were judged and secrets.
 fn disagree(path: &str, paths: &Paths, shells: &[Shell]) -> (Vec<String>, usize, usize) {
-    let (mut wrong, mut judged, mut secrets) = (Vec::new(), 0_usize, 0_usize);
+    let (mut wrong, mut judged, mut flagged) = (Vec::new(), 0_usize, 0_usize);
     let Some(expected) = file_says(path, paths) else {
-        return (wrong, judged, secrets);
+        return (wrong, judged, flagged);
     };
     let home = paths.home.to_string_lossy();
     for &shell in shells {
         for line in lines(path, shell, &home) {
             judged += 1;
-            secrets += usize::from(expected);
+            flagged += usize::from(expected);
             let got = shell_says(&line, shell, paths);
             if got != expected {
                 wrong.push(format!(
@@ -280,27 +280,27 @@ fn disagree(path: &str, paths: &Paths, shells: &[Shell]) -> (Vec<String>, usize,
             }
         }
     }
-    (wrong, judged, secrets)
+    (wrong, judged, flagged)
 }
 
 #[test]
 fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_cases() {
     let cases = paths_of_the_cases().expect("the file guard's case files are readable");
     let machines = machines();
-    let (mut wrong, mut judged, mut secrets) = (Vec::new(), 0_usize, 0_usize);
+    let (mut wrong, mut judged, mut flagged) = (Vec::new(), 0_usize, 0_usize);
     for path in &cases {
         for name in ["posix", "macos", "windows"] {
             let paths = &machines[name];
-            let (more, of, keys) = disagree(path, paths, shells_of(paths));
+            let (more, of, hits) = disagree(path, paths, shells_of(paths));
             wrong.extend(more);
             judged += of;
-            secrets += keys;
+            flagged += hits;
         }
     }
     // The case files are read, and name keys: not an empty scan that agrees
     // on nothing.
     assert!(judged > 10_000, "only {judged} lines were judged");
-    assert!(secrets > 2_000, "only {secrets} of them were secrets");
+    assert!(flagged > 2_000, "only {flagged} of them read a secret");
     assert!(
         wrong.is_empty(),
         "{} of {judged} lines are judged differently:\n{}",
@@ -314,7 +314,7 @@ fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_cases() {
 /// give one answer for every path of that file.
 #[test]
 fn the_shell_and_the_file_guard_agree_on_the_machines_the_cases_declare() {
-    let (mut wrong, mut judged, mut secrets) = (Vec::new(), 0_usize, 0_usize);
+    let (mut wrong, mut judged, mut flagged) = (Vec::new(), 0_usize, 0_usize);
     for name in case_files().expect("the file guard's case files are listed") {
         let declared = declared_in(&name).expect("the declarations are readable");
         let paths_of_file: BTreeSet<String> = paths_of(&name)
@@ -329,16 +329,16 @@ fn the_shell_and_the_file_guard_agree_on_the_machines_the_cases_declare() {
             .collect();
         for paths in declared.iter().filter(|paths| !paths.secrets.is_empty()) {
             for path in &paths_of_file {
-                let (more, of, keys) = disagree(path, paths, shells_of(paths));
+                let (more, of, hits) = disagree(path, paths, shells_of(paths));
                 wrong.extend(more.into_iter().map(|line| format!("{name}: {line}")));
                 judged += of;
-                secrets += keys;
+                flagged += hits;
             }
         }
     }
     // The declared machines name secrets of their own: some reads are ones.
     assert!(judged > 500, "only {judged} lines were judged");
-    assert!(secrets > 150, "only {secrets} of them were secrets");
+    assert!(flagged > 150, "only {flagged} of them read a secret");
     assert!(
         wrong.is_empty(),
         "{} of {judged} lines are judged differently:\n{}",
@@ -426,13 +426,13 @@ fn the_shell_and_the_file_guard_agree_on_every_spelling_where_secrets_are_named(
         })
         .collect();
     spellings.extend(vault);
-    let (mut wrong, mut judged, mut secrets) = (Vec::new(), 0_usize, 0_usize);
+    let (mut wrong, mut judged, mut flagged) = (Vec::new(), 0_usize, 0_usize);
     for paths in &named_machines() {
         for path in &spellings {
-            let (more, of, keys) = disagree(path, paths, shells_of(paths));
+            let (more, of, hits) = disagree(path, paths, shells_of(paths));
             wrong.extend(more);
             judged += of;
-            secrets += keys;
+            flagged += hits;
         }
     }
     // Of those, the ones the file guard calls a read of a named secret, in
@@ -453,7 +453,7 @@ fn the_shell_and_the_file_guard_agree_on_every_spelling_where_secrets_are_named(
         })
         .count();
     assert!(judged > 5_000, "only {judged} lines were judged");
-    assert!(secrets > 1_000, "only {secrets} of them were secrets");
+    assert!(flagged > 1_000, "only {flagged} of them read a secret");
     assert!(named > 100, "only {named} spellings read a named secret");
     assert!(
         wrong.is_empty(),
