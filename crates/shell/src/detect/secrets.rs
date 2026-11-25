@@ -27,9 +27,9 @@ const MAX_LISTS: usize = 12;
 
 impl Checker<'_> {
     /// A file a `<` redirect reads: `base64 < ~/.ssh/id_rsa`, `< file`.
-    pub(super) fn redirected_reads(&mut self) {
+    pub(super) fn redirected_read(&mut self, at: usize) {
         let split = self.split;
-        for (at, read) in split.reads.iter().enumerate() {
+        if let Some(read) = split.reads.get(at) {
             let scope = Scope {
                 shell: read.shell,
                 dir: read.dir.as_ref(),
@@ -44,7 +44,7 @@ impl Checker<'_> {
                 .collect();
             if enclosing.is_empty() {
                 self.secret_in(&scope, &read.target, &read.target, Reach::default());
-                continue;
+                return;
             }
             let target = Unit::new(
                 read.shell,

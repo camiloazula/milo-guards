@@ -164,6 +164,28 @@ fn shell_answer(line: &str, shell: Shell, paths: &Paths) -> BTreeSet<String> {
     answer
 }
 
+/// Where `locate` disagrees with `classify` for `line`, with nothing named
+/// and with the hostile mounts named: the two readings of a line judged on
+/// the paths as spelled too give the same findings, in the same order, and
+/// each keeps a range inside the line, on its characters.
+fn located_apart(what: &str, line: &str, shell: Shell, on_windows: bool) -> Option<String> {
+    let machines = if on_windows {
+        [windows(), hostile_windows()]
+    } else {
+        [posix(), hostile_posix()]
+    };
+    machines.iter().find_map(|paths| {
+        let located = shell::locate(line, shell, paths);
+        let found: Vec<_> = located.iter().map(|at| at.finding.clone()).collect();
+        let classified = shell::classify(line, shell, paths);
+        let outside = located
+            .iter()
+            .any(|at| line.get(at.range.clone()).is_none());
+        (found != classified.findings() || outside)
+            .then(|| format!("{what}: locate and classify disagree on {paths:?}"))
+    })
+}
+
 /// One input, judged with nothing named and with the hostile mounts named:
 /// `None` when every word of the first answer is in the second, else what
 /// the second lost.
@@ -220,6 +242,12 @@ fn every_finding_of_every_case_stays_with_mounts_named() {
         wrong.extend(compare(
             &format!("{}: {line}", record.at),
             &|paths| shell_answer(&line, shell, paths),
+            windows,
+        ));
+        wrong.extend(located_apart(
+            &format!("{}: {line}", record.at),
+            &line,
+            shell,
             windows,
         ));
     }

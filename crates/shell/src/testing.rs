@@ -61,7 +61,10 @@ pub enum Grammar {
 /// given is the first read's, the one every later read starts from.
 #[must_use]
 pub fn grammar(line: &str, shell: Shell, paths: &Paths) -> Grammar {
-    match Reading::new(line, shell, paths, false).split.grammar() {
+    match Reading::new(line, shell, paths, false, false)
+        .split
+        .grammar()
+    {
         Some(true) => Grammar::Whole,
         Some(false) => Grammar::Error,
         None => Grammar::NotRead,
@@ -73,11 +76,40 @@ pub fn grammar(line: &str, shell: Shell, paths: &Paths) -> Grammar {
 /// as a PowerShell line that makes a drive is, counts afresh each time).
 #[must_use]
 pub fn lexed(line: &str, shell: Shell, paths: &Paths) -> Lexed {
-    let reading = Reading::new(line, shell, paths, false);
+    let reading = Reading::new(line, shell, paths, false, false);
     let (handed, parsed) = reading.split.lexed();
     Lexed {
         handed,
         parsed,
         answer: assessed(reading.judged.found),
+    }
+}
+
+/// What [`crate::locate`] gives a line, and the work it took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Ranges {
+    /// What [`crate::locate`] answers for the line, from the same read.
+    pub located: Vec<crate::Located>,
+    /// The steps the walk and the ranges took: the words it kept, the
+    /// pieces of its maps, the arguments it read for where a script comes
+    /// from, one for each finding. It depends on the line, the shell and the
+    /// paths only.
+    pub work: usize,
+    /// The bytes of text the grammars parsed for the line (see
+    /// [`Lexed::parsed`]).
+    pub parsed: usize,
+}
+
+/// Read `line` as [`crate::locate`] does, and say the work it took.
+#[must_use]
+pub fn ranges(line: &str, shell: Shell, paths: &Paths) -> Ranges {
+    let reading = Reading::new(line, shell, paths, false, true);
+    let (located, work) = crate::located::counted(line, &reading);
+    let (_, parsed) = reading.split.lexed();
+    Ranges {
+        located,
+        work,
+        parsed,
     }
 }

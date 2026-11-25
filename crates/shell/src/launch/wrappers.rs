@@ -8,6 +8,7 @@ use super::interpreters::{reads_input, BUN_VALUES, DENO_VALUES};
 use super::npm::{call_script, npm_word, npx_start, prefix_folder, NPM_VALUES};
 use super::packages::{self, MISE_VALUES, PIXI_EXEC_VALUES};
 use super::{after_options, after_options_by, is_stdin, join, Launch, Word, MAX_FORKS};
+use crate::located::Source;
 use crate::powershell::{native, Params};
 use crate::unit::{self, has_flag, Arg, Reads, Unit};
 use crate::Shell;
@@ -101,10 +102,10 @@ fn split_string(
         return Launch::Itself;
     };
     let Some(text) = value.known() else {
-        return in_folder(folder, Launch::Script(Shell::Posix, value));
+        return in_folder(folder, Launch::Script(Shell::Posix, value, Source::NONE));
     };
     let Ok(words) = env_split(text) else {
-        return in_folder(folder, Launch::Script(Shell::Posix, value));
+        return in_folder(folder, Launch::Script(Shell::Posix, value, Source::NONE));
     };
     let mut again = unit.clone();
     again.args = unit.args[..at]
@@ -587,7 +588,9 @@ pub(super) fn tmux(args: &[Arg]) -> Launch {
         .rev()
         .find(|arg| arg.known().is_some_and(|text| !text.starts_with('-')))
     {
-        Some(command) if runs => Launch::Script(Shell::Posix, command.clone()),
+        Some(command) if runs => {
+            Launch::Script(Shell::Posix, command.clone(), Source::arg(command))
+        }
         _ => Launch::Itself,
     }
 }
@@ -608,7 +611,11 @@ pub(super) fn cmd(args: &[Arg], shell: Shell) -> Launch {
         let Some(text) = arg.known() else { continue };
         let lower = text.to_ascii_lowercase();
         if lower == "/c" || lower == "/k" || lower == "/r" {
-            return Launch::Script(Shell::Cmd, join(&args[at + 1..]));
+            return Launch::Script(
+                Shell::Cmd,
+                join(&args[at + 1..]),
+                Source::joined(&args[at + 1..]),
+            );
         }
         if let Some(rest) = ["/c", "/k", "/r"]
             .iter()
@@ -617,7 +624,7 @@ pub(super) fn cmd(args: &[Arg], shell: Shell) -> Launch {
             if !rest.starts_with(' ') && !rest.is_empty() && !rest.starts_with(':') {
                 let mut script = vec![Arg::Known(text[2..].to_string())];
                 script.extend(args[at + 1..].iter().cloned());
-                return Launch::Script(Shell::Cmd, join(&script));
+                return Launch::Script(Shell::Cmd, join(&script), Source::NONE);
             }
         }
     }
@@ -706,7 +713,10 @@ pub(super) fn powershell(args: &[Arg]) -> Launch {
         Entry::Launch(launch @ Launch::Script(..)) => in_folder(folder, launch),
         Entry::Launch(launch) => launch,
         Entry::File(_) => Launch::Itself,
-        Entry::Rest(rest, _) => in_folder(folder, Launch::Script(Shell::PowerShell, join(rest))),
+        Entry::Rest(rest, _) => in_folder(
+            folder,
+            Launch::Script(Shell::PowerShell, join(rest), Source::joined(rest)),
+        ),
     }
 }
 
@@ -804,7 +814,7 @@ fn powershell_entry_in<'a>(args: &'a [Arg], folder: &mut Option<Arg>) -> Entry<'
             return Entry::Launch(match rest {
                 [] => Launch::Itself,
                 [only] if only.known() == Some("-") => Launch::Reads(Reads::Shell),
-                rest => Launch::Script(Shell::PowerShell, join(rest)),
+                rest => Launch::Script(Shell::PowerShell, join(rest), Source::joined(rest)),
             });
         } else if "file".starts_with(&name) {
             return match args.get(at + 1) {
@@ -813,7 +823,11 @@ fn powershell_entry_in<'a>(args: &'a [Arg], folder: &mut Option<Arg>) -> Entry<'
                 }
                 Some(Arg::Known(file)) => Entry::File(file_arg(file, moved)),
                 None => Entry::Launch(Launch::Itself),
-                Some(script) => Entry::Launch(Launch::Script(Shell::PowerShell, script.clone())),
+                Some(script) => Entry::Launch(Launch::Script(
+                    Shell::PowerShell,
+                    script.clone(),
+                    Source::arg(script),
+                )),
             };
         } else if working_directory(&name)
             || matches!(
@@ -942,6 +956,9 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         argument_variables: Rc::default(),
         depth: unit.depth,
         names: unit.names.clone(),
+        place: unit.place.clone(),
+        // Its arguments are not the unit's.
+        words: crate::located::Worded::default(),
     }));
     in_folder(folder, launch)
 }
@@ -1441,7 +1458,7 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
     // package's folder.
     if key == "npm" {
         if let Some(line) = npm_explore(args) {
-            return Launch::Script(shell, line);
+            return Launch::Script(shell, line, Source::NONE);
         }
     }
     let found = match key {
@@ -1580,7 +1597,7 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
                 own
             };
             if let Some(script) = call_script(options, key == "npx") {
-                return runner_in(key, args, end, Launch::Script(shell, script));
+                return runner_in(key, args, end, Launch::Script(shell, script, Source::NONE));
             }
             // The `npm_config_call` the line sets is the same setting.
             if let Some((_, script)) = unit
@@ -1589,13 +1606,18 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
                 .rev()
                 .find(|(name, _)| unit::npm_call(name))
             {
-                return runner_in(key, args, end, Launch::Script(shell, script.clone()));
+                return runner_in(
+                    key,
+                    args,
+                    end,
+                    Launch::Script(shell, script.clone(), Source::NONE),
+                );
             }
         }
         // `mise exec -c 'cmd'` runs a shell line.
         "mise" => {
             if let Some(script) = packages::mise_command(own) {
-                return Launch::Script(shell, script);
+                return Launch::Script(shell, script, Source::NONE);
             }
         }
         // pnpm reads its options wherever they stand: `pnpm -c exec 'cmd'`
@@ -1612,7 +1634,11 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
                     key,
                     args,
                     end,
-                    Launch::Script(shell, join(&args[program..])),
+                    Launch::Script(
+                        shell,
+                        join(&args[program..]),
+                        Source::joined(&args[program..]),
+                    ),
                 );
             }
         }
@@ -1623,7 +1649,11 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
                     key,
                     args,
                     end,
-                    Launch::Script(shell, join(&args[program..])),
+                    Launch::Script(
+                        shell,
+                        join(&args[program..]),
+                        Source::joined(&args[program..]),
+                    ),
                 );
             }
         }
@@ -1860,6 +1890,8 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         argument_variables: Rc::default(),
         depth: unit.depth,
         names: unit.names.clone(),
+        place: unit.place.clone(),
+        words: unit.words.after(program),
     }
 }
 

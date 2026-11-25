@@ -10,6 +10,7 @@
 use super::tools::{unknown_before, unknown_subcommand, UNKNOWN_OPTION, UNKNOWN_WORD};
 use super::wrappers::running;
 use super::{runs, Launch};
+use crate::located::Source;
 use crate::unit::{Arg, Reads, Unit};
 use crate::Shell;
 
@@ -410,6 +411,6 @@ fn nix_shell_options(args: &[Arg]) -> Launch {
         }
     }
     script.map_or(Launch::Itself, |script| {
-        Launch::Script(Shell::Posix, script)
+        Launch::Script(Shell::Posix, script, Source::NONE)
     })
 }

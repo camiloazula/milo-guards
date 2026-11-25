@@ -37,6 +37,7 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     // A number's letters in any case (`1MB`), which the grammar reads only
     // in lower case.
     let lowered = numbers::lower(ascii.as_ref());
+    let original = text;
     let text = lowered.as_ref();
     let Some(first) = unit::parse(split, text, &language, unit::Recovery::Counted) else {
         return;
@@ -44,13 +45,17 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     // The first reading is the one that decides: a line read again with its
     // variable paths quoted stays unreadable.
     split.note_grammar(depth, &first);
+    // Where the quotes put around a variable that is a path are, when the
+    // line is read for its ranges.
+    let mut quoted = Vec::new();
+    let keep = split.placing.is_some();
     // A line the grammar cannot read stays unreadable, whatever else is found
     // in it. When it holds a word that is a variable and a path
     // (`$HOME\.ssh\id_rsa`), which the grammar fails on, it is also read again
     // with those words quoted, so the rules see the paths.
     let fixed;
     let (text, tree) = if first.root_node().has_error() {
-        if let Cow::Owned(rewritten) = variable_paths(text) {
+        if let Cow::Owned(rewritten) = variable_paths(text, keep.then_some(&mut quoted)) {
             fixed = rewritten;
             let Some(again) = unit::parse(split, &fixed, &language, unit::Recovery::Counted) else {
                 return;
@@ -62,6 +67,43 @@ pub(crate) fn split(split: &mut Split, text: &str, depth: usize) {
     } else {
         (text, first)
     };
+    if split.placing.is_some() {
+        // The quotes are put in only when the line is read again with them.
+        let quotes = if std::ptr::eq(text, lowered.as_ref()) {
+            Vec::new()
+        } else {
+            crate::located::verified(&lowered, text, inserted(&quoted))
+        };
+        let spelled = crate::located::diffed(original, &lowered);
+        let steps = [
+            (
+                lowered.as_ref(),
+                crate::located::verified(original, &lowered, spelled),
+            ),
+            (text, quotes),
+        ];
+        split.begin_text(original, &steps);
+        split.text_read(!tree.root_node().has_error());
+    }
+    walk(split, text, &tree, depth);
+    split.end_text();
+}
+
+/// The edits that put a quote at each of `quoted`, the places in the text
+/// after them.
+fn inserted(quoted: &[usize]) -> Vec<crate::located::Edit> {
+    quoted
+        .iter()
+        .enumerate()
+        .map(|(before, at)| crate::located::Edit {
+            old: at - before..at - before,
+            new: *at..at + 1,
+        })
+        .collect()
+}
+
+/// Walk `tree`, the grammar's reading of `text`, into `split`.
+fn walk(split: &mut Split, text: &str, tree: &tree_sitter::Tree, depth: usize) {
     // `sort < x.txt`, `python 0<&3`: PowerShell reserves `<` and refuses
     // the whole line, which the grammar reads as a redirect or a word.
     if let Some(refused) = refused_input(tree.root_node(), text) {
@@ -634,6 +676,17 @@ struct Walker<'a> {
 }
 
 impl Walker<'_> {
+    /// Keep the word at `range`, read as `arg`, for the ranges of the
+    /// line's findings (see [`crate::located`]).
+    fn spot(&mut self, range: Range<usize>, arg: &Arg, whole: bool) -> Option<usize> {
+        if self.split.placing.is_some() {
+            let written = self.source.get(range.clone()).unwrap_or_default();
+            self.split.spot(range, arg, written, whole)
+        } else {
+            None
+        }
+    }
+
     fn walk(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         if level > unit::MAX_TREE_DEPTH {
             self.split
@@ -708,6 +761,15 @@ impl Walker<'_> {
     /// its frame.
     #[inline(never)]
     fn pipeline_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        // A statement that is no command (`$x::Open(…)`) is placed at the
+        // pipeline.
+        self.split.enter_command(node.byte_range());
+        self.pipeline_stages(node, stage, level);
+        self.split.leave_command();
+    }
+
+    /// [`Self::pipeline_node`], once it is begun.
+    fn pipeline_stages(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         self.split.statement();
         let pipeline = self.split.pipeline(stage.or(self.item));
         let mut cursor = node.walk();
@@ -740,6 +802,7 @@ impl Walker<'_> {
     #[inline(never)]
     fn command_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let first = self.split.units.len();
+        self.split.enter_command(node.byte_range());
         let keys = self.command(node, stage);
         let own = first..self.split.units.len();
         let outer = self.item;
@@ -792,6 +855,7 @@ impl Walker<'_> {
                 self.sets_variables(key.as_deref(), at);
             }
         }
+        self.split.leave_command();
     }
 
     /// `trap { … }`, whose block runs later. An arm of [`Self::walk`], kept out
@@ -1724,12 +1788,16 @@ impl Walker<'_> {
             Bare::Redirect { target: "", .. } => state.pending = true,
             Bare::Redirect { target, .. } => {
                 let file = self.glued_target(target);
-                self.split.write(Shell::PowerShell, file);
+                // The file is the end of the word (`1>..\x.txt`).
+                let end = child.end_byte();
+                let word = self.spot(end.saturating_sub(target.len())..end, &file, true);
+                self.split.write_at(Shell::PowerShell, file, word);
             }
             _ if target => {
                 state.pending = false;
                 let file = self.expr(child);
-                self.split.write(Shell::PowerShell, file);
+                let word = self.spot(child.byte_range(), &file, true);
+                self.split.write_at(Shell::PowerShell, file, word);
                 self.walk(child, None, level);
             }
             _ => self.walk(child, None, level),
@@ -1858,157 +1926,189 @@ impl Walker<'_> {
         // that starts with a comma goes on its list.
         let mut after_argument = false;
         let native = !program_key.as_deref().is_some_and(is_cmdlet);
+        // The words of the program and of each argument, in step with
+        // `args`, for the first reading of the name.
+        let keep = first && self.split.placing.is_some();
+        let program_word = node
+            .child_by_field_name("command_name")
+            .filter(|_| keep)
+            .and_then(|name| self.spot(name.byte_range(), &program, true));
+        let mut words: Vec<Option<usize>> = Vec::new();
         if let Some(elements) = node.child_by_field_name("command_elements") {
             let mut cursor = elements.walk();
             for element in elements.named_children(&mut cursor) {
-                // `--%` passes the rest verbatim, but only up to a `|`: the
-                // grammar runs it to the end of the line, so what follows the
-                // pipe is read again as the next command.
-                let source = unit::text(&element, self.source);
-                if let Some(verbatim) = source.strip_prefix("--%") {
-                    let (own, rest) = verbatim
-                        .split_once('|')
-                        .map_or((verbatim, None), |(own, rest)| (own, Some(rest)));
-                    // The words are handed on as written but for `%NAME%`,
-                    // which PowerShell puts the environment variable in, and
-                    // the program splits them by its own rules. `cmd` puts
-                    // the variables in itself, and is read so.
-                    let key = program_key.as_deref().unwrap_or_default();
-                    for word in native::words(key, &args, own) {
-                        args.push(if key == "cmd" {
-                            Arg::Known(word)
-                        } else {
-                            self.environment(&word)
-                        });
-                        shapes.push(blocks::Shape::default());
-                    }
-                    if let Some(rest) = rest.filter(|_| first) {
-                        unit::script(self.split, rest, Shell::PowerShell, self.depth + 1);
-                    }
-                    continue;
-                }
-                // A native program is not handed `$null` at all: the
-                // arguments after it move up (`git $null push` is `git
-                // push`). A cmdlet binds it, and a string that holds it is a
-                // value.
-                if native && self.is_null(element) {
-                    continue;
-                }
-                // A `1>` word and the file after it are a redirect, not
-                // arguments (see `command_child`).
-                // A parameter is not taken for the file (see `command_child`):
-                // it stays an argument.
-                if file_next && element.kind() == "command_parameter" {
-                    file_next = false;
-                } else if file_next && !matches!(element.kind(), "command_argument_sep" | "comment")
-                {
-                    file_next = false;
-                    continue;
-                }
-                if matches!(element.kind(), "generic_token" | "command_parameter") {
-                    if let Bare::Redirect { word, target } = bare_redirect(source) {
-                        if !word.is_empty() {
-                            args.push(Arg::Known(unescape(word)));
+                let before = args.len();
+                // Whether the element holds more than the word it is read as.
+                let mut apart = false;
+                'element: {
+                    // `--%` passes the rest verbatim, but only up to a `|`: the
+                    // grammar runs it to the end of the line, so what follows the
+                    // pipe is read again as the next command.
+                    let source = unit::text(&element, self.source);
+                    if let Some(verbatim) = source.strip_prefix("--%") {
+                        let (own, rest) = verbatim
+                            .split_once('|')
+                            .map_or((verbatim, None), |(own, rest)| (own, Some(rest)));
+                        // The words are handed on as written but for `%NAME%`,
+                        // which PowerShell puts the environment variable in, and
+                        // the program splits them by its own rules. `cmd` puts
+                        // the variables in itself, and is read so.
+                        let key = program_key.as_deref().unwrap_or_default();
+                        for word in native::words(key, &args, own) {
+                            args.push(if key == "cmd" {
+                                Arg::Known(word)
+                            } else {
+                                self.environment(&word)
+                            });
                             shapes.push(blocks::Shape::default());
                         }
-                        file_next = target.is_empty();
-                        continue;
+                        if let Some(rest) = rest.filter(|_| first) {
+                            unit::script(self.split, rest, Shell::PowerShell, self.depth + 1);
+                        }
+                        break 'element;
                     }
-                }
-                downloads |= self.downloads(element);
-                // `--execute=$(…)` and `--execute=${q}`: the grammar ends the
-                // parameter at its `$`, and the rest of the word is the next
-                // element. They are one word, which is only known when it
-                // runs.
-                if let Some((start, end, index)) = dangling.take() {
-                    if end == element.start_byte()
-                        && matches!(
-                            element.kind(),
-                            "parenthesized_expression" | "script_block_expression"
-                        )
+                    // A native program is not handed `$null` at all: the
+                    // arguments after it move up (`git $null push` is `git
+                    // push`). A cmdlet binds it, and a string that holds it is a
+                    // value.
+                    if native && self.is_null(element) {
+                        break 'element;
+                    }
+                    // A `1>` word and the file after it are a redirect, not
+                    // arguments (see `command_child`).
+                    // A parameter is not taken for the file (see `command_child`):
+                    // it stays an argument.
+                    if file_next && element.kind() == "command_parameter" {
+                        file_next = false;
+                    } else if file_next
+                        && !matches!(element.kind(), "command_argument_sep" | "comment")
                     {
-                        let whole = self.source.get(start..element.end_byte());
-                        if let (Some(slot), Some(whole)) = (args.get_mut(index), whole) {
-                            *slot = joined_dollar(
-                                whole,
-                                end - start,
-                                element.kind() == "parenthesized_expression",
-                            );
-                        }
-                        continue;
+                        file_next = false;
+                        break 'element;
                     }
-                }
-                if element.kind() == "command_parameter" && ends_in_dollar(source) {
-                    dangling = Some((element.start_byte(), element.end_byte(), args.len()));
-                }
-                match element.kind() {
-                    "command_argument_sep" => {
-                        if unit::text(&element, self.source).contains(':') {
-                            attach_colon(&mut args);
-                        }
-                    }
-                    "redirection" | "comment" => {}
-                    "array_literal_expression" => {
-                        let mut items = element.walk();
-                        for (index, item) in element.named_children(&mut items).enumerate() {
-                            self.push_element(
-                                &mut args,
-                                &mut shapes,
-                                item,
-                                program_key.as_deref(),
-                                index > 0,
-                            );
-                        }
-                    }
-                    _ => {
-                        // `Name, @{e=$b}`: the grammar reads a word with the
-                        // comma after it, and what follows is the next item
-                        // of the same list.
-                        let joined = last_end
-                            .and_then(|end| self.source.get(end..element.start_byte()))
-                            .is_some_and(|between| between.trim() == ",");
-                        // `x ,~` and `,~`: a comma after a space is the
-                        // start of the grammar's next word, but it puts the
-                        // word on the list of the argument before, or starts
-                        // a list of one, and is not part of it.
-                        let item = source.trim_start_matches(',');
-                        let bare = matches!(element.kind(), "generic_token" | "command_parameter");
-                        if element.kind() == "generic_token" && item.len() < source.len() {
-                            args.push(comma_item(item, source));
-                            shapes.push(self.shape(element, after_argument));
-                        } else if let Some(items) = bare.then(|| comma_items(source)).flatten() {
-                            // `--post-file=.env,x`: the grammar reads the word
-                            // whole, but PowerShell ends a bare word at a
-                            // comma, and hands each item on as an argument.
-                            for (index, item) in items.into_iter().enumerate() {
-                                let arg = attached_path(item, self.split)
-                                    .unwrap_or_else(|| comma_item(item, item));
-                                shapes.push(if index == 0 {
-                                    self.shape(element, joined)
-                                } else {
-                                    blocks::Shape {
-                                        joined: true,
-                                        plain: arg.known().is_some(),
-                                        ..blocks::Shape::default()
-                                    }
-                                });
-                                args.push(arg);
+                    if matches!(element.kind(), "generic_token" | "command_parameter") {
+                        if let Bare::Redirect { word, target } = bare_redirect(source) {
+                            if !word.is_empty() {
+                                args.push(Arg::Known(unescape(word)));
+                                shapes.push(blocks::Shape::default());
                             }
-                        } else {
-                            self.push_element(
-                                &mut args,
-                                &mut shapes,
-                                element,
-                                program_key.as_deref(),
-                                joined,
-                            );
+                            file_next = target.is_empty();
+                            apart = true;
+                            break 'element;
                         }
                     }
+                    downloads |= self.downloads(element);
+                    // `--execute=$(…)` and `--execute=${q}`: the grammar ends the
+                    // parameter at its `$`, and the rest of the word is the next
+                    // element. They are one word, which is only known when it
+                    // runs.
+                    if let Some((start, end, index)) = dangling.take() {
+                        if end == element.start_byte()
+                            && matches!(
+                                element.kind(),
+                                "parenthesized_expression" | "script_block_expression"
+                            )
+                        {
+                            let whole = self.source.get(start..element.end_byte());
+                            if let (Some(slot), Some(whole)) = (args.get_mut(index), whole) {
+                                *slot = joined_dollar(
+                                    whole,
+                                    end - start,
+                                    element.kind() == "parenthesized_expression",
+                                );
+                            }
+                            break 'element;
+                        }
+                    }
+                    if element.kind() == "command_parameter" && ends_in_dollar(source) {
+                        dangling = Some((element.start_byte(), element.end_byte(), args.len()));
+                    }
+                    match element.kind() {
+                        "command_argument_sep" => {
+                            if unit::text(&element, self.source).contains(':') {
+                                attach_colon(&mut args);
+                            }
+                        }
+                        "redirection" | "comment" => {}
+                        "array_literal_expression" => {
+                            let mut items = element.walk();
+                            for (index, item) in element.named_children(&mut items).enumerate() {
+                                self.push_element(
+                                    &mut args,
+                                    &mut shapes,
+                                    item,
+                                    program_key.as_deref(),
+                                    index > 0,
+                                );
+                            }
+                        }
+                        _ => {
+                            // `Name, @{e=$b}`: the grammar reads a word with the
+                            // comma after it, and what follows is the next item
+                            // of the same list.
+                            let joined = last_end
+                                .and_then(|end| self.source.get(end..element.start_byte()))
+                                .is_some_and(|between| between.trim() == ",");
+                            // `x ,~` and `,~`: a comma after a space is the
+                            // start of the grammar's next word, but it puts the
+                            // word on the list of the argument before, or starts
+                            // a list of one, and is not part of it.
+                            let item = source.trim_start_matches(',');
+                            let bare =
+                                matches!(element.kind(), "generic_token" | "command_parameter");
+                            if element.kind() == "generic_token" && item.len() < source.len() {
+                                args.push(comma_item(item, source));
+                                shapes.push(self.shape(element, after_argument));
+                            } else if let Some(items) = bare.then(|| comma_items(source)).flatten()
+                            {
+                                // `--post-file=.env,x`: the grammar reads the word
+                                // whole, but PowerShell ends a bare word at a
+                                // comma, and hands each item on as an argument.
+                                for (index, item) in items.into_iter().enumerate() {
+                                    let arg = attached_path(item, self.split)
+                                        .unwrap_or_else(|| comma_item(item, item));
+                                    shapes.push(if index == 0 {
+                                        self.shape(element, joined)
+                                    } else {
+                                        blocks::Shape {
+                                            joined: true,
+                                            plain: arg.known().is_some(),
+                                            ..blocks::Shape::default()
+                                        }
+                                    });
+                                    args.push(arg);
+                                }
+                            } else {
+                                self.push_element(
+                                    &mut args,
+                                    &mut shapes,
+                                    element,
+                                    program_key.as_deref(),
+                                    joined,
+                                );
+                            }
+                        }
+                    }
+                    if !matches!(element.kind(), "command_argument_sep" | "comment") {
+                        after_argument =
+                            !matches!(element.kind(), "command_parameter" | "redirection");
+                    }
+                    last_end =
+                        (element.kind() != "command_argument_sep").then(|| element.end_byte());
                 }
-                if !matches!(element.kind(), "command_argument_sep" | "comment") {
-                    after_argument = !matches!(element.kind(), "command_parameter" | "redirection");
+                // The words the element was read as, for the ranges of the
+                // line's findings: the element is one word when it was read
+                // as one argument.
+                if keep {
+                    let made = args.get(before..).unwrap_or_default().to_vec();
+                    let whole = made.len() == 1 && !apart;
+                    // An argument the element changed before it (`-Path:`)
+                    // is no longer its word's.
+                    words.resize(before, None);
+                    for arg in &made {
+                        words.push(self.spot(element.byte_range(), arg, whole));
+                    }
                 }
-                last_end = (element.kind() != "command_argument_sep").then(|| element.end_byte());
             }
         }
         // `$PSDefaultParameterValues['Remove-Item:Path'] = '~'`: a parameter
@@ -2035,6 +2135,11 @@ impl Walker<'_> {
         // pipeline the block is a stage of.
         let stage = stage.or(self.item);
         let mut unit = Unit::new(Shell::PowerShell, program, args, stage);
+        if keep {
+            // The arguments a default value gives have no word of the line.
+            words.resize(unit.args.len(), None);
+            unit.words = crate::located::Worded::new(program_word, words);
+        }
         if shapes.len() == unit.args.len() {
             unit.joined = shapes.iter().map(|shape| shape.joined).collect();
         }
@@ -4208,7 +4313,12 @@ impl Walker<'_> {
                 || Arg::Unknown(unit::text(file, self.source).to_string()),
                 |value| self.expr(value),
             );
-        self.split.write(Shell::PowerShell, target);
+        let range = file
+            .named_children(&mut file.walk())
+            .find(|child| child.kind() != "command_argument_sep")
+            .map_or_else(|| file.byte_range(), |value| value.byte_range());
+        let file = self.spot(range, &target, true);
+        self.split.write_at(Shell::PowerShell, target, file);
     }
 }
 
@@ -5689,7 +5799,7 @@ fn parameter(arg: &Arg) -> Option<&str> {
 /// where a word can begin (after white space, `(`, `,` or the `:` of
 /// `-Path:`). Text the scan cannot follow with certainty (a here-string, a
 /// subexpression in a string) leaves the whole line as written.
-fn variable_paths(text: &str) -> Cow<'_, str> {
+fn variable_paths<'t>(text: &'t str, mut quoted: Option<&mut Vec<usize>>) -> Cow<'t, str> {
     if !text.contains(['\\', '/']) || !text.contains('$') {
         return Cow::Borrowed(text);
     }
@@ -5743,8 +5853,14 @@ fn variable_paths(text: &str) -> Cow<'_, str> {
             }
             '$' if previous.is_none_or(|p| p.is_whitespace() || matches!(p, '(' | ',' | ':')) => {
                 if let Some(end) = variable_word(&chars, at) {
+                    if let Some(quoted) = quoted.as_deref_mut() {
+                        quoted.push(out.len());
+                    }
                     out.push('"');
                     out.extend(&chars[at..end]);
+                    if let Some(quoted) = quoted.as_deref_mut() {
+                        quoted.push(out.len());
+                    }
                     out.push('"');
                     changed = true;
                     at = end;

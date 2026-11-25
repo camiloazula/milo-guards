@@ -27,8 +27,9 @@ that guards build on, and the front door:
   [Its design](docs/design/code.md).
 - `crates/shell` (`milo-guards-shell`) - the shell guard, `classify`. It
   parses POSIX shell, PowerShell and cmd and judges programs, flags, operands
-  and redirects, and shows its own tests the count of what its grammars'
-  lexers read behind its `testing` feature, which is not for callers.
+  and redirects; `locate` says where in the line each finding is. It shows
+  its own tests the count of what its grammars' lexers read, and of the work
+  `locate` does, behind its `testing` feature, which is not for callers.
   [Its design](docs/design/shell.md).
 - `crates/file` (`milo-guards-file`) - the file guard, `judge`. It judges one
   read or write of a path through a file API. [Its design](docs/design/file.md).
@@ -81,6 +82,10 @@ crates depend on each other and how that is enforced is in
   unknown. [Code](docs/design/code.md)
 - **Every shell rule reads structure, never raw text**: the program, its flags,
   operands and redirects, and where each path lands. [Shell](docs/design/shell.md)
+- **A finding's range is what its rule judged, never a search**: the word of
+  the argument the rule was handed, told by where it is in memory, or else
+  the part of the line it was found in; no word is found by what it reads
+  as. [Shell](docs/design/shell.md#where-a-finding-is)
 - **The secrets guard judges the value, never the spelling, and never shows
   it.** Escapes are read before the table runs, a shape that is common never
   decides alone, and a finding carries a masked target and offsets, not the

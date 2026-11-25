@@ -16,7 +16,13 @@ pub(crate) enum Language {
 
 /// Code given with a flag is not read: the line is `unknown`, unless it has
 /// a finding of its own.
-pub(crate) fn apply_all(split: &mut Split, _language: Language, code: &Code, _depth: usize) {
+pub(crate) fn apply_all(
+    split: &mut Split,
+    _unit: usize,
+    _language: Language,
+    code: &Code,
+    _depth: usize,
+) {
     split.unread_code(code.pieces.first().map_or("", Arg::text));
 }
 

@@ -1,7 +1,9 @@
 //! Whatever the text, classifying it ends, never panics, and never calls
 //! a line it could not read safe; and the same for `effect`, which never
-//! calls such a line reads-only, and for `explain` and the tree it draws,
-//! which do more work than `classify` and are held to the same limits. The
+//! calls such a line reads-only, for `explain` and the tree it draws,
+//! which do more work than `classify` and are held to the same limits, and
+//! for `locate`, whose work beside `classify`'s is held to a count of the
+//! text the line's grammars parse. The
 //! counts that guard the grammars' time stop a line too long, too nested or
 //! too tangled to read, and do not take everyday lines that hold a lot of
 //! `<<` or `&` for tangled ones. The time those lines take, `explain` and its
@@ -16,7 +18,9 @@ use common::lines::{
     OUTPUT_SHAPES, PACKAGE_RUNNERS, VARIABLE_COPIES,
 };
 use common::{check, disagreements, posix, windows};
-use milo_guards_shell::{classify, effect, explain, Effect, Paths, Protected, Rule, Secret, Shell};
+use milo_guards_shell::{
+    classify, effect, explain, locate, testing, Effect, Paths, Protected, Rule, Secret, Shell,
+};
 use noise::{paths_for, wide_lines, Lcg, SHELLS};
 
 /// Whether `explain` finds `line` unreadable, its tree drawn and saying so.
@@ -448,6 +452,7 @@ fn the_longest_chains_are_read_on_a_small_stack() {
                     let _ = classify(chain, shell, &paths);
                     let _ = effect(chain, shell, &paths);
                     let _ = explain(chain, shell, &paths).to_string();
+                    let _ = locate(chain, shell, &paths);
                 }
             }
             // Past the depth limit, a chain is unreadable.
@@ -737,4 +742,133 @@ fn a_wrapper_that_names_its_output_many_times_is_not_safe() {
         let line = nested_outputs(size);
         assert!(!classify(&line, Shell::Posix, &posix()).is_safe(), "{size}");
     }
+}
+
+/// The steps `locate` may take for each byte of text the grammars parse for
+/// a line, and beside them: the words it keeps, the pieces of its maps, the
+/// arguments it reads for where a script comes from (see
+/// `testing::ranges`).
+const WORK_PER_BYTE: usize = 16;
+const WORK_BASE: usize = 4 * 1024;
+
+/// Whether `locate` kept to [`WORK_PER_BYTE`] for `line`; what it did when
+/// not.
+fn placed_within(line: &str, shell: Shell, paths: &Paths) -> Option<String> {
+    let placed = testing::ranges(line, shell, paths);
+    let bound = WORK_PER_BYTE * placed.parsed.max(line.len()) + WORK_BASE;
+    (placed.work > bound).then(|| {
+        format!(
+            "{shell:?}: {} steps for {} bytes parsed, past {bound}: {:?}",
+            placed.work,
+            placed.parsed,
+            line.get(..60.min(line.len())).unwrap_or_default()
+        )
+    })
+}
+
+#[test]
+fn locate_works_within_a_bound_of_the_text_it_reads() {
+    // The lines held to their counts above and in `tests/timing.rs`, which
+    // read the most for their length: nested traps, wide ones, an alias
+    // used thousands of times, loops, a long chain of variables, nested
+    // outputs, redirects over many units, wrappers read to a count; and the
+    // random lines.
+    let size = 64 * 1024;
+    let mut lines: Vec<(Shell, String)> = vec![
+        (Shell::Posix, deep_traps()),
+        (Shell::Posix, wide_traps(size)),
+        (Shell::Posix, long_alias(size)),
+        (Shell::Posix, dotglob_loops(size)),
+        (Shell::Posix, variable_chain(VARIABLE_COPIES)),
+        (Shell::Posix, "bash -c 'rm -rf ~' ".repeat(3_000)),
+        // One command that runs many scripts, with many arguments besides,
+        // and one script handed many.
+        (
+            Shell::Posix,
+            format!(
+                "tar -cf x.tar {}",
+                "--checkpoint-action=exec=ls ".repeat(2_000)
+            ),
+        ),
+        (
+            Shell::Posix,
+            format!(
+                "tar -cf x.tar {}{}",
+                "--checkpoint-action=exec=ls ".repeat(1_500),
+                "a ".repeat(8_000)
+            ),
+        ),
+        (
+            Shell::Posix,
+            format!("eval {}", "'rm -rf ~' ".repeat(5_000)),
+        ),
+        // A group of many commands with many redirects, and groups in
+        // groups, each with its own: every command holds every redirect of
+        // each group it is in.
+        (
+            Shell::Posix,
+            format!("{{ {}}} {}", "a; ".repeat(10_000), ">f ".repeat(10_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("{}{}", "{ a; ".repeat(6_000), "} >f ".repeat(6_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("{}{}", "( a; ".repeat(6_000), ") <f ".repeat(6_000)),
+        ),
+        (
+            Shell::Posix,
+            format!("bash -c 'rm -rf ~' {}", "a ".repeat(30_000)),
+        ),
+        (
+            Shell::Posix,
+            format!(
+                "python3 -c \"import os; {}\"",
+                (0..2_000).fold(String::new(), |code, at| {
+                    code + "os.remove('/home/me/.ssh/k" + &at.to_string() + "'); "
+                })
+            ),
+        ),
+        (Shell::Posix, "eval rm -rf ~; ".repeat(4_000)),
+        (
+            Shell::Posix,
+            format!(
+                "python3 -c \"{}\"",
+                "open('/home/me/x').read(); ".repeat(2_000)
+            ),
+        ),
+        (
+            Shell::PowerShell,
+            "Remove-Item\u{a0}C:\\Windows; ".repeat(2_000),
+        ),
+        (Shell::Cmd, "set X=1 && rd /s /q C:\\x & ".repeat(2_000)),
+    ];
+    lines.push((Shell::Posix, nested_outputs(size)));
+    for (head, part, tail) in OUTPUT_SHAPES {
+        lines.push((Shell::Posix, format!("{head}{}{tail}", part.repeat(2_000))));
+    }
+    lines.extend(input_redirects_over_many_units().map(|line| (Shell::Posix, line)));
+    for (shell, (head, part, tail), _) in wrapper_shapes() {
+        lines.push((shell, format!("{head}{}{tail}", part.repeat(2_000))));
+    }
+    for (shell, head, tail, _) in open_bracket_shapes() {
+        lines.push((shell, open_brackets(head, tail, size)));
+    }
+    let mut random = Lcg(11);
+    for _ in 0..300 {
+        let length = random.next() % 64;
+        let line: String = (0..length)
+            .map(|_| PIECES[random.next() % PIECES.len()])
+            .collect::<Vec<_>>()
+            .join(" ");
+        for shell in SHELLS {
+            lines.push((shell, line.clone()));
+        }
+    }
+    let over: Vec<String> = lines
+        .iter()
+        .filter_map(|(shell, line)| placed_within(line, *shell, &paths_for(*shell)))
+        .collect();
+    assert!(over.is_empty(), "{}", over.join("\n"));
 }
