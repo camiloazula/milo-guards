@@ -2,10 +2,15 @@
 # `winget install --id Casey.Just --exact` on Windows, or `cargo install just`
 # anywhere. On Windows its recipes need `sh` on PATH (CONTRIBUTING.md).
 #
-# Every recipe that builds builds the whole workspace with the one Rust in
-# rust-toolchain.toml. This is a library and ships no binary, so there are no
-# notices recipes: a binary's third-party notices travel with the binary, in
-# the programs that use these crates.
+# Every recipe that builds builds the whole workspace with the Rust in
+# rust-toolchain.toml, but `oldest-rust`, which builds it with the one below.
+# This is a library and ships no binary, so there are no notices recipes: a
+# binary's third-party notices travel with the binary, in the programs that
+# use these crates.
+
+# The oldest Rust the crates support: `rust-version` in Cargo.toml, which
+# names it, and `crates/guards/tests/toolchain.rs` keeps this the same.
+oldest_rust := "1.90"
 
 # Plain `just` lists the available recipes.
 _default:
@@ -18,6 +23,8 @@ _default:
 # `timing` in a job of its own, both on Linux, and `test` on Windows and
 # macOS in its `test` job. Advisories are not part of it: they change
 # without a commit, so they are their own recipe and their own CI job.
+# Nor is `oldest-rust`, which needs a second Rust: CI runs it in a job of
+# its own.
 # Every check: format, clippy, tests with coverage, timing tests, doctests, rustdoc, the shell guard without its inline reader, dependencies.
 verify: format-check lint coverage timing doc-test doc no-inline deny
 
@@ -58,6 +65,24 @@ publish *flags:
 # Every test but the timing ones, without coverage: quicker while working.
 test:
     cargo test --workspace --all-features --locked
+
+# Not part of `verify`, which needs only the Rust in rust-toolchain.toml:
+# this needs the oldest supported one too (`rustup toolchain install` it,
+# CONTRIBUTING.md). CI runs it in its `oldest-rust` job, on Linux, and a
+# release runs it by hand. Clippy's `incompatible_msrv` finds a library API
+# newer than `rust-version`, but not a language feature, nor a dependency
+# that asks for a newer Rust: a build with that Rust does. The builds are
+# what a caller compiles: default features, with no `testing` (which only
+# the dev-dependencies turn on), and the shell guard without `inline`. The
+# tests are `just test`'s, with every feature, and `no-inline`'s test.
+# `--locked`: with Cargo.lock as it is, whose versions bound how old a Rust
+# can be.
+# What a caller builds, and every test but the timing ones, with the oldest supported Rust.
+oldest-rust:
+    cargo +{{oldest_rust}} build --workspace --locked
+    cargo +{{oldest_rust}} build -p milo-guards-shell --no-default-features --locked
+    cargo +{{oldest_rust}} test --workspace --all-features --locked
+    cargo +{{oldest_rust}} test -p milo-guards-shell --no-default-features --test inline_off --locked
 
 # Raise the floor as coverage lands, never lower it to pass. A failing test
 # fails it too. Only the last run's coverage data is removed, not the build

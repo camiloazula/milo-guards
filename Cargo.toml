@@ -85,7 +85,18 @@ homepage = "https://github.com/camiloazula/milo-guards"
 readme = "README.md"
 keywords = ["ai-agent", "security", "sandbox", "shell", "guard"]
 categories = ["development-tools", "command-line-interface"]
-rust-version = "1.99"
+# The oldest Rust the crates build and test with, against the versions in
+# Cargo.lock, decided here: `just oldest-rust` and CI's `oldest-rust` job
+# build and test with it, and `crates/guards/tests/toolchain.rs` holds every
+# copy of it to this one. 1.90 is what the newest tree-sitter-language
+# releases (0.1.8, in Cargo.lock, and 0.1.9) declare, and a caller's default
+# resolve picks one of them today whatever this says; the code and the other
+# dependencies also build with 1.89. It is raised only when a dependency, a
+# language feature or a library API the code needs requires it, never
+# because a new Rust is out, and a raise is a minor bump at `0.x`
+# (README.md, Versions). The Rust the gate builds with, in
+# rust-toolchain.toml, is another version, and moves freely.
+rust-version = "1.90"
 
 [workspace.dependencies]
 # Each internal crate names its version beside its path: Cargo uses the path
