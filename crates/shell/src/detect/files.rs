@@ -27,6 +27,11 @@ impl Checker<'_> {
         let shell = unit.shell;
         match key {
             // Deleting.
+            // `rm` and `unlink` delete a link they are given; `srm`
+            // overwrites what it points to first.
+            "rm" | "unlink" if shell == Shell::Posix => {
+                self.delete_link(unit, &operands(args, &[]), "deletes");
+            }
             "rm" | "unlink" | "srm" => self.delete(unit, &operands(args, &[]), "deletes"),
             "shred" => self.delete(
                 unit,
@@ -66,6 +71,20 @@ impl Checker<'_> {
                         &picks,
                     );
                 });
+                // `find -L` follows the links it meets: what `-delete`
+                // removes below a folder includes what the links the caller
+                // names there land on.
+                let follows = args
+                    .iter()
+                    .any(|arg| matches!(arg.known(), Some("-L" | "-follow") | None));
+                if follows && args.iter().any(|arg| arg.known() == Some("-delete")) {
+                    for target in &crate::launch::find_starts(args) {
+                        if let Some(words) = self.resolver.linked(unit.dir.as_ref(), target, shell)
+                        {
+                            self.add(Rule::Delete, format!("deletes {words}"), Some(target));
+                        }
+                    }
+                }
                 // `-fprint FILE` and its kin write the file as `>` would,
                 // and `-fprintf FILE FORMAT` writes any text it is given.
                 for file in find_outputs(args) {
@@ -96,7 +115,9 @@ impl Checker<'_> {
             "rd" | "rmdir" if shell == Shell::Cmd && has_switch(args, "s") => {
                 let targets = builtin(key, args);
                 let targets: Vec<&Arg> = targets.iter().map(AsRef::as_ref).collect();
-                self.delete(unit, &targets, "deletes");
+                // `rd /s` of a junction removes the junction, not what it
+                // points to.
+                self.delete_link(unit, &targets, "deletes");
             }
             "remove-item" => {
                 let params = Params::read(args);
@@ -136,7 +157,11 @@ impl Checker<'_> {
             "mv" if shell != Shell::PowerShell => {
                 let (sources, destination) =
                     sources_and_destination(args, &["-S", "--suffix"], shell);
-                self.move_away(unit, &sources, "moves");
+                if shell == Shell::Posix {
+                    self.move_link(unit, &sources, "moves");
+                } else {
+                    self.move_away(unit, &sources, "moves");
+                }
                 if let Some(destination) = destination {
                     self.copy_to(
                         shell,

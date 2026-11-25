@@ -20,7 +20,7 @@ mod common;
 
 use common::cases::{self as runner, Case};
 use format::{decode, encode, parse, read, Record, Word};
-use milo_guards_core::{Flavour, Protected, Secret};
+use milo_guards_core::{Flavour, Link, Protected, Secret};
 
 use common::cases::format;
 
@@ -309,7 +309,7 @@ fn a_paths_declaration_names_the_paths_a_case_is_judged_on() {
         "paths agent base=posix workspace=/home/me/other folder=/home/me/.agent words=\"the agent's settings\" file=/home/me/x.yaml words=\"the agent's rules\" secret_file=/home/me/work/repo/.env words=\"the project's environment file\" secret_folder=/home/me/.vault words=\"your password vault\"\n",
         "posix@home place=inside | x\n",
         "posix@agent place=inside | x\n",
-        "paths wsl base=posix drive_mount=/mnt drive_mount=/ windows_home=C:\\\\Users\\\\me\n",
+        "paths wsl base=posix drive_mount=/mnt drive_mount=/ windows_home=C:\\\\Users\\\\me link=/home/me/work/repo/keys to=/home/me/.ssh link=/home/me/work/repo/lib to=vendor/lib\n",
         "posix@wsl place=inside | x\n",
     ));
     let wsl = &cases[2].paths;
@@ -324,7 +324,15 @@ fn a_paths_declaration_names_the_paths_a_case_is_judged_on() {
         wsl.windows_home,
         Some(std::path::PathBuf::from(r"C:\Users\me"))
     );
+    assert_eq!(
+        wsl.links.as_slice(),
+        [
+            Link::new("/home/me/work/repo/keys", "/home/me/.ssh"),
+            Link::new("/home/me/work/repo/lib", "vendor/lib"),
+        ]
+    );
     assert!(cases[0].paths.drive_mounts.is_empty() && cases[0].paths.windows_home.is_none());
+    assert!(cases[0].paths.links.is_empty());
     let home = &cases[0].paths;
     assert_eq!(
         (home.cwd.to_str(), home.home.to_str()),
@@ -408,6 +416,16 @@ fn a_malformed_case_is_refused() {
             "`words` must follow its `folder` or `file` (or `secret_folder` or `secret_file`)",
         ),
         ("paths x base=posix extra\n", "an unknown word"),
+        ("paths x base=posix to=/a\n", "`to` must follow its `link`"),
+        (
+            "paths x base=posix link=/a to=/b to=/c\n",
+            "`to` must follow its `link`",
+        ),
+        ("paths x base=posix link=/a\n", "each `link` takes its `to`"),
+        (
+            "paths x base=posix link=/a link=/b to=/c\n",
+            "each `link` takes its `to`",
+        ),
         (
             "paths x base=posix windows_home=C:\\\\a windows_home=C:\\\\b\n",
             "`windows_home` twice",

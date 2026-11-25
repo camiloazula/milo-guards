@@ -1,12 +1,13 @@
 # What the guard does not see, kept as cases so a change to any of them is a
 # decision and not an accident. A case here is a limit named in
-# docs/design/file.md, not a goal: a symlink is judged by its own name, and
-# core's table lists places known to hold a secret, not every one. The
-# format is in CONTRIBUTING.md.
+# docs/design/file.md, not a goal: a symlink the caller does not name is
+# judged by its own name, and core's table lists places known to hold a
+# secret, not every one. The format is in CONTRIBUTING.md.
 
-# A symlink is judged by its own name: a link in the workspace to `~/.ssh`
-# looks like any file in it. (The kernel's own links, `/proc/self/root` and
-# `cwd`, are refused by name.)
+# A symlink the caller does not name (`Paths::with_links`) is judged by its
+# own name: a link in the workspace to `~/.ssh` looks like any file in it.
+# (The kernel's own links, `/proc/self/root` and `cwd`, are refused by
+# name.) `resolved_links.cases` names such links.
 read safe | link-to-ssh/id_rsa
 read safe | /dev/stdin
 

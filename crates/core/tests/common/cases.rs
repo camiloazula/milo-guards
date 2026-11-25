@@ -291,7 +291,7 @@ pub fn head(words: &[Word]) -> Option<(&str, Option<&str>)> {
 /// What a `paths` line declares, as its words say it: each guard's runner
 /// makes its `Paths` of it, from `base` (looked up among the paths it knows)
 /// or from `cwd` and `home`, with the workspaces added, each named path in
-/// order, the drive mounts and the Windows home.
+/// order, the drive mounts, the Windows home and the links.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declaration {
     /// The name a case gives after an `@`.
@@ -312,6 +312,9 @@ pub struct Declaration {
     pub drive_mounts: Vec<PathBuf>,
     /// `windows_home=` (`Paths::windows_home`).
     pub windows_home: Option<PathBuf>,
+    /// Each `link=` and the `to=` that follows it (`Paths::links`): the link
+    /// and its target, in order.
+    pub links: Vec<(PathBuf, PathBuf)>,
 }
 
 /// A path a `paths` line names: protected (`folder=`, `file=`) or secret
@@ -329,7 +332,7 @@ pub struct Named {
 }
 
 /// The fields of a `paths` line that name a path.
-pub const PATH_FIELDS: [&str; 9] = [
+pub const PATH_FIELDS: [&str; 11] = [
     "cwd",
     "home",
     "workspace",
@@ -339,6 +342,8 @@ pub const PATH_FIELDS: [&str; 9] = [
     "secret_file",
     "drive_mount",
     "windows_home",
+    "link",
+    "to",
 ];
 
 /// The declaration a `paths` line's words make (the words after `paths`),
@@ -356,8 +361,10 @@ pub fn declaration(words: &[Word]) -> Result<Declaration, String> {
         named: Vec::new(),
         drive_mounts: Vec::new(),
         windows_home: None,
+        links: Vec::new(),
     };
     let mut pending: Vec<(bool, bool, PathBuf, Option<String>)> = Vec::new();
+    let mut links: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
     for word in &words[1..] {
         let (field, value) = match word {
             Word::Field(field, value) => (field, value),
@@ -389,6 +396,11 @@ pub fn declaration(words: &[Word]) -> Result<Declaration, String> {
                 return Err("`windows_home` twice in a `paths` declaration".to_string())
             }
             "windows_home" => declared.windows_home = Some(PathBuf::from(value)),
+            "link" => links.push((PathBuf::from(value), None)),
+            "to" => match links.last_mut() {
+                Some((_, target @ None)) => *target = Some(PathBuf::from(value)),
+                _ => return Err("`to` must follow its `link`".to_string()),
+            },
             other => {
                 return Err(format!(
                     "an unknown field `{other}` in a `paths` declaration"
@@ -414,6 +426,10 @@ pub fn declaration(words: &[Word]) -> Result<Declaration, String> {
             path,
             words: Box::leak(words.into_boxed_str()),
         });
+    }
+    for (link, target) in links {
+        let target = target.ok_or("each `link` takes its `to`")?;
+        declared.links.push((link, target));
     }
     Ok(declared)
 }

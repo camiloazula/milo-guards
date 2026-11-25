@@ -8,10 +8,11 @@
 //! of each case, and the paths each `paths` line names), so a case added
 //! there is held against the shell as soon as it lands. The paths of a case
 //! file are also judged on each machine its `paths` lines declare that names
-//! a secret (`secret_file=`, `secret_folder=`), a drive mount
-//! (`drive_mount=`) or a Windows home (`windows_home=`), with the protected
-//! paths and the secrets it names, so a secret the caller names and a drive
-//! spelled through a mount get one answer too.
+//! a secret (`secret_file=`, `secret_folder=`), a link (`link=`), a drive
+//! mount (`drive_mount=`) or a Windows home (`windows_home=`), with the
+//! protected paths and the secrets it names, so a secret the caller names, a
+//! path through a link it resolved and a drive spelled through a mount get
+//! one answer too.
 
 #![cfg(all(feature = "shell", feature = "file"))]
 #![allow(
@@ -32,7 +33,7 @@ use milo_guards::file::{self, Access};
 #[cfg(all(feature = "script", feature = "url"))]
 use milo_guards::script;
 use milo_guards::shell::{self, Shell};
-use milo_guards::{Paths, Protected, Secret};
+use milo_guards::{Link, Paths, Protected, Secret};
 
 /// The most a path may have in it for a case to be one worth a line.
 const LONGEST: usize = 300;
@@ -149,7 +150,12 @@ fn lines(path: &str, shell: Shell, home: &str) -> Vec<String> {
     };
     match shell {
         Shell::Posix => {
-            let quoted = format!("'{}'", path.replace('\'', "'\\''"));
+            // A `~` the file guard reads as the home directory is one the
+            // shell expands only unquoted.
+            let quoted = match path.strip_prefix("~/") {
+                Some(rest) => format!("~/'{}'", rest.replace('\'', "'\\''")),
+                None => format!("'{}'", path.replace('\'', "'\\''")),
+            };
             lines.push(format!("cat {quoted}"));
             lines.push(format!("cat < {quoted}"));
             lines.push(format!("base64 <{quoted}"));
@@ -245,7 +251,9 @@ fn declared_in(name: &str) -> Result<Vec<Paths>, String> {
                 (true, false) => paths.with_secrets([Secret::file(named.path, named.words)]),
             };
         }
-        paths = paths.with_drive_mounts(made.drive_mounts);
+        paths = paths
+            .with_drive_mounts(made.drive_mounts)
+            .with_links(made.links.into_iter().map(|(path, to)| Link::new(path, to)));
         if let Some(home) = made.windows_home {
             paths = paths.with_windows_home(home);
         }
@@ -318,15 +326,18 @@ fn the_shell_and_the_file_guard_agree_on_every_path_of_the_file_guards_cases() {
 }
 
 /// Whether `paths` names what changes where a path lands or what it is: a
-/// secret, a drive mount or a Windows home.
+/// secret, a link, a drive mount or a Windows home.
 fn names_more(paths: &Paths) -> bool {
-    !paths.secrets.is_empty() || !paths.drive_mounts.is_empty() || paths.windows_home.is_some()
+    !paths.secrets.is_empty()
+        || !paths.links.is_empty()
+        || !paths.drive_mounts.is_empty()
+        || paths.windows_home.is_some()
 }
 
 /// The same on each machine a case file declares that names a secret, a
-/// drive mount or a Windows home: what the caller names changes what a read
-/// is, and the two guards still give one answer for every path of that
-/// file.
+/// link, a drive mount or a Windows home: what the caller names changes what
+/// a read is, and the two guards still give one answer for every path of
+/// that file.
 #[test]
 fn the_shell_and_the_file_guard_agree_on_the_machines_the_cases_declare() {
     let (mut wrong, mut judged, mut flagged) = (Vec::new(), 0_usize, 0_usize);
@@ -560,6 +571,110 @@ fn the_shell_and_the_file_guard_agree_on_every_spelling_through_mounts() {
     );
 }
 
+/// The machines a case names by default, each with a link from the
+/// workspace to the home directory's SSH folder, and the POSIX one on WSL:
+/// the drives under `/mnt` and the Windows home named.
+fn linked_machines() -> Vec<Paths> {
+    let machines = machines();
+    vec![
+        machines["posix"]
+            .clone()
+            .with_links([
+                Link::new("/home/me/work/repo/keys", "/home/me/.ssh"),
+                Link::new("/home/me/work/repo/up", "../.."),
+            ])
+            .with_drive_mounts(["/mnt"])
+            .with_windows_home(r"C:\Users\me"),
+        machines["macos"]
+            .clone()
+            .with_links([Link::new("/Users/me/dev/repo/keys", "../../.ssh")]),
+        machines["windows"]
+            .clone()
+            .with_links([Link::new(r"C:\Users\me\dev\repo\keys", r"C:\Users\me\.ssh")]),
+    ]
+}
+
+/// Every spelling of the file guard's `posix.cases` and `windows.cases`, on
+/// each machine with links named, and each spelling of a key under the home
+/// directory written through those links (`keys/...` for `~/.ssh/...`,
+/// `up/...` for `~/...`) and, on WSL, through the mounted drive
+/// (`/mnt/c/Users/me/...` for `/home/me/...`): the two guards give one
+/// answer for each, and the spellings through a link or a mount do read keys.
+#[test]
+fn the_shell_and_the_file_guard_agree_on_every_spelling_through_links_and_mounts() {
+    let mut spellings: BTreeSet<String> = BTreeSet::new();
+    for name in ["posix", "windows"] {
+        spellings.extend(
+            paths_of(name)
+                .expect("the case file is readable")
+                .into_iter()
+                .filter(|path| {
+                    !path.is_empty()
+                        && path.len() <= LONGEST
+                        && !path.chars().any(char::is_control)
+                        && !path.starts_with(char::is_whitespace)
+                }),
+        );
+    }
+    let mut through: BTreeSet<String> = BTreeSet::new();
+    for path in &spellings {
+        let lower = path.to_lowercase();
+        // A key's folder through the link to it: what follows `.ssh`, or its
+        // short name, below `keys`.
+        for folder in [".ssh", "ssh~1"] {
+            if let Some(at) = lower.find(folder) {
+                let rest = &path[at + folder.len()..];
+                through.insert(format!("keys{rest}"));
+                for separator in ['/', '\\'] {
+                    through.insert(format!("keys{separator}..{separator}keys{rest}"));
+                }
+            }
+        }
+        // The home directory through the link above the workspace, and on
+        // WSL through the drive.
+        for home in ["~/", "/home/me/"] {
+            if let Some(rest) = path.strip_prefix(home) {
+                through.insert(format!("up/{rest}"));
+                through.insert(format!("/mnt/c/Users/me/{rest}"));
+            }
+        }
+    }
+    spellings.extend(through.iter().cloned());
+    let (mut wrong, mut judged, mut flagged) = (Vec::new(), 0_usize, 0_usize);
+    for paths in &linked_machines() {
+        for path in &spellings {
+            let (more, of, hits) = disagree(path, paths, shells_of(paths));
+            wrong.extend(more);
+            judged += of;
+            flagged += hits;
+        }
+    }
+    // Of the spellings made here, the ones the file guard calls a read of a
+    // key: the links and the mount are followed, not only spelled.
+    let reached = linked_machines()
+        .iter()
+        .flat_map(|paths| through.iter().map(move |path| (path, paths)))
+        .filter(|(path, paths)| {
+            file::judge(Access::Read, path, paths)
+                .findings()
+                .iter()
+                .any(|finding| finding.rule == file::Rule::ReadSecret)
+        })
+        .count();
+    assert!(judged > 5_000, "only {judged} lines were judged");
+    assert!(flagged > 1_000, "only {flagged} of them read a secret");
+    assert!(
+        reached > 100,
+        "only {reached} spellings through a link read a key"
+    );
+    assert!(
+        wrong.is_empty(),
+        "{} of {judged} lines are judged differently:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
 #[test]
 fn each_case_file_names_its_paths() {
     let posix = paths_of("posix").expect("posix.cases is readable");
@@ -577,6 +692,8 @@ fn each_case_file_names_its_paths() {
     assert!(named.iter().any(|path| path == "/home/me/work/repo/.env"));
     let declared = declared_in("named_secrets").expect("its declarations are readable");
     assert!(declared.iter().any(|paths| !paths.secrets.is_empty()));
+    let declared = declared_in("resolved_links").expect("its declarations are readable");
+    assert!(declared.iter().any(|paths| !paths.links.is_empty()));
     let declared = declared_in("drives").expect("its declarations are readable");
     assert!(declared.iter().any(|paths| !paths.drive_mounts.is_empty()));
     assert!(declared.iter().any(|paths| paths.windows_home.is_some()));
@@ -591,6 +708,7 @@ fn each_case_file_names_its_paths() {
         "startup",
         "named_secrets",
         "drives",
+        "resolved_links",
     ] {
         assert!(
             names.iter().any(|listed| listed == name),
@@ -606,6 +724,10 @@ fn quoted(path: &str, shell: Shell) -> Option<String> {
     (!path.contains(['\'', '\n'])).then(|| {
         if shell == Shell::Cmd {
             format!("\"{path}\"")
+        } else if let Some(rest) = path.strip_prefix("~/").filter(|_| shell == Shell::Posix) {
+            // A `~` the file guard reads as the home directory is one the
+            // shell expands only unquoted.
+            format!("~/'{rest}'")
         } else {
             format!("'{path}'")
         }
@@ -622,7 +744,9 @@ fn quoted(path: &str, shell: Shell) -> Option<String> {
 /// not, named. By design, and in every case file too: the shell's send also
 /// finds a file by a name that looks like a secret (`.env`), and sends a
 /// public key (`.pub`) as no secret, so a send is held one way and not for
-/// a public key; what the kernel serves is the file guard's and the script
+/// a public key; `Remove-Item` of a path that ends at a junction deletes
+/// through it where `shutil.rmtree` refuses one, so there a delete is held
+/// one way; what the kernel serves is the file guard's and the script
 /// guard's read alone; and the file guard judges a write to a folder that
 /// holds a protected path as a write of what it holds, where a redirect
 /// writes into it, so such a folder's write is left out.
@@ -657,15 +781,31 @@ fn disagree_on_acts(path: &str, paths: &Paths) -> (Vec<String>, usize) {
         let separator = if windows { "\\" } else { "/" };
         format!("{}{separator}{path}", paths.cwd.display())
     };
-    // A folder that holds a protected path, or a workspace.
-    let holder = paths
-        .protected
-        .iter()
-        .map(|named| named.path.to_string_lossy().into_owned())
-        .any(|below| {
-            below.len() > absolute.len()
-                && below.to_lowercase().starts_with(&absolute.to_lowercase())
+    // A folder that holds a link, a protected path, or what a link lands on
+    // (which holds the links named below the link).
+    let lands = paths.links.iter().any(|link| {
+        link.target.as_ref().is_some_and(|target| {
+            target
+                .to_string_lossy()
+                .to_lowercase()
+                .starts_with(&absolute.to_lowercase())
         })
+    });
+    let holder = lands
+        || paths
+            .links
+            .iter()
+            .map(|link| link.path.to_string_lossy().into_owned())
+            .chain(
+                paths
+                    .protected
+                    .iter()
+                    .map(|named| named.path.to_string_lossy().into_owned()),
+            )
+            .any(|below| {
+                below.len() > absolute.len()
+                    && below.to_lowercase().starts_with(&absolute.to_lowercase())
+            })
         || paths
             .workspaces
             .iter()
@@ -725,11 +865,15 @@ fn disagree_on_acts(path: &str, paths: &Paths) -> (Vec<String>, usize) {
     .findings()
     .iter()
     .any(|finding| finding.rule == script::Rule::ReadSecret);
-    check(
-        "read: the file guard, the script guard",
-        read_secret.is_some(),
-        reads,
-    );
+    // Python's `open` does not expand a `~`, where the file guard reads it
+    // as the home directory.
+    if !path.starts_with('~') {
+        check(
+            "read: the file guard, the script guard",
+            read_secret.is_some(),
+            reads,
+        );
+    }
     let deletes = |assessment: milo_guards::Assessment<script::Rule>| {
         assessment
             .findings()
@@ -743,13 +887,22 @@ fn disagree_on_acts(path: &str, paths: &Paths) -> (Vec<String>, usize) {
     ));
     // A long path is PowerShell's to read as a provider path too, which
     // adds a finding of its own to a delete there.
+    // `Remove-Item` may delete through a junction it is given (Windows
+    // PowerShell 5.1 does), where `shutil.rmtree` refuses one: the shell is
+    // the more cautious of the two there, never the less.
+    let at_link = windows && !path.starts_with('~') && {
+        let resolver = milo_guards_core::Resolver::new(paths);
+        let spelling = milo_guards_core::Spelling::Plain(path);
+        let flavour = milo_guards_core::Flavour::Windows;
+        resolver.place_name(spelling, flavour, false) != resolver.place(spelling, flavour)
+    };
     if !path.starts_with("\\\\") {
         let shell_deletes =
             finds(&delete_line, shell::Rule::Delete) || finds(&delete_line, shell::Rule::WipeDisk);
         check(
             "delete: the shell, the script guard",
             shell_deletes,
-            script_deletes,
+            script_deletes || (at_link && shell_deletes),
         );
     }
     // A `file:` URL to an absolute POSIX path reads in the file guard's
@@ -814,6 +967,54 @@ fn the_guards_agree_on_writes_deletes_sends_and_reads_through_mounts() {
         }
     }
     assert!(judged > 2_500, "only {judged} answers were compared");
+    assert!(
+        wrong.is_empty(),
+        "{} of {judged} answers differ:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// Writes, deletes, sends and reads through the links and the drive
+/// mounts of the file guard's case files and of the linked machines, held
+/// to one answer by every guard that places a path: the shell, the file,
+/// the script and the URL guards.
+#[cfg(all(feature = "script", feature = "url"))]
+#[test]
+fn the_guards_agree_on_writes_deletes_sends_and_reads_through_links_and_mounts() {
+    let mut machines: Vec<(String, Paths)> = Vec::new();
+    for name in ["resolved_links", "drives"] {
+        for paths in declared_in(name).expect("the declarations are readable") {
+            if names_more(&paths) {
+                machines.push((name.to_string(), paths));
+            }
+        }
+    }
+    machines.extend(
+        linked_machines()
+            .into_iter()
+            .map(|paths| ("linked".to_string(), paths)),
+    );
+    let mut spellings: BTreeSet<String> = BTreeSet::new();
+    for name in ["resolved_links", "drives"] {
+        spellings.extend(
+            paths_of(name)
+                .expect("the case file is readable")
+                .into_iter()
+                .filter(|path| {
+                    !path.is_empty() && path.len() <= LONGEST && !path.chars().any(char::is_control)
+                }),
+        );
+    }
+    let (mut wrong, mut judged) = (Vec::new(), 0_usize);
+    for (name, paths) in &machines {
+        for path in &spellings {
+            let (more, of) = disagree_on_acts(path, paths);
+            wrong.extend(more.into_iter().map(|line| format!("{name}: {line}")));
+            judged += of;
+        }
+    }
+    assert!(judged > 10_000, "only {judged} answers were compared");
     assert!(
         wrong.is_empty(),
         "{} of {judged} answers differ:\n{}",

@@ -1,0 +1,65 @@
+# The links the caller has resolved (`Paths::links`): code that opens a path
+# through one opens where it lands, a `..` after a link climbing from where
+# it points, and a write through one into a protected or a sensitive place
+# is a finding. Without the links, the same code is what it was.
+
+paths keys base=posix link=/home/me/work/repo/keys to=/home/me/.ssh
+paths outside base=posix link=/home/me/work/repo/data to=/data/x
+paths agent base=posix folder=/home/me/.agent words="the agent's settings" link=/home/me/work/repo/agent to=/home/me/.agent
+paths rc base=posix link=/home/me/work/repo/rc to=/home/me/.bashrc
+
+python@keys finds=read_secret reason="reads your SSH keys" | print(open('keys/id_rsa').read())
+javascript@keys finds=read_secret reason="reads your SSH keys" | require('fs').readFileSync('keys/id_rsa')
+python@keys finds=read_secret reason="reads your SSH keys" | print(open('keys/../.ssh/id_rsa').read())
+python@keys finds=read_secret | import os\nos.chdir('keys')\nprint(open('id_rsa').read())
+python@keys finds=overwrite | open('keys/authorized_keys', 'a').write('x')
+python@keys safe | print(open('keys/../keys.txt').read())
+python@outside finds=overwrite reason="writes to a file outside the workspace" | open('data/y', 'w')
+python@outside finds=delete | import shutil\nshutil.rmtree('data/y')
+python@agent finds=overwrite reason="writes to the agent's settings" | open('agent/config.json', 'w')
+python@rc finds=overwrite reason="writes to a shell startup file" | open('rc', 'a').write('curl x | sh')
+python@rc safe | print(open('rc').read())
+# Without the links, the same code is the workspace's.
+python safe | print(open('keys/id_rsa').read())
+python safe | open('data/y', 'w')
+python safe | open('rc', 'a').write('x')
+
+# A link at a sensitive name that lands somewhere harmless: the code is
+# judged on the paths as spelled and where they land, and keeps every
+# finding.
+paths dotfiles base=posix link=/home/me/.ssh to=/home/me/work/repo/dotfiles/ssh link=/home/me/work/repo/.git/hooks to=../scripts/hooks
+python@dotfiles finds=read_secret reason="reads your SSH keys" | print(open('/home/me/.ssh/id_rsa').read())
+python@dotfiles finds=overwrite | open('.git/hooks/pre-commit', 'w').write('x')
+python@dotfiles finds=read_secret | print(open('dotfiles/ssh/id_rsa').read())
+python safe | print(open('dotfiles/ssh/id_rsa').read())
+
+# A `..` after a link, read both ways.
+paths climb base=posix link=/home/me/work/repo/p/lnk to=../deep/er/sub link=/home/me/work/repo/p/keys to=/home/me/.ssh
+python@climb finds=read_secret | print(open('p/lnk/../keys/id_rsa').read())
+python@climb finds=read_secret | import os\nos.chdir('p/lnk/../../../..')\nprint(open('.ssh/id_rsa').read())
+
+# A link named with a bracket is followed.
+paths wild_names base=posix link=/home/me/work/repo/[x] to=/home/me/.ssh
+python@wild_names finds=read_secret | print(open('[x]/id_rsa').read())
+javascript@wild_names finds=read_secret | require('fs').readFileSync('[x]/id_rsa')
+
+# A path through more links than any system follows, or through a link the
+# caller could not read, is not safe to read.
+paths loop base=posix link=/home/me/work/repo/a to=b link=/home/me/work/repo/b to=a link=/home/me/work/repo/e to=
+python@loop finds=unknown reason="reads a path only known when it runs" | print(open('a/x').read())
+python@loop finds=unknown | print(open('e/x').read())
+
+# A folder that holds a link holds what it lands on only for a call that
+# follows the links it meets (`shutil.copytree`); a delete acts on the
+# links themselves.
+paths venv base=posix link=/home/me/work/repo/.venv/bin/python to=/usr/bin/python3 link=/home/me/work/repo/keys to=/home/me/.ssh
+python@venv lacks=delete | import shutil\nshutil.rmtree('.venv')
+python@venv finds=read_secret reason="reads your SSH keys, and the keys in it" | import shutil\nshutil.copytree('.', '/tmp/x')
+python@keys finds=delete | import shutil\nshutil.rmtree('keys/old')
+# A link into the workspace keeps the workspace the agent's.
+paths current base=posix link=/home/me/current to=/home/me/work/repo
+python@current safe | open('out.txt', 'w').write('x')
+python@current lacks=delete | import shutil\nshutil.rmtree('build')
+# A link named where another link lands lends the first link's name too.
+paths bare base=posix link=/home/me/work/repo/.git to=.bare link=/home/me/work/repo/.bare/hooks to=../scripts/hooks
+python@bare finds=overwrite | open('scripts/hooks/pre-commit', 'w').write('x')

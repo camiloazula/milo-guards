@@ -14,9 +14,10 @@ The path is one literal path, resolved by its spelling alone against the
 directory, `..` applied, and the Windows spellings (drives, shares, long
 paths, short names, any case) read as Windows reads them, whatever host the
 guard runs on. Nothing is read from the disk, so a symlink is judged by its
-own name, and WSL's `/mnt/c` as a folder of this machine's unless the caller
-names the mount (`Paths::with_drive_mounts`): then a path through it is also
-judged where the drive's path lands.
+own name, and WSL's `/mnt/c` as a folder of this machine's, unless the
+caller names the link (`Paths::with_links`) or the mount
+(`Paths::with_drive_mounts`): then a path through it is also judged where it
+lands.
 
 - A **read** is safe wherever it lands, except a key or a credential, or a
   file the caller names as holding a secret (`Paths::with_secrets`)

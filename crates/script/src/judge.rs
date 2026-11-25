@@ -57,6 +57,11 @@ const ENVIRONED: &str = "starts a program with an environment set in the code";
 /// runs, or in part, or cannot be placed.
 const PARTIAL: &str = "opens a file whose path is only known when the code runs";
 
+/// Why a read of a path is `unknown` when it goes through more links than
+/// any system follows, a link the caller could not read, or past the work
+/// one call may spend: as the shell guard says it.
+const LOST: &str = "reads a path only known when it runs";
+
 /// Why a path handed to a call the reader does not know is `unknown`.
 const HANDED: &str = "gives a path to a call the guard does not read";
 
@@ -377,6 +382,23 @@ impl Judge {
             self.resolver.place_into(spelling, self.flavour, false)
         } else {
             self.resolver.place(spelling, self.flavour)
+        }
+    }
+
+    /// Where `arg` lands to what acts on the name itself (a delete, a
+    /// move): a path that ends at a link the caller named is the link, not
+    /// what it points to, unless a trailing separator goes through it.
+    fn place_name(&self, arg: &Arg) -> Place {
+        let Some(text) = self.known(arg) else {
+            return Place::Unknown;
+        };
+        if text.ends_with(['/', '\\']) {
+            return self.place_of(&text, false);
+        }
+        let text = self.normal(&text);
+        match self.spelling(&text) {
+            Some(spelling) => self.resolver.place_name(spelling, self.flavour, false),
+            None => Place::Unknown,
         }
     }
 
@@ -753,7 +775,7 @@ impl Judge {
 
     /// A delete of `path`, as `rm -rf PATH` is judged.
     fn delete(&mut self, path: &Arg) {
-        match self.place(path, false) {
+        match self.place_name(path) {
             place if place.harmless() => {}
             Place::Disk => self.add_about(Rule::WipeDisk, "deletes a disk", path),
             place => {
@@ -772,7 +794,7 @@ impl Judge {
     /// What a move takes away from where it was: anything beyond the
     /// workspace and its temporary files is lost there.
     fn move_away(&mut self, from: &Arg) {
-        match self.place(from, false) {
+        match self.place_name(from) {
             place if place.harmless() => {}
             place => self.add_about(Rule::Delete, format!("moves {}", place.words()), from),
         }
@@ -908,6 +930,8 @@ impl Judge {
         }
         if let Some(doubt) = doubt {
             self.add_about(Rule::Unknown, doubt, path);
+        } else if self.lost(path) {
+            self.add_about(Rule::Unknown, LOST, path);
         } else if unplaceable && path.known().is_some() && self.place(path, false) == Place::Unknown
         {
             self.add_about(Rule::Unknown, PARTIAL, path);
@@ -1051,7 +1075,25 @@ impl Judge {
                 .iter()
                 .find_map(|home| holds(self.place_of(home, false)));
         }
-        holds(self.place(arg, false))
+        holds(self.place(arg, false)).or_else(|| {
+            // A folder that holds a link the caller named holds what the
+            // link lands on, for a reader that follows the links it meets.
+            let known = self.known(arg)?;
+            let text = self.normal(&known).into_owned();
+            let spelling = self.spelling(&text)?;
+            self.resolver.linked_holder(spelling, self.flavour)
+        })
+    }
+
+    /// Whether `arg` goes through more links than any system follows, a
+    /// link the caller could not read, or past the work one call may spend.
+    fn lost(&self, arg: &Arg) -> bool {
+        let Some(text) = self.known(arg) else {
+            return false;
+        };
+        let text = self.normal(&text);
+        self.spelling(&text)
+            .is_some_and(|spelling| self.resolver.lost(spelling, self.flavour))
     }
 
     /// The move a command line starts with when the code runs it from

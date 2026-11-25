@@ -158,6 +158,16 @@ pub(crate) fn drive_of(dir: &str) -> Option<char> {
     (chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
 }
 
+/// Whether the caller names links, and how: only then may a path be lost
+/// on its way, and only with a wildcard or a brace in a link's name is a
+/// word that spells one also read as that name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Linked {
+    None,
+    Named,
+    Wild,
+}
+
 /// Judges path arguments against the caller's directories.
 pub(crate) struct Resolver {
     core: milo_guards_core::Resolver,
@@ -167,6 +177,9 @@ pub(crate) struct Resolver {
     /// Whether the caller names any secret (`Paths::secrets`): only then is
     /// a path looked up among them (see [`Resolver::named_secret`]).
     named: bool,
+    /// Whether the caller names a link (`Paths::links`), and one with a
+    /// wildcard or a brace in its name.
+    linked: Linked,
     /// The drive the working directory is on, upper case; `None` when it is
     /// on no drive.
     cwd_drive: Option<char>,
@@ -178,7 +191,7 @@ pub(crate) struct Resolver {
     /// Whether the line makes a drive whose name is only known when it runs.
     made_unknown: bool,
     /// The places already found for the line (see [`Resolver::place_spelled`]).
-    placed: std::cell::RefCell<HashMap<(String, Shell, bool, bool), Place>>,
+    placed: std::cell::RefCell<HashMap<(String, Shell, bool, Hold), Place>>,
 }
 
 /// Whether a plain relative path (see [`plain_relative`]) from the working
@@ -204,6 +217,18 @@ enum Reading<'a> {
     Into,
     Holding,
     Picked(&'a dyn Fn(&str) -> bool),
+    /// As `Holding`, of the name itself: a path that ends at a link the
+    /// caller named is the link, not what it points to (`rm`, `mv`).
+    Name,
+}
+
+/// How a place is asked for (see [`Reading`]): the item and what it holds,
+/// what is written into it, or the name itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Hold {
+    Whole,
+    Into,
+    Name,
 }
 
 /// The most places [`Resolver::place_spelled`] keeps for a line, and the
@@ -224,6 +249,13 @@ impl Resolver {
                 Clear::No
             },
             named: !paths.secrets.is_empty(),
+            linked: if core.wild_links() {
+                Linked::Wild
+            } else if paths.links.is_empty() {
+                Linked::None
+            } else {
+                Linked::Named
+            },
             core,
             cwd_drive: drive_of(&paths.cwd.to_string_lossy()),
             paths: None,
@@ -486,6 +518,43 @@ impl Resolver {
         within(dir, arg, shell).is_unknown()
     }
 
+    /// Whether a link the caller names has a wildcard or a brace in its
+    /// name, so a word that spells one is that name.
+    pub(crate) fn wild_links(&self) -> bool {
+        self.linked == Linked::Wild
+    }
+
+    /// Whether `arg`, written from `dir`, goes on its way through more links
+    /// than any system follows, a link the caller could not read or the
+    /// guard could not place, or past the work a line may spend (see
+    /// [`milo_guards_core::Resolver::lost`]): a read of it is not one of a
+    /// place the line shows.
+    pub(crate) fn lost(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
+        if self.linked == Linked::None {
+            return false;
+        }
+        let arg = within(dir, arg, shell);
+        let Some(text) = arg.known() else {
+            return false;
+        };
+        if brace_list(text)
+            || device(text, shell).is_some()
+            || self.made_drive(text, shell).is_some()
+        {
+            return false;
+        }
+        let flavour = flavour(shell);
+        match start(text, shell) {
+            Start::Plain => self.core.lost(Spelling::Plain(text), flavour),
+            Start::Home(rest) => self.core.lost(Spelling::Home(rest), flavour),
+            Start::Temp(rest) => self.core.lost(Spelling::Home(&in_temp(rest)), flavour),
+            Start::DriveRelative(letter, rest) => self
+                .on_cwd_drive(letter, rest)
+                .is_some_and(|rest| self.core.lost(Spelling::Plain(rest), flavour)),
+            Start::Provider(..) | Start::Unknown => false,
+        }
+    }
+
     /// Whether `arg`, written from `dir`, names a place on another machine:
     /// a UNC path (`\\server\share`, `//server/share`,
     /// `\\?\UNC\server\share`) in PowerShell or cmd. Reading it contacts
@@ -510,6 +579,17 @@ impl Resolver {
             }
         }
         milo_guards_core::spelling::network(text, flavour(shell))
+            || (self.linked != Linked::None && self.lands_on_share(text, shell))
+    }
+
+    /// Whether a link the caller named takes `text` to another machine.
+    fn lands_on_share(&self, text: &str, shell: Shell) -> bool {
+        let flavour = flavour(shell);
+        match start(text, shell) {
+            Start::Plain => self.core.lands_on_share(Spelling::Plain(text), flavour),
+            Start::Home(rest) => self.core.lands_on_share(Spelling::Home(rest), flavour),
+            _ => false,
+        }
     }
 
     /// What reading `arg`, written from `dir`, exposes when it is a key or a
@@ -562,14 +642,14 @@ impl Resolver {
             arg
         };
         let text = arg.known()?;
-        let mut place = self.place_of(text, shell, hidden, true);
+        let mut place = self.place_of(text, shell, hidden, Hold::Whole);
         // A Windows name the spelling does not settle (a stream, a part with
         // a trailing space) is read for the file it is a name of; PowerShell
         // takes `id_rsa::$DATA` for a provider's path, which is outside.
         let mut file = None;
         if matches!(place, Place::Unknown | Place::Outside) && shell != Shell::Posix {
             if let Some(named) = without_streams(text) {
-                place = self.place_of(&named, shell, hidden, true);
+                place = self.place_of(&named, shell, hidden, Hold::Whole);
                 file = Some(named);
             }
         }
@@ -738,6 +818,7 @@ impl Resolver {
         arg: &Arg,
         shell: Shell,
         hidden: bool,
+        follows: bool,
     ) -> Option<&'static str> {
         // A plain name holds no home directory, named secrets or not.
         if dir.is_none()
@@ -755,8 +836,16 @@ impl Resolver {
             )
             .then(|| place.words())
         };
-        if let Some(words) = holds(self.place_of(text, shell, hidden, true)) {
+        if let Some(words) = holds(self.place_of(text, shell, hidden, Hold::Whole)) {
             return Some(words);
+        }
+        // A folder that holds a link the caller named holds what the link
+        // lands on, for a reader that follows the links it meets.
+        if follows {
+            let linked = self.linked_of(text, shell);
+            if linked.is_some() {
+                return linked;
+            }
         }
         // A POSIX pattern part that can match `..` (`.*`) may be the parent:
         // each reading core gives is asked, as `place` asks them all.
@@ -772,6 +861,37 @@ impl Resolver {
             .places(spelling, Flavour::Posix, hidden)
             .into_iter()
             .find_map(holds)
+    }
+
+    /// The words of what a link the caller named at or below `arg`, written
+    /// from `dir`, lands on, for a tool that follows the links it meets (see
+    /// [`milo_guards_core::Resolver::linked_holder`]).
+    pub(crate) fn linked(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+    ) -> Option<&'static str> {
+        if self.linked == Linked::None {
+            return None;
+        }
+        let arg = within(dir, arg, shell);
+        self.linked_of(arg.known()?, shell)
+    }
+
+    fn linked_of(&self, text: &str, shell: Shell) -> Option<&'static str> {
+        if self.linked == Linked::None || brace_list(text) {
+            return None;
+        }
+        match start(text, shell) {
+            Start::Plain => self
+                .core
+                .linked_holder(Spelling::Plain(text), flavour(shell)),
+            Start::Home(rest) => self
+                .core
+                .linked_holder(Spelling::Home(rest), flavour(shell)),
+            _ => None,
+        }
     }
 
     /// What the kernel serves that `text` names, in a POSIX shell: see
@@ -839,6 +959,26 @@ impl Resolver {
         self.locate(dir, arg, shell, hidden, access, Reading::Into)
     }
 
+    /// As [`place`](Self::place), for what acts on the name itself (`rm`,
+    /// `unlink`, `mv`): a path that ends at a link the caller named is the
+    /// link, unless a trailing separator says to go through it.
+    pub(crate) fn place_name(
+        &self,
+        dir: Option<&Arg>,
+        arg: &Arg,
+        shell: Shell,
+        hidden: bool,
+        access: Access,
+    ) -> Place {
+        let through = arg.known().is_some_and(|text| text.ends_with(['/', '\\']));
+        let reading = if through {
+            Reading::Holding
+        } else {
+            Reading::Name
+        };
+        self.locate(dir, arg, shell, hidden, access, reading)
+    }
+
     /// Where `arg` lands, a path already joined to where the line runs: a
     /// bare device name is read as written, as it is with no `cd` before it.
     pub(crate) fn place_joined(&self, arg: &Arg, shell: Shell, hidden: bool) -> Place {
@@ -873,9 +1013,10 @@ impl Resolver {
         match arg.known() {
             Some(text) => {
                 let (holding, picks) = match reading {
-                    Reading::Into => (false, None),
-                    Reading::Holding => (true, None),
-                    Reading::Picked(picks) => (true, Some(picks)),
+                    Reading::Into => (Hold::Into, None),
+                    Reading::Holding => (Hold::Whole, None),
+                    Reading::Picked(picks) => (Hold::Whole, Some(picks)),
+                    Reading::Name => (Hold::Name, None),
                 };
                 self.place_found(text, shell, hidden, holding, picks)
             }
@@ -1022,7 +1163,7 @@ impl Resolver {
         }
     }
 
-    fn place_of(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
+    fn place_of(&self, text: &str, shell: Shell, hidden: bool, holding: Hold) -> Place {
         self.place_found(text, shell, hidden, holding, None)
     }
 
@@ -1033,7 +1174,7 @@ impl Resolver {
         text: &str,
         shell: Shell,
         hidden: bool,
-        holding: bool,
+        holding: Hold,
         picks: Option<&dyn Fn(&str) -> bool>,
     ) -> Place {
         // A folder a search or a listing hands on whole is the folder, and
@@ -1070,7 +1211,7 @@ impl Resolver {
     /// secret path, a tenth of a millisecond, so PowerShell's `sc *a x;.\b;`
     /// repeated to the length limit placed `*a` thousands of times, half a
     /// second.
-    fn place_spelled(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
+    fn place_spelled(&self, text: &str, shell: Shell, hidden: bool, holding: Hold) -> Place {
         if text.len() > LONGEST_PLACED {
             return self.place_spelled_now(text, shell, hidden, holding);
         }
@@ -1086,18 +1227,24 @@ impl Resolver {
         place
     }
 
-    fn place_spelled_now(&self, text: &str, shell: Shell, hidden: bool, holding: bool) -> Place {
-        let place_core = |spelling, flavour| {
-            if holding {
-                self.core.place_hidden(spelling, flavour, hidden)
-            } else {
-                self.core.place_into(spelling, flavour, hidden)
-            }
+    fn place_spelled_now(&self, text: &str, shell: Shell, hidden: bool, holding: Hold) -> Place {
+        let place_core = |spelling, flavour| match holding {
+            Hold::Whole => self.core.place_hidden(spelling, flavour, hidden),
+            Hold::Into => self.core.place_into(spelling, flavour, hidden),
+            Hold::Name => self.core.place_name(spelling, flavour, hidden),
         };
         // A brace list (`{~,x}`, `x{,/../..}`) expands to paths its spelling
         // does not show, so it is checked before the text is taken for a
         // device.
         if brace_list(text) {
+            // A link the caller named may be named with braces (`{a,b}`),
+            // and a quoted word is that name: where it lands is a place too.
+            if self.wild_links() && matches!(start(text, shell), Start::Plain) {
+                let place = place_core(Spelling::Plain(text), flavour(shell));
+                if !place.harmless() {
+                    return place;
+                }
+            }
             return Place::Unknown;
         }
         if let Some(device) = device(text, shell) {

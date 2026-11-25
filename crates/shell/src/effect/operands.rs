@@ -27,6 +27,10 @@ pub(super) struct Context<'a> {
     /// Whether a read of the line landed beyond the workspace so far, for
     /// [`super::Reach`].
     pub(super) beyond: Cell<bool>,
+    /// Whether a read went through more links than are followed, a link
+    /// that cannot be read or placed, or past the work the line may spend:
+    /// the line's effect is not known, and no read is beyond for it.
+    pub(super) lost: Cell<bool>,
     /// Where each read landed, as written, when the caller asks for the
     /// paths (`None` otherwise, so that `effect` pays nothing for them).
     pub(super) landed: Option<RefCell<Vec<Landed>>>,

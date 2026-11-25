@@ -1,0 +1,161 @@
+# The links the caller has resolved (`Paths::links`): a read or a write
+# through one is judged where it lands, a `..` after a link climbing from
+# where it points. A path that ends at a link is also the link itself, and
+# the more serious answer wins. Without a link named, the same paths are
+# judged as they are spelled. The format is in CONTRIBUTING.md.
+
+paths keys base=posix link=/home/me/work/repo/keys to=/home/me/.ssh
+paths keyfile base=posix link=/home/me/work/repo/id to=../../.ssh/id_rsa
+paths outside base=posix link=/home/me/work/repo/data to=/data/x
+paths tmp base=posix link=/home/me/work/repo/out to=/tmp/out
+paths chain base=posix link=/home/me/work/repo/a to=b link=/home/me/work/repo/b to=/home/me/.aws
+paths loop base=posix link=/home/me/work/repo/a to=b link=/home/me/work/repo/b to=a
+paths agent base=posix folder=/home/me/.agent words="the agent's settings" link=/home/me/work/repo/agent to=/home/me/.agent
+paths env base=posix secret_file=/data/app/.env words="the app's environment file" link=/home/me/work/repo/app to=/data/app
+paths rc base=posix link=/home/me/work/repo/rc to=/home/me/.bashrc
+paths dotfile base=posix link=/home/me/.bashrc to=/home/me/work/repo/bashrc
+paths devices base=posix link=/home/me/work/repo/mem to=/proc/self/environ link=/home/me/work/repo/null to=/dev/null
+paths mac_keys base=macos link=/Users/me/dev/repo/keys to=/Users/me/.ssh
+paths windows_keys base=windows link=C:\\Users\\me\\dev\\repo\\keys to=C:\\Users\\me\\.ssh
+
+# A read through a link to a key is a read of the key.
+read@keys rules=read_secret first=read_secret reason="reads your SSH keys" | keys/id_rsa
+read@keys rules=read_secret | /home/me/work/repo/keys/id_rsa
+read@keys rules=read_secret | ~/work/repo/keys/id_rsa
+read@keys rules=read_secret | src/../keys/id_rsa
+write@keys rules=write_sensitive first=write_sensitive reason="writes to your SSH keys" | keys/authorized_keys
+read@keys safe | keys/../keys.txt
+read@keys rules=read_secret | keys/../.ssh/id_rsa
+read@keys safe | src/keys/id_rsa
+read@keyfile rules=read_secret | id
+write@keyfile rules=write_sensitive | id
+# Without the links, the same paths are the workspace's.
+read safe | keys/id_rsa
+write safe | keys/authorized_keys
+read safe | keys/../.ssh/id_rsa
+read safe | id
+# A write through a link out of the workspace is beyond it; into a
+# temporary folder, safe.
+write@outside rules=write_outside first=write_outside reason="writes to a path outside the workspace" | data/x
+read@outside safe | data/x
+write@tmp safe | out/build.log
+# A link to a link is followed again; a loop is a path only known when it
+# runs.
+read@chain rules=read_secret first=read_secret reason="reads your AWS credentials" | a/credentials
+read@loop rules=unreadable first=unreadable reason="is a path only known when it runs" | a/x
+write@loop rules=unreadable | a
+# Into a protected place, a named secret, a startup file.
+write@agent rules=write_protected first=write_protected reason="writes to the agent's settings" | agent/config.json
+read@agent safe | agent/config.json
+read@env rules=read_secret first=read_secret reason="reads the app's environment file" | app/.env
+write@env rules=write_sensitive first=write_sensitive reason="writes to the app's environment file" | app/.env
+write@rc rules=write_sensitive first=write_sensitive reason="writes to a shell startup file" | rc
+read@rc safe | rc
+# A link in a startup file's place is still that file, and so is the file it
+# lands on: `bashrc` is also `~/.bashrc`.
+write@dotfile rules=write_sensitive first=write_sensitive reason="writes to a shell startup file" | ~/.bashrc
+write@dotfile rules=write_sensitive first=write_sensitive reason="writes to a shell startup file" | bashrc
+write safe | bashrc
+# What the kernel serves, through a link.
+read@devices rules=read_secret first=read_secret reason="reads the kernel's process files" | mem
+write@devices safe | null
+# A Mac and Windows compare a link's name without case.
+read@mac_keys rules=read_secret | KEYS/id_rsa
+read@mac_keys rules=read_secret | /System/Volumes/Data/Users/me/dev/repo/keys/id_rsa
+read@windows_keys rules=read_secret | Keys\\id_rsa
+read@windows_keys rules=read_secret | C:\\Users\\me\\dev\\repo\\KEYS\\id_rsa
+read@windows_keys rules=read_secret | \\\\?\\C:\\Users\\me\\dev\\repo\\keys\\id_rsa
+read@windows safe | keys\\id_rsa
+
+# A link at a sensitive name that lands somewhere harmless: the path as
+# spelled, as it reads at each link, and each name of where it lands are
+# judged, and every finding is kept.
+paths dotfiles base=posix link=/home/me/.ssh to=/home/me/work/repo/dotfiles/ssh link=/home/me/work/repo/.git/hooks to=../scripts/hooks link=/home/me/work/repo/.vscode to=config/vscode link=/home/me/work/repo/.github to=ci
+paths gitdir base=posix link=/home/me/work/repo/.git to=/home/me/work/repo/gitdir
+read@dotfiles rules=read_secret first=read_secret reason="reads your SSH keys" | ~/.ssh/id_rsa
+write@dotfiles rules=write_sensitive | ~/.ssh/authorized_keys
+read@dotfiles rules=read_secret | dotfiles/ssh/id_rsa
+write@dotfiles finds=write_sensitive | .git/hooks/pre-commit
+write@dotfiles finds=write_sensitive | scripts/hooks/pre-commit
+write@dotfiles rules=write_sensitive first=write_sensitive reason="writes to a file a tool runs on its own" | .vscode/tasks.json
+write@dotfiles finds=write_sensitive | .github/workflows/ci.yml
+write@dotfiles finds=write_sensitive | ci/workflows/ci.yml
+write@gitdir finds=write_sensitive | .git/config
+write@gitdir finds=write_sensitive | gitdir/config
+read safe | dotfiles/ssh/id_rsa
+
+# A `..` after a link, read as the text spells it (as Windows applies it)
+# and as a POSIX system climbs it: the more serious wins.
+paths windows_climb base=windows link=C:\\Users\\me\\dev\\repo\\j to=C:\\Users\\me\\dev\\repo\\a\\b\\c link=C:\\Users\\me\\dev\\repo\\keys to=C:\\Users\\me\\.ssh
+paths climb base=posix link=/home/me/work/repo/p/lnk to=../deep/er/sub link=/home/me/work/repo/p/keys to=/home/me/.ssh
+read@windows_climb rules=read_secret | j\\..\\..\\..\\.ssh\\id_rsa
+read@windows_climb rules=read_secret | j\\..\\keys\\id_rsa
+write@windows_climb finds=write_sensitive | j\\..\\keys\\authorized_keys
+read@climb rules=read_secret | p/lnk/../keys/id_rsa
+read@windows safe | j\\..\\keys\\id_rsa
+
+# Targets as systems hand them over: a junction's raw forms, a share (a read
+# reaches it), and what cannot be placed (a volume, a device, an empty
+# target), which is unreadable.
+paths windows_targets base=windows link=C:\\Users\\me\\dev\\repo\\j1 to=\\??\\C:\\Users\\me\\.ssh link=C:\\Users\\me\\dev\\repo\\j3 to=\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\Users link=C:\\Users\\me\\dev\\repo\\j4 to=\\\\server\\share\\x link=C:\\Users\\me\\dev\\repo\\j6 to=\\\\.\\C:\\Users\\me\\.ssh link=C:\\Users\\me\\dev\\repo\\e to=
+paths posix_targets base=posix link=/home/me/work/repo/k1 to=//home/me/.ssh link=/home/me/work/repo/e to= link=keys to=/home/me/.ssh
+read@windows_targets rules=read_secret | j1\\id_rsa
+read@windows_targets rules=unreadable | j3\\x
+read@windows_targets finds=network_share | j4\\y
+read@windows_targets rules=unreadable | j6\\id_rsa
+write@windows_targets rules=unreadable | e\\x
+read@posix_targets rules=read_secret | k1/id_rsa
+write@posix_targets rules=unreadable | e/x
+read@posix_targets rules=read_secret | keys/id_rsa
+
+# A link named with a bracket or a star is followed: the path a file API
+# takes is that name.
+paths wild_names base=posix link=/home/me/work/repo/[x] to=/home/me/.ssh link=/home/me/work/repo/app/[id] to=/home/me/.aws link=/home/me/work/repo/a*b to=/home/me/.ssh
+read@wild_names rules=read_secret | [x]/id_rsa
+read@wild_names rules=read_secret | app/[id]/credentials
+write@wild_names finds=write_sensitive | [x]/authorized_keys
+
+# The same answer in any order the links are named.
+paths order_one base=posix link=/home/me/work/repo/a to=/home/me/work/repo/x/y/z link=/home/me/work/repo/a/c to=/home/me/.ssh link=/home/me/work/repo/x/y to=/home/me/work/repo/q
+paths order_two base=posix link=/home/me/work/repo/x/y to=/home/me/work/repo/q link=/home/me/work/repo/a/c to=/home/me/.ssh link=/home/me/work/repo/a to=/home/me/work/repo/x/y/z
+read@order_one rules=read_secret | a/c/id_rsa
+read@order_two rules=read_secret | a/c/id_rsa
+
+# A link's name by its Windows short name.
+paths short base=windows link=C:\\Users\\me\\dev\\repo\\mysecretkeys to=C:\\Users\\me\\.ssh
+read@short rules=read_secret | MYSECR~1\\id_rsa
+write@short finds=write_sensitive | MYSECR~1\\authorized_keys
+
+# A link into the workspace lends its name to what it lands on only for
+# what the name means by itself: a key, a protected path, a startup file;
+# never a place beyond the workspace, a system folder or a share.
+paths current base=posix link=/home/me/current to=/home/me/work/repo
+paths site base=posix link=/var/www/site to=/home/me/work/repo/public
+paths share_home base=windows link=\\\\server\\share\\x to=C:\\Users\\me
+write@current safe | src/main.rs
+read@current safe | src/main.rs
+write@site safe | public/index.html
+read@share_home safe | README.md
+write@share_home safe | README.md
+read@share_home rules=read_secret | C:\\Users\\me\\.ssh\\id_rsa
+
+# A link at or above a mount's folder: the mount is where its folder lands.
+paths mnt_link base=posix drive_mount=/mnt windows_home=C:\\Users\\me link=/mnt to=/media
+read@mnt_link rules=read_secret first=read_secret reason="reads your SSH keys" | /mnt/c/Users/me/.ssh/id_rsa
+read@mnt_link rules=read_secret | /media/c/Users/me/.ssh/id_rsa
+
+# An empty link names nothing; a relative one is read from the first
+# workspace folder.
+paths relative_link base=posix link=keys to=/home/me/.ssh link= to=/home/me/.ssh
+read@relative_link rules=read_secret | keys/id_rsa
+write@relative_link safe | src/main.rs
+
+# A link named where another link lands lends the first link's name too.
+paths lent_twice base=posix link=/home/me/.ssh to=/home/me/work/repo/s link=/home/me/work/repo/s/keys to=../k
+paths bare base=posix link=/home/me/work/repo/.git to=.bare link=/home/me/work/repo/.bare/hooks to=../scripts/hooks
+read@lent_twice rules=read_secret first=read_secret reason="reads your SSH keys" | k/id_rsa
+write@bare rules=write_sensitive first=write_sensitive reason="writes to a git hook, which runs code" | scripts/hooks/pre-commit
+# A workspace inside a folder a link lands on (a stow layout) is one whose
+# plain names a link lends: `credentials` is `~/.config/git/credentials`.
+paths stow cwd=/home/me/dotfiles/config/git home=/home/me workspace=/home/me/dotfiles/config/git link=/home/me/.config to=/home/me/dotfiles/config
+read@stow rules=read_secret first=read_secret reason="reads your git credentials" | credentials

@@ -76,7 +76,7 @@ mod tables;
 
 use address::Written;
 use host::Verdict;
-pub use milo_guards_core::{Paths, Protected, ProtectedKind, Secret};
+pub use milo_guards_core::{Link, Links, Paths, Protected, ProtectedKind, Secret};
 use tables::MAX_URL;
 use url::{Host, Url};
 

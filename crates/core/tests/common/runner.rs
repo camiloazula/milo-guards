@@ -30,7 +30,8 @@
 //! or `cwd=` and `home=`; `workspace=` (one for each folder, after the
 //! base's), `folder=` or `file=` (a protected path) and `secret_folder=` or
 //! `secret_file=` (a secret the caller names), each followed by its `words=`;
-//! `drive_mount=` for each folder drives are mounted in, and `windows_home=`.
+//! `drive_mount=` for each folder drives are mounted in, `windows_home=`, and
+//! `link=` for each link the caller resolved, followed by its `to=`.
 
 #![allow(
     dead_code,
@@ -48,7 +49,9 @@ use std::path::PathBuf;
 
 use format::{Record, Word};
 use milo_guards_core::spelling::network;
-use milo_guards_core::{Flavour, Paths, Place, Protected, Resolver, Secret, Sensitivity, Spelling};
+use milo_guards_core::{
+    Flavour, Link, Paths, Place, Protected, Resolver, Secret, Sensitivity, Spelling,
+};
 
 /// A POSIX machine: the workspace in the home directory.
 pub fn posix() -> Paths {
@@ -70,7 +73,7 @@ pub fn windows() -> Paths {
 }
 
 /// The questions a case can ask, by the field that asks each.
-pub const ASKS: [&str; 14] = [
+pub const ASKS: [&str; 17] = [
     "place",
     "into",
     "place_hidden",
@@ -85,6 +88,9 @@ pub const ASKS: [&str; 14] = [
     "opened",
     "reaches",
     "network",
+    "linked",
+    "lost",
+    "name",
 ];
 
 /// The questions `hidden` changes the answer of.
@@ -209,6 +215,9 @@ pub fn answer(case: &Case, ask: &str) -> String {
         "startup" => words(resolver.startup(spelled, flavour, hidden)),
         "below" => words(resolver.startup_below(spelled, flavour, hidden)),
         "picks" => words(resolver.picks_secret(spelled, flavour, hidden)),
+        "linked" => words(resolver.linked_holder(spelled, flavour)),
+        "name" => place_name(resolver.place_name(spelled, flavour, hidden)),
+        "lost" => yes(resolver.lost(spelled, flavour)),
         "holds" => words(resolver.holds_protected(spelled, flavour, hidden)),
         "named" => words(resolver.named_secret(spelled, flavour)),
         "kernel" => words(resolver.kernel(spelled, flavour)),
@@ -372,7 +381,12 @@ fn declaration(
             (true, false) => paths.with_secrets([Secret::file(named.path, named.words)]),
         };
     }
-    paths = paths.with_drive_mounts(declared.drive_mounts);
+    paths = paths.with_drive_mounts(declared.drive_mounts).with_links(
+        declared
+            .links
+            .into_iter()
+            .map(|(path, to)| Link::new(path, to)),
+    );
     if let Some(home) = declared.windows_home {
         paths = paths.with_windows_home(home);
     }
@@ -451,8 +465,8 @@ fn add(case: &mut Case, name: &str, value: Option<&str>) -> Result<(), String> {
                 return Err(format!("an unknown field `{ask}`"));
             };
             let fits = match ask {
-                "place" | "into" | "place_hidden" => is_place(value),
-                "reaches" | "network" => value == "yes" || value == "no",
+                "place" | "into" | "place_hidden" | "name" => is_place(value),
+                "reaches" | "network" | "lost" => value == "yes" || value == "no",
                 _ => !value.is_empty(),
             };
             if !fits {
