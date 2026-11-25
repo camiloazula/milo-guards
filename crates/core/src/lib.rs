@@ -9,8 +9,9 @@
 //!   each finding names a rule of the guard's own enum, which implements
 //!   [`RuleName`];
 //! - the directories everything is judged against: [`Paths`], with the
-//!   files the caller gates with ([`Protected`]) and the ones it knows hold
-//!   a secret ([`Secret`]);
+//!   files the caller gates with ([`Protected`]), the ones it knows hold
+//!   a secret ([`Secret`]), and how this machine spells another system's
+//!   drives;
 //! - the path model: [`Resolver`] says where a path spelled out as text
 //!   lands ([`Place`]), by its spelling alone, for POSIX and Windows
 //!   ([`Flavour`]);

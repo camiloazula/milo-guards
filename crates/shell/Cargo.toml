@@ -26,10 +26,12 @@ default = ["inline"]
 # line is `unknown`, and neither grammar is built.
 inline = ["dep:milo-guards-code"]
 # What only the guard's own tests read: the count of bytes its grammars'
-# lexers are handed for a line (`MAX_LEXED` in `src/unit.rs`). Its tests turn
-# it on, through the dev-dependency on this crate below. It is not for
-# callers and not part of the API (hidden from the docs): it may change or
-# go without notice.
+# lexers are handed for a line (`MAX_LEXED` in `src/unit.rs`), and how the
+# grammar read a line itself (`testing::grammar`, which the repository's
+# `tools/grammar-check` holds against the real shells). Its tests turn it
+# on, through the dev-dependency on this crate below. It is not for callers
+# and not part of the API (hidden from the docs): it may change or go
+# without notice.
 testing = []
 
 [dependencies]

@@ -121,9 +121,10 @@ Until then nothing keeps a red run from merging or from being released
 `crates/guards/tests/ci_jobs.rs` holds each job to its recipes: `verify` to
 every recipe of `just verify` but `timing`, `timing` to `just timing`,
 `test` to `just test` alone, on those two systems, `oldest-rust` to
-`just oldest-rust` alone, on Linux, and `advisories` and `semver` each to
-the recipe of its name alone, on Linux, neither of which `just verify`
-runs (below).
+`just oldest-rust` alone, on Linux, `grammars` to `just grammars
+--require bash --entries` alone, and `advisories` and `semver` each to the
+recipe of its name alone, on Linux; `just verify` runs none of those three
+(below).
 
 A timing test lives in its crate's `tests/timing.rs`, and only there. It
 reads the clock in an optimized build only, with
@@ -286,6 +287,82 @@ whose format changes with Rust's releases: when a bump of the pinned Rust
 makes it fail to read that JSON (it says which format it reads), bump it
 here and in the job together.
 
+### The grammars beside the real shells
+
+`just grammars` is not part of `just verify` either. It holds the shell
+guard's grammars to how bash parses each POSIX line of the case files and of
+a generated set
+([Shell](docs/design/shell.md#the-grammars-beside-the-real-shells) says what
+it compares and what it cannot), so its answer depends on bash's version. It
+needs `bash`; a shell that is not on `PATH` is skipped, and the report says
+so and which version it compared against (`just grammars --require bash`
+refuses the run instead, as CI's job does). zsh is not used: its no-exec mode
+still expands words, so it is neither parse-only nor an answer of accept or
+reject. PowerShell's half is in the tool but has not been proven: it runs
+only with `--with pwsh`, CI does not run it, and its first runs are a
+maintainer's, on a machine of their own, read with `--private`. CI runs
+`just grammars --require bash --entries` in its own job, `grammars`, on
+Linux (bash 5); the job is not a required check, and a red run there is a
+difference to look at, not a change that cannot merge.
+
+It prints every difference, sorted, and fails on one on a line of the case
+files that is not in `tools/grammar-check/known.cases`, and on an entry there
+that no difference matches for a shell and version that ran. A new
+difference that is cautious (bash accepts a line the grammar does not read
+whole) or that only says bash refuses the text goes on that list with its
+reason and the versions it was seen on, or is fixed in the grammar's
+reading; `--entries` prints each new one as an entry, its version filled in
+and its reason left to write, so CI's report gives the entries for its bash.
+A case line you add may give one: add its entry in the same change.
+Differences on generated lines are printed apart and do not fail the run: a
+word you add to a case file may change which lines are generated, and you
+need do nothing about them unless one is a split or a line the guard answers
+safe without reading it whole. Those two always fail the run, wherever they
+are found, and are never put on the list or in an issue: without `--private`
+the run says only that it found something to report privately (no kind, no
+count, no line), `just grammars --private` shows them, on a machine of your
+own and never in CI, and they are reported as [SECURITY.md](SECURITY.md)
+says.
+
+It never runs a line. bash parses each with `-n`, its startup files and the
+environment it is started from kept out, in a room of empty folders, its
+input closed, with a time limit and a cap on what it prints, and the run
+stops at once if a folder of the room stops being empty, a program it left
+holds its output open, or bash prints anything. The recipe runs the tool's
+tests first, which show each of those on canary lines and plain programs
+(`tools/grammar-check/tests/`), and runs it only when they pass. On macOS the
+recipe runs the tests and the tool under `sandbox-exec` too, through cargo's
+runner, with the profile the tool writes to
+`target/grammar-check/sandbox.sb` (`--sandbox-profile`): no network, no read
+under `/Users` but of the checkout, wherever it is, and no write but to the
+temporary folder, where the rooms are, and `/dev`. Run any other way on
+macOS (`cargo run --manifest-path tools/grammar-check/Cargo.toml`), the tool
+starts no shell while it can read `/Users`, unless it is given
+`--unsandboxed`, which the recipe never gives. On Linux there is no such
+sandbox: the layers of the room and `-n` are all there is, which is why CI
+runs it on a runner that is thrown away after the job.
+
+The tool is a package of its own, in `tools/grammar-check`, which the
+workspace excludes: it starts processes, which no crate under `crates/` may,
+and it is never published, so no gate of the workspace builds it and
+`just package`, `just publish` and the release workflow never see it. The
+recipe formats, lints, tests and runs it. `just oldest-rust` does not build
+it: it is not published, so no caller compiles it with an older Rust. Its
+`rust-version` and `edition` are the workspace's (`contract.rs` holds them),
+so clippy's `incompatible_msrv` holds its code, tests included, to the
+oldest Rust as it holds the crates'. Its `Cargo.lock` is its own, and
+`crates/guards/tests/contract.rs` holds every package in it to `Cargo.lock`,
+at the same version and from the same source, and the recipe builds it
+`--locked`, so it builds what the gates build and `just advisories` audits; after a change to `Cargo.lock` (a new
+dependency, an update, a release's version bump), bring it in step with
+
+```sh
+cp Cargo.lock tools/grammar-check/Cargo.lock
+cargo metadata --manifest-path tools/grammar-check/Cargo.toml --format-version 1 > /dev/null
+```
+
+which keeps every version and leaves out what the tool does not use.
+
 ## Case files
 
 A plain case, a line and the answer it must get, is written in a case file,
@@ -344,7 +421,9 @@ command line, and it may hold anything, a ` | ` included.
   then `workspace=` for each workspace folder (added to the base's),
   `folder=` or `file=` for a protected path, and `secret_folder=` or
   `secret_file=` for a secret the caller names (`Paths::secrets`), each
-  followed by its `words=`. Every guard reads a `paths` line the same way
+  followed by its `words=`; `drive_mount=` for each folder the machine
+  mounts drives in (`Paths::drive_mounts`), and `windows_home=`
+  (`Paths::windows_home`). Every guard reads a `paths` line the same way
   (`format::declaration` in the shared reading).
 - **Escapes.** A backslash starts one of `\\` (a backslash), `\n`, `\t`, `\r`,
   `\s` (a space) and `\u{HEX}` (any character), and `\"` in a quoted value.
@@ -358,8 +437,9 @@ end of a line or of a command line (write `\s`), an unknown escape, an unknown
 word, field, shell, rule, effect or paths name, an answer that is not whole
 (no answer, `safe` with a rule, `reason` or `instead` without its one rule,
 a field twice, a `words=` with no path before it, a named path without its
-`words=`), a case without its `| LINE`, and a case that repeats another (the
-same shell, paths, line and answer). A missing file fails its test, and
+`words=`, `windows_home=` twice), a case without its `| LINE`, and a case
+that repeats another (the same shell, paths, line and answer). A missing
+file fails its test, and
 `tests/cases.rs` fails for a case file no test file checks and for a case
 that repeats one in another file checked in the same build (a test file that
 starts `#![cfg(...)]`, as `tests/inline_off.rs` does, is checked in another,
@@ -497,9 +577,11 @@ its path. A release is:
 
 1. Bump `version` in `Cargo.toml` and the `version` of every
    `milo-guards-*` entry under `[workspace.dependencies]`, to the same
-   number: a new rule, a raise of `rust-version` or any other change to
-   what a caller compiles against is a minor bump at `0.x`; a change to
-   what a guard answers with the same API is a patch
+   number, and bring `tools/grammar-check/Cargo.lock` in step with
+   `Cargo.lock` ([the command](#the-grammars-beside-the-real-shells);
+   `just verify` fails until it is): a new rule, a raise of `rust-version`
+   or any other change to what a caller compiles against is a minor bump at
+   `0.x`; a change to what a guard answers with the same API is a patch
    ([Versions](README.md#versions)). Before choosing, check:
    - `next_bump` in the `justfile`: `minor` says a change since the last
      release breaks a caller's build, so this release is a minor bump.

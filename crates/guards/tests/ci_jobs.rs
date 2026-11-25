@@ -4,16 +4,20 @@
 //! fails here. The `test` job runs `just test` alone, on Windows and on
 //! macOS, and the `oldest-rust` job runs `just oldest-rust` alone, on Linux:
 //! a job removed, a system dropped or another command fails here too. The
-//! two recipes that need the network, `advisories` (the advisory database)
-//! and `semver` (each crate's last release on crates.io), are not part of
-//! `just verify`, and each has a job of its own, on Linux, that runs it
-//! alone. The semver job checks out with no credentials kept, may only read
-//! the repository, and installs the cargo-semver-checks that CONTRIBUTING.md
-//! installs; the justfile's `next_bump`, which it reads, is empty or
-//! `minor`, and empty while CHANGELOG.md's Unreleased section is.
+//! `grammars` job runs `just grammars --require bash --entries` alone, a
+//! recipe `just verify` does not run: it starts bash, and is not part of the
+//! gate; PowerShell is not run there yet, and bash is required. The two
+//! recipes that need the network, `advisories` (the advisory database) and
+//! `semver` (each crate's last release on crates.io), are not part of
+//! `just verify` either, and each has a job of its own, on Linux, that runs
+//! it alone. The semver job checks out with no credentials kept, may only
+//! read the repository, and installs cargo-semver-checks at a full version,
+//! `MAJOR.MINOR.PATCH`, the one CONTRIBUTING.md installs once and no other;
+//! the justfile's `next_bump`, which it reads, is empty or `minor`, and
+//! empty while CHANGELOG.md's Unreleased section is.
 //!
 //! The workflow is read line by line, as plain block YAML: each job under
-//! `jobs:`, each key by where it sits, comments skipped. In the six jobs
+//! `jobs:`, each key by where it sits, comments skipped. In the seven jobs
 //! held here, some ways a job could run less than it shows are refused, never
 //! read: the keys `if:`, `continue-on-error:`, `needs:`, `shell:`,
 //! `include:`, `exclude:` and `working-directory:`; a quoted key, an explicit
@@ -383,6 +387,42 @@ fn ci_runs_just_test_alone_on_windows_and_macos() -> Result<(), String> {
         systems(&workflow, "test")?,
         ["windows-latest", "macos-latest"],
         "the test job of ci.yml must run on Windows and on macOS"
+    );
+    Ok(())
+}
+
+#[test]
+fn ci_runs_just_grammars_alone_outside_the_gate() -> Result<(), String> {
+    let justfile = read("justfile")?;
+    let workflow = read(".github/workflows/ci.yml")?;
+    // It takes the tool's flags, and depends on no other recipe.
+    assert!(
+        justfile.lines().any(|line| line == "grammars *flags:"),
+        "the justfile has the recipe `grammars *flags:`, which runs its own commands"
+    );
+    for recipe in ["verify", "test"] {
+        assert!(
+            !dependencies(&justfile, recipe)?
+                .iter()
+                .any(|r| r == "grammars"),
+            "`just {recipe}` must not run `grammars`: it starts the real shells"
+        );
+    }
+    assert_eq!(
+        runs(&workflow, "grammars")?,
+        ["just grammars --require bash --entries"],
+        "the grammars job of ci.yml must run `just grammars` alone, bash required and \
+         PowerShell not run"
+    );
+    assert_eq!(
+        setting(&workflow, "grammars", &["name"])?,
+        "grammars",
+        "the grammars job's check is named `grammars`"
+    );
+    assert_eq!(
+        setting(&workflow, "grammars", &["runs-on"])?,
+        "ubuntu-latest",
+        "the grammars job runs on Linux, where bash and pwsh come with the runner"
     );
     Ok(())
 }

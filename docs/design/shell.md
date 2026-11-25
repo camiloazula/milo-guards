@@ -3700,6 +3700,24 @@ any `cd`), the home directory and the workspace folders. The path model is
 core's; see [Core](core.md). This guard adds what only a shell's syntax gives
 a path.
 
+How the machine spells another system's drives is the caller's to pass,
+and core's to read ([Core](core.md#drive-mounts)). **Naming it never makes
+an answer less serious**: a line is judged on the `Paths` as given and as
+spelled (`Paths::as_spelled`), from one split, and keeps every finding of
+both; `effect` is the most cautious of what each judging says on its own and
+of what they say together, so one never hides the other's `unknown`, and
+`effect_paths` lists paths only when that is reads-only. On WSL, with the
+mount named (`Paths::with_drive_mounts(["/mnt"])`), `cat
+/mnt/c/Users/me/.ssh/id_rsa` is `read_secret` and `rm -rf /mnt/c` deletes the
+root of a disk; with the Windows home named too
+(`Paths::with_windows_home`), `rm -rf /mnt/c/Users/me` deletes your home
+directory. On Windows, Git Bash's mount (`/`) is read in a POSIX shell's line
+written from `/` (`cat /c/Users/me/.ssh/id_rsa`) or climbing above the drive
+(`cat ../../../../../c/Users/me/.ssh/id_rsa`); PowerShell and cmd spell a
+drive as Windows does, so a mount changes none of theirs. Without a mount or
+a Windows home, every line is judged as it was. The cases are in
+`tests/cases/drives.cases`.
+
 - `~` is the home directory. `~user` is another user's, which the spelling
   does not say, so it is unknown.
 - `$HOME`, `%USERPROFILE%` and `$env:TEMP` are the places they name.
@@ -7425,6 +7443,150 @@ cargo run -p milo-guards-shell --example explain -- \
 `--shell` is `posix` (the default), `powershell` or `cmd`; `--workspace` can be
 repeated. A caller gets `explain` as `milo_guards::shell::explain`
 through the front door, which has no logic and no example of its own.
+
+## The grammars beside the real shells
+
+The guard judges the tree its grammar gives it, never the text, so it is as
+right as the grammar: a line the grammar splits otherwise than the shell that
+runs it is judged as another line. The URL guard is held to a second reading
+of each URL; this is the shell guard's. `tools/grammar-check` (`just
+grammars`, [CONTRIBUTING.md](../../CONTRIBUTING.md#the-grammars-beside-the-real-shells))
+reads every POSIX line of the case files (this guard's and the front door's
+`everyday.cases`), and a set generated from their words, as the guard does,
+and asks bash how it parses each. It never runs one.
+
+What the guard read is two things. Whether its grammar read the line itself
+whole: the first parse of the line at depth 0 in its first read, after the
+guard's own preparation of the text (continuations joined, PowerShell's
+spellings made ASCII), never a script nested in it, which the shell does not
+parse until it runs; the shell crate's `testing` feature shows it
+(`testing::grammar`: whole, with an error, or never handed to the grammar),
+and the tool is the one thing besides the crate's own tests that turns it on.
+And the programs it read at the line's own depth, with their words, from
+`explain`.
+
+What each shell can say without running anything decides what is compared:
+
+- **bash**, started as `bash --noprofile --norc -r -n` with the line on its
+  standard input. `-n` reads every command and runs none, and expands no
+  word: on the bash the tests run against, it opens no file a line names
+  (`$(< FILE)`, backticks, a here-string, a redirect), looks up no program or
+  builtin, and its status is its parse (`! cmd` is 0, a list left unfinished
+  at the end of the text is refused). So all it gives is accept or reject,
+  and its first error. A syntax error is a refusal whatever bash ends with:
+  bash 3.2 reports one in an array assignment and ends with 0, bash 5 with
+  1. A POSIX line is compared by that alone: bash gives no
+  tree, so a line both accept and the guard splits otherwise is not found
+  here.
+- **zsh is not a second reading.** Its no-exec mode (`zsh -n`) still expands
+  words: it opens the file of a `$(< FILE)`, takes `~` from the password
+  database whatever `HOME` it is given, and looks programs up; and its status
+  is not a parse verdict (`! cmd` ends with 1, a list left unfinished at the
+  end of the text is accepted). It is neither parse-only nor an answer of
+  accept or reject, so it is never started.
+- **PowerShell is not compared yet.** Its parser,
+  `[System.Management.Automation.Language.Parser]::ParseInput`, gives a tree
+  and its errors and runs nothing, and the tool has the half that asks it: a
+  few lines of PowerShell (the one script of the repository beside the
+  release workflow's steps, embedded in the tool's Rust) that read the lines
+  as data, each in base64 on a line of a file, and hand them to `ParseInput`
+  and to nothing else; a line both accept would also be compared by the
+  commands of its own script and their words. That half has not run anywhere:
+  it is off unless `--with pwsh` is given, CI does not give it, and it is to
+  be run and read on a maintainer's machine first, since a split it finds can
+  never go on the known list. The parser acts on a few statements while it
+  reads (`using module` and `using assembly` load what they name, a
+  `configuration` loads DSC resources, an assembly-qualified type literal may
+  load its assembly), so a line that may hold one is never handed to it, and
+  the report counts them.
+- **cmd is not compared**: `cmd.exe` has no way to parse a line without
+  running it.
+
+A line that holds a NUL is left out, and counted: there is nothing to
+compare.
+
+A difference is one of three kinds:
+
+- The shell accepts the line and the grammar does not read it whole
+  (`grammar_rejects`): the guard answers `unreadable`, which is cautious. That
+  premise is held too: the tool fails on any line the grammar does not read
+  whole that the guard answers safe.
+- The grammar reads it whole and the shell refuses it (`shell_rejects`). That
+  says the text as one whole is not a script bash accepts, and no more. bash
+  runs a text of several lines one command at a time, so the lines before the
+  error still run (the guard read them, since its grammar read the text
+  whole); and `-n` runs nothing, so a text whose earlier line changes how a
+  later one parses (`shopt -s extglob`, then `ls !(x)`; an alias that opens an
+  `if`) is refused by `-n` though bash would run it. It is no proof that the
+  line does not run.
+- Both accept it and the guard splits it otherwise (`split`, PowerShell
+  only): the guard judges another line than the one that runs.
+
+A split, and a line the guard answers safe without reading it whole, are
+reported privately, as [SECURITY.md](../../SECURITY.md) says. Without
+`--private` the run says only that it found something to report privately,
+and fails: no kind, no count and no line reaches its report. With
+`--private`, on a machine of a maintainer's, it shows them.
+
+The known differences are `tools/grammar-check/known.cases`, one to a line in
+the case-file format: the shell, the kind (`grammar_rejects` or
+`shell_rejects`; never a split), the versions of that shell it was seen on,
+its reason and the line. The two versions read some lines apart. bash 3.2
+(the bash of macOS) has no `coproc` and no `[[ -v`, and takes a parenthesis
+in a parameter expansion inside `$( )` as part of the substitution, all of
+which bash 5.3 (CI's) accepts; bash 5.3 parses the inside of a `$( )` while
+it reads the line, where 3.2 leaves it for when it runs, so it refuses a zsh
+glob qualifier there, and it refuses a `coproc` with no command, with a `!`
+after it, or with its group left open, which 3.2 reads as words. So an entry
+names the versions it was seen on, by major and minor (`versions=3.2,5.3`:
+every 3.2 and every 5.3, nothing between), and is never widened to one it was
+not seen on: `--entries` prints each new
+difference as an entry, its version filled in and its reason left to write,
+so the entries of the bash of CI's Linux runner come from that job's report.
+The tool fails on a difference on a line of the case files that is not on the
+list, and on an entry that no difference matches for a shell and a version
+that ran, so the list stays what is true.
+
+The generated set is a thousand lines of each grammar, made from the words of
+the case files and the operators that join commands, from a fixed seed and no
+clock: the same lines on every run. A line takes the words that rank first
+for it by a hash of the line's number and the word, so a word added to the
+case files changes the few lines it ranks first for, not the whole set. Its
+differences are printed apart and never kept on the known list: a new word
+in a case file may change them, and they do not fail the run (a split, and a
+line not read whole and answered safe, fail it wherever they are found).
+
+Every shell is started with its no-exec flags and nothing from a line, with
+an environment of its own (`HOME`, `PATH` and `TMPDIR` each an empty folder,
+the locale, nothing else), in an empty folder, its input closed after the
+text, for a bounded time, with what it prints past a cap read and dropped.
+After each, its working and `PATH` folders must still be empty, and for bash
+its home and temporary folder too (PowerShell keeps caches in those two);
+nothing may hold its output open (a program left running would); and bash
+must have printed nothing on its standard output; any of those stops the run
+at once. Programs are started one at a time across the tool's threads, so
+one started at the same moment cannot inherit another room's pipe. On macOS
+`just grammars` runs the tool and its tests under `sandbox-exec` as well: no
+network, no read under `/Users` but of the checkout, no write but to the
+temporary folder; and the tool, run any other way there, starts no shell
+while it can read `/Users` unless it is given `--unsandboxed`, which the
+recipe never gives. On Linux there is no such sandbox; the layers above and
+`-n` are what there is.
+
+The tool's tests show each layer, on canary lines written so that they leave
+a file behind if bash runs them: none appears, with bash's restricted mode
+and again without it, so `-n` alone holds. Each layer of the room is held on
+its own, with plain programs and no line: the environment is exactly the
+room's, the program starts in its working folder, its input is closed, it is
+killed past its time, what it prints past the cap is dropped, and a program
+left holding its output, a file left in the room or a word on bash's
+standard output stops the run. A bash given no text at all reads nothing of
+the environment of the process that started it (`BASH_ENV`, `ENV`,
+`SHELLOPTS`, `BASHOPTS`, `PS4`, `PROMPT_COMMAND`, an exported function).
+`--noprofile` and `--norc` matter only to a login and an interactive shell,
+which the tool never starts, so they are held by the arguments the room is
+given. Dropping any one of those layers fails a test, but `-r`, which acts
+only were `-n` to fail.
 
 ## Tests
 

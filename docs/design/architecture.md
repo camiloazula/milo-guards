@@ -21,6 +21,19 @@ on, and the front door.
 
 Package names start with `milo-guards-`. Folder names drop the prefix.
 
+Beside the crates, `tools/grammar-check` is a tool of the repository: it holds
+the shell guard's grammars to how the real shells parse each line of its case
+files ([Shell](shell.md#the-grammars-beside-the-real-shells)). It starts
+processes, which no crate under `crates/` may, so it lives outside them, is
+never published, and is a package of its own that the workspace excludes,
+with its own `Cargo.lock`: no gate of the workspace builds it, and no release
+sees it. `contract.rs` holds it to that: it is excluded and `publish =
+false`, no crate depends on it, its lints, edition and oldest Rust are the
+workspace's, every package its lockfile holds is in the workspace's at the
+same version and source, so it builds what the gates build and `just
+advisories` audits, and in it only `src/room.rs` (and a program its tests
+start) names `process`, and it has no target outside `src/` and `tests/`.
+
 The front door has no logic of its own. It re-exports the types every guard
 shares: `Paths` with its `Protected` and `Secret`, `Assessment`, `Finding` and the trait
 `RuleName`. It does not
@@ -71,7 +84,9 @@ milo-guards        ──►  milo-guards-shell  ──►  milo-guards-core
 - Core depends on nothing but `std`.
 - A crate may be a dev-dependency of itself (`path = "."`), to turn on a
   feature only its own tests read: the shell guard's `testing`, which shows
-  its tests the count of bytes its grammars' lexers are handed, and the
+  its tests the count of bytes its grammars' lexers are handed (and the
+  repository's `tools/grammar-check`, never published, how its grammar read
+  a line itself), and the
   script guard's, which shows its tests the count of acts judged and places
   built. It is the same
   crate, not another. The feature is not for callers and not part of the API
@@ -110,7 +125,9 @@ Every guard keeps these five promises.
    clock or the network. It never starts a process or a thread and never
    writes to the terminal. It takes text and the `Paths` it is given, and it
    returns an answer. Paths are judged by how they are spelled, never by what
-   is on disk, so a Windows line is judged the same on every host.
+   is on disk, so a Windows line is judged the same on every host; how the
+   machine spells another system's drives (WSL's `/mnt/c`) is the caller's
+   to pass in `Paths`.
 2. **Deterministic.** The same input gives the same answer, on every run and
    on every machine.
 3. **No policy.** A guard says what it found. It never decides to ask, to
@@ -194,7 +211,8 @@ answer is not. There are three kinds of test, and each has its place:
   `script_targets.rs` (the shell guard reads the script guard's targets as
   the machine's shell runs them), `ci_jobs.rs`
   (CI's jobs run the recipes of `just verify`, `just test` on Windows
-  and macOS, `just oldest-rust` on Linux, and the two recipes that need the
+  and macOS, `just oldest-rust` on Linux, `just grammars` outside the
+  gate, and the two recipes that need the
   network, `just advisories` and `just semver`, each in a job of its own;
   the semver job keeps no credentials and installs the cargo-semver-checks
   CONTRIBUTING.md names, and the justfile's `next_bump` it reads agrees

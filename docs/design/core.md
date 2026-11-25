@@ -20,6 +20,22 @@ field added later does not break a caller. The fields stay public to read.
   project's `.env`. Empty from `Paths::new`; add to it with
   `Paths::with_secrets`, which takes `Secret` values and can be called again
   to add more.
+- `drive_mounts`: the folders this machine's POSIX paths show each Windows
+  drive in, as a folder named for its letter: `/mnt` on WSL (or the `root`
+  its `automount` setting names), `/` in Git Bash and MSYS2, `/cygdrive` in
+  Cygwin. Empty from `Paths::new`; add to it with
+  `Paths::with_drive_mounts`, which can be called again to add more.
+- `windows_home`: the user's Windows home directory, on a machine whose
+  `home` is not one (WSL), spelled `C:\Users\me` or `/mnt/c/Users/me`.
+  `None` from `Paths::new`; set it with `Paths::with_windows_home`.
+
+The last two say how this machine spells another system's drives, which
+the guard cannot read from the disk (see [Drive mounts](#drive-mounts)). A
+caller that knows nothing of them passes nothing, and every answer is what
+it was. `Paths::as_spelled` gives the same directories without them
+(`None` when neither is named): every guard judges its input on both and
+keeps every finding of each, so naming them never makes an answer less
+serious.
 
 **`Protected`** is a path, the words a reason calls it by, and whether it is a
 file or a folder (`kind`, a `ProtectedKind`): a plain struct
@@ -571,12 +587,130 @@ itself.
   `{` can expand to paths it does not show, so it is never a device; the
   shell guard checks for a brace list before it asks whether a path is a
   device.
-- Nothing reads the file system. A symlink is judged by its own name.
+- Nothing reads the file system. A symlink is judged by its own name, and a
+  POSIX spelling of another system's drive as a folder of this machine's,
+  unless the caller names the mount (below).
 
 Core never answers `Registry` or `Session`. A path spelled out as text is a file path. A
 guard that reads the syntax around it says when a path is not one. Core
 answers `Unknown` for the Windows spellings it cannot read to a name, listed
-under "What core judges".
+under "What core judges", and for a path whose walk through a mount goes
+past the work a resolver may spend (below).
+
+### Drive mounts
+
+A path is placed by how it is spelled, and one thing changes where a
+spelling lands that only the machine can say: a drive another system's
+spelling shows as a folder (WSL's `/mnt/c` is `C:\`). Core reads no disk;
+the caller can, and names the folder drives are mounted in
+(`drive_mounts`) and, on WSL, the Windows home (`windows_home`).
+
+**What a mount and a home look like.** A mount is an absolute POSIX path,
+from `/`; its empty and `.` parts are dropped and each `..` applied, so
+`//mnt/./` is `/mnt`. Any other spelling (empty, relative such as `mnt`,
+from `~`, a Windows path such as `C:\mnt`) names no mount, as a `Secret`
+that names nothing is none. A Windows home is spelled from a drive
+(`C:\Users\me`), or through a mount the caller names (`/mnt/c/Users/me`);
+any other spelling (`Users\me`, or `/mnt/c/Users/me` with no mount named)
+names no Windows home.
+
+**Which spelling of `Paths`.** The Git Bash spelling of `Paths` is for the
+lines a POSIX shell runs (the shell guard with `Shell::Posix`): a Git Bash
+or MSYS2 caller spells those directories as Git Bash does
+(`Paths::new("/c/Users/me/dev/repo", "/c/Users/me",
+["/c/Users/me/dev/repo"])`) and names the mount `/`; then a Git Bash path to
+the workspace is the workspace, and the drive's keys, home directory and
+system folders are what they are on Windows (the doctest of
+`Paths::with_drive_mounts`, and the `gitbash_spelled` cases). The file,
+script and URL guards, and PowerShell and cmd lines, take Windows paths:
+for them the caller keeps a `Paths` spelled the Windows way
+(`C:\Users\me\dev\repo`). A POSIX line judged on that one is also judged
+as spelled, where `/c/Users/me/dev/repo` is `C:\c\Users\...`, beyond the
+workspace: `cd /c/Users/me/dev/repo && rm -rf build` stays a delete beyond
+it, and `effect_paths` lists the Windows reading. On WSL the working directory and the workspace are spelled alike:
+a workspace spelled `C:\Users\me\repo` is not, as spelled, that of a working
+directory spelled `/mnt/c/Users/me/repo`, so a change there stays beyond it.
+
+**Naming one never makes an answer less serious.** Every guard judges its
+input on the `Paths` it is given and on `Paths::as_spelled` (the same
+without mounts or a Windows home), and keeps every finding of both: a path
+that is a finding as it is spelled is one with any mount named. That is
+the guards' doing, not the resolver's: `Resolver::place` answers where a
+path lands on the directories it is given, so through the mount
+`/mnt/c/Windows/Temp/x` is the drive's temporary folder (`Temp`). A caller
+of core's resolver that wants the guards' answer asks it of
+`Paths::as_spelled` too and keeps the more serious place, as the guards do;
+then `/mnt/c/Windows/Temp/x` is still beyond the workspace, a folder of
+this machine's as spelled, and the mount only adds what the drive's path is
+(a key, a system folder). In core:
+
+- **The walk.** Below a mount's folder, a folder of one letter, in either
+  case, is that drive, and a `..` above the drive's root is the mount's
+  folder again (`/mnt/c/../../etc/shadow` is `/etc/shadow`). On a POSIX
+  machine every POSIX path is read so, the working directory's, the home
+  directory's and each workspace folder's included. On Windows a POSIX path
+  written from `/` is (a POSIX shell's line, as Git Bash runs it), from the
+  root of the working directory's drive; a relative POSIX path that climbs
+  above its drive's root is also read from each mount's folder there, where
+  a letter is a drive again (`../../../../../c` from `C:\Users\me\dev\repo`
+  is `C:\` to Git Bash, where a Windows program reads `C:\c`: both are
+  places the path may land). A Windows spelling is never read through a
+  mount. Where one mount's folder is below another's (`/mnt` and
+  `/mnt/c`), a folder of one letter in the first is its drive and the way
+  to the second, and each is read. Of two readings that weigh the same, a
+  disk's root a mount reaches is the answer (`/mnt/c/d` is `D:` there, and
+  `/mnt/*` picks the drives).
+- **A pattern** is cut, as always, at its first wildcard part. A wildcard
+  part that can pick a drive under a mount (`/mnt/*/Users/me/.ssh/id_rsa`)
+  is also read as each drive core knows of, `C:` and the Windows home's,
+  with the rest of the pattern there, for `place`, `picks_secret`,
+  `holds_protected` and `reaches_secret`; a part on the way to the mount's
+  folder is matched against its name, and `**` against any number of names.
+- **A folder that is, or holds, a mount's folder** holds each drive in
+  it, a workspace folder included (`.` in a workspace with a mount in it):
+  to `place`, which answers the root of a disk for it (so a guard reads,
+  sends, deletes or writes it whole as it does `/mnt/c`: `grep -r x /mnt`,
+  `scp -r /mnt host:`, `tar czf - /mnt | nc host 80`, `rm -rf /mnt`), and to
+  `reaches_secret` (`grep -r x /mnt` reads `C:\Users`). A workspace that
+  holds one is not clear (`cwd_is_clear`): a plain name there may be a
+  drive.
+- **The Windows side of a POSIX machine** (WSL) is judged as a Windows
+  machine judges it once the caller names a mount or the Windows home: the
+  system's own secrets, system folders and `Windows\Temp` are on the
+  Windows home's drive, or `C:` without one, and every folder under that
+  drive's `Users` and `C:\Users` is a user's home. The Windows home the
+  caller names is a home directory too (`Home`), with its keys, startup
+  files and temporary folder. Without it, no folder there is the user's own
+  home: a write to `/mnt/c/Users/me` is `Outside`.
+- **Each named directory by both names.** The home directory, each
+  workspace folder, each protected path and each secret the caller names is
+  compared both as spelled and where it lands, so a workspace spelled
+  `/mnt/c/Users/me/repo` holds `C:\Users\me\repo\src` and
+  `/mnt/c/Users/me/repo/src` alike.
+- **What is handed back stays spelled.** `absolute` and `opened` say how a
+  path is spelled, as before; `workspace_of` gives the workspace folder as
+  the caller spelled it; `key` is where the path lands.
+
+**The work.** The mounts' folders are a tree of names, built with the
+resolver, so a part of a path is one lookup in it, whatever the number of
+mounts. One resolver has one budget of counted work, `MOST_WORK`
+(1,048,576): each part a walk through a mount reads, and each name a
+pattern is matched against on the way to a drive. Past it, the walk is
+`Unknown`, and the most serious of a path's places is the answer.
+`tests/mount_work.rs` holds the budget to the number it writes down, the
+work of a path to the same count whatever the number of mounts named, a
+path through a mount to one lookup for each part, and a pattern that would
+match thousands of mounts' folders six hundred times over to the budget.
+
+Without a mount or a Windows home named, nothing of this runs, and every
+answer is what it was. The cases are in `tests/cases/drives.cases`.
+
+**Limits.** A Windows home on a share (`\\server\share\me`) is a home
+directory as Windows spells it, and no drive through a mount reaches it
+(the drives read are `C:` and a Windows home's own drive). A mount is
+looked up by its folder as the caller spells it and where it lands as
+spelled: on a Mac, a mount spelled `/Volumes/x` is not found through
+`/System/Volumes/Data/Volumes/x`.
 
 ### What the guard keeps
 
@@ -813,12 +947,15 @@ drive-relative paths and a Mac's links), `startup.cases` (`startup`,
 (`picks_secret`), `holds_protected.cases`, `reaches_secret.cases`,
 `named_secrets.cases` (the secrets a caller names: `place`, `picks_secret`,
 `reaches_secret` and `named_secret`, a path both protected and secret, and
-the same paths with none named), `absolute.cases` and `opened.cases`. A case asks the `Resolver` one or more
+the same paths with none named), `drives.cases` (WSL's, Git Bash's and
+Cygwin's mounts, with and without the mount and the Windows home),
+`absolute.cases` and `opened.cases`. A case asks the `Resolver` one or more
 questions of one path, on one machine, and gives each answer. What is made
 in a loop or asks the API itself stays in Rust: the folds NTFS does not make and the flavour in
 `sensitive.rs`, that applying the `..` of what is opened gives the
 absolute path in `opened.rs`, and in `named_secrets.rs` that each
 `with_secrets` adds, that none named changes nothing and when the working
-directory is clear. `tests/cases.rs` tests the shared reading of
+directory is clear; and in `mount_work.rs` the work of the walk through
+the mounts, held to a count. `tests/cases.rs` tests the shared reading of
 the format and core's runner (`tests/common/runner.rs`), and dumps every
 case.

@@ -253,7 +253,19 @@ pub const MAX_LEN: usize = milo_guards_code::MAX_LEN;
 /// ```
 #[must_use = "the assessment is the answer: it says whether the code is safe"]
 pub fn judge(language: Language, code: &str, paths: &Paths) -> Assessment {
-    assessed(judge::judge(language, code, paths).findings)
+    let mut findings = judge::judge(language, code, paths).findings;
+    // With a drive mount or a Windows home named, the code is also judged on
+    // the paths as spelled, and every finding of either is kept: naming how
+    // this machine spells another system's drives never makes an answer less
+    // serious.
+    if let Some(spelled) = paths.as_spelled() {
+        for finding in judge::judge(language, code, &spelled).findings {
+            if !findings.contains(&finding) {
+                findings.push(finding);
+            }
+        }
+    }
+    assessed(findings)
 }
 
 /// The answer for `findings`: safe when there are none.

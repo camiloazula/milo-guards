@@ -1436,6 +1436,12 @@ pub(crate) struct Split {
     /// bytes their lexers were handed for it: see [`MAX_LEXED`].
     parsed: usize,
     lexed: usize,
+    /// Whether the grammar read the line itself (depth 0) with no error, as
+    /// the first parse of it in the line's first read found (`split` keeps
+    /// it across a read again): `None` while it has not been parsed. Only
+    /// the `testing` feature reads it (`testing::grammar`).
+    #[cfg(feature = "testing")]
+    grammar: Option<bool>,
     /// The characters the lexers of the grammars whose recoveries are
     /// counted moved over for the line, and the recoveries from an error
     /// those grammars started: see [`MAX_SCANNED`] and [`MAX_RECOVERIES`].
@@ -5500,6 +5506,10 @@ pub(crate) fn split(
     start(&mut split, false, (drive, home_drive));
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
+    // How the grammar read the line in this first read: a read again starts
+    // a fresh `Split`, and this is what `testing::grammar` gives.
+    #[cfg(feature = "testing")]
+    let first = split.grammar;
     if split.psdrive {
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
@@ -5516,6 +5526,10 @@ pub(crate) fn split(
     {
         start_again_extended(&mut split);
         script(&mut split, command, shell, 0);
+    }
+    #[cfg(feature = "testing")]
+    {
+        split.grammar = first;
     }
     split.hide_bodies();
     split.settle_later();
@@ -5534,6 +5548,26 @@ impl Split {
     #[cfg(feature = "testing")]
     pub(crate) fn lexed(&self) -> (usize, usize) {
         (self.lexed, self.parsed)
+    }
+
+    /// Keep whether `tree`, the grammar's first reading of a script `depth`
+    /// levels deep, has an error, when it is the line itself (depth 0) and
+    /// the first reading of it. Only the `testing` feature keeps it, for
+    /// `testing::grammar`; without it this does nothing.
+    pub(crate) fn note_grammar(&mut self, depth: usize, tree: &tree_sitter::Tree) {
+        #[cfg(feature = "testing")]
+        if depth == 0 && self.grammar.is_none() {
+            self.grammar = Some(!tree.root_node().has_error());
+        }
+        #[cfg(not(feature = "testing"))]
+        let _ = (depth, tree);
+    }
+
+    /// What [`Self::note_grammar`] kept: `None` when the line itself was
+    /// never handed to its grammar.
+    #[cfg(feature = "testing")]
+    pub(crate) fn grammar(&self) -> Option<bool> {
+        self.grammar
     }
 }
 
