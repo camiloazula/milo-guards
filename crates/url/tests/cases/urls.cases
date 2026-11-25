@@ -64,11 +64,14 @@ first=local_address reason="fetches a machine on your own network" | http://192.
 finds=local_address | http://169.254.1.1/
 finds=local_address | http://100.64.0.1/
 finds=local_address | http://100.127.255.255/
-finds=local_address | http://[fc00::1]/
-finds=local_address | http://[fd12:3456:789a::1]/
-finds=local_address | http://[fe80::1]/
-finds=local_address | http://[febf::1]/
-finds=local_address | http://[fec0::1]/
+# Unique local (fc00::/7), link-local (fe80::/10) and site-local (fec0::/10)
+# are each a machine on the network, not merely an address that is not
+# public.
+first=local_address reason="fetches a machine on your own network" | http://[fc00::1]/
+first=local_address reason="fetches a machine on your own network" | http://[fd12:3456:789a::1]/
+first=local_address reason="fetches a machine on your own network" | http://[fe80::1]/
+first=local_address reason="fetches a machine on your own network" | http://[febf::1]/
+first=local_address reason="fetches a machine on your own network" | http://[fec0::1]/
 finds=local_address | http://router.lan/
 finds=local_address | http://nas.home.arpa/
 first=local_address reason="fetches a machine on your own network" | http://printer.local/

@@ -6,10 +6,18 @@
 //! a job removed, a system dropped or another command fails here too. The
 //! `grammars` job runs `just grammars --require bash --entries` alone, a
 //! recipe `just verify` does not run: it starts bash, and is not part of the
-//! gate; PowerShell is not run there yet, and bash is required.
+//! gate; PowerShell is not run there yet, and bash is required. The two
+//! recipes that need the network, `advisories` (the advisory database) and
+//! `semver` (each crate's last release on crates.io), are not part of
+//! `just verify` either, and each has a job of its own, on Linux, that runs
+//! it alone. The semver job checks out with no credentials kept, may only
+//! read the repository, and installs cargo-semver-checks at a full version,
+//! `MAJOR.MINOR.PATCH`, the one CONTRIBUTING.md installs once and no other;
+//! the justfile's `next_bump`, which it reads, is empty or `minor`, and
+//! empty while CHANGELOG.md's Unreleased section is.
 //!
 //! The workflow is read line by line, as plain block YAML: each job under
-//! `jobs:`, each key by where it sits, comments skipped. In the five jobs
+//! `jobs:`, each key by where it sits, comments skipped. In the seven jobs
 //! held here, some ways a job could run less than it shows are refused, never
 //! read: the keys `if:`, `continue-on-error:`, `needs:`, `shell:`,
 //! `include:`, `exclude:` and `working-directory:`; a quoted key, an explicit
@@ -449,6 +457,174 @@ fn ci_runs_just_oldest_rust_alone_on_linux() -> Result<(), String> {
         "the oldest-rust job of ci.yml runs on Linux"
     );
     Ok(())
+}
+
+/// The recipes that need the network, each run by the CI job of its name:
+/// their answer depends on the advisory database and on crates.io, which
+/// change without a commit here, so `just verify` runs neither.
+const NETWORK: [&str; 2] = ["advisories", "semver"];
+
+#[test]
+fn ci_runs_each_recipe_that_needs_the_network_alone_in_a_job_of_its_own() -> Result<(), String> {
+    let justfile = read("justfile")?;
+    let workflow = read(".github/workflows/ci.yml")?;
+    let verify = dependencies(&justfile, "verify")?;
+    for recipe in NETWORK {
+        assert!(
+            dependencies(&justfile, recipe)?.is_empty(),
+            "`just {recipe}` runs its own command, not other recipes"
+        );
+        assert!(
+            !verify.iter().any(|name| name == recipe),
+            "`just verify` reads no network, so it does not run `{recipe}`"
+        );
+        assert_eq!(
+            runs(&workflow, recipe)?,
+            [format!("just {recipe}")],
+            "the {recipe} job of ci.yml must run `just {recipe}` alone"
+        );
+        assert_eq!(
+            setting(&workflow, recipe, &["name"])?,
+            recipe,
+            "the {recipe} job's check is named `{recipe}`"
+        );
+        assert_eq!(
+            setting(&workflow, recipe, &["runs-on"])?,
+            "ubuntu-latest",
+            "the {recipe} job of ci.yml runs on Linux"
+        );
+    }
+    Ok(())
+}
+
+/// The value of the justfile variable `name` (`name := "value"`), unquoted.
+fn variable(justfile: &str, name: &str) -> Result<String, String> {
+    let head = format!("{name} := ");
+    justfile
+        .lines()
+        .find_map(|line| line.strip_prefix(&head))
+        .map(|rest| rest.trim().trim_matches('"').to_string())
+        .ok_or_else(|| format!("the justfile has no variable `{name} := \"…\"`"))
+}
+
+/// The text of the section `## title` of a changelog, up to the next `## `,
+/// or nothing when it has no such section.
+fn section<'a>(changelog: &'a str, title: &str) -> Vec<&'a str> {
+    let head = format!("## {title}");
+    changelog
+        .lines()
+        .skip_while(|line| line.trim_end() != head)
+        .skip(1)
+        .take_while(|line| !line.starts_with("## "))
+        .filter(|line| !line.trim().is_empty())
+        .collect()
+}
+
+#[test]
+fn the_semver_job_reads_the_next_bump_with_the_checker_contributing_installs() -> Result<(), String>
+{
+    let justfile = read("justfile")?;
+    let bump = variable(&justfile, "next_bump")?;
+    assert!(
+        bump.is_empty() || bump == "minor",
+        "`next_bump` in the justfile is empty or `minor`, not `{bump}`"
+    );
+    let changelog = read("CHANGELOG.md")?;
+    assert!(
+        bump.is_empty() || !section(&changelog, "Unreleased").is_empty(),
+        "`next_bump` is `minor` while CHANGELOG.md's Unreleased section is empty: a release's \
+         commit, which moves that section under its version, empties `next_bump` too, so the \
+         version it bumps to is what `just semver` reads"
+    );
+    let workflow = read(".github/workflows/ci.yml")?;
+    assert_eq!(
+        setting(
+            &workflow,
+            "semver",
+            &["steps", "-", "with", "persist-credentials"]
+        )?,
+        "false",
+        "the semver job keeps no credentials in its checkout"
+    );
+    assert_eq!(
+        setting(&workflow, "semver", &["permissions", "contents"])?,
+        "read",
+        "the semver job may only read the repository"
+    );
+    let tool = setting(&workflow, "semver", &["steps", "-", "with", "tool"])?;
+    let version = tool
+        .strip_prefix("cargo-semver-checks@")
+        .filter(|version| full_version(version))
+        .ok_or_else(|| {
+            format!("the semver job installs `{tool}`, not cargo-semver-checks@MAJOR.MINOR.PATCH")
+        })?;
+    assert_eq!(
+        installed(&read("CONTRIBUTING.md")?, "cargo-semver-checks"),
+        [version],
+        "CONTRIBUTING.md installs cargo-semver-checks once, at {version}, the version the semver \
+         job does"
+    );
+    Ok(())
+}
+
+/// Whether `version` is a full version, `MAJOR.MINOR.PATCH`, and nothing
+/// else.
+fn full_version(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Every version `doc` installs `tool` at, `cargo install --locked
+/// tool@VERSION`, the version read to the white space or the end of the
+/// line after it.
+fn installed<'a>(doc: &'a str, tool: &str) -> Vec<&'a str> {
+    let head = format!("cargo install --locked {tool}@");
+    doc.lines()
+        .flat_map(|line| line.match_indices(&head).map(move |(at, _)| &line[at..]))
+        .map(|rest| {
+            let version = &rest[head.len()..];
+            version
+                .split_once(char::is_whitespace)
+                .map_or(version, |(version, _)| version)
+        })
+        .collect()
+}
+
+#[test]
+fn a_variable_and_a_section_are_read_from_their_lines() -> Result<(), String> {
+    let justfile = "x := \"1\"\nnext_bump := \"\"\nlast := \"minor\"\n";
+    assert_eq!(variable(justfile, "next_bump")?, "");
+    assert_eq!(variable(justfile, "last")?, "minor");
+    assert!(variable(justfile, "next").is_err());
+    let changelog = "# Changelog\n\nIntro.\n\n## Unreleased\n\n## 0.1.4 (2026-11-22)\n\nA patch.\n";
+    assert!(section(changelog, "Unreleased").is_empty());
+    assert_eq!(section(changelog, "0.1.4 (2026-11-22)"), ["A patch."]);
+    assert!(section(changelog, "0.1.3").is_empty());
+    let open = changelog.replace("## Unreleased\n", "## Unreleased\n\nA change.\n");
+    assert_eq!(section(&open, "Unreleased"), ["A change."]);
+    Ok(())
+}
+
+#[test]
+fn a_tool_version_is_read_whole_and_full() {
+    assert!(full_version("0.51.0"));
+    for partial in [
+        "", "0", "0.5", "0.51.", "0.51.0.1", "0.51.x", "v0.51.0", "0.51.0 ",
+    ] {
+        assert!(
+            !full_version(partial),
+            "{partial:?} is read as a full version"
+        );
+    }
+    let doc =
+        "```sh\ncargo install --locked t@0.51.0   # for x\ncargo install --locked t@0.51.01\n\
+               cargo install --locked t@\ncargo install --locked other@1.0.0\n```\n";
+    assert_eq!(installed(doc, "t"), ["0.51.0", "0.51.01", ""]);
+    assert_eq!(installed(doc, "other"), ["1.0.0"]);
+    assert!(installed(doc, "none").is_empty());
 }
 
 /// A workflow with two jobs, the first as ci.yml writes its `test` job.

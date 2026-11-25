@@ -61,6 +61,8 @@ rules=local_file first=local_file reason="reads a path only known when it runs" 
 @windows rules=local_file first=local_file reason="reads the Windows account database" | file:///C:/Windows/System32/config/SAM
 @windows rules=local_file first=local_file reason="reads a system folder" | file:///C:/Windows/System32/notepad.exe
 @windows rules=local_file first=local_file reason="reads a path outside the workspace" | file:///C:/Users/me/dev/repo/../.ssh/id_rsa
+# A path too short to hold a drive is read as it is.
+@windows rules=local_file first=local_file reason="reads the root of the disk" | file:///
 
 # What the caller gates with is read in its words.
 paths agent base=posix folder=/home/me/.agent words="the agent's settings"

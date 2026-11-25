@@ -89,7 +89,12 @@ purpose, so **a new rule is a minor bump**: it breaks a caller's `match` at
 compile time, where the caller decides what to do with the rule, and a
 caller pinned to `"0.1"` is never handed a rule it has no answer for. A
 guard that judges a line differently after a fix is a patch, since the API
-is the same, and the change is in [the changelog](CHANGELOG.md).
+is the same, and the change is in [the changelog](CHANGELOG.md). Before
+each release, a step of the release done by hand (the release workflow does
+not run it) checks the crates against the release before it on crates.io
+with [cargo-semver-checks](https://github.com/obi1kenobi/cargo-semver-checks),
+so a change that breaks a caller's build does not ship in a patch. What
+breaks no build, such as an addition, is judged by hand.
 
 The crates declare Rust 1.90 (`rust-version` in their manifests), and are
 built and tested with it against the versions in this repository's

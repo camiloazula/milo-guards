@@ -66,4 +66,8 @@ id_ed25519*
 # the file; `.cargo/*` excludes only the contents and lets the negation work.
 .cargo/*
 !.cargo/config.toml
+# cargo-mutants' settings (`just mutants`), and the output of a run.
+!.cargo/mutants.toml
+/mutants.out/
+/mutants.out.old/
 tmp

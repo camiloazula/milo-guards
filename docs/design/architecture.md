@@ -211,7 +211,12 @@ answer is not. There are three kinds of test, and each has its place:
   `script_targets.rs` (the shell guard reads the script guard's targets as
   the machine's shell runs them), `ci_jobs.rs`
   (CI's jobs run the recipes of `just verify`, `just test` on Windows
-  and macOS, and `just oldest-rust` on Linux), `contract.rs` (the contract
+  and macOS, `just oldest-rust` on Linux, `just grammars` outside the
+  gate, and the two recipes that need the
+  network, `just advisories` and `just semver`, each in a job of its own;
+  the semver job keeps no credentials and installs the cargo-semver-checks
+  CONTRIBUTING.md names, and the justfile's `next_bump` it reads agrees
+  with the changelog), `contract.rs` (the contract
   and the direction of the dependencies), `everyday.rs` (the everyday
   commands stay safe, its lines in `tests/cases/everyday.cases`),
   `everyday_answers.rs` (the answers of a few thousand everyday commands,
