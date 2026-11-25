@@ -193,7 +193,8 @@ answer is not. There are three kinds of test, and each has its place:
   (the script and the shell guard give one answer for the same code),
   `script_targets.rs` (the shell guard reads the script guard's targets as
   the machine's shell runs them), `ci_jobs.rs`
-  (CI's jobs run the recipes of `just verify`), `contract.rs` (the contract
+  (CI's jobs run the recipes of `just verify`, and `just test` on Windows
+  and macOS), `contract.rs` (the contract
   and the direction of the dependencies), `everyday.rs` (the everyday
   commands stay safe, its lines in `tests/cases/everyday.cases`) and
   `toolchain.rs` (the places that name the Rust version agree).

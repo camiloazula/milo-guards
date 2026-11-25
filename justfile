@@ -1,4 +1,6 @@
-# Run `just <target>`. Install just with `brew install just`.
+# Run `just <target>`. Install just with `brew install just` on macOS,
+# `winget install --id Casey.Just --exact` on Windows, or `cargo install just`
+# anywhere. On Windows its recipes need `sh` on PATH (CONTRIBUTING.md).
 #
 # Every recipe that builds builds the whole workspace with the one Rust in
 # rust-toolchain.toml. This is a library and ships no binary, so there are no
@@ -13,7 +15,8 @@ _default:
 # clippy's check pass, one instrumented build of every test, which runs them
 # and measures coverage, and one optimized build of the timing tests, which
 # runs them alone. CI runs every recipe but `timing` in its `verify` job and
-# `timing` in a job of its own. Advisories are not part of it: they change
+# `timing` in a job of its own, both on Linux, and `test` on Windows and
+# macOS in its `test` job. Advisories are not part of it: they change
 # without a commit, so they are their own recipe and their own CI job.
 # Every check: format, clippy, tests with coverage, timing tests, doctests, rustdoc, the shell guard without its inline reader, dependencies.
 verify: format-check lint coverage timing doc-test doc no-inline deny
@@ -48,7 +51,10 @@ publish *flags:
 # `just verify` runs them again in its one instrumented build, apart from
 # the doctests, which `just doc-test` runs, and the timing tests, which
 # `just timing` runs: a debug build ignores them, so no test here reads the
-# clock. `--locked`: fail if Cargo.lock would need updating.
+# clock. `--locked`: fail if Cargo.lock would need updating. CI's `test` job
+# runs it on Windows and macOS: just runs this line with `sh` there too
+# (Git for Windows has one), and it is a plain `cargo` command line, so it
+# reads the same to any shell.
 # Every test but the timing ones, without coverage: quicker while working.
 test:
     cargo test --workspace --all-features --locked

@@ -5,11 +5,15 @@
 # over the whole workspace: none of them reads a clock, so its answer is the
 # same on every machine. The `timing` job runs `just timing` alone, the tests
 # that read the clock, on a runner of its own; it is advisory for now, while
-# its rows are measured on GitHub's runner. The crates are plain Rust with no
-# platform code, so the jobs run on Linux. This is a library: nothing here
-# builds for a platform or produces an artefact. Advisories are their own
-# job, running `just advisories`, because they change without a commit and
-# must not be confused with a code failure; the verify job does not run them.
+# its rows are measured on GitHub's runner. Those two run on Linux. The
+# crates are Rust with no platform code of their own, but the grammars are C,
+# compiled by each system's C compiler (MSVC on Windows, Apple's clang on
+# macOS), and a caller builds them on its own system: the `test` job runs
+# `just test` on Windows and on macOS, so a caller there is not the first to
+# build and test them. It is advisory for now (below). This is a library:
+# nothing here produces an artefact. Advisories are their own job, running
+# `just advisories`, because they change without a commit and must not be
+# confused with a code failure; the verify job does not run them.
 name: CI
 
 on:
@@ -98,6 +102,55 @@ jobs:
 
       - run: just timing
         timeout-minutes: 20
+
+  # Every test but the timing ones, doctests included, on Windows and on
+  # macOS: `just test`, a debug build with every feature, `--locked`, without
+  # coverage (the verify job measures it, on Linux). No test it runs reads a
+  # clock, so a slow runner cannot fail it. Advisory for now: the ruleset on
+  # `main` does not require it, so a red run here is a time to look, not a
+  # change that cannot merge. Its two checks, `test (windows-latest)` and
+  # `test (macos-latest)`, are added to the ruleset's required checks once
+  # they have passed on `main` steadily, with their time on these runners
+  # known.
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      # One system failing does not cancel the other: each answers for itself.
+      fail-fast: false
+      matrix:
+        # Today `windows-latest` is x86_64 (Windows Server 2025, MSVC) and
+        # `macos-latest` is arm64 (macOS 26, Apple silicon); Linux is
+        # x86_64, in the jobs above. These are three of the four targets
+        # deny.toml audits; x86_64 macOS is not run.
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      # `.gitattributes` keeps every text file LF on Windows too: the tests
+      # compare the case files and the sources as text.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # `just test` needs no component: no clippy, rustfmt or llvm-tools.
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.99.1"
+
+      # The cache key carries the job's name and rustc's host, so each
+      # system's build is kept apart, and apart from the other jobs.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: "epoch-${{ vars.RUST_CACHE_EPOCH || '1' }}"
+          cache-on-failure: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+
+      # just runs a recipe's lines with `sh`, on Windows too: the runner has
+      # Git for Windows' `sh` on its PATH (`crates/guards/tests/ci_jobs.rs`
+      # checks the job runs this recipe alone).
+      - run: just test
+        timeout-minutes: 45
 
   advisories:
     name: advisories
