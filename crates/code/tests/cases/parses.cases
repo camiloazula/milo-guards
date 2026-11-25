@@ -26,3 +26,18 @@ javascript parses=no | if (
 javascript parses=no | console.log(1
 javascript parses=no | function f( {}
 javascript parses=no | require('fs').rmSync('/home/me'); }
+
+# Code the reader stops on, past the work its grammar may do for it (see
+# `tests/parse_budget.rs`), is not code that parses, nor code read: it may
+# give input and hand a shell a list. Python with stars where Python allows
+# none (here `+*a`, which tree-sitter reads two ways at once) is refused
+# before it is parsed: code that does not parse. Code with an error does not parse, and is not code it
+# stops on: the reader is stopped where the recovery from the error starts,
+# with the budget left, even where the recovery would go round with no end.
+python parses=no stops=no input=yes shell_list=yes | +*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a+*a
+javascript parses=no stops=no input=yes shell_list=yes | c(.c(''.(X%'''"';c(=
+javascript parses=no stops=no | x;\nc(.c(''.(X%'''"';c(=
+javascript parses=no stops=no | if (
+python parses=no stops=no | print(
+javascript parses=yes stops=no | console.log(1); console.log(2)
+python parses=yes stops=no | print(1)

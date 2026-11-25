@@ -153,7 +153,10 @@ which is a minor bump.
   risky is safe (`print(1)`); code not read whole is `unknown`, never safe;
   Python that declares another encoding is `unknown`, as it runs from a file
   or its input; code too long, too deep or that does not parse is
-  `unreadable`.
+  `unreadable`, and so is code the reader stops on, past the work it may
+  do for it (`takes too long to read`; every reading the guard makes of one
+  piece of code draws from one `Budget`). Code that does not parse is not
+  read through its error: nothing in it is found.
 - `run_program` is the new guard's own rule: code that starts a program or
   runs a command in a shell. The guard does not judge the program, which is
   the shell guard's; the finding's target is the command as a line of the
@@ -176,7 +179,8 @@ which is a minor bump.
 - The code reader has `parses(language, code)`, whether the code's grammar
   reads it with no error, `gives_input(language, code)`, whether the code
   may give a program it starts input, and `gives_shell_a_list(language,
-  code)`, whether it may hand a shell a list of words.
+  code)`, whether it may hand a shell a list of words. Code the reader stops
+  on (below) does not parse, and may give input and hand a shell a list.
 - No answer of another guard changed. A front-door test
   (`crates/guards/tests/agree_code.rs`) holds the new guard's whole answer,
   combined with the shell guard's for each program, to the shell guard's for
@@ -397,6 +401,84 @@ and a new field on
 - The case files' `paths` line reads `link=` followed by its `to=` (an empty
   `to=` is a target the guard cannot place); core's case files ask `linked`
   and `lost` too.
+
+The reader of Python and JavaScript holds every reading to a budget, and
+reads no code through a syntax error: a new public type, part of the same
+minor bump. These are security fixes: code the reader could take very long
+to parse, or a lot of memory or stack to parse, is now answered within a
+bounded amount of work.
+
+- `milo-guards-code`: code with a syntax error is not read through it.
+  `read` gives an `Unread` act alone, where it gave one beside what it found
+  past the error; `understand` says `NotUnderstood` and `parses` no, as
+  before; `gives_input` and `gives_shell_a_list` say it may. The parse stops
+  where tree-sitter starts to recover from the error, so code whose error
+  recovery was costly is answered so in milliseconds. Literal code `exec` or
+  `eval` run with an error in it raises before it runs, as before: it is the
+  code act it is, and what is beside it is read.
+- `milo-guards-code`: `Budget` is the work the reader may do for code, or
+  for a line that holds code, counted as the grammars and the reader's walk
+  go and never by a clock (see Limits in `docs/design/code.md`).
+  `Budget::new(len)` makes one (a length past the reader's limit is the
+  limit); `Budget::read`, `understand`, `understand_python2`, `parses`,
+  `gives_input` and `gives_shell_a_list` ask the same questions as the
+  functions of those names within it, each question asked again of the same
+  code answered from the tree the budget keeps, with no parse;
+  `Budget::is_spent` says whether a reading within it was stopped. A budget
+  is `Send`, not `Sync`, and its `Debug` shows what it spent, never the code.
+  The functions each make one for the code they are given. Past it a
+  reading is stopped and the code is not read: `read` gives an `Unread` act
+  (alone when the code's own parse was stopped; beside what the walk found
+  around literal code `eval` or `exec` runs, when that parse was),
+  `understand` says `NotUnderstood`, `parses` says no, and `gives_input` and
+  `gives_shell_a_list` say yes, also when a question's own walk runs out part
+  of the way; every reading after it within the same budget is stopped
+  before it starts.
+- `milo-guards-code`: code is scanned before it is parsed, and not read
+  when it is longer than `MAX_LEN` (`read` and `understand` refuse it
+  themselves), when its openers nest deeper than `MAX_TREE_DEPTH`, or when
+  it holds more than a few of the shapes the grammars read two ways at once
+  at a cost that grows faster than the code, counted both as the text is
+  read and on its bytes alone; Python with more than four stars where Python
+  allows none (after an operator, or a keyword that takes an operand) is
+  code that does not parse, as Python says. Code with more than four spaces
+  outside its strings and comments that a grammar passes over but that are
+  not ASCII ones (a zero-width space, U+2060, a no-break space, the vertical
+  tab) is not read. No real file of 73,696 is refused, and every reading
+  within these bounds fits a thread of 1 MiB.
+- `milo-guards-shell`: every reading of the inline code of a line, and of the
+  code inside that code, is held to one budget for the line, so nesting and
+  pieces do not multiply the work. Code the reader stops on, or that has a
+  syntax error, given to `node -e`, `python3 -c`, on an interpreter's input
+  or in a here-document, is `unknown`, `runs code the guard does not read`,
+  and `effect` is `Unknown`, with what the line does beside it kept.
+- `milo-guards-script`: one budget for each piece of code, shared by its
+  judgings on each set of the paths; code the reader stops on is
+  `unreadable`, `takes too long to read`.
+- `milo-guards-code`: a list of arguments to a program is built in time
+  that grows with it, and a chain of assignments is followed to its end once
+  for the chain; past some hundred links the reader's own work stops it.
+- What changes for code that read before: code with a syntax error is not
+  read for the acts beside the error. In the shell guard a line that was
+  `delete` and `unknown` for such code is `unknown` alone; in the script
+  guard it was `unreadable` already, and is so alone. Of some 28,000 files
+  of real Python and JavaScript, 28 change: 22 of JavaScript with Flow
+  types, an editor's backup of a half-written file, and 7 of runnable
+  JavaScript the grammar does not read (private class fields after a line
+  with no semicolon in `undici`, `export { _null as null }` in `zod`, and
+  two more), in which the earlier reader found no file act. Code in syntax
+  newer than the grammars know runs, and is not read either: Python 3.15's
+  `lazy import` and `lazy from … import`, type parameter defaults (`def f[T
+  = int]()`), JavaScript's `export { _null as null }`: such code is not
+  read, as code past the length limit is not, and is `unknown` in the shell
+  guard where an act in it was found before. This is a known limit; reading
+  a tree with a few small errors beside them is possible later work. Two
+  case lines of the script guard (`import shutil; shutil.rmtree('/home/me');
+  if 1:`, and its JavaScript twin) no longer find the delete. Python with a
+  long run of comment lines in or after a block, read with tree-sitter's
+  log, is not read past the bytes handed (no real file has such a run); and
+  valid code longer than a kilobyte or two is read with tree-sitter's log,
+  since only the log sees two ways of reading the code that never part.
 
 ## 0.1.4 (2026-11-22)
 

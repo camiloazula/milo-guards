@@ -366,3 +366,13 @@ posix rules=unknown | python3 -c "import os; os.chdir('/home/me')"; rm x
 posix rules=delete | python3 -c "import os; os.system('python3 -c \\"import os; os.system(\\\\'python3 -c \\\\\\\\\\"import os; os.system(\\\\\\\\\\\\\\\\\\\\'rm -rf /home/me\\\\\\\\\\\\\\\\\\\\')\\\\\\\\\\"\\\\')\\"')"
 # Read to the end, but `exec` is not on the strict gate's list: unknown.
 posix rules=unknown | python3 -c "exec('exec(\\\\'import os\\\\')')"
+
+# Code whose recovery from an error goes round with no end is stopped where
+# the recovery starts: code that does not parse, which the guard does not
+# read: unknown, wherever the code comes from, and what the line does beside
+# it is kept. Longer such code is in inline.rs.
+posix rules=unknown effect=unknown | node -e "c(.c(''.(X%'''\\"';c(="
+posix rules=unknown effect=unknown | echo "c(.c(''.(X%'''\\"';c(=" | node
+posix rules=unknown effect=unknown | node <<'EOF'\nc(.c(''.(X%'''"';c(=\nEOF
+posix rules=unknown effect=unknown | node -e "eval('c(.c(\\\\'\\\\'.(X%\\\\'\\\\'\\\\'\\"\\\\';c(=')"
+posix rules=unknown,delete effect=changes | node -e "c(.c(''.(X%'''\\"';c(=" && rm -rf ~

@@ -214,6 +214,7 @@ dependencies = [
 name = "milo-guards-code"
 version = "0.1.4"
 dependencies = [
+ "milo-guards-code",
  "tree-sitter",
  "tree-sitter-javascript",
  "tree-sitter-python",

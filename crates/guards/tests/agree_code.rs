@@ -137,15 +137,23 @@ const WINDOWS_MAPPED: &[(&str, &str, &str, &str)] = &[];
 
 /// What the script guard says where the shell guard says another thing, as
 /// `(script's rule, script's reason, shell's rule, shell's reason)`: code
-/// that does not parse is `unreadable` to the script guard, as a line that
-/// does not parse is to the shell guard, and `unknown` to the shell guard's
-/// inline reading.
-const MAPPED: [(&str, &str, &str, &str); 1] = [(
-    "unreadable",
-    "does not parse",
-    "unknown",
-    "runs code the guard does not read",
-)];
+/// that does not parse, and code the reader stops on past the work its
+/// grammar may do, is `unreadable` to the script guard, as such a line is to
+/// the shell guard, and `unknown` to the shell guard's inline reading.
+const MAPPED: [(&str, &str, &str, &str); 2] = [
+    (
+        "unreadable",
+        "does not parse",
+        "unknown",
+        "runs code the guard does not read",
+    ),
+    (
+        "unreadable",
+        "takes too long to read",
+        "unknown",
+        "runs code the guard does not read",
+    ),
+];
 
 /// The code the two guards do not agree on, beyond [`BY_DESIGN`], as
 /// `(machine, language, code, why)`.

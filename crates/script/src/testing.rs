@@ -30,6 +30,9 @@ pub struct Work {
     pub joined_bytes: usize,
     /// What [`crate::judge`] answers for the code, from the same judging.
     pub answer: Assessment,
+    /// What the readings of the code did, within the one budget every
+    /// reading of it shares: `None` for code too long to read at all.
+    pub reader: Option<milo_guards_code::testing::Work>,
 }
 
 /// Judge `code` as [`crate::judge`] does, and say what it cost.
@@ -39,6 +42,7 @@ pub fn work(language: Language, code: &str, paths: &Paths) -> Work {
         judged: outcome.judged,
         place_moves: outcome.place_moves,
         joined_bytes: outcome.joined_bytes,
+        reader: outcome.reader,
         answer: assessed(outcome.findings),
     }
 }

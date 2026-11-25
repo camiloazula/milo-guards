@@ -1060,6 +1060,13 @@ impl NodeOptions {
     reason = "each flag is a separate fact the one walk of the line latches"
 )]
 pub(crate) struct Split {
+    /// The length of the line, which the work the reader of its inline code
+    /// may do is made for.
+    pub(crate) line_len: usize,
+    /// The work the reader of the line's inline code may do, shared by
+    /// every reading of it (made at the first).
+    #[cfg(feature = "inline")]
+    pub(crate) reader: Option<milo_guards_code::Budget>,
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
     /// The redirects' writes made where the line may be in more than one
@@ -5600,6 +5607,7 @@ pub(crate) fn split(
         split.placing = Some(Box::new(Placing::new(command.len())));
     }
     start(&mut split, false, (drive, home_drive));
+    split.line_len = command.len();
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
     // How the grammar read the line in this first read: a read again starts
@@ -5610,6 +5618,7 @@ pub(crate) fn split(
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
         start(&mut split, true, (drive, home_drive));
+        split.line_len = command.len();
         script(&mut split, command, shell, 0);
     }
     // A function body or a loop may run after the line turns `extendedglob`
@@ -5621,6 +5630,7 @@ pub(crate) fn split(
             && split.read_in_body.is_empty())
     {
         start_again_extended(&mut split);
+        split.line_len = command.len();
         script(&mut split, command, shell, 0);
     }
     #[cfg(feature = "testing")]

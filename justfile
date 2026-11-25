@@ -122,10 +122,14 @@ coverage:
 # (`cfg(any(coverage, debug_assertions))`) and run here, alone: no other test
 # binary runs beside them. `--show-output` prints what each test that passes
 # printed: every timed row's share of its bound, for the timing job's log.
-# The timing tests, and nothing else, in an optimized build.
+# The stack tests (`tests/stack.rs`) read no clock and run in every build,
+# each on a thread whose stack fits the build; here they run again in the
+# build a caller runs, on a thread of 1 MiB.
+# The timing tests, and the stack tests, in an optimized build.
 timing:
     cargo test --release --locked --all-features -p milo-guards-shell --test timing -- --show-output
     cargo test --release --locked --all-features -p milo-guards-secrets --test timing -- --show-output
+    cargo test --release --locked --all-features -p milo-guards-code -p milo-guards-script -p milo-guards-shell --test stack
 
 # The examples in the documentation and the README, compiled and run.
 # Every doctest.

@@ -295,8 +295,9 @@ fn code_that_runs_code_too_deeply_is_unreadable_and_never_safe() {
             "{language:?}: {assessment:?}"
         );
         // Past it, the code is unreadable, for running code too deeply (the
-        // reader stops at the same depth and says the code is too deep), and
-        // the delete at the bottom is not read.
+        // reader stops at the same depth and says the code is too deep), or
+        // for the work its readings at each depth took, and the delete at
+        // the bottom is not read.
         let assessment = judge(language, &running(language, 12), &posix());
         let reasons: Vec<&str> = assessment
             .findings()
@@ -308,7 +309,9 @@ fn code_that_runs_code_too_deeply_is_unreadable_and_never_safe() {
             reasons.iter().any(|reason| {
                 matches!(
                     *reason,
-                    "runs code inside code too deeply to read" | "nests too deeply to read"
+                    "runs code inside code too deeply to read"
+                        | "nests too deeply to read"
+                        | "takes too long to read"
                 )
             }),
             "{language:?}: {assessment:?}"

@@ -9,48 +9,58 @@ use super::{
     environment, join, mode, named_path, path, read_path, walk, writes, Act, Ancestor, Constants,
     Expansion, Holds, Language, Parts, Reading, MAX_ROUNDS,
 };
-use crate::unit::{self, Arg, MAX_TREE_DEPTH};
+use crate::scan;
+use crate::unit::{self, Arg, Budget, Parsed, Refusal, MAX_TREE_DEPTH};
 
-pub(super) fn read(code: &str) -> Reading {
+pub(super) fn read(code: &str, budget: &Budget) -> Reading {
     // CPython turns CRLF and a lone CR into a newline before it reads code
     // (`translate_newlines`); tree-sitter-python does not, so a comment that
     // ends at a CR would swallow the code after it.
     let translated = translate_newlines(code);
     let code = translated.as_str();
-    let mut reader = Reader::new(code, HashMap::new(), HashSet::new(), 0);
-    let Some(tree) = parse(code) else {
+    let mut reader = Reader::new(code, budget, HashMap::new(), HashSet::new(), 0);
+    // Code with an error is not read through it, and code whose parse is
+    // stopped is not read.
+    let Parsed::Tree(tree) = parse(reader.budget, code) else {
         reader.reading.unread(code);
         return reader.reading;
     };
     let root = tree.root_node();
-    if root.has_error() {
-        reader.reading.unread(code);
-    }
     reader.collect_imports(root);
     reader.walk_all(root);
+    // Code inside it whose parse was stopped is not read, wherever the
+    // reader met it.
+    if reader.budget.spent().stopped
+        && !reader
+            .reading
+            .acts
+            .iter()
+            .any(|act| matches!(act, Act::Unread(_)))
+    {
+        reader.reading.unread(code);
+    }
     reader.reading
 }
 
 /// Whether `code` parses whole, read as [`read`] reads it.
-pub(super) fn parses(code: &str) -> bool {
-    parse(&translate_newlines(code)).is_some_and(|tree| !tree.root_node().has_error())
+///
+/// Code whose parse is stopped (see [`Budget`]) is not said to parse.
+pub(super) fn parses(code: &str, budget: &Budget) -> bool {
+    matches!(parse(budget, &translate_newlines(code)), Parsed::Tree(_))
 }
 
 /// Whether `code` may hand a program it starts something to read on its
 /// input: a keyword argument `input` or `stdin` (`subprocess.run([…],
 /// input=…)`), or a `communicate` or `stdin` member (`p.communicate(…)`,
 /// `p.stdin.write(…)`). Code that does not parse may.
-pub(super) fn gives_input(code: &str) -> bool {
+pub(super) fn gives_input(code: &str, budget: &Budget) -> bool {
     let code = translate_newlines(code);
-    let Some(tree) = parse(&code) else {
+    // Code not read, as code that does not parse, may.
+    let Parsed::Tree(tree) = parse(budget, &code) else {
         return true;
     };
-    let root = tree.root_node();
-    if root.has_error() {
-        return true;
-    }
     let mut found = false;
-    unit::for_each_node(root, |node| {
+    unit::for_each_node(budget, tree.root_node(), |node| {
         let name = match node.kind() {
             "keyword_argument" => node.child_by_field_name("name"),
             "attribute" => node.child_by_field_name("attribute"),
@@ -69,7 +79,8 @@ pub(super) fn gives_input(code: &str) -> bool {
                 matches!(text, "stdin" | "input")
             });
     });
-    found
+    // A walk cut short has not read the code: it may.
+    found || budget.is_spent()
 }
 
 /// Whether `call` is a call of a `popen` (`os.popen`, `popen`) given more
@@ -92,17 +103,14 @@ fn popen_given_more(call: Node<'_>, code: &str) -> bool {
 /// with anything but `False` (`subprocess.run(['del', 'x'], shell=True)`) or
 /// arguments that may carry it (`**kw`, `*rest`, positional arguments past
 /// the list). Code that does not parse may.
-pub(super) fn gives_shell_a_list(code: &str) -> bool {
+pub(super) fn gives_shell_a_list(code: &str, budget: &Budget) -> bool {
     let code = translate_newlines(code);
-    let Some(tree) = parse(&code) else {
+    // Code not read, as code that does not parse, may.
+    let Parsed::Tree(tree) = parse(budget, &code) else {
         return true;
     };
-    let root = tree.root_node();
-    if root.has_error() {
-        return true;
-    }
     let mut found = false;
-    unit::for_each_node(root, |node| {
+    unit::for_each_node(budget, tree.root_node(), |node| {
         if node.kind() != "call" {
             return;
         }
@@ -143,15 +151,35 @@ pub(super) fn gives_shell_a_list(code: &str) -> bool {
             });
         found |= shell && listed;
     });
-    found
+    // A walk cut short has not read the code: it may.
+    found || budget.is_spent()
 }
 
-fn parse(code: &str) -> Option<tree_sitter::Tree> {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_python::LANGUAGE.into())
-        .ok()
-        .and_then(|()| parser.parse(code, None))
+/// Parse `code` as Python, within what is left of `budget`. Code whose
+/// brackets nest deeper than [`MAX_TREE_DEPTH`], or with more than
+/// [`scan::MAX_ODD_SPACES`] spaces of [`scan::odd_space`] outside its
+/// strings and comments, is not read; and code with a backtick outside them,
+/// or more than [`scan::MAX_STARS_AFTER_OPERATORS`] stars where Python allows
+/// none (see [`scan::python`]), is not parsed: Python refuses it, and it is
+/// code that does not parse.
+pub(super) fn parse(budget: &Budget, code: &str) -> Parsed {
+    unit::parse(budget, &tree_sitter_python::LANGUAGE.into(), code, |code| {
+        let scanned = scan::python(code);
+        // What Python itself refuses is code that does not parse, before
+        // anything else past a bound.
+        let refusal = if scanned.backticks > 0 || scanned.marks > scan::MAX_STARS_AFTER_OPERATORS {
+            Some(Refusal::Error)
+        } else if scanned.depth > MAX_TREE_DEPTH
+            || scanned.raw_depth > MAX_TREE_DEPTH
+            || scanned.raw_marks > scan::MAX_RAW_STARS
+            || scanned.odd > scan::MAX_ODD_SPACES
+        {
+            Some(Refusal::Stopped)
+        } else {
+            None
+        };
+        (scanned, refusal)
+    })
 }
 
 /// `code` with CRLF and a lone CR read as a newline, as Python itself does.
@@ -877,6 +905,11 @@ const DUNDERS: [&str; 8] = [
 
 struct Reader<'s> {
     src: &'s str,
+    /// The work the parses of the call that reads this code may do, shared
+    /// with the readers of the code inside it.
+    budget: &'s Budget,
+    /// The grammar's id of the field `right`, the value of an assignment.
+    right: u16,
     /// What each name `import` binds stands for: `rm` from `from os import
     /// remove as rm` is `os.remove`.
     aliases: HashMap<String, String>,
@@ -1035,12 +1068,17 @@ impl<'t> Args<'t> {
 impl<'s> Reader<'s> {
     fn new(
         src: &'s str,
+        budget: &'s Budget,
         aliases: HashMap<String, String>,
         modules: HashSet<String>,
         nesting: usize,
     ) -> Self {
         Self {
             src,
+            budget,
+            right: tree_sitter::Language::from(tree_sitter_python::LANGUAGE)
+                .field_id_for_name("right")
+                .map_or(0, u16::from),
             aliases,
             modules,
             names: HashMap::new(),
@@ -1079,7 +1117,7 @@ impl<'s> Reader<'s> {
             self.constants.mark(&name);
         }
         let mut found = Vec::new();
-        unit::for_each_node(root, |node| match node.kind() {
+        unit::for_each_node(self.budget, root, |node| match node.kind() {
             "assignment"
             | "named_expression"
             | "for_statement"
@@ -1090,6 +1128,7 @@ impl<'s> Reader<'s> {
             }
             _ => {}
         });
+        let ends = unit::chain_ends(&found, "assignment");
         // A name found to be unresolved after a value was worked out from it
         // makes that value stale: the strings are noted again, with it
         // unresolved. Each round marks one more name, so they settle; if they
@@ -1100,7 +1139,7 @@ impl<'s> Reader<'s> {
                 self.constants.everything();
             }
             self.constants.start_round();
-            self.note_round(&found);
+            self.note_round(&found, &ends);
             if !self.constants.stale() || round == MAX_ROUNDS {
                 break;
             }
@@ -1109,7 +1148,7 @@ impl<'s> Reader<'s> {
     }
 
     /// One round of noting the strings the names are set to ([`Self::collect_constants`]).
-    fn note_round(&mut self, found: &[Node<'_>]) {
+    fn note_round<'t>(&mut self, found: &[Node<'t>], ends: &HashMap<usize, Node<'t>>) {
         self.constants_on = true;
         for &node in found {
             if node.kind() == "as_pattern" {
@@ -1148,12 +1187,7 @@ impl<'s> Reader<'s> {
                 continue;
             }
             // `a = b = 'x'` sets `a` to the string too.
-            while value.kind() == "assignment" {
-                let Some(next) = value.child_by_field_name("right") else {
-                    break;
-                };
-                value = next;
-            }
+            value = unit::chain_end(value, "assignment", ends);
             if !looped {
                 self.note_object(value, target);
             }
@@ -1262,7 +1296,7 @@ impl<'s> Reader<'s> {
         loose: &mut Vec<String>,
     ) -> bool {
         let mut found = Vec::new();
-        unit::for_each_node(root, |node| match node.kind() {
+        unit::for_each_node(self.budget, root, |node| match node.kind() {
             "assignment"
             | "named_expression"
             | "for_statement"
@@ -1341,7 +1375,7 @@ impl<'s> Reader<'s> {
                 }
                 "case_pattern" => {
                     // A capture pattern, and a name of a class in one.
-                    unit::for_each_node(node, |inner| {
+                    unit::for_each_node(self.budget, node, |inner| {
                         if inner.kind() == "identifier" {
                             names.push(self.text(inner).to_string());
                         }
@@ -1401,15 +1435,20 @@ impl<'s> Reader<'s> {
                 continue;
             }
             let translated = translate_newlines(&text);
-            let Some(tree) = parse(&translated) else {
-                continue;
+            let tree = match parse(self.budget, &translated) {
+                Parsed::Tree(tree) => tree,
+                // Code not read may bind any name.
+                Parsed::Stopped => {
+                    deep = true;
+                    continue;
+                }
+                // Code that does not parse raises before it runs a thing.
+                Parsed::Error | Parsed::Failed => continue,
             };
             let inner_root = tree.root_node();
-            if inner_root.has_error() {
-                continue;
-            }
             let mut inner = Reader::new(
                 &translated,
+                self.budget,
                 self.aliases.clone(),
                 self.modules.clone(),
                 self.nesting + 1,
@@ -1693,7 +1732,7 @@ impl<'s> Reader<'s> {
     fn walk_all(&mut self, root: Node<'_>) {
         self.collect_constants(root);
         self.walking = true;
-        walk(root, |node, field, above| {
+        walk(self.budget, root, |node, field, above| {
             // Python reads a name in its NFKC form (`ｒｅｍｏｖｅ` is `remove`),
             // which the reader does not compute: a name that is not ASCII is
             // a name it does not follow.
@@ -1756,16 +1795,17 @@ impl<'s> Reader<'s> {
             return true;
         }
         let translated = translate_newlines(text);
-        let Some(tree) = parse(&translated) else {
-            return false;
+        let tree = match parse(self.budget, &translated) {
+            Parsed::Tree(tree) => tree,
+            // Code not read may share any name.
+            Parsed::Stopped => return true,
+            // Code that does not parse raises before it runs a thing.
+            Parsed::Error | Parsed::Failed => return false,
         };
         let root = tree.root_node();
-        // Code that does not parse raises before it runs a thing.
-        if root.has_error() {
-            return false;
-        }
         let mut inner = Reader::new(
             &translated,
+            self.budget,
             self.aliases.clone(),
             self.modules.clone(),
             self.nesting + 1,
@@ -1779,7 +1819,7 @@ impl<'s> Reader<'s> {
                 .aliases
                 .iter()
                 .any(|(name, value)| rebase(value) != self.resolve(name) && inner.followed(value));
-        walk(root, |node, field, _| {
+        walk(self.budget, root, |node, field, _| {
             if node.kind() == "identifier" && field != Some("attribute") {
                 let name = self.text_of(node, &translated);
                 if let Some(value) = self.aliases.get(name) {
@@ -1812,7 +1852,7 @@ impl<'s> Reader<'s> {
 
     fn collect_imports(&mut self, root: Node<'_>) {
         let mut found = Vec::new();
-        unit::for_each_node(root, |node| match node.kind() {
+        unit::for_each_node(self.budget, root, |node| match node.kind() {
             "import_statement" | "import_from_statement" | "assignment" | "named_expression" => {
                 found.push(node);
             }
@@ -1996,7 +2036,50 @@ impl<'s> Reader<'s> {
     /// The dotted name `node` stands for, once the names `import` bound are
     /// put back: `shutil.rmtree`, `os.path.join`. `None` for what is not a
     /// name.
+    /// The name a chain of assignments (`a = b = c`) ends in, from its first
+    /// assignment, `level` deep: each assignment in it is a level, as when
+    /// each is asked for in turn, and each is given the name the chain ends
+    /// in. Followed in one loop, so a chain of thousands (`x = a = a = …`)
+    /// costs each of its assignments the few steps to the end, or to one
+    /// whose name is known, not a call of [`Self::qualified`] for each
+    /// assignment after it, which took a second at the length limit.
+    fn qualified_chain(&mut self, node: Node<'_>, level: usize) -> Option<String> {
+        let mut links = Vec::new();
+        let mut value = node;
+        let mut level = level;
+        let name = loop {
+            if value.kind() != "assignment" {
+                break self.qualified(value, level);
+            }
+            if level > MAX_TREE_DEPTH {
+                self.reading.deep = true;
+                return None;
+            }
+            if self.walking && value.id() != node.id() {
+                if let Some(known) = self.names.get(&value.id()) {
+                    break known.clone();
+                }
+            }
+            links.push(value.id());
+            if !self.budget.walk(1) {
+                return None;
+            }
+            value = value.child_by_field_id(self.right)?;
+            level += 1;
+        };
+        if self.walking && !self.reading.deep {
+            for link in links.into_iter().skip(1) {
+                self.names.insert(link, name.clone());
+            }
+        }
+        name
+    }
+
     fn qualified(&mut self, node: Node<'_>, level: usize) -> Option<String> {
+        // Each name worked out is a unit of the reader's own work.
+        if !self.budget.walk(1) {
+            return None;
+        }
         if level > MAX_TREE_DEPTH {
             self.reading.deep = true;
             return None;
@@ -2038,10 +2121,7 @@ impl<'s> Reader<'s> {
                 self.qualified(inner, level + 1)
             }
             // `a = b = os`: `a` is `os` too.
-            "assignment" => {
-                let right = node.child_by_field_name("right")?;
-                self.qualified(right, level + 1)
-            }
+            "assignment" => self.qualified_chain(node, level),
             "call" => self.qualified_call(node, level),
             _ => None,
         }
@@ -3607,6 +3687,10 @@ impl<'s> Reader<'s> {
     /// there, or an assignment of a module or of a call the reader knows, is
     /// one it does not follow.
     fn class_binding<'t>(&mut self, node: Node<'t>, above: &[Ancestor<'t>]) {
+        // The nodes above are looked through: units of the reader's work.
+        if !self.budget.walk(above.len()) {
+            return;
+        }
         let in_class = above
             .iter()
             .rev()

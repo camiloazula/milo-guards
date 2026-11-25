@@ -23,7 +23,9 @@ that guards build on, and the front door:
   `understand`. It reads Python and JavaScript and says what the code is
   certain to do, or that it does not understand it. It judges nothing; the
   shell guard builds on it for inline code, behind its `inline` feature, and
-  the script guard for the code it judges.
+  the script guard for the code it judges. It shows its own tests the count
+  of the work its parses do behind its `testing` feature, which is not for
+  callers.
   [Its design](docs/design/code.md).
 - `crates/shell` (`milo-guards-shell`) - the shell guard, `classify`. It
   parses POSIX shell, PowerShell and cmd and judges programs, flags, operands

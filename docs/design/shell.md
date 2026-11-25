@@ -4710,7 +4710,33 @@ name the reader does not follow. Code too long or nested too deeply to read is
 noted for all names together and the paths read out of them are bounded, so a
 few hundred bytes cannot take seconds: a name that went over a limit is dropped,
 not read as any string, and a read of it is `unknown`, so no limit makes a line
-safe.
+safe. Every reading of the line's inline code, and of the code that code
+runs inside it (read again for each `Code` act, and to see whether it moves
+the code's folder), draws from one `Budget` of the reader's, made for the
+line's length at the first reading and counted without a clock (see
+[Code: Limits](code.md#limits)), so nesting does not multiply the work: code
+nested in four `eval`s costs what the line's length allows, and so does code
+given in many pieces, each read whole within the bounds of its one parse: the
+budget adds up what each piece's parse cost where no count of that parse sees
+it.
+Each question asked of the same piece is answered from the one tree the
+budget keeps for it. Past it the reading is stopped and the code is not
+read, whatever it is given with (`-c`, `-e`, its input, a here-document),
+and so is every piece of the line read
+after it: `unknown`, `runs code the guard does not read`, and the effect is
+unknown, with what the line does beside it kept. JavaScript the grammar reads
+two ways at once, code nested past the depth the reader walks, a lexer that
+goes over the same text again and again, and a chain of calls named again
+from each link are stopped so. Inline code with a
+syntax error is not read through it either (the reader stops where the
+grammar starts to recover from the error, so a recovery that would go round
+the same tokens with no end costs some milliseconds): `unknown`, with what
+the line does beside it kept, where a delete beside the error was once
+found. So is code in syntax newer than the grammars know, which runs:
+`python3 -c "lazy import shutil; shutil.rmtree('/home/me')"` (Python 3.15)
+is `unknown` alone, a known limit (see [Code: Errors](code.md#errors)). `tests/inline.rs` holds them, through each way the code is given, the
+work of one line's readings, nested from none to four deep, to its budget,
+and a line of such pieces to the budget's bounds in all.
 
 ## Reading a key
 

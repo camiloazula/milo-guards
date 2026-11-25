@@ -75,7 +75,7 @@ beside it.
 | `run_downloaded` | Code that runs code it downloads (`import('https://…')`): `runs code it downloads`, with what to do instead. | the same |
 | `run_program` | Code that starts a program (`runs a program`: `subprocess.run([…])`, `child_process.spawn`, `os.kill`) or runs a command in a shell (`runs a command in a shell`: `os.system`, `child_process.exec`). | none: see below |
 | `unknown` | Code the guard does not read: what the reader does not follow (`eval` of a name, code loaded from outside the workspace, a path handed to a call it has no row for), a path, a program or a directory only known when the code runs, a read of a path that cannot be placed, code that declares another encoding, and code not read whole. | the same |
-| `unreadable` | Code longer than `MAX_LEN` (64 KiB), nested deeper than the reader walks, running code inside code deeper than `MAX_DEPTH` (8) or more than the nested budget, or that does not parse. | the same |
+| `unreadable` | Code longer than `MAX_LEN` (64 KiB), nested deeper than the reader walks, running code inside code deeper than `MAX_DEPTH` (8) or more than the nested budget, that does not parse, or that the reader stops on, past the work its grammar may do for it. | the same |
 
 The `Rule` enum is exhaustive, with `Rule::ALL`, an inherent `name` and core's
 `RuleName`, as every guard's.
@@ -86,8 +86,10 @@ guard does not show` and `starts a program the guard cannot write as a
 command line` (`unknown`, below); and `does not parse`, `runs code inside code
 too deeply to read` and `runs too much code inside code to read`
 (`unreadable`). The shell guard's inline reading says `runs code the guard
-does not read` (`unknown`) for code that does not parse, as a nested piece of
-code that does not parse is here.
+does not read` (`unknown`) for code that does not parse, and for code the
+reader stops on, as a nested piece of such code is here. `takes too long to
+read` (`unreadable`) is the shell guard's reason for a line its own grammars
+are stopped on.
 
 After a move (`os.chdir`, `process.chdir`, a program's `cwd`), what an act
 finds from where the code was before it, beyond what it finds where the code
@@ -280,11 +282,39 @@ themselves. The cases are in `tests/cases/resolved_links.cases`.
   read`.
 - **Does not parse.** Code whose grammar reads an error (the reader's
   `parses`) is `unreadable`, `does not parse`, with the start of the code as
-  the target. What the reader still finds in it is kept: `import shutil;
-  shutil.rmtree('/home/me'); if 1:` is `unreadable` and `delete`. Nested code
-  that does not parse is code the guard does not read (`unknown`). Python's
+  the target. It is not read through the error, so nothing in it is found
+  (for code the interpreter refuses too, it raises before it runs a thing;
+  code in syntax newer than the grammars know, such as Python 3.15's `lazy
+  import`, runs, and is a known limit: see [Code: Errors](code.md#errors)): `import shutil;
+  shutil.rmtree('/home/me'); if 1:` is `unreadable` alone. The reader stops
+  its parse where tree-sitter starts to recover from the error, so code whose
+  recovery would go round the same tokens with no end, or wrap an error never
+  closed again at each token, is answered so in some milliseconds. Nested
+  code that does not parse is code the guard does not read (`unknown`). Python's
   grammar reads an empty block (`if 1:`) with no error, which Python refuses:
   such code is not read whole, so it is `unknown`.
+- **Too costly to read.** Every reading the guard makes of a piece of
+  code, and of the code it runs inside it (and its judging again on each other set of the
+  paths (`Paths::also_judged_on`), which reads the code from
+  what the budget kept), draws from one `Budget` of the reader's, made for the code's length and counted as the grammars and the
+  reader's walk go, never by a clock (see [Code: Limits](code.md#limits)).
+  Code whose own parse the reader stops on (its `parses` does not call it
+  parsed, and the budget is spent) is `unreadable`, `takes too long to
+  read`, with the start of the code as the target: it is not read at all, so
+  nothing in it is found, and the guard asks the reader nothing more of it.
+  Code the reader stops on further in, the code it runs read at a depth, is
+  code the guard does not read (`unknown`), and the whole is `unreadable`,
+  `takes too long to read`, beside it. JavaScript the grammar reads two ways
+  at once, code
+  nested past the depth the reader walks, a lexer that goes
+  over the same text again and again (a run of comment lines in a block
+  longer than 182 to 755 lines after code longer than a kilobyte or two, by
+  the length of its lines and of the code before it; see
+  [Code: Limits](code.md#limits)), and a chain of calls named again from each link, each of which
+  took seconds, are answered so on every machine; and so is code that runs
+  piece after piece of code each read whole within the bounds of one parse,
+  which the one budget adds up. Python the grammar reads two ways at once
+  holds a star where Python allows none, and is code that does not parse.
 - **Empty.** Code that is empty or only a comment holds no statement, so it
   is not read whole: `unknown`.
 
@@ -371,7 +401,9 @@ walks `Rule::ALL` and pins the wire names; `robust.rs` runs seeded noise and
 every case of the code reader's case files through both languages (no panic,
 the same answer twice, safe only for code read whole) and holds code too long,
 too deep or that runs code too deeply to `unreadable`, never safe; `work.rs`
-holds the work to counts; the unit tests of `src/judge.rs` hold the depth and
+holds the work to counts, and the code the reader stops on, at each size to
+the length limit and on a POSIX and a Windows machine, and code inside code
+four deep, to the one budget of its readings, never safe; the unit tests of `src/judge.rs` hold the depth and
 the nested budget and the quoting.
 
 The front door's `crates/guards/tests/agree_code.rs` holds this guard and the
@@ -404,8 +436,8 @@ what the two say of the program beyond its file acts (`elevated` as root or
 as administrator, `stop_system`, the reason of an `unknown`) is not
 compared, since the shell guard's inline reading judges a POSIX unit where
 cmd runs the line. No Windows shape is mapped away from that rule today.
-`does not parse` here is the shell guard's `runs code the guard
-does not read`. Code with a NUL in it has no shell line and is not compared.
+`does not parse` and `takes too long to read` here are the shell
+guard's `runs code the guard does not read`. Code with a NUL in it has no shell line and is not compared.
 What still differs otherwise is listed in the test with both answers: code
 that writes a script and runs it (`sh x.sh`), where both say `unknown` for
 different reasons; and, on a Windows machine, `os.system` of a `python3 -c`

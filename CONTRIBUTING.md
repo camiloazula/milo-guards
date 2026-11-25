@@ -70,7 +70,7 @@ while it fails. It runs, in order, over the whole workspace:
 | `just format-check` | `cargo fmt --all --check` |
 | `just lint` | clippy, `--all-targets --all-features`, zero warnings (`cargo lint` runs the same) |
 | `just coverage` | every unit and integration test, `--all-features --locked`, run once in an instrumented build, and line coverage against the floor in the `justfile` (`--fail-under-lines`); raise it as coverage lands, never lower it to pass |
-| `just timing` | the timing tests, and nothing else, in an optimized build: `cargo test --release --locked --all-features -p <crate> --test timing -- --show-output` for each crate with a `tests/timing.rs` (the shell guard and the secrets guard). Every test that reads the clock is in one of those files, and no other test does; they compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here |
+| `just timing` | the timing tests, and nothing else, in an optimized build: `cargo test --release --locked --all-features -p <crate> --test timing -- --show-output` for each crate with a `tests/timing.rs` (the shell guard and the secrets guard). Every test that reads the clock is in one of those files, and no other test does; they compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here; and the stack tests of the code reader, the script guard and the shell guard (`tests/stack.rs`), which read no clock and run in every build, again in the optimized one, where each reading runs on a thread of 1 MiB |
 | `just doc-test` | every doctest, README example included (`cargo test --doc --workspace --all-features --locked`), which coverage does not run |
 | `just doc` | rustdoc on the workspace with warnings denied, so a broken intra-doc link fails (`--all-features --no-deps --locked`) |
 | `just no-inline` | the shell guard without its `inline` feature (no readers of Python and JavaScript, no grammars): clippy on all its targets with zero warnings, and `tests/inline_off.rs`, which holds every inline line to `unknown`; `--all-features` never builds it that way |
@@ -189,7 +189,10 @@ each depth: the recoveries counted and the depth a nest is read to bound
 it, far below the budget, and the runner took about thirty times as long
 on it as here. The POSIX
 grammar's shapes that reach the same budget stay timed until the runner
-shows them out of line with the machine. A timed table names every row that
+shows them out of line with the machine. The code reader holds its grammars
+to a budget of the same kind (Limits in `docs/design/code.md`), and its
+`tests/parse_budget.rs` holds the shapes it stops to that count, each with
+its answer pinned, through the reader's own `testing` feature. A timed table names every row that
 is over its bound before it fails, so one run on the runner shows them all.
 
 `just advisories` is not part of `just verify`. It checks the RustSec database
@@ -552,8 +555,8 @@ and `network=` give `yes` or `no`. The code reader's case is `WHAT ANSWER... | C
 `python`, `javascript`, `python2` (`understand_python2`) or `module` (a
 module specifier), and the answer is `acts="..."` (the acts `read` finds,
 as `tests/common` spells them),
-`understand=yes|importing|no`, `other_encoding=yes|no` (Python), `parses=yes|no`
-`input=yes|no` (`gives_input`) and `shell_list=yes|no` (`gives_shell_a_list`;
+`understand=yes|importing|no`, `other_encoding=yes|no` (Python), `parses=yes|no`,
+`stops=yes|no` (the reader stops on it), `input=yes|no` (`gives_input`) and `shell_list=yes|no` (`gives_shell_a_list`;
 Python and JavaScript), and
 `data_url=yes|no` and `foreign=yes|no` (a module). Their dumps are the same
 command with `-p milo-guards-core` and `-p milo-guards-code`.

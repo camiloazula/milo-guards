@@ -18,9 +18,22 @@ exclude = ["tests/cases/"]
 [lints]
 workspace = true
 
+[features]
+# What only the reader's own tests read: the count of the work its parses
+# do for a call (`REPORT_BYTES` in `src/unit.rs`). Its tests turn it on,
+# through the dev-dependency on this crate below. It is not for callers and
+# not part of the API (hidden from the docs): it may change or go without
+# notice.
+testing = []
+
 [dependencies]
 # The grammars and the runtime they share: the workspace manifest holds the
 # runtime at 0.26 and says why. They are this crate's "own parsers".
 tree-sitter.workspace = true
 tree-sitter-python.workspace = true
 tree-sitter-javascript.workspace = true
+
+[dev-dependencies]
+# This crate with `testing` on, so every build of its tests reads the count
+# of the work its parses do (`tests/parse_budget.rs`).
+milo-guards-code = { path = ".", features = ["testing"] }

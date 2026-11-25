@@ -68,6 +68,30 @@ let reading = read(Language::JavaScript, "require('fs').rmSync(process.argv[1])"
 assert!(matches!(&reading.acts[..], [Act::Remove(Arg::Unknown(_))]));
 ```
 
+Each function parses the code it is given. A caller that asks more than one
+question of a piece of code, or reads several pieces of one line, asks them
+through one `Budget` made for the whole: the code is parsed once for all its
+questions, and all the readings share one bound on the work, so reading the
+code inside code, or many pieces, does not multiply it.
+
+```rust
+use milo_guards_code::{Budget, Language, Understanding};
+
+let code = "import shutil\nshutil.rmtree('/home/me')";
+let budget = Budget::new(code.len());
+let reading = budget.read(Language::Python, code);
+// Answered from the same parse.
+assert_eq!(budget.understand(Language::Python, code), Understanding::NotUnderstood);
+assert!(budget.parses(Language::Python, code));
+assert_eq!(reading.acts.len(), 1);
+assert!(!budget.is_spent());
+```
+
+Code with a syntax error is not read through it: `read` gives an
+`Act::Unread` alone. Code the reader stops on, past the work its budget
+allows (counted, never timed), is not read either, and the budget is then
+spent: every later question within it gets the cautious answer.
+
 ## Contract
 
 Like every milo-guards crate: no I/O and no environment reads, deterministic

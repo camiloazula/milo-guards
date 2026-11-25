@@ -35,6 +35,11 @@ pub struct Lexed {
     pub parsed: usize,
     /// What [`crate::classify`] answers for the line, from the same read.
     pub answer: Assessment,
+    /// What the reader of the line's inline code did, within the one budget
+    /// every reading of it shares: `None` when the line holds no code it
+    /// read.
+    #[cfg(feature = "inline")]
+    pub reader: Option<milo_guards_code::testing::Work>,
 }
 
 /// How the grammar read a line itself, before any rule: what the tool in
@@ -78,10 +83,18 @@ pub fn grammar(line: &str, shell: Shell, paths: &Paths) -> Grammar {
 pub fn lexed(line: &str, shell: Shell, paths: &Paths) -> Lexed {
     let reading = Reading::new(line, shell, paths, false, false);
     let (handed, parsed) = reading.split.lexed();
+    #[cfg(feature = "inline")]
+    let reader = reading
+        .split
+        .reader
+        .as_ref()
+        .map(milo_guards_code::testing::spent);
     Lexed {
         handed,
         parsed,
         answer: assessed(reading.judged.found),
+        #[cfg(feature = "inline")]
+        reader,
     }
 }
 

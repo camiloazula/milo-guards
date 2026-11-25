@@ -3,7 +3,12 @@
 
 mod common;
 
+use common::cases::What;
 use common::shown;
+use milo_guards_code::testing::{
+    self, HANDED_BASE, HANDED_BYTES, LOGGED_WEIGHT, PIECE, QUIET_IN_ALL, REPORT_BASE, REPORT_BYTES,
+    SELECTED_IN_ALL, TANGLE_BASE, WALK_BASE, WALK_BYTES,
+};
 use milo_guards_code::Language::{self, JavaScript, Python};
 use milo_guards_code::{read, understand, Act, Understanding, MAX_LEN};
 
@@ -336,4 +341,137 @@ fn code_the_reader_does_not_walk_whole_is_not_understood() {
             }
         }
     }
+}
+
+/// Single characters and short pieces of punctuation, which the pieces above
+/// never give alone: a quote by itself, a `.`, a `%`. The noise above joins
+/// whole tokens (strings with both their quotes, keywords, calls), so it
+/// never made the shape that keeps tree-sitter-javascript's recovery from
+/// an error going round with no end (`c(.c(''.(X%'''"';c(=`: lone quotes
+/// beside a member and an operator, and a call left open after them).
+const PUNCTUATION: [&str; 36] = [
+    "(", ")", "[", "]", "{", "}", ".", ",", ";", ":", "=", "%", "'", "\"", "`", "\\", "#", "@",
+    "+", "-", "*", "/", "<", ">", "&", "|", "!", "?", "\n", " ", "X", "c", "1", "${", "\n    ",
+    "'''",
+];
+
+/// `code` changed in one to six places at random: a piece put in, a
+/// character taken out or replaced, a few characters repeated, two
+/// swapped.
+fn mutated(random: &mut Lcg, code: &str) -> String {
+    let mut chars: Vec<char> = code.chars().collect();
+    for _ in 0..=random.next() % 6 {
+        let len = chars.len();
+        let piece = PUNCTUATION[random.next() % PUNCTUATION.len()];
+        let at = random.next() % (len + 1);
+        match random.next() % 5 {
+            0 => {
+                chars.splice(at..at, piece.chars());
+            }
+            1 if at < len => {
+                chars.remove(at);
+            }
+            2 if at < len => {
+                chars.splice(at..=at, piece.chars());
+            }
+            3 if at < len => {
+                let end = (at + 1 + random.next() % 8).min(len);
+                let again: Vec<char> = chars[at..end].to_vec();
+                chars.splice(at..at, again);
+            }
+            4 if len > 1 => chars.swap(at % len, random.next() % len),
+            _ => {}
+        }
+    }
+    chars.into_iter().collect()
+}
+
+/// Read and ask of `code`: the work its parses do is within the budget, a
+/// count, so no noise can hang the test; code whose parse is stopped is not
+/// read and not understood; and the reading is the same twice. Whether the
+/// parse was stopped, and whether one of its parses met an error.
+fn within_budget(language: Language, code: &str) -> (bool, bool) {
+    let (reading, read_work) = testing::read(language, code);
+    let (understood, asked) = testing::understand(language, code);
+    for work in [read_work, asked] {
+        let len = code.len();
+        assert!(
+            work.reports <= len / REPORT_BYTES + REPORT_BASE + 1,
+            "{code:?}: {work:?}"
+        );
+        assert!(work.quiet <= QUIET_IN_ALL + 1, "{code:?}: {work:?}");
+        assert!(work.tangled <= TANGLE_BASE + 16, "{code:?}: {work:?}");
+        assert!(
+            work.selected <= SELECTED_IN_ALL + 4096,
+            "{code:?}: {work:?}"
+        );
+        assert!(
+            work.walked <= len * WALK_BYTES + WALK_BASE + len,
+            "{code:?}: {work:?}"
+        );
+        assert!(
+            work.handed <= len * HANDED_BYTES + HANDED_BASE + 2 * PIECE * LOGGED_WEIGHT,
+            "{code:?}: {work:?}"
+        );
+    }
+    if read_work.stopped {
+        assert!(
+            reading.acts.iter().any(|act| matches!(act, Act::Unread(_))),
+            "{code:?}"
+        );
+    }
+    if read_work.stopped || asked.stopped {
+        assert_eq!(understood, Understanding::NotUnderstood, "{code:?}");
+    }
+    assert_eq!(
+        shown(&reading.acts),
+        shown(&read(language, code).acts),
+        "{code:?}"
+    );
+    (read_work.stopped, read_work.errors > 0)
+}
+
+#[test]
+fn punctuation_and_code_changed_at_random_are_read_within_the_budget() {
+    // The code of every case, the shape that goes round with no end, and
+    // Python read two ways at once, each changed at random; and
+    // punctuation joined at random.
+    let (mut stopped, mut erred) = (0, 0);
+    for (language, what, seed) in [
+        (Python, What::Python, 19),
+        (JavaScript, What::JavaScript, 23),
+    ] {
+        let mut seeds: Vec<String> = ["acts", "understand"]
+            .iter()
+            .flat_map(|name| common::cases::load(name))
+            .filter(|case| case.what == what)
+            .map(|case| case.code)
+            .collect();
+        if language == JavaScript {
+            seeds.push("c(.c(''.(X%'''\"';c(=".to_string());
+            seeds.push("- await [a,a]".repeat(700));
+        } else {
+            seeds.push("+*a".repeat(400));
+        }
+        let mut random = Lcg(seed);
+        for _ in 0..3_000 {
+            let base = &seeds[random.next() % seeds.len()];
+            let code = mutated(&mut random, base);
+            let (stop, error) = within_budget(language, &code);
+            stopped += usize::from(stop);
+            erred += usize::from(error);
+            let length = 1 + random.next() % 48;
+            let noise: String = (0..length)
+                .map(|_| PUNCTUATION[random.next() % PUNCTUATION.len()])
+                .collect();
+            let (stop, error) = within_budget(language, &noise);
+            stopped += usize::from(stop);
+            erred += usize::from(error);
+        }
+    }
+    // The shapes are met again now and then, or the check is empty.
+    assert!(
+        stopped > 0 && erred > 0,
+        "{stopped} stopped, {erred} met an error"
+    );
 }
