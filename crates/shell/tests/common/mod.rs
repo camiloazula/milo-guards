@@ -251,7 +251,10 @@ pub fn path_disagreement(shell: Shell, paths: &Paths, line: &str) -> Option<Stri
     if effect != Effect::ReadsOnly(Reach::Workspace) {
         return None;
     }
-    let windows = shell != Shell::Posix;
+    // The paths are spelled as the machine spells them: the Windows way on
+    // a Windows machine, in a POSIX shell there too (Git Bash).
+    let windows =
+        shell != Shell::Posix || paths.cwd.to_string_lossy().as_bytes().get(1) == Some(&b':');
     listed?
         .iter()
         .map(|read| read.path.to_string_lossy().into_owned())

@@ -133,17 +133,26 @@ impl Context<'_> {
                 });
             }
         }
+        let pattern = from.known().is_some_and(glob::has_wildcard);
         let beyond = match place {
             Place::Inside
             | Place::Temp { exact: false }
             | Place::Null
             | Place::Workspace { exact: true } => false,
             Place::Sensitive(_, Sensitivity::Secret) => true,
-            // The repository's history is inside the workspace.
-            Place::Sensitive(_, Sensitivity::History) => false,
-            // A startup file or a protected path is the workspace's own
-            // only when it is inside it, and a protected path the caller also
-            // named a secret is a secret.
+            // The repository's history, a startup file and a protected path
+            // are the workspace's own only when they are inside it, and a
+            // protected path the caller also named a secret is a secret. A
+            // pattern is placed by the most serious name it can pick, which
+            // says nothing of the others: one that can pick a hidden name
+            // is the repository's history (`*/.git`), so a pattern is inside
+            // only when the folder it starts in is (`~/work/*/.env` starts
+            // in `~/work` and picks every project there).
+            // The history of a path written out is the workspace's own
+            // `.git`, which is inside it.
+            Place::Sensitive(_, Sensitivity::History) => {
+                pattern && !self.resolver.inside_workspace(from, shell)
+            }
             Place::Sensitive(_, Sensitivity::Startup) => {
                 !self.resolver.inside_workspace(from, shell)
             }
@@ -155,7 +164,6 @@ impl Context<'_> {
         };
         // What a pattern can pick, and what a deep read goes below, may be a
         // secret that the place of the folder does not say.
-        let pattern = from.known().is_some_and(glob::has_wildcard);
         let beyond = beyond
             || (how.follows && self.resolver.linked(None, from, shell).is_some())
             || ((how.deep || pattern)

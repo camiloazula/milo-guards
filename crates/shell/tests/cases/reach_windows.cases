@@ -652,3 +652,15 @@ powershell@proj effect=reads_beyond | git show HEAD:.ssh/id_rsa
 powershell@proj effect=reads_beyond | git show :/.ssh/id_rsa
 powershell@proj effect=reads_workspace | git show HEAD:src/lib.rs
 powershell@proj effect=reads_workspace | git show :/src/lib.rs
+
+# A pattern that starts in a folder above the workspace picks the other
+# projects there too, whatever its last name is.
+powershell effect=reads_beyond | Get-Content ~\\dev\\*\\.env
+powershell effect=reads_beyond | Get-Content C:\\Users\\me\\dev\\*\\.env
+powershell effect=reads_beyond | Get-Content ..\\*\\.git\\config
+powershell effect=reads_beyond | Select-String KEY ..\\*\\.env
+cmd effect=reads_beyond | type C:\\Users\\me\\dev\\*\\.env
+cmd effect=reads_beyond | type ..\\*\\.env
+cmd effect=reads_beyond | type %USERPROFILE%\\dev\\*\\.env
+powershell effect=reads_workspace | Get-Content src\\*\\.env
+cmd effect=reads_workspace | type src\\*\\.env

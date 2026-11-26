@@ -49,6 +49,8 @@ paths agent_and_file base=posix folder=/home/me/work/repo/.agent words="the agen
 paths home_workspace cwd=/home/me home=/home/me workspace=/home/me
 paths config cwd=/home/me/.config home=/home/me workspace=/home/me/.config
 paths proj cwd=/home/me/proj home=/home/me workspace=/home/me
+# The plain workspace with its `.env` named a secret.
+paths named_env base=posix secret_file=/home/me/work/repo/.env words="the project's environment file"
 
 # Reads inside the workspace stay in it (`cat src/main.rs` is in
 # read_secret.cases, beside the keys it is not).
@@ -2068,3 +2070,70 @@ posix@in_src effect=reads_workspace | git show HEAD:./lib.rs
 posix@in_src effect=reads_workspace | git show HEAD:../Cargo.toml
 posix@in_src effect=reads_workspace | git diff -- ../Cargo.toml
 posix@in_src effect=reads_workspace | git diff -- :/src
+
+# A pattern reaches every folder it can pick, whatever its last name is: one
+# that starts in a folder above the workspace picks the other projects there
+# too, a hidden name (`.env`, `.git`) among them, though the most serious
+# name it can pick is the workspace's own history.
+posix effect=reads_beyond | cat ~/work/*/.env
+posix effect=reads_beyond | cat ~/work/*/.envrc
+posix effect=reads_beyond | cat ~/work/*/.git/config
+posix effect=reads_beyond | cat /home/me/work/*/.env
+posix effect=reads_beyond | head ~/work/*/.env
+posix effect=reads_beyond | grep KEY ~/work/*/.env
+posix effect=reads_beyond | ls ~/work/*/.git
+posix effect=reads_beyond | cat ~/work/**/.env
+posix effect=reads_beyond | cat ~/work/.g*/config
+posix effect=reads_beyond | cat ../*/.env
+posix effect=reads_beyond | cat ../*/.git/config
+posix effect=reads_beyond | cd src && cat ../../*/.env
+posix@in_src effect=reads_beyond | cat ../../*/.env
+posix@second effect=reads_beyond | cat ~/work/*/.agent/x
+posix@named_env finds=read_secret reason="reads the project's environment file" effect=reads_beyond | cat ~/work/*/.env
+posix effect=unknown | cat ~/work/{repo,other}/.env
+# One that starts in the workspace stays in it.
+posix effect=reads_workspace | cat */.env
+posix effect=reads_workspace | cat ./*/.git/config
+posix effect=reads_workspace | cat ~/work/repo/*/.env
+posix effect=reads_workspace | cat /home/me/work/repo/*/.git/config
+posix effect=reads_workspace | cat .g*/config
+posix effect=reads_workspace | cat src/*/../.env
+posix@in_src effect=reads_workspace | cat ../*/.env
+posix@named_env effect=reads_workspace | cat */.env
+
+# A POSIX shell on a Windows machine (Git Bash) reads the workspace the
+# caller spelled the Windows way: a hidden name or a pattern in it stays in
+# it, and one that starts above it picks the other projects there.
+posix@windows effect=reads_workspace | cat **/.envrc
+posix@windows effect=reads_workspace | cat */.env
+posix@windows effect=reads_workspace | cat .*rc
+posix@windows effect=reads_workspace | cat ./*/.git/config
+posix@windows effect=reads_workspace | cat .GIT/config
+posix@windows effect=reads_workspace | cat .[a]gent/config.yaml
+posix@windows effect=reads_workspace | cat .[a]gent/x
+posix@windows effect=reads_workspace | cat .[s]sh/id_rsa
+posix@windows effect=reads_workspace | cat .a*/config.yaml
+posix@windows effect=reads_workspace | cat .a*/x
+posix@windows effect=reads_workspace | cat .agen?/config.yaml
+posix@windows effect=reads_workspace | cat .e*
+posix@windows effect=reads_workspace | cat .env*
+posix@windows effect=reads_workspace | cat .g*/config
+posix@windows effect=reads_workspace | cat .git*
+posix@windows effect=reads_workspace | cat .git/HEAD
+posix@windows effect=reads_workspace | cat .git/config
+posix@windows effect=reads_workspace | cat .git/hooks/pre-commit
+posix@windows effect=reads_workspace | cat .s*/id_rsa
+posix@windows effect=reads_workspace | echo *git(D)
+posix@windows effect=reads_workspace | find .git
+posix@windows effect=reads_workspace | git diff -- '.ag*'
+posix@windows effect=reads_workspace | grep -r x .*rc
+posix@windows effect=reads_workspace | grep -r x .git
+posix@windows effect=reads_workspace | ls *git(D)
+posix@windows effect=reads_workspace | ls -R .git
+posix@windows effect=reads_workspace | ls .git
+posix@windows effect=reads_workspace | ls .git(D)
+posix@windows effect=reads_workspace | rg x .git
+posix@windows effect=reads_beyond | cat ../*/.env
+posix@windows effect=reads_beyond | cat ../*/.git/config
+posix@windows effect=reads_beyond | cd src && cat ../../*/.env
+posix@windows effect=reads_beyond | cat ~/dev/*/.env

@@ -354,9 +354,12 @@ impl Resolver {
             return false;
         };
         paths.workspaces.iter().any(|workspace| {
+            // A workspace folder is read as the caller spelled it: a
+            // Windows path is one in a POSIX shell too (Git Bash on a
+            // Windows machine), as the places are.
             let text = workspace.to_string_lossy();
             self.core
-                .key(Spelling::Plain(&text), flavour)
+                .key(Spelling::Plain(&text), spelled_flavour(&text, flavour))
                 .is_some_and(|folder| {
                     key == folder
                         || key.starts_with(&folder)
@@ -1746,6 +1749,18 @@ pub(crate) fn climb(text: &str, shell: Shell) -> Option<String> {
         start += part.len() + 1;
     }
     None
+}
+
+/// How the absolute path `text`, a folder the caller names, is spelled: the
+/// Windows way when it starts with a drive or a backslash, else `flavour`.
+fn spelled_flavour(text: &str, flavour: Flavour) -> Flavour {
+    let windows = matches!(text.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic())
+        || text.starts_with('\\');
+    if windows {
+        Flavour::Windows
+    } else {
+        flavour
+    }
 }
 
 /// The folder a pattern starts in: what comes before its first wildcard,

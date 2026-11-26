@@ -544,6 +544,11 @@ are more serious than 0.1.4's.
   OpenSSH is told to load (`-I`, `PKCS11Provider`, `SecurityKeyProvider`)
   is `unknown`. The `effect` of `fd -x rm` and of `less +'!rm x' f` is
   `Changes`.
+- `milo-guards-shell`: the `effect` of a pattern that starts in a folder
+  above every workspace folder is `ReadsOnly(Reach::Beyond)`, whatever its
+  last name (`cat ~/work/*/.env`, `cat ../*/.git/config`, `Get-Content
+  ~\dev\*\.env`); one that starts in a workspace folder is
+  `ReadsOnly(Reach::Workspace)`, in a POSIX shell on Windows too.
 
 ## 0.1.4 (2026-11-22)
 

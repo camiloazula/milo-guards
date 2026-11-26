@@ -7211,7 +7211,14 @@ hidden folder. A pattern that picks a secret, or goes below one, is `Beyond`; a
 deep read of a pattern that picks a folder holding one is too. In PowerShell
 and cmd a wildcard with a recursion is a filter on every folder below the one
 it starts in. A part that starts with a dot and matches `..` (`.*`, `.?`)
-reads the folder above as well, in the shells whose patterns match it.
+reads the folder above as well, in the shells whose patterns match it. A
+pattern is `Workspace` only when the folder it starts in, before its first
+wildcard, is inside a workspace folder: one that starts above it picks the
+other projects there too, so `cat ~/work/*/.env`, `cat ../*/.git/config`
+and `Get-Content ~\dev\*\.env` are `Beyond` whatever their last name is,
+though the most serious name they can pick (a hidden one, which may be
+`.git`) is the workspace's own history, while `cat */.env` and `cat
+~/work/repo/*/.env` stay `Workspace`.
 
 What a line reads is also judged by what a place is *to the workspace*, which
 core's place does not say: a protected path or a startup file is the
