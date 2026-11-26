@@ -4901,8 +4901,57 @@ and temporary folder, as written from the working directory (`bash
 ~/.ssh/x`, `python3 /opt/x.py`, `bash ../other/x.sh`, `powershell -File
 C:\Users\me\x.ps1`), is not: it is `unknown`, "runs a script outside the
 workspace". An init script (`sh /etc/init.d/ufw stop`) is judged as the
-program it is, and `source` and `.` (`source ~/.nvm/nvm.sh`) read the
-shell's own settings, judged as reads.
+program it is, `source` and `.` (`source ~/.nvm/nvm.sh`) read the
+shell's own settings, judged as reads, and a script read from the input
+(`/dev/stdin`, `/dev/fd/0`) is the input's, which its own rules judge. A
+shell given `-c` (in a cluster too, `-ec`) or `-s` runs no file: the word
+after its options is the command or an argument, and a command whose
+program is a path (`bash -c /opt/x.sh`) is that script. Each shell has a
+table of the letters it knows, flags and those that take a value: each `o` of
+a cluster takes the next word as an option's name, wherever it stands
+(`-euo NAME`, `-oe NAME`, `-oc NAME 'cmd'`), in bash, dash and ash, and so
+does bash's `O`, `shopt`'s; zsh, mksh (`-T` and `-o`) and fish (`-d`, `-D`,
+`-f`, `-o`, `-p` and `-C`) take the rest of the word instead when it has any.
+`sh`, `ksh` and `yash` may be either, so a valued letter with letters after
+it there (`-oerrexit`) makes the line unknown, and so does `-T`, which takes
+a value in mksh, in `sh` and `ksh`. A letter the table does not have, or one
+that means one thing in one shell of the name and another in another (`O` in
+`sh`: a name in bash, a flag in zsh), and a long option it does not have,
+are not guessed at: the line is unknown. A shell by another name has the
+table of the shell it is: a version (`bash5`, `bash-5.2`, `zsh-5.9`,
+`ksh93`) or a build (`bash-static`, `bash-5.2-release`, `ksh93u+m`),
+`rbash` (bash), `lksh` (mksh), `oksh` and `pdksh` (ksh), `posh` (dash), and
+not a program that only starts with a shell's name (`bashtop`, `zshdb`,
+`fishnet`); `hush`, whose `-o` is not read, has a table of its own. bash
+reads a long option with one dash too (`-rcfile FILE`, `-init-file FILE`),
+so a word of that spelling is the option and takes its value, but only in
+the run of long options that starts its arguments: after any other word it
+is a cluster of flags (`-e -help` is `-e` and the flags `h`, `e`, `l` and
+`p`); in `sh`, which may be bash or a cluster of flags, the line is
+unknown. csh and tcsh take the word after `-c` as the command whatever it
+is (one that starts like an option is unknown), and each later `-c` has one
+more, and a word only known when it runs after it is one of its arguments,
+unless a word follows it, which it may have made an option, or it may split
+into several words (`$X`, `"$@"`, `$(…)`, what `xargs` hands it), and the commands read before it are judged still.
+With no
+command, the first word that is no option is the script, or the input when
+it names it (`/dev/stdin`), and the options end there, at `--` and after
+`-b`; `-s`, `-t` and `-i` read the commands from the input, and the words
+after them are only arguments. fish reads everything it is given to run as one script, as
+its one parser does (`-C`'s commands, then `-c`'s and `--command`'s,
+attached or the next word, each a line of it, so a `cd` carries on), and
+each alone besides, as fish parses each on its own and the grammar reads a
+heredoc, a quote or a backtick across the joins of them, whatever the codes
+are; a line that gives fish more than 16 commands in all, nested ones too
+(each unit that gives it more than one), is unknown, since each is read
+twice. What follows the options is `$argv`, and with no `-c` fish goes on to
+run the script it is handed or to read its input, from where the `-C`
+commands leave it: a script named by a relative path is unknown, one from
+`/` or `~` is as it is. Its long
+options are read by any prefix of their name that no other starts with
+(`--co`), and a word only known when it runs among its options makes the
+line unknown. The program a `-c` string starts is its first word with the
+quotes off, after any assignments and `exec`, `command` and the like.
 
 **Where the script is.** Each interpreter's options are read with its own
 table of the options that take a value, so the word after one is its value

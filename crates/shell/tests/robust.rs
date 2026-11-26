@@ -977,3 +977,19 @@ fn locate_works_within_a_bound_of_the_text_it_reads() {
         .collect();
     assert!(over.is_empty(), "{}", over.join("\n"));
 }
+
+#[test]
+fn a_line_full_of_letters_a_shell_does_not_know_is_unknown_and_one_of_known_ones_is_read() {
+    // A letter the shell's table does not have is not guessed at: the line is
+    // unknown, however many there are. Letters it has are flags, read as
+    // such, however many.
+    let paths = posix();
+    let strange = format!("sh -c -{} 'rm -rf ~'", "Z".repeat(20_000));
+    let words = format!("sh -c {}'rm -rf ~'", "-Z ".repeat(5_000));
+    let known = format!("sh -c -{} 'rm -rf ~'", "E".repeat(20_000));
+    let named = format!("sh -c {}'rm -rf ~'", "-O x ".repeat(5_000));
+    for line in [&strange, &words, &named] {
+        check(Shell::Posix, &paths, &[], &[(line, Rule::Unknown)]);
+    }
+    check(Shell::Posix, &paths, &[], &[(&known, Rule::Delete)]);
+}

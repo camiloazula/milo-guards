@@ -1602,6 +1602,10 @@ pub(crate) struct Split {
     /// How many words and how many bytes of them the lists read as each
     /// element alone have made in the line.
     pub(crate) alone_words: usize,
+    /// How many commands fish has been given in all, by the units of the
+    /// line that give it more than one, nested ones too: each is read alone
+    /// and with the rest.
+    fish_codes: usize,
     /// How deep the line is inside `find … -exec find … -exec …`: each
     /// level is read once for every place the one outside it searches.
     pub(crate) find_depth: usize,
@@ -2001,6 +2005,13 @@ impl Split {
     pub(crate) fn fork(&mut self, most: usize) -> bool {
         self.forks += 1;
         self.forks <= most
+    }
+
+    /// Count `count` more commands given to a fish; `false` once `most` have
+    /// been, when the line is not read any further.
+    pub(crate) fn count_fish_codes(&mut self, count: usize, most: usize) -> bool {
+        self.fish_codes = self.fish_codes.saturating_add(count);
+        self.fish_codes <= most
     }
 
     /// The folder the `cd`s read so far moved the line to.

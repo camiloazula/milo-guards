@@ -9,10 +9,74 @@ use crate::unit::{Arg, Reads, Unit};
 use crate::Shell;
 
 /// The POSIX shells, which run a script with `-c` or read one from their
-/// input.
-pub(crate) const SHELLS: [&str; 11] = [
-    "sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "fish", "csh", "tcsh",
+/// input, and the shell each other name is read as: a version of one (`bash5`,
+/// `zsh-5.9`, `ksh93`) is that shell, and so are `rbash`, `lksh`, `oksh`,
+/// `pdksh` and `posh` of the one they are made of.
+const SHELLS: [(&str, &str); 17] = [
+    ("sh", "sh"),
+    ("bash", "bash"),
+    ("rbash", "bash"),
+    ("zsh", "zsh"),
+    ("dash", "dash"),
+    ("posh", "dash"),
+    ("ksh", "ksh"),
+    ("oksh", "ksh"),
+    ("pdksh", "ksh"),
+    ("mksh", "mksh"),
+    ("lksh", "mksh"),
+    ("ash", "ash"),
+    ("yash", "yash"),
+    ("hush", "hush"),
+    ("fish", "fish"),
+    ("csh", "csh"),
+    ("tcsh", "tcsh"),
 ];
+
+/// The shell `key` is read as, by its name or a version or a build of it:
+/// `None` for a program that is no shell (`bashtop`, `zshdb`, `fishnet`).
+pub(crate) fn shell_family(key: &str) -> Option<&'static str> {
+    SHELLS.iter().find_map(|(name, family)| {
+        let rest = key.strip_prefix(name)?;
+        named_build(rest).then_some(*family)
+    })
+}
+
+/// The words a build of a shell is named by after its name (`bash-static`).
+const BUILDS: [&str; 9] = [
+    "static", "release", "debug", "minimal", "portable", "dynamic", "musl", "glibc", "git",
+];
+
+/// Whether `rest`, what follows a shell's name, is nothing, or a version
+/// (`5`, `-5.2`, `93u+m`) and builds (`-static`, `-5.2-release`), and no
+/// other word.
+fn named_build(rest: &str) -> bool {
+    if rest.is_empty() {
+        return true;
+    }
+    let attached = !rest.starts_with('-');
+    let rest = rest.strip_prefix('-').unwrap_or(rest);
+    rest.split('-')
+        .enumerate()
+        .all(|(at, piece)| version(piece) || (!(attached && at == 0) && BUILDS.contains(&piece)))
+}
+
+/// Whether `piece` is a version: digits and dots, and at most three letters or
+/// a `+` after them (`93u+m`).
+fn version(piece: &str) -> bool {
+    let end = piece
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(piece.len());
+    let (number, tail) = piece.split_at(end);
+    number.starts_with(|c: char| c.is_ascii_digit())
+        && tail.len() <= 3
+        && tail.chars().all(|c| c.is_ascii_lowercase() || c == '+')
+        && tail.matches('+').count() <= 1
+}
+
+/// Whether `key` is a POSIX shell (see [`shell_family`]).
+pub(crate) fn is_shell(key: &str) -> bool {
+    shell_family(key).is_some()
+}
 
 /// Language interpreters that read code from their input when given no
 /// script: besides python (and the other names of a Python, by
@@ -131,33 +195,128 @@ fn py_lists(args: &[Arg]) -> bool {
 
 /// A POSIX shell: `-c` runs its first operand; a script file is its own
 /// business; `--version` and `--help` print; with none of them, it reads
-/// commands from its input.
-pub(super) fn shell(args: &[Arg]) -> Launch {
+/// commands from its input. A letter or a long option that the shell's table
+/// does not know, or that means one thing in one shell of that name and
+/// another in another (`sh -O`), is not guessed at: the line is unknown.
+pub(super) fn shell(key: &str, args: &[Arg]) -> Launch {
+    match shell_family(key) {
+        Some("fish") => fish(key, args).unwrap_or_else(|| generic(key, args)),
+        Some("csh" | "tcsh") => csh(key, args),
+        _ => generic(key, args),
+    }
+}
+
+/// How bash reads the word `text` that has one dash and the name of a long
+/// option (`-rcfile`): as the option, which it takes. `sh` may be bash, or
+/// read the same word as a cluster of flags.
+pub(crate) enum Dashed {
+    /// A cluster of flags, or no long option of the shell.
+    No,
+    /// The long option, spelled with two dashes.
+    Long(String),
+    /// Either of them: the line is unknown.
+    Either,
+}
+
+pub(crate) fn single_dash(key: &str, text: &str) -> Dashed {
+    let family = shell_family(key);
+    let named = text
+        .strip_prefix('-')
+        .filter(|name| !name.starts_with('-') && bash_long(name));
+    match (family, named) {
+        (Some("bash"), Some(_)) => Dashed::Long(format!("-{text}")),
+        (Some("sh"), Some(_)) => Dashed::Either,
+        _ => Dashed::No,
+    }
+}
+
+/// The words of `args` that the shell `key` reads as a long option spelled
+/// with one dash (`-rcfile`): those among the words that start its
+/// arguments while each is a long option; any other `-word` is a cluster of
+/// flags.
+pub(crate) fn dashed_options(key: &str, args: &[Arg]) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(text) = args.get(at).and_then(Arg::known) {
+        let long = if text.starts_with("--") {
+            text.to_string()
+        } else if let Dashed::Long(long) = single_dash(key, text) {
+            found.push(at);
+            long
+        } else {
+            break;
+        };
+        if text == "--" || !long_option(key, &long).known {
+            break;
+        }
+        at += 1 + usize::from(long_option(key, &long).skip);
+    }
+    found
+}
+
+fn generic(key: &str, args: &[Arg]) -> Launch {
+    generic_script(key, args, &mut None)
+}
+
+/// [`generic`], and the script it is given (the word after its options) in
+/// `script`.
+fn generic_script(key: &str, args: &[Arg], script: &mut Option<Arg>) -> Launch {
     let mut command = false;
     let mut stdin = false;
+    // Whether every word so far is a long option: bash reads one with a
+    // single dash only in the run of them that starts its arguments, and
+    // reads any other `-word` as a cluster of flags.
+    let mut leading = true;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else {
             return Launch::Script(Shell::Posix, arg.clone(), Source::arg(arg));
         };
+        let spelled;
+        let dashed = if leading {
+            single_dash(key, text)
+        } else {
+            Dashed::No
+        };
+        let text = match dashed {
+            Dashed::No => text,
+            Dashed::Long(long) => {
+                spelled = long;
+                &spelled
+            }
+            Dashed::Either => return Launch::Unread(arg.clone()),
+        };
+        leading &= text.starts_with("--");
         match text {
             "--" => break,
             // `bash --version` prints and runs nothing.
             "--version" | "--help" if !command && !stdin => return Launch::Itself,
-            "-o" | "+o" | "-O" | "+O" | "--rcfile" | "--init-file" => {
-                iter.next();
-            }
             "-" => {
                 stdin = true;
                 break;
             }
-            text if text.starts_with("--") => {}
+            text if text.starts_with("--") => {
+                let long = long_option(key, text);
+                if !long.known {
+                    return Launch::Unread(arg.clone());
+                }
+                if long.skip {
+                    iter.next();
+                }
+            }
             text if (text.starts_with('-') || text.starts_with('+')) && text.len() > 1 => {
+                let flags = cluster(key, text);
+                if flags.unknown {
+                    return Launch::Unread(arg.clone());
+                }
                 if text[1..].contains('c') {
                     command = true;
                 }
                 if text[1..].contains('s') {
                     stdin = true;
+                }
+                for _ in 0..flags.taken {
+                    iter.next();
                 }
             }
             _ => {
@@ -166,19 +325,534 @@ pub(super) fn shell(args: &[Arg]) -> Launch {
                 } else if stdin || is_stdin(text) {
                     Launch::Reads(Reads::Shell)
                 } else {
+                    *script = Some(arg.clone());
                     Launch::Itself
                 };
             }
         }
     }
     match (command, iter.next()) {
-        (true, Some(script)) => Launch::Script(Shell::Posix, script.clone(), Source::arg(script)),
+        (true, Some(operand)) => {
+            Launch::Script(Shell::Posix, operand.clone(), Source::arg(operand))
+        }
         (true, None) => Launch::Itself,
-        (false, Some(Arg::Known(script))) if !stdin && !is_stdin(script) => Launch::Itself,
-        (false, Some(script)) if !stdin && script.known().is_none() => {
-            Launch::Script(Shell::Posix, script.clone(), Source::arg(script))
+        (false, Some(operand @ Arg::Known(text))) if !stdin && !is_stdin(text) => {
+            *script = Some(operand.clone());
+            Launch::Itself
+        }
+        (false, Some(operand)) if !stdin && operand.known().is_none() => {
+            Launch::Script(Shell::Posix, operand.clone(), Source::arg(operand))
         }
         _ => Launch::Reads(Reads::Shell),
+    }
+}
+
+/// The line of csh or tcsh with a word it cannot read, after the commands
+/// already read, which are judged still.
+fn unknown_after(mut codes: Vec<Arg>, word: Arg) -> Launch {
+    if codes.is_empty() {
+        return Launch::Unread(word);
+    }
+    // A command only known when it runs makes the line unknown already.
+    if codes.iter().all(|code| code.known().is_some()) {
+        codes.push(Arg::Unknown(word.text().to_string()));
+    }
+    Launch::Commands {
+        shell: Shell::Posix,
+        commands: codes,
+        moves: false,
+    }
+}
+
+/// csh and tcsh: the word after `-c` is the command, whatever it is, and
+/// each later `-c` has one more; the other words after it are what the
+/// command is given, but for one that may split into several words. Without a command, the first word that is no option is
+/// the script, or the input when it names it (`/dev/stdin`), and the options
+/// end there, and at `--` and after `-b`. A word that starts like an option
+/// after `-c` is not guessed at.
+fn csh(key: &str, args: &[Arg]) -> Launch {
+    let mut codes: Vec<Arg> = Vec::new();
+    let mut command = false;
+    let mut operand = false;
+    let mut stdin = false;
+    let mut options = true;
+    // `--` has been read: the next word is the script, `-` its input.
+    let mut ended = false;
+    // A word only known when it runs after the command: an argument of it,
+    // unless a word follows it, which it may have made an option.
+    let mut pending: Option<Arg> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(word) = pending.take() {
+            return unknown_after(codes, word);
+        }
+        let Some(text) = arg.known() else {
+            if codes.is_empty() && !command {
+                return Launch::Script(Shell::Posix, arg.clone(), Source::arg(arg));
+            }
+            // One that may split into several words may hold a `-c` and its
+            // command, at the end of the line too.
+            if crate::unit::may_split(arg, Shell::Posix) {
+                return unknown_after(codes, arg.clone());
+            }
+            pending = Some(arg.clone());
+            continue;
+        };
+        if options && text == "--" {
+            options = false;
+            ended = true;
+            continue;
+        }
+        if !options || !text.starts_with('-') || text == "-" {
+            if text == "-" && (options || ended) {
+                stdin = true;
+                break;
+            }
+            if codes.is_empty() && !command {
+                return if stdin || is_stdin(text) {
+                    Launch::Reads(Reads::Shell)
+                } else {
+                    Launch::Itself
+                };
+            }
+            operand = true;
+            continue;
+        }
+        match text {
+            "--version" | "--help" if codes.is_empty() && !command && !stdin => {
+                return Launch::Itself;
+            }
+            text if text.starts_with("--") => {
+                if !long_option(key, text).known {
+                    return unknown_after(codes, arg.clone());
+                }
+            }
+            text => {
+                if cluster(key, text).unknown {
+                    return unknown_after(codes, arg.clone());
+                }
+                // `-s`, `-t` and `-i` read the commands from the input, and
+                // the words after them are only arguments.
+                if text[1..].contains(['s', 't', 'i']) {
+                    stdin = true;
+                }
+                // `-b` ends the options: what follows is the script.
+                if text[1..].contains('b') {
+                    options = false;
+                }
+                if text[1..].contains('c') {
+                    command = true;
+                    let Some(code) = iter.next() else {
+                        break;
+                    };
+                    if code
+                        .known()
+                        .is_some_and(|word| word.starts_with(['-', '+']))
+                    {
+                        return unknown_after(codes, code.clone());
+                    }
+                    codes.push(code.clone());
+                }
+            }
+        }
+    }
+    match codes.len() {
+        0 if command => Launch::Itself,
+        0 if stdin || !operand => Launch::Reads(Reads::Shell),
+        0 => Launch::Itself,
+        1 => {
+            let code = codes.remove(0);
+            let source = Source::arg(&code);
+            Launch::Script(Shell::Posix, code, source)
+        }
+        _ => Launch::Commands {
+            shell: Shell::Posix,
+            commands: codes,
+            moves: false,
+        },
+    }
+}
+
+/// What fish is given to run, in the order it runs it: the commands of
+/// `-C` (`--init-command`), then those of `-c` (`--command`), each by where
+/// it is (a long option by any prefix of its name that no other starts
+/// with, a value as the word after it or attached), and a word only known
+/// when it runs among the options, which may be one.
+pub(crate) struct FishCodes {
+    pub codes: Vec<(Arg, Source)>,
+    /// How many of them are `-c`'s: with none, fish goes on to run what it
+    /// is handed, or to read its input.
+    pub commands: usize,
+    pub unknown: Option<Arg>,
+}
+
+const FISH_LONG: [&str; 17] = [
+    "command",
+    "init-command",
+    "debug",
+    "debug-output",
+    "debug-stack-frames",
+    "features",
+    "help",
+    "interactive",
+    "login",
+    "no-config",
+    "no-execute",
+    "print-debug-categories",
+    "print-rusage-self",
+    "private",
+    "profile",
+    "profile-startup",
+    "version",
+];
+
+/// The long option of fish that `name` names: exactly, or by the one option
+/// it is a prefix of.
+fn fish_option(name: &str) -> Option<&'static str> {
+    if let Some(exact) = FISH_LONG.iter().find(|full| **full == name) {
+        return Some(exact);
+    }
+    let mut starts = FISH_LONG
+        .iter()
+        .filter(|full| !name.is_empty() && full.starts_with(name));
+    let first = starts.next()?;
+    starts.next().is_none().then_some(*first)
+}
+
+/// Whether the long option `option` of fish takes a value.
+fn fish_valued(option: &str) -> bool {
+    matches!(
+        option,
+        "command"
+            | "init-command"
+            | "debug"
+            | "debug-output"
+            | "debug-stack-frames"
+            | "features"
+            | "profile"
+            | "profile-startup"
+    )
+}
+
+pub(crate) fn fish_codes(args: &[Arg]) -> FishCodes {
+    let mut init = Vec::new();
+    let mut commands = Vec::new();
+    let mut unknown = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else {
+            unknown.get_or_insert_with(|| arg.clone());
+            continue;
+        };
+        if text == "--" || text == "-" {
+            break;
+        }
+        if let Some(long) = text.strip_prefix("--") {
+            let (name, value) = long
+                .split_once('=')
+                .map_or((long, None), |(name, value)| (name, Some(value)));
+            let Some(option) = fish_option(name) else {
+                unknown.get_or_insert_with(|| arg.clone());
+                continue;
+            };
+            if !fish_valued(option) {
+                continue;
+            }
+            let found = match value {
+                Some(value) => Some((Arg::Known(value.to_string()), Source::part(arg, value))),
+                None => iter.next().map(|code| (code.clone(), Source::arg(code))),
+            };
+            match (option, found) {
+                ("command", Some(code)) => commands.push(code),
+                ("init-command", Some(code)) => init.push(code),
+                _ => {}
+            }
+            continue;
+        }
+        if text.len() > 1 && text.starts_with('-') {
+            let letters = &text[1..];
+            for (at, letter) in letters.char_indices() {
+                let rest = &letters[at + letter.len_utf8()..];
+                if "cCdDfop".contains(letter) {
+                    let found = if rest.is_empty() {
+                        iter.next().map(|code| (code.clone(), Source::arg(code)))
+                    } else {
+                        Some((Arg::Known(rest.to_string()), Source::part(arg, rest)))
+                    };
+                    match (letter, found) {
+                        ('c', Some(code)) => commands.push(code),
+                        ('C', Some(code)) => init.push(code),
+                        _ => {}
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        break;
+    }
+    let count = commands.len();
+    init.extend(commands);
+    FishCodes {
+        codes: init,
+        commands: count,
+        unknown,
+    }
+}
+
+/// What fish does with what it is given to run: all of it is one script, as
+/// fish reads every command in one parser, so a `cd` or a `set` carries to
+/// the next, and each is read on its own besides, as fish parses each alone,
+/// so that no construct that the shell grammar reads across the joins of
+/// them (a heredoc, a quote, a backtick, a backslash) hides the next: a line
+/// with many (see `MAX_FISH_CODES`) is not read. A command only known when
+/// it runs is another, and a word only known when it runs among the options
+/// makes the line unknown. With no `-c`, fish runs what it is handed
+/// besides, or reads its input, which is unknown for a script named by a
+/// relative path, since the `-C` commands may have changed the folder.
+/// `None` when it is given no command.
+fn fish(key: &str, args: &[Arg]) -> Option<Launch> {
+    let FishCodes {
+        codes,
+        commands: given,
+        unknown,
+    } = fish_codes(args);
+    if codes.is_empty() {
+        return unknown.map(Launch::Unread);
+    }
+    let launch = if codes.len() == 1 && unknown.is_none() {
+        let (code, source) = codes.into_iter().next()?;
+        Launch::Script(Shell::Posix, code, source)
+    } else {
+        let known: Vec<&str> = codes.iter().filter_map(|(code, _)| code.known()).collect();
+        let mut commands: Vec<Arg> = Vec::new();
+        if known.len() > 1 {
+            commands.push(Arg::Known(known.join("\n")));
+        }
+        commands.extend(codes.iter().map(|(code, _)| code.clone()));
+        commands.extend(unknown.map(|word| Arg::Unknown(word.text().to_string())));
+        Launch::Commands {
+            shell: Shell::Posix,
+            commands,
+            moves: false,
+        }
+    };
+    if given > 0 {
+        return Some(launch);
+    }
+    let mut script = None;
+    let mut then = generic_script(key, args, &mut script);
+    if let (Some(script), Launch::Itself) = (script, &then) {
+        if !script
+            .known()
+            .is_some_and(|text| text.starts_with(['/', '~']))
+        {
+            then = Launch::Unread(script);
+        }
+    }
+    Some(Launch::Either(Box::new(launch), Box::new(then)))
+}
+
+/// How a shell takes the rest of a word that has a letter taking a value.
+#[derive(Clone, Copy, PartialEq)]
+enum Rest {
+    /// It takes the next word wherever the letter stands (`-oe NAME`), as
+    /// bash does, and the letters after it are flags.
+    NextWord,
+    /// It takes the rest of the word when there is any (`-ofoo`), as `getopt`
+    /// does, and the next word otherwise.
+    IsValue,
+    /// It is either, in the shells that go by the name: the line is unknown.
+    Either,
+}
+
+/// What a shell's table says of the letters it has.
+struct Letters {
+    /// Every letter the shell has an option for that is a flag; `None` where
+    /// the table is not worth keeping (zsh has one for nearly every letter).
+    known: Option<&'static str>,
+    /// The letters that take a value.
+    valued: &'static str,
+    /// The letters that mean one thing in one shell of the name and another
+    /// in another.
+    ambiguous: &'static str,
+    /// Where a valued letter that has more letters after it takes its value.
+    rest: Rest,
+}
+
+fn letters(key: &str) -> Letters {
+    match shell_family(key).unwrap_or(key) {
+        "bash" => Letters {
+            known: Some("abcefhiklmnprstuvxBCDEHIPT"),
+            valued: "oO",
+            ambiguous: "",
+            rest: Rest::NextWord,
+        },
+        // `sh` may be bash, dash, zsh or any other: `O` takes a name in
+        // bash and is a flag in zsh, `o` takes the rest of its word or the
+        // next, and `T` takes a value in mksh.
+        "sh" => Letters {
+            known: Some("abcefhiklmnprstuvxBCEHP"),
+            valued: "o",
+            ambiguous: "OT",
+            rest: Rest::Either,
+        },
+        "dash" => Letters {
+            known: Some("abcefhiklmnpqstuvxBCEHIPTV"),
+            valued: "o",
+            ambiguous: "",
+            rest: Rest::NextWord,
+        },
+        "ash" => Letters {
+            known: Some("abcefhiklmnprstuvxBCEHIPT"),
+            valued: "o",
+            ambiguous: "",
+            rest: Rest::NextWord,
+        },
+        "ksh" => Letters {
+            known: Some("abcefhiklmnprstuvxBCEHIP"),
+            valued: "o",
+            ambiguous: "T",
+            rest: Rest::Either,
+        },
+        "yash" => Letters {
+            known: Some("abcefhiklmnprstuvxBCEHIPT"),
+            valued: "o",
+            ambiguous: "",
+            rest: Rest::Either,
+        },
+        "mksh" => Letters {
+            known: Some("abcefhiklmnprstuvxBCEHIP"),
+            valued: "oT",
+            ambiguous: "",
+            rest: Rest::IsValue,
+        },
+        "zsh" => Letters {
+            known: None,
+            valued: "o",
+            ambiguous: "",
+            rest: Rest::IsValue,
+        },
+        // `-c`'s value is its command (see [`fish_codes`]); `-C`, `-d`, `-D`,
+        // `-f`, `-o` and `-p` take a value.
+        "fish" => Letters {
+            known: Some("chilnNPv"),
+            valued: "CdDfop",
+            ambiguous: "",
+            rest: Rest::IsValue,
+        },
+        // hush: the table of busybox's is not kept, and `-o` is not read.
+        "hush" => Letters {
+            known: Some("cefilnsx"),
+            valued: "",
+            ambiguous: "o",
+            rest: Rest::NextWord,
+        },
+        // csh and tcsh: `-D` of tcsh is `-Dname=value`.
+        _ => Letters {
+            known: Some("bcefFilmnqstvVxX"),
+            valued: "D",
+            ambiguous: "",
+            rest: Rest::IsValue,
+        },
+    }
+}
+
+/// What the shell `key` makes of a cluster of flags (`-euo`, `+o`).
+pub(crate) struct Cluster {
+    /// How many words after it the cluster takes as values: each `o` of
+    /// bash and the shells that read options as it does takes one wherever
+    /// it stands (`-oe NAME`), and so does bash's `O`, `shopt`'s name;
+    /// zsh, mksh and fish for their own letters take the rest of the word
+    /// when it has any (`-ofoo`, `-d3`), as `getopt` does.
+    pub taken: usize,
+    /// Whether a letter is one the table does not have, an ambiguous one,
+    /// or a valued one that has letters after it in a shell where it may take
+    /// either.
+    pub unknown: bool,
+}
+
+pub(crate) fn cluster(key: &str, text: &str) -> Cluster {
+    let table = letters(key);
+    let flags = text.get(1..).unwrap_or_default();
+    let mut found = Cluster {
+        taken: 0,
+        unknown: false,
+    };
+    for (at, letter) in flags.char_indices() {
+        let rest = &flags[at + letter.len_utf8()..];
+        if !letter.is_ascii_alphabetic() {
+            continue;
+        }
+        if table.ambiguous.contains(letter) {
+            found.unknown = true;
+        } else if table.valued.contains(letter) {
+            if !rest.is_empty() {
+                match table.rest {
+                    Rest::IsValue => break,
+                    Rest::Either => {
+                        found.unknown = true;
+                        break;
+                    }
+                    Rest::NextWord => {}
+                }
+            }
+            found.taken += 1;
+        } else if table.known.is_some_and(|known| !known.contains(letter)) {
+            found.unknown = true;
+        }
+    }
+    found
+}
+
+/// What a shell makes of a long option.
+pub(crate) struct Long {
+    /// The table has it.
+    pub known: bool,
+    /// It takes the next word.
+    pub skip: bool,
+}
+
+/// The long options of bash.
+fn bash_long(name: &str) -> bool {
+    matches!(
+        name,
+        "debugger"
+            | "dump-po-strings"
+            | "dump-strings"
+            | "help"
+            | "init-file"
+            | "login"
+            | "noediting"
+            | "noprofile"
+            | "norc"
+            | "posix"
+            | "pretty-print"
+            | "rcfile"
+            | "restricted"
+            | "verbose"
+            | "version"
+            | "rpm-requires"
+    )
+}
+
+pub(crate) fn long_option(key: &str, text: &str) -> Long {
+    let name = text.trim_start_matches('-');
+    let (name, value) = name
+        .split_once('=')
+        .map_or((name, None), |(name, value)| (name, Some(value)));
+    let (known, valued) = match shell_family(key).unwrap_or(key) {
+        "bash" | "sh" => (bash_long(name), matches!(name, "rcfile" | "init-file")),
+        "zsh" => (true, name == "emulate"),
+        "fish" => {
+            let option = fish_option(name);
+            (option.is_some(), option.is_some_and(fish_valued))
+        }
+        _ => (matches!(name, "help" | "version"), false),
+    };
+    Long {
+        known,
+        skip: valued && value.is_none(),
     }
 }
 

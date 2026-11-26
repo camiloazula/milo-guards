@@ -56,6 +56,34 @@ security fixes: each line below was judged safer than what it does.
   `%…%` in the value that holds a quote, a caret or an operator makes the
   line unknown, and what follows the first operator outside it is still
   read.
+- `milo-guards-shell`: "runs a script outside the workspace" is said only
+  of a script a shell or an interpreter runs from a file, and of a program
+  a shell's command string starts by a path. A shell given a command or its
+  input runs no file, a script read from the input is the input's, which
+  its own rules judge, and each flag of a shell that takes an option's name
+  takes the next word, wherever it stands in a cluster, as the shell reads
+  its options (a flag in one shell takes a name in another, and fish's
+  options that take a value, long ones included, are its own). A letter or a
+  long option the shell's table does not have, or that means one thing in one
+  shell of the name and another in another (an option's name attached to
+  `-o` in `sh`, `ksh` and `yash`, `-T` in `sh` and `ksh`), is not guessed at:
+  the line is unknown. A shell under another name (`bash5`, `zsh-5.9`,
+  `ksh93`, `rbash`, `lksh`, `oksh`, `pdksh`, `posh`, `hush`) has the table of
+  the shell it is (a build too, `bash-static`, `ksh93u+m`, and no program
+  that only starts with its name), bash takes the value of `-rcfile` and
+  `-init-file` with one dash, in the run of long options that starts its
+  arguments and nowhere else, and csh and tcsh take the word after `-c` and
+  each later `-c` as commands, and the script they are given, or the input
+  when it names it (`-s`, `-t` and `-i` read it, and the words after them
+  are arguments, but for one that may split into several words, which may
+  hold a `-c`; the commands read before such a word are judged still). fish
+  reads everything it is given to run as one script, so
+  a change of folder carries on, and each command alone besides, so that a
+  heredoc, a quote or a backtick does not take the next with it; a line that
+  gives fish more than 16 commands in all, nested ones too, is unknown. Given
+  only `-C`, it goes on to run the script it is handed, unknown when it is
+  named by a relative path, or to read its input. A word only known when it
+  runs among its options makes the line unknown.
 
 ## 0.2.1 (2026-11-28)
 

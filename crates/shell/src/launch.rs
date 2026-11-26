@@ -35,8 +35,10 @@ pub(crate) use find::{
 };
 pub(crate) use git::{global as git_global, is_long as git_long, is_submodule, Global, Unread};
 pub(crate) use interpreters::{
-    after_run, code_options, is_interpreter, is_ipython, is_node, is_python, is_ts_node, options,
-    own_args, perl_edits, py_picks_three, valued_options, Options, BUN_VALUES, DENO_VALUES, SHELLS,
+    after_run, cluster, code_options, dashed_options, fish_codes, is_interpreter, is_ipython,
+    is_node, is_python, is_shell, is_ts_node, long_option, options, own_args, perl_edits,
+    py_picks_three, shell_family, single_dash, valued_options, Dashed, FishCodes, Options,
+    BUN_VALUES, DENO_VALUES,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
 pub(crate) use named::{command_variable, is_command_variable};
@@ -54,6 +56,10 @@ const MAX_WRAPPERS: usize = 16;
 /// [`Launch::Either`]): each fork is one more reading to judge, so this
 /// bounds the work whatever the line does. A plain line has none or a few.
 const MAX_FORKS: usize = 32;
+
+/// The most commands a line may give fish in all, nested ones too, when each
+/// unit gives it more than one: each is read alone and with the others.
+const MAX_FISH_CODES: usize = 16;
 
 /// What a program does with the rest of its arguments.
 #[derive(Clone, PartialEq)]
@@ -372,6 +378,18 @@ fn add_launched(
         // A command the line names for the program in a variable it sets or
         // an option (`GIT_SSH_COMMAND='…' git fetch`) runs besides, once for
         // the unit however many ways it reads.
+        if given.is_none() && shell_family(&key) == Some("fish") {
+            let codes = fish_codes(&unit.args).codes.len();
+            if codes > 1 && !split.count_fish_codes(codes, MAX_FISH_CODES) {
+                split.problem(
+                    Rule::Unknown,
+                    "gives fish more commands than are read",
+                    Some(unit.program.text()),
+                );
+                split.push(unit);
+                return;
+            }
+        }
         let launched = if let Some(launched) = given.take() {
             launched
         } else {
@@ -718,15 +736,14 @@ fn add_script(
 ) {
     // A shell started with the option on (`bash -O dotglob -c`,
     // `zsh -o globdots -c`) runs its script with it on.
-    let starts_hidden =
-        SHELLS.contains(&key) && shell == Shell::Posix && dotglob::starts_with(&unit.args);
+    let starts_hidden = is_shell(key) && shell == Shell::Posix && dotglob::starts_with(&unit.args);
     // And `zsh -o extendedglob -c` with zsh's extended patterns.
-    let starts_extended = SHELLS.contains(&key)
+    let starts_extended = is_shell(key)
         && shell == Shell::Posix
         && extended::starts_with(extended::EXTENDED_GLOB, &unit.args);
     // And `zsh -o autocd -c` with a command of one word run as a
     // `cd` to it.
-    let starts_autocd = SHELLS.contains(&key)
+    let starts_autocd = is_shell(key)
         && shell == Shell::Posix
         && extended::starts_with(extended::AUTO_CD, &unit.args);
     let stage = unit.stage;
@@ -1868,7 +1885,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         "deno" => deno(unit, input),
         // In every shell: a cmd line starts bash and its kin as the others
         // do (`bash -c "rm -rf /"`).
-        key if SHELLS.contains(&key) => shell(args),
+        key if is_shell(key) => shell(key, args),
         // Also under cmd and PowerShell: the code they are given is not
         // read there, which comes back as `unknown`. A line with nothing to
         // run (`python --version`, a bare `python`) reads its input only

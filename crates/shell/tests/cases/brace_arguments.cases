@@ -154,7 +154,7 @@ posix finds=git_remote | git 2>/dev/null {push,--force}
 # A form zsh or ksh reads as words, and the guard does not model, is a word
 # only known when it runs.
 posix finds=unknown | bash {1..3%d}
-posix finds=delete | bash -{c-d} 'rm -rf ~'
+posix finds=unknown | bash -{c-d} 'rm -rf ~'
 
 # A command that changes how the shell reads the rest of the line (an option,
 # a variable, a name, the folder) is read as written, and a brace list in it is

@@ -4,7 +4,7 @@
 //! stands (`{}`, `{.}`, `{1}`) or after the words when none does. `sem`
 //! (`parallel --semaphore`) runs its command once, with no value.
 
-use super::interpreters::{interpreter, is_interpreter, shell, SHELLS};
+use super::interpreters::{interpreter, is_interpreter, is_shell, shell};
 use super::{join, shell_word, Launch};
 use crate::located::Source;
 use crate::unit::{self, Arg, Reads, MAX_LEN};
@@ -399,7 +399,7 @@ fn job_reads(command: &[Arg], options: &Options, sources: &[Vec<Value>]) -> Opti
 /// known when it runs.
 fn reads_input(name: &str, args: &[Option<&str>]) -> Option<Reads> {
     let key = unit::key(name, Shell::Posix);
-    let shell_reads = SHELLS.contains(&key.as_str());
+    let shell_reads = is_shell(&key);
     if !shell_reads && matches!(key.as_str(), "pwsh" | "powershell") {
         return Some(Reads::Shell);
     }
@@ -417,11 +417,11 @@ fn reads_input(name: &str, args: &[Option<&str>]) -> Option<Reads> {
             .map(|word| word.map_or_else(|| any.clone(), |text| Arg::Known(text.to_string())))
             .collect();
         let launch = if shell_reads {
-            shell(&args)
+            shell(&key, &args)
         } else {
             interpreter(&key, &args, true, true)
         };
-        matches!(launch, Launch::Reads(_) | Launch::Unread(_))
+        reads(&launch)
     });
     let kind = if shell_reads {
         Reads::Shell
@@ -429,6 +429,17 @@ fn reads_input(name: &str, args: &[Option<&str>]) -> Option<Reads> {
         Reads::Interpreter
     };
     reads.then_some(kind)
+}
+
+/// Whether `launch` reads its input, in any reading of it that has two (fish
+/// given only `-C` runs those and then reads what it is given).
+fn reads(launch: &Launch) -> bool {
+    match launch {
+        Launch::Reads(_) | Launch::Unread(_) => true,
+        Launch::Either(first, second) => reads(first) || reads(second),
+        Launch::In(_, _, inner) => reads(inner),
+        _ => false,
+    }
 }
 
 /// The launch of `command` run with the values of `sources`, as [`read`]

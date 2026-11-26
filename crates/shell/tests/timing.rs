@@ -589,6 +589,164 @@ fn find_expressions_are_read_in_linear_time() {
     }
 }
 
+/// Distinct words, each `/a` and a number, of at most `size` bytes in all.
+fn distinct_words(size: usize) -> String {
+    let mut words = String::new();
+    let mut at = 0;
+    loop {
+        let word = format!(" /a{at}");
+        if words.len() + word.len() > size {
+            return words;
+        }
+        words.push_str(&word);
+        at += 1;
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn a_shell_given_many_flags_and_words_is_read_in_linear_time() {
+    let _serial = serial();
+    // A cluster of letters, known or not, a run of options and many distinct
+    // words after them: each is read once, whatever the shell's table says.
+    let paths = posix();
+    let shapes: [(&str, Grown); 9] = [
+        (
+            "sh -c -EEE… x",
+            Box::new(|size| format!("sh -c -{} x", "E".repeat(size.saturating_sub(9)))),
+        ),
+        (
+            "sh -c -ZZZ… x",
+            Box::new(|size| format!("sh -c -{} x", "Z".repeat(size.saturating_sub(9)))),
+        ),
+        (
+            "sh -c -E /a0 /a1 …",
+            Box::new(|size| format!("sh -c -E{}", distinct_words(size.saturating_sub(8)))),
+        ),
+        (
+            "sh -c -Z /a0 /a1 …",
+            Box::new(|size| format!("sh -c -Z{}", distinct_words(size.saturating_sub(8)))),
+        ),
+        (
+            "sh -c -E -E -E … x",
+            Box::new(|size| format!("sh -c {}x", "-E ".repeat(size.saturating_sub(8) / 3))),
+        ),
+        (
+            "fish -c a -c a … x",
+            Box::new(|size| format!("fish {}x", "-c a ".repeat(size.saturating_sub(7) / 5))),
+        ),
+        (
+            "fish -C a -C a … x",
+            Box::new(|size| format!("fish {}x", "-C a ".repeat(size.saturating_sub(7) / 5))),
+        ),
+        (
+            "tcsh -c a -c a … x",
+            Box::new(|size| format!("tcsh {}x", "-c a ".repeat(size.saturating_sub(7) / 5))),
+        ),
+        (
+            "bash -rcfile a -rcfile a … x",
+            Box::new(|size| format!("bash {}x", "-rcfile a ".repeat(size.saturating_sub(7) / 10))),
+        ),
+    ];
+    for (what, line) in &shapes {
+        assert_linear(what, Shell::Posix, &paths, line);
+    }
+}
+
+/// `word` in double quotes, so that a shell given it reads it back.
+fn double_quoted(word: &str) -> String {
+    let mut quoted = String::from("\"");
+    for c in word.chars() {
+        if matches!(c, '\\' | '"' | '$' | '`') {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// `program` given `fan` codes (`-c`), each a `program` given `fan` codes,
+/// to `depth` levels, in the quotes of each level.
+fn nested_codes(program: &str, fan: usize, depth: usize) -> String {
+    let mut code = "true".to_string();
+    for _ in 0..depth {
+        let mut line = program.to_string();
+        for _ in 0..fan {
+            line.push_str(" -c ");
+            line.push_str(&double_quoted(&code));
+        }
+        code = line;
+    }
+    code
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn codes_of_a_shell_nested_in_codes_cost_no_more_than_tcsh_reads() {
+    let _serial = serial();
+    // tcsh reads each code once; fish reads them as one script and each on
+    // its own besides, which nested costs twice as much at each level, so a
+    // line that gives fish more than 16 commands in all, nested ones too, is
+    // not read (`MAX_FISH_CODES`). A 46 KB line of three levels of fourteen
+    // took five times as long as tcsh's, and four levels of six, seven.
+    let paths = posix();
+    for (fan, depth) in [(14, 3), (6, 4), (2, 3), (4, 2)] {
+        let (fish, tcsh) = (
+            nested_codes("fish", fan, depth),
+            nested_codes("tcsh", fan, depth),
+        );
+        assert!(fish.len() <= 64 * 1024, "{fan} codes, {depth} levels");
+        let (fish, tcsh) = (
+            took(&fish, Shell::Posix, &paths),
+            took(&tcsh, Shell::Posix, &paths),
+        );
+        assert!(
+            fish <= tcsh * 2 + Duration::from_millis(5),
+            "{fan} codes in {depth} levels: fish {fish:?}, tcsh {tcsh:?}"
+        );
+    }
+    // One `-C` code that fills the line is read once, as a `-c` one is: it
+    // was read three times, joined, alone and as a command the line names.
+    let big = format!("'echo {}'", "a; ".repeat(60_000 / 3));
+    let (init, command) = (
+        took(&format!("fish -C {big}"), Shell::Posix, &paths),
+        took(&format!("fish -c {big}"), Shell::Posix, &paths),
+    );
+    assert!(
+        init <= command * 3 / 2 + Duration::from_millis(5),
+        "fish -C {init:?}, fish -c {command:?}"
+    );
+    // At the cap: sixteen codes that fill the line are read once alone and
+    // once joined, two readings of the line, and one more is not read.
+    let code = |size: usize| format!("echo {}", "a; ".repeat(size / 3));
+    for (codes, most) in [(16, 3), (17, 1)] {
+        let line = |program: &str| {
+            let mut line = program.to_string();
+            for _ in 0..codes {
+                let _ = write!(line, " -c '{}'", code(3_700));
+            }
+            line
+        };
+        let (fish, tcsh) = (line("fish"), line("tcsh"));
+        assert!(fish.len() <= 64 * 1024, "{codes} codes");
+        let (fish, tcsh) = (
+            took(&fish, Shell::Posix, &paths),
+            took(&tcsh, Shell::Posix, &paths),
+        );
+        assert!(
+            fish <= tcsh * most + Duration::from_millis(5),
+            "{codes} codes: fish {fish:?}, tcsh {tcsh:?}"
+        );
+    }
+}
+
 #[test]
 #[cfg_attr(
     any(coverage, debug_assertions),
