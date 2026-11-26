@@ -3924,7 +3924,16 @@ plain name there is looked up in full. Without a link named, every line is
 judged as it was. The cases are in `tests/cases/resolved_links.cases`.
 
 - `~` is the home directory. `~user` is another user's, which the spelling
-  does not say, so it is unknown.
+  does not say, so it is unknown. `~+` is `$PWD`, and read as `$PWD` is: the
+  working directory (`cat ~+/../../.ssh/id_rsa` reads the home directory's
+  key), or a folder only known when it runs after a `cd` the guard cannot
+  follow.
+- A `~` the shell leaves as it is, quoted or escaped (`cat "~/../.env"`,
+  `\~/x`, `'~'/x`, `$'~'/x`), hands the program a name in the working
+  directory (`./~/../.env`, the workspace's `.env`); a program that expands
+  `~` itself reads the home directory. Each is judged, in an argument and in
+  a redirect, and so is a path the inline code opens with a `~`, which Python
+  and JavaScript do not expand either.
 - `$HOME`, `%USERPROFILE%` and `$env:TEMP` are the places they name.
 - A PowerShell word that is a variable and a path (`$HOME\.agent\config.yaml`,
   `$env:USERPROFILE/x`, `${HOME}\x`) is an expandable string. The grammar
@@ -4165,6 +4174,8 @@ judged as it was. The cases are in `tests/cases/resolved_links.cases`.
   PowerShell, on the drive the working directory is on, it is relative to it;
   on any other drive it is outside the workspace. After a `cd` it is unknown,
   except that after `cd C:` a relative path is `C:x`, a path on that drive.
+  The working directory's drive is read through a long path's prefix, as core
+  reads it: from `\\?\C:\Users\me\repo` (or `//?/C:/…`) the line is on `C:`.
   cmd keeps a working directory for every drive and the line never shows where
   each one is, so in cmd three rules hold:
   - `cd` and `chdir` without `/d` to a path on another drive set that drive's
@@ -5001,7 +5012,8 @@ by its own name (`keys/signing.pem`), with `.` and `..` applied first
 only known when it runs). A name that does not spell a named path's own last
 name (`signing.pem` alone) is not counted, since the folder could be any. What
 is left: core's own keys after such a `cd` are still looked for only by a
-plain name in the home directory (`cd "$x" && cat .ssh/id_rsa`), so `cd "$x"
+plain name in the home directory (`cd "$x" && cat .ssh/id_rsa`, and in cmd
+the same, `%USERPROFILE%` being cmd's home), so `cd "$x"
 && cat src/../.ssh/id_rsa` and a short name (`cd $root; Get-Content
 SSH~1\id_rsa`) are not read for them, as on `main`.
 
@@ -7446,7 +7458,8 @@ the workspace, and `effect_paths` lists it like any other.
 - **`Beyond` lines are listed too**, with every read, not only the one that
   made it `Beyond`.
 - **Over-listing** is on the safe side: `cat '~/x'` lists the home folder's `x`
-  (the guard reads the quoted `~` as home), `cat 0< x` lists a path `0`, and a
+  and the working directory's `~/x` (the guard reads the quoted `~` both
+  ways), `cat 0< x` lists a path `0`, and a
   git revision is listed as a path (`HEAD~1`).
 
 `effect` costs what it did: the paths are collected only when `effect_paths`

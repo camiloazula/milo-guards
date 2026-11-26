@@ -321,6 +321,10 @@ posix effect=reads_beyond | diff a.txt ../b.txt
 posix effect=reads_beyond | cat /proc/self/cwd/../x
 posix effect=reads_beyond | cat $PWD/../x
 posix effect=reads_beyond | cat "$PWD/../x"
+# `~+` is `$PWD`.
+posix effect=reads_workspace | cat ~+/x
+posix effect=reads_workspace | cd ~+; ls
+posix effect=reads_beyond | cat ~+/../x
 posix effect=reads_beyond | ls -d ..
 # `.*` picks `..` too.
 posix effect=reads_beyond | cat .*/x
@@ -540,12 +544,12 @@ posix effect=unknown | cd "$d"; cat x
 posix effect=unknown | rg x "$d"
 posix effect=unknown | cd -
 posix effect=unknown | cd $OLDPWD; ls
-posix effect=unknown | cd ~+; ls
+posix effect=unknown | cd "$d"; cd ~+; ls
 posix effect=unknown | CDPATH=/ cd etc; ls
 posix effect=unknown | f() { cd ~; }; f; ls
 posix effect=unknown | pushd /tmp; pushd ~; popd; ls
 posix effect=unknown | popd; ls
-posix effect=unknown | cat ~+/x
+posix effect=unknown | cd "$d"; cat ~+/x
 posix effect=unknown | cat ~-/x
 posix effect=unknown | tree
 posix effect=unknown | git --git-dir=../.git log
@@ -1483,7 +1487,7 @@ posix@agent effect=reads_beyond | printf '%s\\n' ~/*
 posix@agent effect=reads_beyond | ls ~/.ssh/*
 posix@agent effect=unknown | cd -
 posix@agent effect=unknown | cd $OLDPWD; ls
-posix@agent effect=unknown | cd ~+; ls
+posix@agent effect=unknown | cd "$d"; cd ~+; ls
 posix@agent effect=unknown | CDPATH=/ cd etc; ls
 posix@agent effect=unknown | f() { cd ~; }; f; ls
 posix@agent effect=unknown | pushd /tmp; pushd ~; popd; ls
@@ -1492,7 +1496,7 @@ posix@agent effect=unknown | tree
 posix@agent effect=unknown | git --git-dir=../.git log
 posix@agent effect=unknown | GIT_DIR=../.git git log
 posix@agent effect=unknown | git grep x
-posix@agent effect=unknown | cat ~+/x
+posix@agent effect=unknown | cd "$d"; cat ~+/x
 posix@agent effect=unknown | cat ~-/x
 posix@agent effect=unknown | env -C ~ ls
 
@@ -1754,7 +1758,7 @@ posix@home_workspace effect=reads_workspace | git -C /home/me/work/repo -C .. st
 posix@home_workspace effect=reads_workspace | cat .agent
 posix@home_workspace effect=unknown | cd -
 posix@home_workspace effect=unknown | cd $OLDPWD; ls
-posix@home_workspace effect=unknown | cd ~+; ls
+posix@home_workspace effect=unknown | cd "$d"; cd ~+; ls
 posix@home_workspace effect=unknown | CDPATH=/ cd etc; ls
 posix@home_workspace effect=unknown | f() { cd ~; }; f; ls
 posix@home_workspace effect=unknown | pushd /tmp; pushd ~; popd; ls
@@ -1763,7 +1767,7 @@ posix@home_workspace effect=unknown | tree
 posix@home_workspace effect=unknown | git --git-dir=../.git log
 posix@home_workspace effect=unknown | GIT_DIR=../.git git log
 posix@home_workspace effect=unknown | git grep x
-posix@home_workspace effect=unknown | cat ~+/x
+posix@home_workspace effect=unknown | cd "$d"; cat ~+/x
 posix@home_workspace effect=unknown | cat ~-/x
 posix@home_workspace effect=unknown | env -C ~ ls
 
@@ -1985,7 +1989,7 @@ posix@config effect=unknown | grep $flags x
 posix@config effect=unknown | rg $flags x
 posix@config effect=unknown | cd -
 posix@config effect=unknown | cd $OLDPWD; ls
-posix@config effect=unknown | cd ~+; ls
+posix@config effect=unknown | cd "$d"; cd ~+; ls
 posix@config effect=unknown | CDPATH=/ cd etc; ls
 posix@config effect=unknown | f() { cd ~; }; f; ls
 posix@config effect=unknown | pushd /tmp; pushd ~; popd; ls
@@ -1994,7 +1998,7 @@ posix@config effect=unknown | tree
 posix@config effect=unknown | git --git-dir=../.git log
 posix@config effect=unknown | GIT_DIR=../.git git log
 posix@config effect=unknown | git grep x
-posix@config effect=unknown | cat ~+/x
+posix@config effect=unknown | cd "$d"; cat ~+/x
 posix@config effect=unknown | cat ~-/x
 posix@config effect=unknown | env -C ~ ls
 

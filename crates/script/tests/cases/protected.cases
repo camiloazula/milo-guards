@@ -34,6 +34,13 @@ python@env finds=overwrite reason="writes to the project's environment file" | o
 python@env finds=delete reason="deletes the project's environment file" | import os\nos.remove('.env')
 javascript@env finds=read_secret reason="reads the project's environment file" | require('fs').readFileSync('.env', 'utf8')
 javascript@env finds=read_secret reason="reads your password vault" | require('fs').readFileSync('/home/me/.vault/x')
+# Python and JavaScript expand no `~`: `open('~/../.env')` opens the
+# workspace's `.env` through a folder named `~`, and the same text from
+# `os.path.expanduser` is the home directory's. Each is judged.
+python@env finds=read_secret reason="reads the project's environment file" | print(open('~/../.env').read())
+javascript@env finds=read_secret | require('fs').readFileSync('~/../.env')
+python@env safe | print(open('~/src/x').read())
+python safe | print(open('~/../.env').read())
 # Without the secret named, a project's `.env` is the workspace's own.
 python rules=unknown | import os\nprint(open('.env').read(), os.getcwd())
 python safe | print(open('.env').read())

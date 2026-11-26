@@ -151,7 +151,7 @@ pub(crate) struct Made {
     pub(crate) registry: bool,
 }
 
-/// The drive letter a working directory is on (`C` for `C:\Users\me`).
+/// The drive letter a path starts with (`C` for `C:\Users\me`).
 pub(crate) fn drive_of(dir: &str) -> Option<char> {
     let mut chars = dir.chars();
     let letter = chars.next().filter(char::is_ascii_alphabetic)?;
@@ -166,6 +166,13 @@ enum Linked {
     None,
     Named,
     Wild,
+}
+
+/// The drive letter one of the caller's directories is on, read through a
+/// long path's prefix as core reads it (`C` for `\\?\C:\Users\me` and
+/// `//?/C:/Users/me`).
+pub(crate) fn directory_drive(dir: &str) -> Option<char> {
+    drive_of(milo_guards_core::spelling::verbatim(dir).unwrap_or(dir))
 }
 
 /// Judges path arguments against the caller's directories.
@@ -257,7 +264,7 @@ impl Resolver {
                 Linked::Named
             },
             core,
-            cwd_drive: drive_of(&paths.cwd.to_string_lossy()),
+            cwd_drive: directory_drive(&paths.cwd.to_string_lossy()),
             paths: None,
             made: HashMap::new(),
             made_unknown: false,
@@ -1306,9 +1313,10 @@ impl Resolver {
 /// directory, which the folder may be: after a `cd` the guard cannot follow
 /// (`cd "$x"`, or more folders than it keeps), `.ssh/id_rsa` may be
 /// `~/.ssh/id_rsa`. `None` when `dir` is known or where the line began, or
-/// `arg` is not such a name; and in cmd, which has no `~`.
+/// `arg` is not such a name. cmd has no `~`, but the guard spells
+/// `%USERPROFILE%` so, and reads cmd's names so too.
 pub(crate) fn in_unknown_folder(dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<Arg> {
-    if shell == Shell::Cmd || dir?.known().is_some() {
+    if dir?.known().is_some() {
         return None;
     }
     let text = arg.known().filter(|text| plain_relative(text, shell))?;

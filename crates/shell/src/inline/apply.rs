@@ -261,12 +261,18 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
         Act::Read(path) => {
             let path = arg(path);
             let doubt = read_doubt(&path, unplaced);
+            if let Some(literal) = literal_tilde(&path) {
+                opened(split, "cat", vec![flag("--")], literal, None, depth);
+            }
             opened(split, "cat", vec![flag("--")], path, doubt, depth);
         }
         Act::ReadTree(path) => {
             let path = arg(path);
             let doubt = read_doubt(&path, unplaced);
             let args = vec![flag("-r"), flag("--"), Arg::Known("x".to_string())];
+            if let Some(literal) = literal_tilde(&path) {
+                opened(split, "grep", args.clone(), literal, None, depth);
+            }
             opened(split, "grep", args, path, doubt, depth);
         }
         Act::Opaque(path) => opened(
@@ -414,6 +420,15 @@ fn after(unplaced: bool, dirs: &[Arg]) -> bool {
 /// when it runs (`unplaced`). A path of the home directory or an absolute one
 /// is the same wherever the code is, and so is a key it names (which the unit
 /// finds and says as `read_secret`).
+/// A path the code reads that starts with `~` as the name in the working
+/// directory it also is: Python and JavaScript do not expand a `~`, so
+/// `open('~/x')` opens `./~/x`. The path is read as the home directory's
+/// too (`os.path.expanduser` gives the same text), so each is judged.
+fn literal_tilde(path: &Arg) -> Option<Arg> {
+    let text = path.known().filter(|text| text.starts_with('~'))?;
+    Some(Arg::Known(format!("./{text}")))
+}
+
 fn read_doubt(path: &Arg, unplaced: bool) -> Option<&'static str> {
     match path.known() {
         None => Some(PARTIAL),

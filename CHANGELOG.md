@@ -583,6 +583,19 @@ are more serious than 0.1.4's.
 - `milo-guards-shell`: in cmd, a `^"` outside quotes opens no quoted text,
   as cmd reads it, so the `&`, `&&`, `|` and redirects after it split the
   line into the commands cmd runs, each judged.
+- `milo-guards-shell`: more spellings of a path are read for the file
+  they name. In cmd, after a `cd` the guard cannot follow, a name that is a
+  key in the home directory is read as that key, as in a POSIX shell and
+  PowerShell (`%USERPROFILE%` is cmd's home). A
+  working directory spelled as a long path (`\\?\C:\…`) is on the drive
+  it names, so a path from that drive's own working directory lands there.
+  `~+` is `$PWD`. A quoted or escaped `~` (`cat "~/../.env"`) is judged
+  both as the home directory and as the name in the working directory the
+  shell hands on, in an argument and in a redirect, and so is a `~` in a
+  path inline Python or JavaScript reads, which they do not expand.
+- `milo-guards-script`: a read of a path that starts with `~` is judged as
+  the home directory's and as the name in the folder the code runs in
+  (`./~/…`), since Python and JavaScript do not expand it.
 
 ## 0.1.4 (2026-11-22)
 

@@ -990,6 +990,18 @@ impl Judge {
             Arg::Below { folder, .. } => folder,
             Arg::Unknown(_) => return None,
         };
+        // Python and JavaScript do not expand a `~`: `open('~/x')` opens
+        // `./~/x`. The path is read as the home directory's too
+        // (`os.path.expanduser` gives the same text), so each is judged.
+        self.secret_of(text).or_else(|| {
+            text.starts_with('~')
+                .then(|| self.secret_of(&format!("./{text}")))
+                .flatten()
+        })
+    }
+
+    /// The words of the key or credential a read of the path `text` reads.
+    fn secret_of(&self, text: &str) -> Option<&'static str> {
         // From a directory only known when it runs, a name may be one in the
         // home directory, which that directory may be, or one the caller
         // named, wherever it is.

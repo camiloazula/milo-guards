@@ -219,7 +219,10 @@ string `+`, f-strings and template literals made of those). It is placed by
 core's `Resolver`, by its spelling alone, on the machine `Paths` describes:
 POSIX paths on a POSIX machine and a Mac, Windows paths (drives, `\`, any
 case) on a Windows one. `~` and `~/…` are the home directory, as the reader
-gives them. `~alice/…` is another user's home directory, which the spelling
+gives them; for a read, `~/…` is also the name it is in the folder the code
+runs in (`./~/…`): Python and JavaScript expand no `~`, and the reader gives
+`open('~/x')` and `os.path.expanduser('~/x')` the same text, so each is
+judged and either one is a finding, as the file guard reads it. `~alice/…` is another user's home directory, which the spelling
 does not place: a read of it is read wherever a system keeps homes
 (`/home/alice`, `/Users/alice`, and `/root` and `/var/root` for `root`; on
 Windows `C:\Users\alice`), as the shell guard reads it, and a delete or a
