@@ -639,6 +639,15 @@ are more serious than 0.1.4's.
   character other than a tab and a line break (a carriage return only
   before a line feed), or DEL, is `unreadable`, "holds a control character
   a terminal acts on", wherever it stands in the line.
+- `milo-guards-shell`: a file a program takes its words or its options
+  from is read: `xargs -a FILE`, curl's `-K` and wget's `--config` and `-i`
+  are `read_secret` for a key, and curl's `-K` and wget's `--config` are
+  also `unknown`, "takes options from a file the guard does not read". `git
+  show REV:path`, `git cat-file -p REV:path` and `git blame path` read that
+  file. A script a shell or an interpreter runs by a path outside every
+  workspace folder and temporary folder (`bash ~/.ssh/x`, `python3
+  /opt/x.py`) is `unknown`, "runs a script outside the workspace"; a script
+  in the workspace, `source` and an init script are judged as before.
 
 ## 0.1.4 (2026-11-22)
 

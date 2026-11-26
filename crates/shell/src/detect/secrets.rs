@@ -419,6 +419,7 @@ fn opens(shell: Shell, key: &str) -> bool {
                 | "7za"
                 | "7zz"
                 | "curl"
+                | "wget"
         ),
         Shell::PowerShell => matches!(
             key,
@@ -486,7 +487,11 @@ fn posix<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
         }
         // A work tree's files, and what an option or `--no-index` names;
         // the folder `-C` names is only looked in.
-        "git" => table::git_reads(args),
+        "git" => {
+            let mut places = table::git_reads(args);
+            places.extend(git_objects(args));
+            places
+        }
         // `source FILE` runs what the file holds.
         "source" | "." => args.first().map(Cow::Borrowed).into_iter().collect(),
         "dd" => args
@@ -506,19 +511,95 @@ fn posix<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
             }
         }
         "openssl" => table::openssl_paths(args),
-        // `curl file:///etc/shadow` reads the file it names.
+        // `curl file:///etc/shadow` reads the file it names, and `-K` the
+        // file it takes its options from.
         "curl" => args
             .iter()
             .filter_map(|arg| file_url(arg.known()?))
             .map(|path| Cow::Owned(Arg::Known(path)))
+            .chain(config_files(key, args))
             .collect(),
+        // wget reads its options from `--config`, and the addresses it
+        // fetches from `-i` (`--input-file`).
+        "wget" => config_files(key, args).collect(),
         _ => table::extra_paths(unit, key).unwrap_or_default(),
+    }
+}
+
+/// The files `curl` and `wget` take their options or addresses from:
+/// curl's `-K` (`--config`), wget's `--config` and `-i` (`--input-file`),
+/// as a word of their own or after `=`; `-` is the input.
+pub(super) fn config_files<'u>(key: &str, args: &'u [Arg]) -> impl Iterator<Item = Cow<'u, Arg>> {
+    let (short, long): (&[&str], &[&str]) = match key {
+        "curl" => (&["-K"], &["--config"]),
+        _ => (&["-i"], &["--config", "--input-file"]),
+    };
+    let mut files = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if short.contains(&text) || long.contains(&text) {
+            files.extend(iter.next().map(Cow::Borrowed));
+        } else if let Some(value) = long.iter().find_map(|name| {
+            text.strip_prefix(*name)
+                .and_then(|rest| rest.strip_prefix('='))
+        }) {
+            files.push(Cow::Owned(Arg::Known(value.to_string())));
+        } else if let Some(value) = short
+            .iter()
+            .find_map(|name| text.strip_prefix(*name))
+            .filter(|value| !value.is_empty() && text.len() > 2 && !text.starts_with("--"))
+        {
+            files.push(Cow::Owned(Arg::Known(value.to_string())));
+        }
+    }
+    files.into_iter().filter(|file| file.known() != Some("-"))
+}
+
+/// The files of the repository's history git shows by their path: `show`,
+/// `cat-file` and `grep`'s `REV:path` (`HEAD:.env`, `:.env` for the index),
+/// read from the working directory as git reads a `./` path, and the file
+/// `blame` names. A secret there is in the history as it is in the work
+/// tree.
+fn git_objects(args: &[Arg]) -> Vec<Cow<'_, Arg>> {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        match arg.known() {
+            Some("-C" | "-c") => at += 2,
+            Some(text) if text.starts_with('-') => at += 1,
+            _ => break,
+        }
+    }
+    let Some(subcommand) = args.get(at).and_then(Arg::known) else {
+        return Vec::new();
+    };
+    let rest = args.get(at + 1..).unwrap_or_default();
+    let mut words = rest
+        .iter()
+        .filter_map(Arg::known)
+        .filter(|text| !text.starts_with('-'));
+    match subcommand {
+        "show" | "cat-file" | "grep" => words
+            .filter(|text| !text.contains("://"))
+            .filter_map(|text| text.split_once(':'))
+            .map(|(_, path)| path.strip_prefix("./").unwrap_or(path))
+            .filter(|path| !path.is_empty())
+            .map(|path| Cow::Owned(Arg::Known(path.to_string())))
+            .collect(),
+        "blame" | "annotate" => words
+            .next_back()
+            .map(|path| Cow::Owned(Arg::Known(path.to_string())))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
 fn powershell<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
     if key == "git" {
-        return table::git_reads(args);
+        let mut places = table::git_reads(args);
+        places.extend(git_objects(args));
+        return places;
     }
     if key == "copy-item" {
         let params = Params::read(args);

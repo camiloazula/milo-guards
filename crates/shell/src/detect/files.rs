@@ -692,6 +692,17 @@ impl Checker<'_> {
                 for file in downloads_to(key, args) {
                     self.write(shell, unit.scope(), &file, "writes to");
                 }
+                // curl's `-K` and wget's `--config` hold options the line
+                // does not show: a file to upload, one to write, a URL.
+                if let Some(file) = super::secrets::config_files(key, args)
+                    .find(|file| key == "curl" || is_config(args, file.as_ref()))
+                {
+                    self.add(
+                        Rule::Unknown,
+                        "takes options from a file the guard does not read",
+                        Some(file.as_ref()),
+                    );
+                }
             }
             "certutil" => {
                 for file in certutil_writes(args) {
@@ -1449,6 +1460,18 @@ fn saved_to(key: &str, args: &[Arg]) -> Vec<Arg> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Whether `file`, a file wget reads, is the one its `--config` names, not
+/// a list of addresses (`-i`).
+fn is_config(args: &[Arg], file: &Arg) -> bool {
+    args.iter().enumerate().any(|(at, arg)| match arg.known() {
+        Some("--config") => args.get(at + 1) == Some(file),
+        Some(text) => text
+            .strip_prefix("--config=")
+            .is_some_and(|value| file.known() == Some(value)),
+        None => false,
+    })
 }
 
 pub(super) fn remote(arg: &Arg) -> bool {

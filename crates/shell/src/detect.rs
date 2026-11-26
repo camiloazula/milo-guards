@@ -1876,6 +1876,9 @@ impl Checker<'_> {
             if self.found.len() == before {
                 self.extension_then_run(unit, &file);
             }
+            if self.found.len() == before {
+                self.runs_outside(unit, &file);
+            }
             return;
         }
         let runner = SHELLS.contains(&key)
@@ -1893,7 +1896,53 @@ impl Checker<'_> {
         let Some(script) = script_operand(key, &unit.args, unit.shell) else {
             return;
         };
+        let before = self.found.len();
         self.runs_written(unit, script, unit.dir.as_ref());
+        // `source` and `.` read the shell's own settings (`source
+        // ~/.nvm/nvm.sh`) as often as anything; what they read is judged
+        // as a read.
+        if self.found.len() == before && !matches!(key, "source" | ".") {
+            self.runs_outside(unit, script);
+        }
+    }
+
+    /// A script a shell or an interpreter runs by its path from outside
+    /// every workspace folder and temporary folder (`bash ~/.ssh/x`,
+    /// `python3 /opt/x.py`): it is not the workspace's own code, which a
+    /// script file in the workspace is, and the guard does not read it. A
+    /// path only known when it runs is said so elsewhere.
+    fn runs_outside(&mut self, unit: &Unit, script: &Arg) {
+        // An init script is judged as the program it is; a relative name
+        // after a `cd` is in the folder the `cd` moved to, which the line's
+        // own rules judge.
+        if script.known().is_some_and(settings::is_init_script) {
+            return;
+        }
+        let rooted = script.known().is_some_and(|text| {
+            text.starts_with(['/', '~'])
+                || (unit.shell != Shell::Posix
+                    && (text.starts_with('\\') || path::drive_of(text).is_some()))
+        });
+        if !rooted && unit.dir.is_some() {
+            return;
+        }
+        let place = self.place(unit.shell, unit.scope(), script, Access::Item);
+        let ours = matches!(
+            place,
+            Place::Inside
+                | Place::Workspace { .. }
+                | Place::Temp { .. }
+                | Place::Null
+                | Place::Unknown
+                | Place::Sensitive(_, milo_guards_core::Sensitivity::History)
+        );
+        if !ours {
+            self.add(
+                Rule::Unknown,
+                "runs a script outside the workspace",
+                Some(script),
+            );
+        }
     }
 
     /// A program started by a path (`./x.sh`, `x/run`, `/tmp/x`) is that

@@ -649,6 +649,7 @@ fn runs_from_input(
     if key == "xargs" {
         if let Some(file) = wrappers::arg_file(unit.args.get(..start).unwrap_or_default()) {
             let at = split.units.len();
+            split.read(unit.shell, file.clone());
             split.redirect(at..at + 1, file, true);
         }
     }
