@@ -1312,9 +1312,10 @@ impl Checker<'_> {
                     })
                     // The read rule's own lookup: a Windows name the
                     // spelling does not settle (a stream, a part that ends
-                    // in a space or a dot) is the file it is a name of.
+                    // in a space or a dot) is the file it is a name of; so is
+                    // a device path a POSIX line on Windows hands on.
                     .or_else(|| {
-                        (unit.shell != Shell::Posix)
+                        (unit.shell != Shell::Posix || self.split.on_windows())
                             .then(|| {
                                 self.resolver.secret(
                                     unit.dir.as_ref(),

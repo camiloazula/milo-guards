@@ -3237,10 +3237,31 @@ impl Walker<'_> {
             self.node_options(assignment);
         }
         let before = self.split.qualify(qualified);
+        // On Windows, Git Bash and MSYS2 hand a word that is `//` and a
+        // name to a Windows program with one `/` off (`cmd //c` is `cmd /c`),
+        // read as the switch it is for every program, in the words a brace
+        // list makes as in the line as written.
+        let on_windows = self.split.on_windows();
+        let msys = |args: &mut [Arg]| {
+            if on_windows {
+                for arg in args {
+                    if let Some(switch) = arg.known().and_then(msys_switch) {
+                        *arg = Arg::Known(switch);
+                    } else if let Some(path) = arg.known().and_then(msys_drive) {
+                        *arg = Arg::Known(path);
+                    }
+                }
+            }
+        };
+        msys(&mut args);
         // The command read with the words the shell makes of its brace lists
         // in place of them, kept apart from the command as written.
         let spelled_args = (!alts.is_empty() || lost_alts.iter().any(Option::is_some))
-            .then(|| spelled_arguments(&args, &words, before_lost, &alts, &lost_alts));
+            .then(|| spelled_arguments(&args, &words, before_lost, &alts, &lost_alts))
+            .map(|(mut spelled, spots)| {
+                msys(&mut spelled);
+                (spelled, spots)
+            });
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         if self.split.placing.is_some() {
             // The arguments the grammar left out of the tree (a `-`) have
@@ -4819,6 +4840,39 @@ fn unescape(word: &str) -> String {
     value
 }
 
+/// The switch a word `//name` (no other separator) is to a Windows program
+/// that Git Bash or MSYS2 starts: `/name`. `None` for any other word, a
+/// share (`//server/share`) among them.
+fn msys_switch(text: &str) -> Option<String> {
+    let name = text.strip_prefix("//")?;
+    if name.contains(['/', '\\']) {
+        return None;
+    }
+    let switch = name.split(':').next().unwrap_or(name);
+    (!switch.is_empty()
+        && switch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '?' | '-' | '+')))
+    .then(|| format!("/{name}"))
+}
+
+/// The path a word `//C:/x` or `//./C:/x` is, on a Windows machine: Git Bash
+/// and MSYS2 open and hand it on as the drive's `C:/x`. `None` for any other
+/// word.
+fn msys_drive(text: &str) -> Option<String> {
+    let path = text
+        .strip_prefix("//")
+        .or_else(|| text.strip_prefix("\\\\"))?;
+    let path = path
+        .strip_prefix("./")
+        .or_else(|| path.strip_prefix(".\\"))
+        .unwrap_or(path);
+    let mut chars = path.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    (chars.next() == Some(':') && path[2..].starts_with(['/', '\\']))
+        .then(|| format!("{letter}:{}", &path[2..]))
+}
+
 /// `value`, the word at `node`, as the path it names when the `~` it starts
 /// with is quoted or escaped (`"~/x"`, `'~'/x`, `\~/x`): the shell leaves
 /// it, so the program is handed a name in the working directory (`./~/x`).
@@ -4888,4 +4942,42 @@ fn unescape_quoted(text: &str) -> String {
         }
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::msys_switch;
+
+    #[test]
+    fn a_word_is_a_switch_only_when_a_name_follows_the_slashes() {
+        assert_eq!(msys_switch("//F").as_deref(), Some("/F"));
+        assert_eq!(msys_switch("//out:name").as_deref(), Some("/out:name"));
+        // A share, and a drive path, are paths.
+        assert_eq!(msys_switch("//server/share"), None);
+        assert_eq!(msys_switch("//C:/Users/me"), None);
+        assert_eq!(msys_switch("//C:\\Users\\me"), None);
+        assert_eq!(msys_switch("/F"), None);
+        assert_eq!(msys_switch("//"), None);
+    }
+
+    #[test]
+    fn a_word_with_a_drive_after_the_slashes_is_the_drive_path() {
+        use super::msys_drive;
+        assert_eq!(msys_drive("//C:/Users/me").as_deref(), Some("C:/Users/me"));
+        assert_eq!(
+            msys_drive("//./C:/Users/me").as_deref(),
+            Some("C:/Users/me")
+        );
+        assert_eq!(msys_drive("//./C:"), None);
+        assert_eq!(
+            msys_drive("\\\\.\\C:\\Users\\me").as_deref(),
+            Some("C:\\Users\\me")
+        );
+        assert_eq!(msys_drive("//?/C:/x"), None);
+        assert_eq!(msys_drive("//d:\\x").as_deref(), Some("d:\\x"));
+        assert_eq!(msys_drive("//C:"), None);
+        assert_eq!(msys_drive("//server/share"), None);
+        assert_eq!(msys_drive("//1:/x"), None);
+        assert_eq!(msys_drive("/C:/x"), None);
+    }
 }

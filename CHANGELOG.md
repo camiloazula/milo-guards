@@ -32,6 +32,13 @@ security fixes: each line below was judged safer than what it does.
   folder only known when it runs may leave it for any other, so what stays
   a name is the file the word ends in, read as it is after any such folder
   (`name/..` pairs of the word go first).
+- `milo-guards-shell`: on a Windows machine, a word of a POSIX line that is
+  two slashes and a name is handed to a Windows program as a switch, as Git
+  Bash and MSYS2 hand it, for every program whose switches the guard reads.
+  Two slashes and a drive are the drive's path, and a device or long path
+  is handed on unchanged and read as Windows reads it. A share stays a
+  share, but an administrative one, also as a long path, is read as cmd
+  reads it.
 
 ## 0.2.1 (2026-11-28)
 

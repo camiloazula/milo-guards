@@ -2014,6 +2014,11 @@ impl Split {
         self.pwd.physical
     }
 
+    /// Whether the line runs on Windows: the home directory is on a drive.
+    pub(crate) fn on_windows(&self) -> bool {
+        self.home_drive.is_some()
+    }
+
     /// Whether `$PWD` is plain text here: the line has not moved, or moved to
     /// a name it wrote out that holds no code (`sub`). After a `cd` to one
     /// that may (`d$(rm -rf ~)`, `d\044(…)`, `"$x"`, a wildcard that matches

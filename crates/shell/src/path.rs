@@ -168,9 +168,15 @@ enum Linked {
     Wild,
 }
 
-/// Whether `text` starts with a drive and a separator (`C:/x`, `C:\x`).
+/// Whether `text` starts with a drive and a separator (`C:/x`, `C:\x`), or
+/// with one behind the prefix of a device or long path (`//./C:/x`,
+/// `//?/C:/x`), which Windows opens as the drive's own.
 fn starts_with_drive(text: &str) -> bool {
-    drive_of(text).is_some() && text[2..].starts_with(['/', '\\'])
+    let plain = |text: &str| drive_of(text).is_some() && text[2..].starts_with(['/', '\\']);
+    let rest = ["//./", "//?/", "\\\\.\\", "\\\\?\\"]
+        .iter()
+        .find_map(|prefix| text.strip_prefix(prefix));
+    plain(text) || rest.is_some_and(plain)
 }
 
 /// The drive letter one of the caller's directories is on, read through a
