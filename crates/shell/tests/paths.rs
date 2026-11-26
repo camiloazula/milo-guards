@@ -18,7 +18,9 @@ fn places(line: &str, shell: Shell, paths: &Paths) -> Option<Vec<PathBuf>> {
         .into_iter()
         .map(|read| read.path)
         .collect();
-    places.dedup();
+    // By the text, not by `Path`'s own equality, which on Windows takes `\`
+    // for `/` and would merge `a\b` and `a/b`, two places in a POSIX line.
+    places.dedup_by(|a, b| a.as_os_str() == b.as_os_str());
     Some(places)
 }
 
