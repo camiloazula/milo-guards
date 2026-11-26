@@ -151,7 +151,7 @@ pub(crate) struct Made {
     pub(crate) registry: bool,
 }
 
-/// The drive letter a working directory is on (`C` for `C:\Users\me`).
+/// The drive letter a path starts with (`C` for `C:\Users\me`).
 pub(crate) fn drive_of(dir: &str) -> Option<char> {
     let mut chars = dir.chars();
     let letter = chars.next().filter(char::is_ascii_alphabetic)?;
@@ -168,14 +168,27 @@ enum Linked {
     Wild,
 }
 
+/// Whether `text` starts with a drive and a separator (`C:/x`, `C:\x`).
+fn starts_with_drive(text: &str) -> bool {
+    drive_of(text).is_some() && text[2..].starts_with(['/', '\\'])
+}
+
+/// The drive letter one of the caller's directories is on, read through a
+/// long path's prefix as core reads it (`C` for `\\?\C:\Users\me` and
+/// `//?/C:/Users/me`).
+pub(crate) fn directory_drive(dir: &str) -> Option<char> {
+    drive_of(milo_guards_core::spelling::verbatim(dir).unwrap_or(dir))
+}
+
 /// Judges path arguments against the caller's directories.
 pub(crate) struct Resolver {
     core: milo_guards_core::Resolver,
     /// Whether a plain relative path (see [`plain_relative`]) is the agent's
     /// own, since the working directory is in a workspace that holds no key.
     clear: Clear,
-    /// Whether the caller names any secret (`Paths::secrets`): only then is
-    /// a path looked up among them (see [`Resolver::named_secret`]).
+    /// Whether the caller names any secret (`Paths::secrets`) or protects any
+    /// path: only then is a path looked up among the named secrets and core's
+    /// own under a protected path (see [`Resolver::named_secret`]).
     named: bool,
     /// Whether the caller names a link (`Paths::links`), and one with a
     /// wildcard or a brace in its name.
@@ -248,7 +261,7 @@ impl Resolver {
             } else {
                 Clear::No
             },
-            named: !paths.secrets.is_empty(),
+            named: !paths.secrets.is_empty() || !paths.protected.is_empty(),
             linked: if core.wild_links() {
                 Linked::Wild
             } else if paths.links.is_empty() {
@@ -257,7 +270,7 @@ impl Resolver {
                 Linked::Named
             },
             core,
-            cwd_drive: drive_of(&paths.cwd.to_string_lossy()),
+            cwd_drive: directory_drive(&paths.cwd.to_string_lossy()),
             paths: None,
             made: HashMap::new(),
             made_unknown: false,
@@ -332,6 +345,7 @@ impl Resolver {
         let (Some(text), Some(paths)) = (arg.known(), self.paths.as_ref()) else {
             return false;
         };
+        let shell = self.reading(text, shell);
         if brace_list(text) {
             return false;
         }
@@ -354,9 +368,12 @@ impl Resolver {
             return false;
         };
         paths.workspaces.iter().any(|workspace| {
+            // A workspace folder is read as the caller spelled it: a
+            // Windows path is one in a POSIX shell too (Git Bash on a
+            // Windows machine), as the places are.
             let text = workspace.to_string_lossy();
             self.core
-                .key(Spelling::Plain(&text), flavour)
+                .key(Spelling::Plain(&text), spelled_flavour(&text, flavour))
                 .is_some_and(|folder| {
                     key == folder
                         || key.starts_with(&folder)
@@ -373,6 +390,7 @@ impl Resolver {
         let Some(text) = arg.known() else {
             return true;
         };
+        let shell = self.reading(text, shell);
         if brace_list(text) {
             return true;
         }
@@ -413,6 +431,35 @@ impl Resolver {
         }
     }
 
+    /// The shell whose spelling `text` is read in. On a Windows machine (the
+    /// working directory on a drive), a POSIX word that starts with a drive
+    /// and a separator (`C:/Users/me`, `C:\Users\me`) is the Windows path:
+    /// Git Bash, MSYS2 and Cygwin open it so, and hand it on so to a Windows
+    /// program. It is read as cmd reads a path, since it is one of Windows'.
+    /// Any other text is read as `shell` reads it.
+    fn reading(&self, text: &str, shell: Shell) -> Shell {
+        if shell == Shell::Posix && self.cwd_drive.is_some() && starts_with_drive(text) {
+            Shell::Cmd
+        } else {
+            shell
+        }
+    }
+
+    /// The shell whose spelling `arg`, written from `dir`, is read in (see
+    /// [`reading`](Self::reading)): the path's own, or for a relative one
+    /// the folder's, which it is joined to.
+    fn reading_of(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Shell {
+        let Some(text) = arg.known() else {
+            return shell;
+        };
+        let own = self.reading(text, shell);
+        if own != shell || text.starts_with(['/', '~']) {
+            return own;
+        }
+        dir.and_then(Arg::known)
+            .map_or(shell, |dir| self.reading(dir, shell))
+    }
+
     /// The path `rest` names on `letter`'s drive, from the working
     /// directory when that is the drive it is on; `None` on any other
     /// drive, whose own working directory is not known.
@@ -423,6 +470,7 @@ impl Resolver {
     /// A key for the single file `arg` names from `dir`; `None` when it is
     /// not one definite file (a device, a wildcard, a brace list, unknown).
     pub(crate) fn file_key(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<String> {
+        let shell = self.reading_of(dir, arg, shell);
         // A device is the same in any folder: read it before the join.
         if is_device(arg, shell) {
             return None;
@@ -475,6 +523,7 @@ impl Resolver {
     }
 
     fn resolved(&self, text: &str, shell: Shell, dots: Dots) -> Option<PathBuf> {
+        let shell = self.reading(text, shell);
         if brace_list(text)
             || device(text, shell).is_some()
             || self.made_drive(text, shell).is_some()
@@ -512,6 +561,7 @@ impl Resolver {
     /// Whether `arg`, written from `dir`, is a file that cannot be placed:
     /// not a device, and unknown by itself or by where `dir` moved to.
     pub(crate) fn unplaced(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> bool {
+        let shell = self.reading_of(dir, arg, shell);
         if is_device(arg, shell) {
             return false;
         }
@@ -605,6 +655,7 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
     ) -> Option<&'static str> {
+        let shell = self.reading_of(dir, arg, shell);
         // Most words are a name in the workspace, which is no secret, unless
         // the caller named one there: then it is only looked up among those.
         if let Some(text) = arg
@@ -692,6 +743,7 @@ impl Resolver {
         if !self.named {
             return None;
         }
+        let shell = self.reading_of(dir, arg, shell);
         self.named_secret_of(within(dir, arg, shell).known()?, shell)
     }
 
@@ -742,10 +794,12 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
     ) -> Option<&'static str> {
+        let shell = self.reading_of(dir, arg, shell);
         self.picks(within(dir, arg, shell).known()?, shell, hidden)
     }
 
     fn named_secret_of(&self, text: &str, shell: Shell) -> Option<&'static str> {
+        let shell = self.reading(text, shell);
         if !self.named
             || brace_list(text)
             || device(text, shell).is_some()
@@ -778,6 +832,7 @@ impl Resolver {
     /// The key or credential a pattern can pick (`~/.s*/id_rsa`): see
     /// [`milo_guards_core::Resolver::picks_secret`].
     fn picks(&self, text: &str, shell: Shell, hidden: bool) -> Option<&'static str> {
+        let shell = self.reading(text, shell);
         if !glob::has_wildcard(text) || brace_list(text) {
             return None;
         }
@@ -820,6 +875,7 @@ impl Resolver {
         hidden: bool,
         follows: bool,
     ) -> Option<&'static str> {
+        let shell = self.reading_of(dir, arg, shell);
         // A plain name holds no home directory, named secrets or not.
         if dir.is_none()
             && self.clear != Clear::No
@@ -998,6 +1054,7 @@ impl Resolver {
         if matches!(arg, Arg::Null) {
             return Place::Null;
         }
+        let shell = self.reading_of(dir, arg, shell);
         // On a drive the line makes, a device name is an item's name there.
         let made = dir
             .and_then(Arg::known)
@@ -1037,7 +1094,8 @@ impl Resolver {
         hidden: bool,
         below: bool,
     ) -> Option<&'static str> {
-        self.startup_of(arg.known()?, shell, hidden, below)
+        let text = arg.known()?;
+        self.startup_of(text, self.reading(text, shell), hidden, below)
     }
 
     fn startup_of(
@@ -1095,6 +1153,7 @@ impl Resolver {
         shell: Shell,
         hidden: bool,
     ) -> Option<&'static str> {
+        let shell = self.reading_of(dir, arg, shell);
         self.holds_protected_of(within(dir, arg, shell).known()?, shell, hidden)
     }
 
@@ -1109,6 +1168,7 @@ impl Resolver {
     /// `Resolver::workspace_of`). `None` when it is in none, or is only
     /// known when it runs.
     pub(crate) fn workspace_of(&self, dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<Arg> {
+        let shell = self.reading_of(dir, arg, shell);
         let absolute = self.absolute(within(dir, arg, shell).known()?, shell)?;
         let text = absolute.to_string_lossy();
         let top = self
@@ -1118,7 +1178,7 @@ impl Resolver {
     }
 
     fn holds_protected_of(&self, text: &str, shell: Shell, hidden: bool) -> Option<&'static str> {
-        self.holds_protected_picked(text, shell, hidden, None)
+        self.holds_protected_picked(text, self.reading(text, shell), hidden, None)
     }
 
     /// As [`Self::holds_protected_of`], with `picks` as for
@@ -1212,6 +1272,7 @@ impl Resolver {
     /// repeated to the length limit placed `*a` thousands of times, half a
     /// second.
     fn place_spelled(&self, text: &str, shell: Shell, hidden: bool, holding: Hold) -> Place {
+        let shell = self.reading(text, shell);
         if text.len() > LONGEST_PLACED {
             return self.place_spelled_now(text, shell, hidden, holding);
         }
@@ -1303,9 +1364,10 @@ impl Resolver {
 /// directory, which the folder may be: after a `cd` the guard cannot follow
 /// (`cd "$x"`, or more folders than it keeps), `.ssh/id_rsa` may be
 /// `~/.ssh/id_rsa`. `None` when `dir` is known or where the line began, or
-/// `arg` is not such a name; and in cmd, which has no `~`.
+/// `arg` is not such a name. cmd has no `~`, but the guard spells
+/// `%USERPROFILE%` so, and reads cmd's names so too.
 pub(crate) fn in_unknown_folder(dir: Option<&Arg>, arg: &Arg, shell: Shell) -> Option<Arg> {
-    if shell == Shell::Cmd || dir?.known().is_some() {
+    if dir?.known().is_some() {
         return None;
     }
     let text = arg.known().filter(|text| plain_relative(text, shell))?;
@@ -1748,6 +1810,51 @@ pub(crate) fn climb(text: &str, shell: Shell) -> Option<String> {
     None
 }
 
+/// How the absolute path `text`, a folder the caller names, is spelled: the
+/// Windows way when it starts with a drive or a backslash, else `flavour`.
+fn spelled_flavour(text: &str, flavour: Flavour) -> Flavour {
+    let windows = matches!(text.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic())
+        || text.starts_with('\\');
+    if windows {
+        Flavour::Windows
+    } else {
+        flavour
+    }
+}
+
+/// The last name of `text`, a path as `shell`'s system spells it: after the
+/// last `/` (on Windows also `\`, and the drive of `C:name`), trailing
+/// separators left off; `None` for a path that ends in `..` or names no
+/// file (`/`, `C:`). The guard's own reading, the same on every host, where
+/// `std::path` reads a path by the rules of the host it runs on.
+pub(crate) fn last_name(text: &str, shell: Shell) -> Option<&str> {
+    let separators = flavour(shell).separators();
+    let mut text = text.trim_end_matches(separators);
+    if shell != Shell::Posix {
+        if let [letter, b':', ..] = text.as_bytes() {
+            if letter.is_ascii_alphabetic() {
+                text = &text[2..];
+            }
+        }
+    }
+    let name = text.rsplit(separators).next().unwrap_or(text);
+    (!name.is_empty() && name != "..").then_some(name)
+}
+
+/// The extension of the last name of `text` (see [`last_name`]), as
+/// `std::path::Path::extension` reads one: what follows its last dot, unless
+/// that dot is its first character (`.bashrc` has none) or the name is `.`.
+/// The same on every host for the shell given: `C:.py` is the name `.py` on
+/// Windows, with no extension, and the name `C:.py` in a POSIX shell, whose
+/// extension is `py`.
+pub(crate) fn extension(text: &str, shell: Shell) -> Option<&str> {
+    let name = last_name(text, shell)?;
+    match name.rsplit_once('.') {
+        Some(("", _)) | None => None,
+        Some((_, extension)) => Some(extension),
+    }
+}
+
 /// The folder a pattern starts in: what comes before its first wildcard,
 /// up to the last separator before it (`.` when nothing does), or the text
 /// itself when it holds none.
@@ -1759,5 +1866,49 @@ pub(crate) fn pattern_folder(text: &str) -> String {
         Some(0) => text[..1].to_string(),
         Some(at) => text[..at].to_string(),
         None => ".".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_last_name_is_read_by_the_rules_of_the_shell_given() {
+        for (text, posix, windows) in [
+            ("a/b.py", Some("b.py"), Some("b.py")),
+            (r"a\b.py", Some(r"a\b.py"), Some("b.py")),
+            ("C:.py", Some("C:.py"), Some(".py")),
+            ("C:x.py", Some("C:x.py"), Some("x.py")),
+            ("src/", Some("src"), Some("src")),
+            (r"src\", Some(r"src\"), Some("src")),
+            ("a/..", None, None),
+            ("/", None, None),
+            ("C:", Some("C:"), None),
+        ] {
+            assert_eq!(last_name(text, Shell::Posix), posix, "{text}");
+            assert_eq!(last_name(text, Shell::PowerShell), windows, "{text}");
+            assert_eq!(last_name(text, Shell::Cmd), windows, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_extension_is_read_as_std_reads_one_whatever_the_host() {
+        for (text, posix, windows) in [
+            ("build.ts", Some("ts"), Some("ts")),
+            ("a/b.tar.gz", Some("gz"), Some("gz")),
+            (".bashrc", None, None),
+            ("x/.bashrc", None, None),
+            (".x.rb", Some("rb"), Some("rb")),
+            ("foo.", Some(""), Some("")),
+            (".", None, None),
+            ("noext", None, None),
+            ("C:.py", Some("py"), None),
+            (r"a.d\b", Some(r"d\b"), None),
+            (r"C:\x\s.PY", Some("PY"), Some("PY")),
+        ] {
+            assert_eq!(extension(text, Shell::Posix), posix, "{text}");
+            assert_eq!(extension(text, Shell::PowerShell), windows, "{text}");
+        }
     }
 }

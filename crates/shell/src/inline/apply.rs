@@ -3,7 +3,7 @@
 //! literal argument list a unit. The code itself is read by
 //! `milo-guards-code`; nothing here knows a language.
 
-use milo_guards_code::{self as reader, Act, Language};
+use milo_guards_code::{self as reader, Act, Budget, Language};
 
 use super::{shorten, Code};
 use crate::launch;
@@ -24,6 +24,14 @@ fn arg(value: reader::Arg) -> Arg {
             runs: false,
         },
     }
+}
+
+/// The work the reader may do for the line: every reading of its code, and of
+/// the code inside that code, draws from the one budget, made for the line's
+/// length at its first reading, so nesting does not multiply the work.
+fn budget<'s>(split: &'s mut Split, code: &str) -> &'s Budget {
+    let len = split.line_len.max(code.len());
+    split.reader.get_or_insert_with(|| Budget::new(len))
 }
 
 /// Why a program started with an environment the code sets is `unknown`.
@@ -75,9 +83,9 @@ pub(crate) fn apply_all(
     let read = match code.pieces.as_slice() {
         [Arg::Known(text)] if code.plain && !split.environment_set() => {
             let understood = if code.python2 {
-                reader::understand_python2(text)
+                budget(split, text).understand_python2(text)
             } else {
-                reader::understand(language, text)
+                budget(split, text).understand(language, text)
             };
             match understood {
                 reader::Understanding::NotUnderstood => None,
@@ -135,13 +143,13 @@ fn apply(split: &mut Split, language: Language, code: &str, depth: usize, unplac
 
 /// [`apply`], once the code is let be read.
 fn read_code(split: &mut Split, language: Language, code: &str, depth: usize, unplaced: bool) {
-    let reading = reader::read(language, code);
+    let reading = budget(split, code).read(language, code);
     if reading.deep {
         split.problem(Rule::Unreadable, "nests too deeply to read", None);
     }
     // A `chdir` in the code moves its own process, not the line.
     let outer = split.dir_snapshot();
-    let places = places(&reading.acts, depth);
+    let places = places(budget(split, code), &reading.acts, depth);
     if places.len() == 1 {
         for act in reading.acts {
             perform(split, act, depth, unplaced);
@@ -176,15 +184,15 @@ fn read_code(split: &mut Split, language: Language, code: &str, depth: usize, un
 /// may change the directory: it is read, with its own language and at any
 /// depth, and holds a `chdir`. Code the reader cannot follow, or that is too
 /// long or too deep to read, may.
-fn changes_directory(language: Language, code: &str, depth: usize) -> bool {
+fn changes_directory(budget: &Budget, language: Language, code: &str, depth: usize) -> bool {
     if depth > unit::MAX_DEPTH || code.len() > unit::MAX_LEN {
         return true;
     }
-    let reading = reader::read(language, code);
+    let reading = budget.read(language, code);
     reading.deep
         || reading.acts.iter().any(|act| match act {
             Act::Chdir(_) | Act::Unread(_) => true,
-            Act::Code(language, text) => changes_directory(*language, text, depth + 1),
+            Act::Code(language, text) => changes_directory(budget, *language, text, depth + 1),
             _ => false,
         })
 }
@@ -202,14 +210,14 @@ const MAX_PLACES: usize = 12;
 /// goes up (`..`) or is only known when it runs, or a nested piece of code
 /// holds a `chdir` (read, not searched for, at any depth) or cannot be read,
 /// the code may be anywhere, and a relative path is only known when it runs.
-fn places(acts: &[Act], depth: usize) -> Vec<Vec<Arg>> {
+fn places(budget: &Budget, acts: &[Act], depth: usize) -> Vec<Vec<Arg>> {
     let mut targets = Vec::new();
     let mut hidden = false;
     for act in acts {
         match act {
             Act::Chdir(target) => targets.push(arg(target.clone())),
             Act::Code(language, text) => {
-                hidden |= changes_directory(*language, text, depth + 1);
+                hidden |= changes_directory(budget, *language, text, depth + 1);
             }
             _ => {}
         }
@@ -253,12 +261,18 @@ fn perform(split: &mut Split, act: Act, depth: usize, unplaced: bool) {
         Act::Read(path) => {
             let path = arg(path);
             let doubt = read_doubt(&path, unplaced);
+            if let Some(literal) = literal_tilde(&path) {
+                opened(split, "cat", vec![flag("--")], literal, None, depth);
+            }
             opened(split, "cat", vec![flag("--")], path, doubt, depth);
         }
         Act::ReadTree(path) => {
             let path = arg(path);
             let doubt = read_doubt(&path, unplaced);
             let args = vec![flag("-r"), flag("--"), Arg::Known("x".to_string())];
+            if let Some(literal) = literal_tilde(&path) {
+                opened(split, "grep", args.clone(), literal, None, depth);
+            }
             opened(split, "grep", args, path, doubt, depth);
         }
         Act::Opaque(path) => opened(
@@ -406,6 +420,15 @@ fn after(unplaced: bool, dirs: &[Arg]) -> bool {
 /// when it runs (`unplaced`). A path of the home directory or an absolute one
 /// is the same wherever the code is, and so is a key it names (which the unit
 /// finds and says as `read_secret`).
+/// A path the code reads that starts with `~` as the name in the working
+/// directory it also is: Python and JavaScript do not expand a `~`, so
+/// `open('~/x')` opens `./~/x`. The path is read as the home directory's
+/// too (`os.path.expanduser` gives the same text), so each is judged.
+fn literal_tilde(path: &Arg) -> Option<Arg> {
+    let text = path.known().filter(|text| text.starts_with('~'))?;
+    Some(Arg::Known(format!("./{text}")))
+}
+
 fn read_doubt(path: &Arg, unplaced: bool) -> Option<&'static str> {
     match path.known() {
         None => Some(PARTIAL),
@@ -480,14 +503,15 @@ fn run(split: &mut Split, program: &str, args: Vec<Arg>, depth: usize) {
 mod tests {
     use super::*;
 
-    /// The reader holds code to the limits the shell holds a line to, and
-    /// shows the start of code the way the shell does (two copies, one in
-    /// each crate, because the shell shows it with or without the reader).
+    /// The reader holds code to the limits the shell holds a line to, its
+    /// length to a shorter one, and shows the start of code the way the
+    /// shell does (two copies, one in each crate, because the shell shows it
+    /// with or without the reader).
     #[test]
     fn the_reader_and_the_shell_agree_on_the_limits_and_on_the_start_of_code() {
         assert_eq!(reader::MAX_DEPTH, unit::MAX_DEPTH);
         assert_eq!(reader::MAX_TREE_DEPTH, unit::MAX_TREE_DEPTH);
-        assert_eq!(reader::MAX_LEN, unit::MAX_LEN);
+        const { assert!(reader::MAX_LEN < unit::MAX_LEN) };
         for code in [
             "if (",
             "  if ( second line\nthird",

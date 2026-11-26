@@ -308,8 +308,8 @@ impl Reading {
             command,
             shell,
             (
-                path::drive_of(&paths.cwd.to_string_lossy()),
-                path::drive_of(&paths.home.to_string_lossy()),
+                path::directory_drive(&paths.cwd.to_string_lossy()),
+                path::directory_drive(&paths.home.to_string_lossy()),
             ),
             effect,
             places,

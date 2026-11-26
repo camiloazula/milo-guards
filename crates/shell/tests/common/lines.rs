@@ -178,17 +178,17 @@ pub fn numbered(size: usize, make: impl Fn(usize) -> String) -> String {
     text
 }
 
-/// Long inline code, and the chain of members in it, if any. Reading inline
-/// code asked the tree for each name's parent, which walks it from the root,
-/// and built a dotted name again from each member of it: a chain of 30,000
-/// members (60 KB, under the limit) took a minute.
+/// Long inline code, up to the reader's length limit (3 KiB), and the chain
+/// of members in it, if any. Reading inline code asked the tree for each
+/// name's parent, which walks it from the root, and built a dotted name
+/// again from each member of it: a long chain of members took a minute.
 pub fn long_code() -> (Vec<String>, String) {
-    let chain = ".b".repeat(30_000);
-    let calls = format!("{}{}", "f(".repeat(10_000), ")".repeat(10_000));
-    // Chains just under the depth limit, many of them: every one is read.
-    let chains = format!("x = a{}\n", ".b".repeat(390)).repeat(80);
-    // Calls nested just under the limit on every line, many of them.
-    let nested = format!("f({}\n", "f(".repeat(380) + &")".repeat(381)).repeat(50);
+    let chain = ".b".repeat(1_000);
+    let calls = format!("{}{}", "f(".repeat(700), ")".repeat(700));
+    // Chains just under the depth limit, a few of them: every one is read.
+    let chains = format!("x = a{}\n", ".b".repeat(390)).repeat(3);
+    // Calls nested just under the limit on every line, a few of them.
+    let nested = format!("f({}\n", "f(".repeat(380) + &")".repeat(381)).repeat(2);
     let mut rows = Vec::new();
     for (interpreter, end) in [("python3", "PY"), ("node", "JS")] {
         for body in [

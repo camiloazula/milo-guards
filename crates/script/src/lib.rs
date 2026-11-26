@@ -33,7 +33,8 @@
 //! - code that runs code it downloads is [`Rule::RunDownloaded`];
 //! - code the reader does not follow, or does not understand whole, is
 //!   [`Rule::Unknown`] when nothing worse is found in it, never safe; code
-//!   too long, too deep or that does not parse is [`Rule::Unreadable`].
+//!   too long, too deep, that does not parse or that the reader stops on,
+//!   past the work its grammar may do for it, is [`Rule::Unreadable`].
 //!
 //! Code read whole that does none of it is safe: `print(1)`,
 //! `console.log(1)`, `open('out.txt', 'w')` inside the workspace. Python
@@ -153,7 +154,8 @@ pub enum Rule {
     /// does not understand whole in which it found nothing worse.
     Unknown,
     /// Code that cannot be read: longer than [`MAX_LEN`], nested too deeply,
-    /// running code inside code too deeply, or that does not parse.
+    /// running code inside code too deeply, that does not parse, or that the
+    /// reader stops on (`takes too long to read`).
     Unreadable,
 }
 
@@ -231,8 +233,9 @@ pub fn target_shell(paths: &Paths) -> TargetShell {
     }
 }
 
-/// The longest code judged, in bytes: the code reader's limit, and the
-/// shell guard's for a line. Longer code is [`Rule::Unreadable`].
+/// The longest code judged, in bytes: the code reader's limit, 3 KiB, a
+/// deliberate limit (see [`milo_guards_code::MAX_LEN`]). Longer code is
+/// [`Rule::Unreadable`], `is too long to read`.
 pub const MAX_LEN: usize = milo_guards_code::MAX_LEN;
 
 /// Judge `code`, written in `language`, run from the working directory of
@@ -253,13 +256,20 @@ pub const MAX_LEN: usize = milo_guards_code::MAX_LEN;
 /// ```
 #[must_use = "the assessment is the answer: it says whether the code is safe"]
 pub fn judge(language: Language, code: &str, paths: &Paths) -> Assessment {
-    let mut findings = judge::judge(language, code, paths).findings;
+    let budget = milo_guards_code::Budget::new(code.len());
+    let (outcome, mut budget) = judge::judge_within(language, code, paths, budget);
+    let mut findings = outcome.findings;
     // With a link, a drive mount or a Windows home named, the code is also
     // judged on each other set of the paths (`Paths::also_judged_on`), and
     // every finding of each is kept: naming what only the disk can say never
-    // makes an answer less serious.
+    // makes an answer less serious. Each other judging reads the code from
+    // what the one budget kept and draws from its work, so it does not
+    // multiply the work's bound; a reading stopped in any is the cautious
+    // answer of all.
     for other in paths.also_judged_on() {
-        for finding in judge::judge(language, code, &other).findings {
+        let (outcome, rest) = judge::judge_within(language, code, &other, budget);
+        budget = rest;
+        for finding in outcome.findings {
             if !findings.contains(&finding) {
                 findings.push(finding);
             }

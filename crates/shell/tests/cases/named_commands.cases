@@ -1,0 +1,159 @@
+# A program that runs a command the line names in a variable it sets, or in
+# one of its options, runs that command besides what it does: the command
+# is read as a line of the shell the program hands it to, and judged by
+# every rule. A value only known when it runs is a command only known when
+# it runs. The format is in CONTRIBUTING.md.
+
+# git runs these variables through sh: in front of it, with `env`,
+# exported, or set and exported later.
+posix finds=delete reason="deletes your home directory" | GIT_SSH_COMMAND='rm -rf ~' git fetch
+posix finds=delete | export GIT_SSH_COMMAND='rm -rf ~'; git fetch
+posix finds=delete | env GIT_SSH_COMMAND='rm -rf ~' git fetch
+posix finds=delete | GIT_SSH_COMMAND='rm -rf ~'; export GIT_SSH_COMMAND; git fetch
+posix finds=delete | GIT_PAGER='rm -rf ~' git log
+posix finds=delete | PAGER='rm -rf ~' git log
+posix finds=delete | GIT_EDITOR='rm -rf ~' git commit
+posix finds=delete | GIT_SEQUENCE_EDITOR='rm -rf ~' git rebase -i HEAD~2
+posix finds=delete | EDITOR='rm -rf ~' git commit
+posix finds=delete | VISUAL='rm -rf ~' git tag -a v1
+posix finds=delete | GIT_EXTERNAL_DIFF='rm -rf ~' git diff
+posix finds=delete | GIT_ASKPASS='rm -rf ~' git fetch
+posix finds=delete | SSH_ASKPASS='rm -rf ~' git fetch
+posix finds=delete | GIT_PROXY_COMMAND='rm -rf ~' git fetch git://x/y
+posix finds=run_input | GIT_SSH=/bin/sh git fetch
+posix finds=unknown reason="runs a command only known when it runs" | GIT_SSH_COMMAND="$cmd" git fetch
+posix finds=unknown reason="runs a command only known when it runs" | GIT_SSH_COMMAND="ssh -i $key" git fetch
+posix safe | GIT_SSH_COMMAND='ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes' git fetch
+posix safe | GIT_SSH=ssh git fetch
+posix safe | GIT_PAGER=cat git log
+posix safe | GIT_PAGER= git log
+posix safe | PAGER='less -R' git log
+posix safe | EDITOR=vim git commit
+posix safe | GIT_SSH_COMMAND='rm -rf ~' ls
+posix safe | X='rm -rf ~'; export X; git fetch
+# The same on Windows: PowerShell's `$env:` and cmd's `set`, the name in
+# any case; git runs it through the sh it ships with.
+powershell finds=delete | $env:GIT_SSH_COMMAND = 'rm -rf ~'; git fetch
+powershell finds=delete | $env:git_ssh_command = 'rm -rf ~'; git fetch
+cmd finds=delete | set GIT_SSH_COMMAND=rm -rf ~&& git fetch
+cmd finds=delete | set "GIT_PAGER=rm -rf ~" && git log
+
+# The other programs that run a command a variable names.
+posix finds=delete | RSYNC_RSH='rm -rf ~' rsync a host:
+posix finds=delete | MANPAGER='rm -rf ~' man ls
+posix finds=delete | PAGER='rm -rf ~' man ls
+posix finds=delete | LESSOPEN='|rm -rf ~ %s' less x
+posix finds=delete | LESSOPEN='||rm -rf ~ %s' less x
+posix finds=delete | EDITOR='rm -rf ~' crontab -e
+posix finds=delete | VISUAL='rm -rf ~' crontab -e
+posix finds=delete | SUDO_EDITOR='rm -rf ~' sudoedit /etc/hosts
+posix finds=delete | SYSTEMD_PAGER='rm -rf ~' journalctl -u x
+posix finds=delete | SYSTEMD_EDITOR='rm -rf ~' systemctl edit x
+posix finds=delete | GH_PAGER='rm -rf ~' gh pr list
+posix finds=delete | AWS_PAGER='rm -rf ~' aws s3 ls
+posix finds=delete | KUBE_EDITOR='rm -rf ~' kubectl edit deploy/x
+posix finds=delete | SSH_ASKPASS='rm -rf ~' ssh-add
+posix finds=delete | SVN_SSH='rm -rf ~' svn up
+posix finds=delete | HGEDITOR='rm -rf ~' hg commit
+posix finds=delete | BAT_PAGER='rm -rf ~' bat x
+posix safe | LESSOPEN='| lesspipe %s' less x
+posix safe | PAGER=cat man ls
+# A program that runs it through the system's shell runs it through cmd on
+# Windows. psql runs its pager and its editor there too, a program the
+# guard does not read on a Windows line.
+powershell finds=delete | $env:GH_PAGER = 'cmd /c rd /s /q C:\\Users\\me'; gh pr list
+powershell finds=unknown reason="runs a program from a database client" | $env:PAGER = 'rm -rf ~'; psql -c 'select 1'
+cmd finds=unknown reason="runs a program from a database client" | set PAGER=rm -rf ~&& psql -c "select 1"
+
+# OpenSSH runs `ProxyCommand`, `LocalCommand` and `KnownHostsCommand`
+# through the user's shell, the key in any case, after the host too; `scp
+# -S` and `sftp -S` connect with a program, and `sftp -D` runs a server.
+posix finds=delete | ssh -o ProxyCommand='rm -rf ~' host
+posix finds=delete | ssh -oProxyCommand='rm -rf ~' host
+posix finds=delete | ssh -o 'proxycommand rm -rf ~' host
+posix finds=delete | ssh host -o ProxyCommand='rm -rf ~'
+posix finds=delete | ssh -o LocalCommand='rm -rf ~' -o PermitLocalCommand=yes host
+posix finds=delete | ssh -o KnownHostsCommand='rm -rf ~' host
+posix finds=delete | scp -o ProxyCommand='rm -rf ~' a host:
+posix finds=delete | sftp -o ProxyCommand='rm -rf ~' host
+posix finds=delete | autossh -M 0 -o ProxyCommand='rm -rf ~' host
+posix finds=delete | sftp -D 'rm -rf ~' host
+posix finds=run_input | scp -S /bin/sh a host:
+posix finds=unknown | ssh -o "ProxyCommand=$x" host
+posix finds=unknown | ssh -o "$opt" host
+posix safe | ssh -o ProxyCommand='ssh -W %h:%p jump' host
+posix safe | ssh -o ProxyCommand=none host
+posix safe | ssh -o StrictHostKeyChecking=no host
+posix safe | ssh -o "StrictHostKeyChecking=$x" host
+cmd finds=delete | ssh -o ProxyCommand="cmd /c rd /s /q C:\\Users\\me" host
+
+# The programs other options name.
+posix finds=run_input | sort --compress-program=sh x
+posix finds=run_input | sort --compress-prog sh x
+posix finds=delete | less '+!rm -rf ~' x
+posix finds=delete | less '+|arm -rf ~' x
+posix finds=run_input | rg --pre sh x
+posix safe | sort --compress-program=gzip x
+posix safe | less +G x
+posix safe | rg --pre ./filter x
+
+# git's own subcommands that run a command their options name.
+posix finds=delete | git rebase -x 'rm -rf ~' HEAD~1
+posix finds=delete | git rebase --exec='rm -rf ~' HEAD~1
+posix finds=delete | git rebase -ix 'rm -rf ~' HEAD~1
+posix finds=delete | git bisect run rm -rf ~
+posix finds=delete | git grep --open-files-in-pager='rm -rf ~' x
+posix finds=delete | git grep -O'rm -rf ~' x
+posix finds=delete | git difftool -x 'rm -rf ~'
+posix finds=delete | git clone --upload-pack='rm -rf ~' ../r
+posix finds=delete | git clone -u 'rm -rf ~' ../r
+posix finds=delete | git fetch --upload-pack='rm -rf ~' ../r
+posix finds=delete | git push --receive-pack='rm -rf ~' ../r
+posix finds=delete | git send-email --sendmail-cmd='rm -rf ~' x.patch
+posix safe | git rebase -x 'cargo test' HEAD~3
+posix safe | git bisect run cargo test
+
+# fd runs the command after `-x` or `-X` for what it finds, a path only
+# known when it runs.
+posix finds=delete reason="deletes a path only known when it runs" | fd -x rm -rf
+posix finds=delete | fd . / -X rm -rf {}
+posix safe | fd -e rs -x wc -l
+# fd's short options in a bundle, read as clap reads them: `-x` and `-X` at
+# its end, or with the first word attached.
+posix finds=delete reason="deletes a path only known when it runs" | fd -Hx rm -rf
+posix finds=delete reason="deletes your home directory" | fd -Hx sh -c 'rm -rf ~' \\;
+posix finds=delete | fd -HIx rm -rf ~ \\;
+posix finds=delete | fd . ~ -Hx rm -rf
+posix finds=delete | fd -X=rm
+posix finds=delete | fd -xrm
+posix safe | fd -dx 3
+posix safe | fd -H x
+# A program is read with at most 64 values of its variables.
+posix finds=unreadable reason="runs the command a variable sets too many times to read" | PAGER=a0; PAGER=a1; PAGER=a2; PAGER=a3; PAGER=a4; PAGER=a5; PAGER=a6; PAGER=a7; PAGER=a8; PAGER=a9; PAGER=a10; PAGER=a11; PAGER=a12; PAGER=a13; PAGER=a14; PAGER=a15; PAGER=a16; PAGER=a17; PAGER=a18; PAGER=a19; PAGER=a20; PAGER=a21; PAGER=a22; PAGER=a23; PAGER=a24; PAGER=a25; PAGER=a26; PAGER=a27; PAGER=a28; PAGER=a29; PAGER=a30; PAGER=a31; PAGER=a32; PAGER=a33; PAGER=a34; PAGER=a35; PAGER=a36; PAGER=a37; PAGER=a38; PAGER=a39; PAGER=a40; PAGER=a41; PAGER=a42; PAGER=a43; PAGER=a44; PAGER=a45; PAGER=a46; PAGER=a47; PAGER=a48; PAGER=a49; PAGER=a50; PAGER=a51; PAGER=a52; PAGER=a53; PAGER=a54; PAGER=a55; PAGER=a56; PAGER=a57; PAGER=a58; PAGER=a59; PAGER=a60; PAGER=a61; PAGER=a62; PAGER=a63; PAGER=a64; git log
+# More of the same tables: git's send-email commands, ssh-copy-id, sshfs's
+# `ssh_command` and the ssh settings it hands on, mosh's `--ssh`, less's
+# `!` after other commands, and git clone's own `-c`, read as `git -c`.
+posix finds=delete reason="deletes your home directory" | git send-email --to-cmd='rm -rf ~' x.patch
+posix finds=delete | git send-email --cc-cmd='rm -rf ~' x.patch
+posix finds=delete | git send-email --header-cmd='rm -rf ~' x.patch
+posix finds=delete | ssh-copy-id -o ProxyCommand='rm -rf ~' host
+posix finds=delete | sshfs host:/ mnt -o ssh_command='rm -rf ~'
+posix finds=delete | sshfs host:/ mnt -o reconnect,ProxyCommand='rm -rf ~'
+posix finds=delete | mosh --ssh='rm -rf ~' host
+posix finds=delete | mosh --ssh 'rm -rf ~' host
+posix finds=delete | less '+G!rm -rf ~' x
+posix finds=unknown reason="runs a command through git config" | git clone -c core.sshCommand='rm -rf ~' ssh://x/y
+posix finds=unknown | git clone --config core.sshCommand='rm -rf ~' ssh://x/y
+posix finds=unknown | git clone --config=core.hooksPath=x ssh://x/y
+posix finds=unknown reason="gives git config only known when it runs" | git clone -c "$cfg" ssh://x/y
+posix safe | git clone -c user.name=x ssh://x/y
+posix safe | sshfs host:/ mnt -o reconnect
+# A library OpenSSH is told to load is native code.
+posix finds=unknown reason="loads a library into the program" | ssh -I ./x.so host
+posix finds=unknown reason="loads a library into the program" | ssh -o PKCS11Provider=./x.so host
+posix finds=unknown | ssh -o securitykeyprovider=./x.so host
+posix finds=unknown | scp -o PKCS11Provider=./x.so a host:
+posix safe | ssh -o PKCS11Provider=none host
+# PowerShell's `$null` removes the variable: no command.
+powershell safe | $env:PAGER=$null; git log
+powershell safe | $env:GIT_SSH_COMMAND = $null; git fetch

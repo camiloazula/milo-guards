@@ -687,6 +687,19 @@ posix rules=unknown | cmd /c python < x.py
 cmd rules=delete first=delete reason="deletes your home directory" | bash -c "echo \\"hi\\"; rm -rf ~"
 cmd rules=delete first=delete reason="deletes your home directory" | bash -c ^"rm -rf ~^"
 cmd rules=unreadable | bash -c "echo ^"; rm -rf ~"
+# A `^"` outside quotes is a quote character to cmd that opens no quoted
+# text, so the `&`, `&&`, `|` and redirects after it split the line.
+cmd finds=delete reason="deletes your home directory" | echo ^" & rd /s /q C:\\Users\\me & echo ^"
+cmd finds=delete | echo ^" && rd /s /q C:\\Users\\me && echo ^"
+cmd rules=delete | echo ^" & rd /s /q C:\\Users\\me
+cmd finds=delete reason="deletes your SSH keys" | echo a^"b & del /q C:\\Users\\me\\.ssh\\id_rsa & echo c^"d
+cmd finds=read_secret | echo ^" & type C:\\Users\\me\\.ssh\\id_rsa & echo ^"
+cmd finds=overwrite reason="writes to a shell startup file" | echo ^" > C:\\Users\\me\\.bashrc & echo ^"
+cmd finds=delete | echo ^"x^" & rd /s /q C:\\Users\\me
+# A `^^` is a caret, and the quote after it opens quoted text.
+cmd safe | echo ^^" & rd /s /q C:\\Users\\me & echo "
+cmd safe | echo ^"hello^"
+cmd safe | rem ^" & rd /s /q C:\\Users\\me & echo ^"
 cmd rules=unknown | python -c "print(\\"x\\")"
 cmd safe | bash -c "echo \\"hi\\""
 cmd safe | git commit -m "say \\"hi\\""

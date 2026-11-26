@@ -58,10 +58,14 @@ use tree_sitter::Node;
 
 mod javascript;
 mod python;
+mod scan;
 mod strict;
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub mod testing;
 mod unit;
 
-pub use unit::{Arg, MAX_DEPTH, MAX_LEN, MAX_TREE_DEPTH};
+pub use unit::{Arg, Budget, MAX_DEPTH, MAX_LEN, MAX_TREE_DEPTH};
 
 /// The languages whose code is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,27 +227,100 @@ impl Reading {
 ///
 /// What the reader finds is kept wherever the code comes from and however it
 /// is written; that it found nothing says nothing of whether the code does
-/// nothing (see [`understand`]).
+/// nothing (see [`understand`]). Code with a syntax error is not read
+/// through it: the reading is an [`Act::Unread`] alone (the interpreter
+/// raises before it runs a thing), and so is code the reader stops on, past
+/// the work its [`Budget`] allows. Each call makes a budget of its own and
+/// parses the code again: a caller that asks more than one question of the
+/// same code asks them through one [`Budget`].
 pub fn read(language: Language, code: &str) -> Reading {
-    let mut reading = match language {
-        Language::Python => python::read(code),
-        Language::JavaScript => javascript::read(code),
-    };
-    reading.acts = mark_environment(std::mem::take(&mut reading.acts));
-    reading
+    read_counted(language, code).0
+}
+
+/// [`read`], and what its parses did.
+pub(crate) fn read_counted(language: Language, code: &str) -> (Reading, unit::Spent) {
+    let budget = Budget::new(code.len());
+    let reading = budget.read(language, code);
+    (reading, budget.spent())
+}
+
+impl Budget {
+    /// [`read`] `code` in `language`, within what is left of this budget.
+    #[must_use]
+    pub fn read(&self, language: Language, code: &str) -> Reading {
+        let mut reading = match language {
+            Language::Python => python::read(code, self),
+            Language::JavaScript => javascript::read(code, self),
+        };
+        reading.acts = mark_environment(std::mem::take(&mut reading.acts));
+        reading
+    }
+
+    /// [`understand`] `code` in `language`, within what is left of this
+    /// budget: code whose reading is stopped is not understood.
+    #[must_use]
+    pub fn understand(&self, language: Language, code: &str) -> Understanding {
+        match strict::reads_whole(language, code, self) {
+            Some(imports) if !self.is_spent() => Understanding::Understood { imports },
+            _ => Understanding::NotUnderstood,
+        }
+    }
+
+    /// [`understand_python2`] `code`, within what is left of this budget.
+    #[must_use]
+    pub fn understand_python2(&self, code: &str) -> Understanding {
+        match strict::reads_whole_python2(code, self) {
+            Some(imports) if !self.is_spent() => Understanding::Understood { imports },
+            _ => Understanding::NotUnderstood,
+        }
+    }
+
+    /// [`parses`]: whether `code` in `language` parses whole, within what is
+    /// left of this budget.
+    #[must_use]
+    pub fn parses(&self, language: Language, code: &str) -> bool {
+        match language {
+            Language::Python => python::parses(code, self),
+            Language::JavaScript => javascript::parses(code, self),
+        }
+    }
+
+    /// [`gives_input`], within what is left of this budget.
+    #[must_use]
+    pub fn gives_input(&self, language: Language, code: &str) -> bool {
+        match language {
+            Language::Python => python::gives_input(code, self),
+            Language::JavaScript => javascript::gives_input(code, self),
+        }
+    }
+
+    /// [`gives_shell_a_list`], within what is left of this budget.
+    #[must_use]
+    pub fn gives_shell_a_list(&self, language: Language, code: &str) -> bool {
+        match language {
+            Language::Python => python::gives_shell_a_list(code, self),
+            Language::JavaScript => javascript::gives_shell_a_list(code, self),
+        }
+    }
 }
 
 /// Whether `code` in `language` parses whole: its grammar reads it with no
 /// error, as [`read`] reads it (Python with its line ends as the interpreter
 /// reads them, JavaScript with a hashbang line ended where the language ends
-/// it). Code that does not parse is read all the same, and [`read`] gives an
-/// [`Act::Unread`] for it first; a caller that tells such code from code it
-/// parses but does not follow asks this.
+/// it). Code that does not parse is not read through its error: [`read`]
+/// gives an [`Act::Unread`] alone; a caller that tells such code from code
+/// it parses but does not follow asks this. Code whose parse is stopped,
+/// past the work the grammar may do for it (see [`Budget`] and the crate's
+/// design page), is not said to parse either: it is code not read.
 pub fn parses(language: Language, code: &str) -> bool {
-    match language {
-        Language::Python => python::parses(code),
-        Language::JavaScript => javascript::parses(code),
-    }
+    parses_counted(language, code).0
+}
+
+/// [`parses`], and what its parse did.
+pub(crate) fn parses_counted(language: Language, code: &str) -> (bool, unit::Spent) {
+    let budget = Budget::new(code.len());
+    let answer = budget.parses(language, code);
+    (answer, budget.spent())
 }
 
 /// Whether `code` in `language` may hand a program it starts something to
@@ -256,12 +333,16 @@ pub fn parses(language: Language, code: &str) -> bool {
 /// `c['stdin']`), or a `stdin` taken apart (`const { stdin: s } = spawn(…)`). It is read loosely, by name, on
 /// any call: a caller asks it of code that starts a program, and takes a yes
 /// for "the program may be given input the line does not show". Code that does
-/// not parse may give input.
+/// not parse may give input, and so may code whose parse is stopped.
 pub fn gives_input(language: Language, code: &str) -> bool {
-    match language {
-        Language::Python => python::gives_input(code),
-        Language::JavaScript => javascript::gives_input(code),
-    }
+    gives_input_counted(language, code).0
+}
+
+/// [`gives_input`], and what its parse did.
+pub(crate) fn gives_input_counted(language: Language, code: &str) -> (bool, unit::Spent) {
+    let budget = Budget::new(code.len());
+    let answer = budget.gives_input(language, code);
+    (answer, budget.spent())
 }
 
 /// Whether `code` in `language` may hand a shell a list of words. It answers
@@ -282,12 +363,16 @@ pub fn gives_input(language: Language, code: &str) -> bool {
 /// rest as its arguments, which [`read`] gives as an [`Act::Script`] of the
 /// first word; on Windows the words are joined into the line, which no act
 /// gives, so a caller that writes a line for a Windows shell asks this. Code
-/// that does not parse may.
+/// that does not parse may, and so may code whose parse is stopped.
 pub fn gives_shell_a_list(language: Language, code: &str) -> bool {
-    match language {
-        Language::Python => python::gives_shell_a_list(code),
-        Language::JavaScript => javascript::gives_shell_a_list(code),
-    }
+    gives_shell_a_list_counted(language, code).0
+}
+
+/// [`gives_shell_a_list`], and what its parse did.
+pub(crate) fn gives_shell_a_list_counted(language: Language, code: &str) -> (bool, unit::Spent) {
+    let budget = Budget::new(code.len());
+    let answer = budget.gives_shell_a_list(language, code);
+    (answer, budget.spent())
 }
 
 /// Whether the code is read whole (see [`understand`]).
@@ -336,10 +421,14 @@ pub enum Understanding {
 /// [`Understanding::NotUnderstood`] because the reader has no row for what it
 /// does, whatever [`read`] found in it.
 pub fn understand(language: Language, code: &str) -> Understanding {
-    match strict::reads_whole(language, code) {
-        None => Understanding::NotUnderstood,
-        Some(imports) => Understanding::Understood { imports },
-    }
+    understand_counted(language, code).0
+}
+
+/// [`understand`], and what its parse did.
+pub(crate) fn understand_counted(language: Language, code: &str) -> (Understanding, unit::Spent) {
+    let budget = Budget::new(code.len());
+    let understood = budget.understand(language, code);
+    (understood, budget.spent())
 }
 
 /// Whether `code` that Python 2 runs is read whole: the same subset as
@@ -349,10 +438,7 @@ pub fn understand(language: Language, code: &str) -> Understanding {
 /// in, and `builtins` is no built-in module there (it is `__builtin__`), so a
 /// file of that name in the folder would run.
 pub fn understand_python2(code: &str) -> Understanding {
-    match strict::reads_whole_python2(code) {
-        None => Understanding::NotUnderstood,
-        Some(imports) => Understanding::Understood { imports },
-    }
+    Budget::new(code.len()).understand_python2(code)
 }
 
 /// Whether Python, when it reads `code` as bytes (from its input, or the
@@ -378,14 +464,20 @@ pub(crate) struct Ancestor<'t> {
 /// recursion so a deep tree cannot overflow the stack. `visit` is given the
 /// node, the field it fills in its parent, and the nodes above it (the root
 /// first), so no reader asks the tree for a node's parent, which walks it from
-/// the top; it returns whether to go on.
+/// the top; it returns whether to go on. The walk stops where `budget` is
+/// spent.
 pub(crate) fn walk<'t>(
+    budget: &Budget,
     root: Node<'t>,
     mut visit: impl FnMut(Node<'t>, Option<&'static str>, &[Ancestor<'t>]) -> bool,
 ) {
     let mut cursor = root.walk();
     let mut above: Vec<Ancestor<'t>> = Vec::new();
     loop {
+        // Each node visited is a unit of the reader's own work.
+        if !budget.walk(1) {
+            return;
+        }
         let node = cursor.node();
         let field = cursor.field_name();
         if !visit(node, field, &above) {
@@ -510,16 +602,37 @@ fn read_path(parts: Parts, code: &str) -> Arg {
 /// judged. Past [`MAX_CHOICES`] lists the words that are left are each one
 /// word only known when it runs. A word with no choice is one only known
 /// when it runs too.
+///
+/// A word with one choice is put at the end of each list as it is, so a
+/// list of many words is built in time that grows with its words, not with
+/// their square: only a word with several choices copies the lists, and
+/// that can happen only a few times before [`MAX_CHOICES`] is reached.
 pub(crate) fn argument_lists(words: Vec<Vec<Arg>>) -> Vec<Vec<Arg>> {
+    argument_lists_counted(words).0
+}
+
+/// [`argument_lists`], and how many arguments it put in a list, copied or
+/// for the first time: the work it did.
+fn argument_lists_counted(words: Vec<Vec<Arg>>) -> (Vec<Vec<Arg>>, usize) {
     let mut lists: Vec<Vec<Arg>> = vec![Vec::new()];
+    let mut put = 0_usize;
     for choices in words {
-        let choices =
+        let mut choices =
             if choices.is_empty() || lists.len().saturating_mul(choices.len()) > MAX_CHOICES {
                 let shown = choices.first().map_or("an argument", Arg::text);
                 vec![Arg::Unknown(shorten(shown))]
             } else {
                 choices
             };
+        if choices.len() == 1 {
+            if let Some(only) = choices.pop() {
+                for list in &mut lists {
+                    list.push(only.clone());
+                }
+                put = put.saturating_add(lists.len());
+            }
+            continue;
+        }
         lists = lists
             .iter()
             .flat_map(|list| {
@@ -530,8 +643,9 @@ pub(crate) fn argument_lists(words: Vec<Vec<Arg>>) -> Vec<Vec<Arg>> {
                 })
             })
             .collect();
+        put = put.saturating_add(lists.iter().map(Vec::len).sum::<usize>());
     }
-    lists
+    (lists, put)
 }
 
 /// The longest string worked out from names the code sets: a longer one is
@@ -545,7 +659,7 @@ pub(crate) const MAX_STRING: usize = 4 * 1024;
 /// The most bytes of strings noted for all names together: past it the name
 /// that went over is dropped, not read as any string. A few times the
 /// longest line, so the strings a line writes out are all noted.
-const MAX_NOTED: usize = 4 * MAX_LEN;
+const MAX_NOTED: usize = 4 * unit::MEASURED_LEN;
 
 /// The most paths one piece of code reads out of names: past it the read is
 /// of code the reader does not follow. A name read with every string it holds
@@ -1056,6 +1170,48 @@ pub(crate) fn loads(specifier: &str, code: &str) -> Option<Act> {
         Foreign::Downloaded => Act::Downloaded(shorten(code)),
         Foreign::Outside => Act::Loads(shorten(code)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{argument_lists_counted, Arg};
+
+    fn word(text: &str) -> Vec<Arg> {
+        vec![Arg::Known(text.to_string())]
+    }
+
+    #[test]
+    fn a_long_argument_list_is_built_in_work_that_grows_with_it() {
+        // `subprocess.run([x, x, …])` at the length limit: one list, each
+        // word put in it once, not the list copied at each word.
+        let words: Vec<Vec<Arg>> = (0..20_000).map(|_| word("a")).collect();
+        let (lists, put) = argument_lists_counted(words);
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].len(), 20_000);
+        assert_eq!(put, 20_000);
+    }
+
+    #[test]
+    fn words_of_several_choices_copy_the_lists_a_few_times_at_most() {
+        // Eight words of two strings each, after and before many of one:
+        // the lists double eight times, and each copy is of what is there,
+        // so the work is at most twice the arguments of the lists made.
+        for at_end in [false, true] {
+            let choices = || vec![Arg::Known("p".to_string()), Arg::Known("q".to_string())];
+            let plain = (0..2_000).map(|_| word("a"));
+            let several = (0..8).map(|_| choices());
+            let words: Vec<Vec<Arg>> = if at_end {
+                plain.chain(several).collect()
+            } else {
+                several.chain(plain).collect()
+            };
+            let (lists, put) = argument_lists_counted(words);
+            assert_eq!(lists.len(), 256, "{at_end}");
+            let made: usize = lists.iter().map(Vec::len).sum();
+            assert_eq!(made, 256 * 2_008, "{at_end}");
+            assert!(put <= 2 * made, "{at_end}: {put} for {made}");
+        }
+    }
 }
 
 /// The README's example, compiled and run with the doctests so it cannot

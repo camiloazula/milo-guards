@@ -13,9 +13,11 @@
 //!   understood though it imports when it runs, or not understood) for
 //!   `python` and `javascript`; `understand=` alone for `python2`
 //!   (`understand_python2`); `other_encoding=yes|no`
-//!   (`declares_other_encoding`) for `python`; `parses=yes|no` (`parses`)
-//!   `input=yes|no` (`gives_input`) and `shell_list=yes|no`
-//!   (`gives_shell_a_list`) for `python` and `javascript`;
+//!   (`declares_other_encoding`) for `python`; `parses=yes|no` (`parses`),
+//!   `stops=yes|no` (whether the reader stops on it: its budget is spent),
+//!   `input=yes|no` (`gives_input`) and
+//!   `shell_list=yes|no` (`gives_shell_a_list`) for `python` and
+//!   `javascript`;
 //!   `data_url=yes|no`
 //!   (`is_data_url`) and `foreign=yes|no` (`is_foreign_module`) for
 //!   `module`.
@@ -37,7 +39,7 @@ use format::{Record, Word};
 use milo_guards_code::Language::{JavaScript, Python};
 use milo_guards_code::{
     declares_other_encoding, gives_input, gives_shell_a_list, is_data_url, is_foreign_module,
-    parses, read, understand, understand_python2, Understanding,
+    parses, read, understand, understand_python2, Budget, Understanding,
 };
 
 use super::shown;
@@ -60,10 +62,18 @@ impl What {
                 "understand",
                 "other_encoding",
                 "parses",
+                "stops",
                 "input",
                 "shell_list",
             ],
-            Self::JavaScript => &["acts", "understand", "parses", "input", "shell_list"],
+            Self::JavaScript => &[
+                "acts",
+                "understand",
+                "parses",
+                "stops",
+                "input",
+                "shell_list",
+            ],
             Self::Python2 => &["understand"],
             Self::Module => &["data_url", "foreign"],
         }
@@ -128,6 +138,11 @@ pub fn answer(case: &Case, field: &str) -> String {
         (What::Python2, "understand") => understanding(understand_python2(code)).to_string(),
         (What::Python, "other_encoding") => yes(declares_other_encoding(code)),
         (What::Python | What::JavaScript, "parses") => yes(parses(language, code)),
+        (What::Python | What::JavaScript, "stops") => {
+            let budget = Budget::new(code.len());
+            let _ = budget.parses(language, code);
+            yes(budget.is_spent())
+        }
         (What::Python | What::JavaScript, "input") => yes(gives_input(language, code)),
         (What::Python | What::JavaScript, "shell_list") => yes(gives_shell_a_list(language, code)),
         (What::Module, "data_url") => yes(is_data_url(code)),

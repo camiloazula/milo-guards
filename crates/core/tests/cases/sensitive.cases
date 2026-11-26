@@ -218,6 +218,25 @@ paths d cwd=D:\\work home=C:\\Users\\me workspace=D:\\work workspace=C:\\Users\\
 windows@d place=inside | D:x
 windows@d place=unknown | C:x
 windows@d place="secret:your SSH keys" | C:\\Users\\me\\.ssh\\id_rsa
+# An administrative share of this machine is its disk, and a share as
+# spelled, which is outside: the more serious wins. Another machine's share,
+# and a share of this machine that is not a disk's, are only shares.
+windows place="secret:your SSH keys" | \\\\localhost\\C$\\Users\\me\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | \\\\LOCALHOST\\c$\\Users\\me\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | \\\\127.0.0.1\\C$\\Users\\me\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | \\\\127.1.2.3\\C$\\Users\\me\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | \\\\::1\\C$\\Users\\me\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | \\\\0--1.ipv6-literal.net\\C$\\Users\\me\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | \\\\?\\UNC\\localhost\\C$\\Users\\me\\.ssh\\id_rsa
+windows place="secret:your SSH keys" | //localhost/C$/Users/me/.ssh/id_rsa
+windows place=home | \\\\localhost\\C$\\Users\\me
+windows place="top:a system folder" | \\\\localhost\\C$\\Windows
+windows place=outside | \\\\localhost\\C$\\Users\\me\\dev\\repo\\src\\x.rs
+windows place=outside | \\\\server\\C$\\Users\\me\\.ssh\\id_rsa
+windows place=outside | \\\\localhost\\share\\Users\\me\\.ssh\\id_rsa
+windows place=outside | \\\\localhost\\CC$\\Users\\me\\.ssh\\id_rsa
+windows place=outside | \\\\128.0.0.1\\C$\\Users\\me\\.ssh\\id_rsa
+windows place=outside | \\\\127.0.0.256\\C$\\Users\\me\\.ssh\\id_rsa
 # POSIX has no drives.
 posix place=inside | C:x
 

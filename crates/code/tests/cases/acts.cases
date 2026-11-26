@@ -103,3 +103,14 @@ javascript acts="environment, started [script ls]" | process.env.NODE_OPTIONS = 
 javascript acts="" | console.log(1)
 javascript acts="unread" | if (
 javascript acts="remove /home/me" | function f() { require('fs').rmSync('/home/me') }
+# Code with an error is not read through it: unread alone, and not
+# understood; so is code whose recovery from an error goes round with no
+# end, which is stopped where the recovery starts.
+javascript acts="unread" understand=no | c(.c(''.(X%'''"';c(=
+javascript acts="unread" understand=no | (c(''.(X%'''"';c(=
+javascript acts="unread" understand=no | c(.c(''.(X%'''"';c(;
+javascript acts="unread" understand=no | x;\nc(.c(''.(X%'''"';c(=
+javascript acts="javascript c(.c(''.(X%'''\"';c(=" understand=no | eval("c(.c(''.(X%'''\\"';c(=")
+# Literal code with an error raises before it runs: what is read beside it
+# is kept.
+javascript acts="javascript c(.c(''.(X%'''\"';c(=, remove /home/me" | const m = require('fs'); eval("c(.c(''.(X%'''\\"';c(="); m.rmSync('/home/me')

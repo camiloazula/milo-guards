@@ -3,3 +3,28 @@
 # CONTRIBUTING.md.
 
 posix safe | eval eval eval : hi
+
+# A NUL is no character a program can be handed, and a shell fed the line
+# drops it: a line that holds one is unreadable, in every shell. A POSIX
+# line typed into a terminal is read by the terminal first, which acts on
+# every C0 control character but a tab and a line break (a carriage return
+# only before a line feed) and on DEL, quoted or not: such a line is
+# unreadable too.
+posix rules=unreadable first=unreadable reason="holds a NUL character" | r\u{0}m -rf ~
+posix finds=unreadable | ec\u{0}ho hi
+powershell finds=unreadable reason="holds a NUL character" | r\u{0}m -r C:\\Users\\me
+posix finds=unreadable reason="holds a control character a terminal acts on" | echo hi\u{15}rm -rf ~
+posix finds=unreadable | echo hi\u{8}
+posix finds=unreadable | echo hi\u{7f}
+posix finds=unreadable | echo hi\u{17}
+posix finds=unreadable | echo hi\u{4}
+posix finds=unreadable | echo hi\u{3}
+posix finds=unreadable | echo hi\u{16}
+posix finds=unreadable | echo hi\u{1a}
+posix finds=unreadable | echo 'a\u{1b}[31mb'
+posix finds=unreadable | echo hi\rrm -rf ~
+posix finds=delete | echo hi\r\nrm -rf ~
+posix safe | echo a\tb
+posix safe | printf 'a\\tb\\n'
+powershell safe | Write-Output hi\u{15}
+cmd safe | echo hi\u{15}

@@ -600,6 +600,24 @@ pub(super) fn tmux(args: &[Arg]) -> Launch {
 /// cmd its words as one command line (see [`command_line`]), which cmd reads
 /// by its own rules.
 pub(super) fn cmd(args: &[Arg], shell: Shell) -> Launch {
+    // MSYS2 and Git Bash hand a word that starts with `//` to a Windows
+    // program with one `/` off, so a POSIX line writes cmd's switches so
+    // (`cmd //c "rd /s /q x"`, `cmd //c del //q x`).
+    let unescaped: Vec<Arg>;
+    let args = if shell == Shell::Posix {
+        unescaped = args
+            .iter()
+            .map(
+                |arg| match arg.known().and_then(|text| text.strip_prefix('/')) {
+                    Some(rest) if rest.starts_with('/') => Arg::Known(rest.to_string()),
+                    _ => arg.clone(),
+                },
+            )
+            .collect();
+        unescaped.as_slice()
+    } else {
+        args
+    };
     let line;
     let args = if shell == Shell::Cmd {
         args
@@ -954,7 +972,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         unread_item: false,
         listed: Vec::new(),
         joined: Vec::new(),
-        argument_variables: Rc::default(),
+        argument_variables: unit::Noted::default(),
         depth: unit.depth,
         names: unit.names.clone(),
         place: unit.place.clone(),
@@ -1660,7 +1678,9 @@ fn package_runner(key: &str, unit: &Unit) -> Launch {
         }
         // `uv run file.py` and `uv run --script file` run Python on the file,
         // and `uv run -` on its input: read like `python file`.
-        "uv" if program.is_some() && uv_script(args).is_some() => return Launch::Itself,
+        "uv" if program.is_some() && uv_script(args, unit.shell).is_some() => {
+            return Launch::Itself
+        }
         "uv" if program.is_some_and(|at| reads_input(&args[at])) && uv_run(args).is_some() => {
             return runner_in(key, args, end, Launch::Reads(Reads::Interpreter));
         }
@@ -1795,7 +1815,7 @@ fn uv_run(args: &[Arg]) -> Option<(usize, Option<usize>)> {
 /// The file `uv run` hands to Python: the command when it is a `.py` or
 /// `.pyw` file, or whatever follows `--script`, `-s` or `--gui-script`.
 /// `None` for anything else, and for a module (`-m`).
-pub(crate) fn uv_script(args: &[Arg]) -> Option<&Arg> {
+pub(crate) fn uv_script(args: &[Arg], shell: Shell) -> Option<&Arg> {
     let (from, at) = uv_run(args)?;
     let at = at?;
     let program = &args[at];
@@ -1815,9 +1835,14 @@ pub(crate) fn uv_script(args: &[Arg]) -> Option<&Arg> {
         return None;
     }
     let file = program.known().is_some_and(|text| {
-        std::path::Path::new(text)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("py") || ext.eq_ignore_ascii_case("pyw"))
+        // Read as the shell's system reads it and as a POSIX one does, so a
+        // word whose last name is only the extension on Windows (`C:.py` is
+        // the name `.py` there) is still the Python file the line wrote.
+        [shell, Shell::Posix].into_iter().any(|shell| {
+            crate::path::extension(text, shell).is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("py") || ext.eq_ignore_ascii_case("pyw")
+            })
+        })
     });
     (file || own.iter().filter_map(Arg::known).any(is_flag)).then_some(program)
 }
@@ -1889,7 +1914,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         unread_item: false,
         listed: Vec::new(),
         joined: Vec::new(),
-        argument_variables: Rc::default(),
+        argument_variables: unit::Noted::default(),
         depth: unit.depth,
         names: unit.names.clone(),
         place: unit.place.clone(),

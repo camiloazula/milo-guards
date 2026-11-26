@@ -6,6 +6,24 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+## 0.2.0 (2026-11-26)
+
+A minor release, with security fixes. What a caller compiles against grows:
+a new guard, `milo-guards-script`, for the Python and JavaScript an agent
+runs directly; the shell guard's `locate`, which says where in the line
+each finding is; the URL guard's `judge_address`; the code reader's
+`Budget`; and `Paths` that name secret files, drive mounts, a Windows home
+and resolved links. The crates declare Rust 1.90. The security fixes: the
+code reader holds every reading of Python and JavaScript to a bounded
+amount of work, reads no code through a syntax error, and reads code of at
+most 3 KiB, a deliberate limit of this release (longer code is not read:
+`unreadable` to the script guard, `unknown` to the shell guard); and the
+guards read more commands, paths and spellings for what they do (the
+answers that change, below), so some answers are more serious than 0.1.4's.
+Of the 2,934 everyday answers, 2,908 are safe: a false-alarm share of 0.9 %
+(0.3 % in a POSIX shell, none in PowerShell, 4.6 % in cmd). Their record
+is new in this release.
+
 The crates declare an older Rust (#312): `rust-version` is 1.90, where it
 was 1.99, the Rust this repository's own checks are pinned to. Nothing a
 caller compiles against or a guard answers changed.
@@ -153,7 +171,10 @@ which is a minor bump.
   risky is safe (`print(1)`); code not read whole is `unknown`, never safe;
   Python that declares another encoding is `unknown`, as it runs from a file
   or its input; code too long, too deep or that does not parse is
-  `unreadable`.
+  `unreadable`, and so is code the reader stops on, past the work it may
+  do for it (`takes too long to read`; every reading the guard makes of one
+  piece of code draws from one `Budget`). Code that does not parse is not
+  read through its error: nothing in it is found.
 - `run_program` is the new guard's own rule: code that starts a program or
   runs a command in a shell. The guard does not judge the program, which is
   the shell guard's; the finding's target is the command as a line of the
@@ -176,7 +197,8 @@ which is a minor bump.
 - The code reader has `parses(language, code)`, whether the code's grammar
   reads it with no error, `gives_input(language, code)`, whether the code
   may give a program it starts input, and `gives_shell_a_list(language,
-  code)`, whether it may hand a shell a list of words.
+  code)`, whether it may hand a shell a list of words. Code the reader stops
+  on (below) does not parse, and may give input and hand a shell a list.
 - No answer of another guard changed. A front-door test
   (`crates/guards/tests/agree_code.rs`) holds the new guard's whole answer,
   combined with the shell guard's for each program, to the shell guard's for
@@ -397,6 +419,253 @@ and a new field on
 - The case files' `paths` line reads `link=` followed by its `to=` (an empty
   `to=` is a target the guard cannot place); core's case files ask `linked`
   and `lost` too.
+
+The reader of Python and JavaScript holds every reading to a budget, and
+reads no code through a syntax error: a new public type, part of the same
+minor bump. These are security fixes: code the reader could take very long
+to parse, or a lot of memory or stack to parse, is now answered within a
+bounded amount of work.
+
+- `milo-guards-code`: code with a syntax error is not read through it.
+  `read` gives an `Unread` act alone, where it gave one beside what it found
+  past the error; `understand` says `NotUnderstood` and `parses` no, as
+  before; `gives_input` and `gives_shell_a_list` say it may. The parse stops
+  where tree-sitter starts to recover from the error, so code whose error
+  recovery was costly is answered so in milliseconds. Literal code `exec` or
+  `eval` run with an error in it raises before it runs, as before: it is the
+  code act it is, and what is beside it is read.
+- `milo-guards-code`: `Budget` is the work the reader may do for code, or
+  for a line that holds code, counted as the grammars and the reader's walk
+  go and never by a clock (see Limits in `docs/design/code.md`).
+  `Budget::new(len)` makes one (a length past the reader's limit is the
+  limit); `Budget::read`, `understand`, `understand_python2`, `parses`,
+  `gives_input` and `gives_shell_a_list` ask the same questions as the
+  functions of those names within it, each question asked again of the same
+  code answered from the tree the budget keeps, with no parse;
+  `Budget::is_spent` says whether a reading within it was stopped. A budget
+  is `Send`, not `Sync`, and its `Debug` shows what it spent, never the code.
+  The functions each make one for the code they are given. Past it a
+  reading is stopped and the code is not read: `read` gives an `Unread` act
+  (alone when the code's own parse was stopped; beside what the walk found
+  around literal code `eval` or `exec` runs, when that parse was),
+  `understand` says `NotUnderstood`, `parses` says no, and `gives_input` and
+  `gives_shell_a_list` say yes, also when a question's own walk runs out part
+  of the way; every reading after it within the same budget is stopped
+  before it starts.
+- `milo-guards-code`: code is scanned before it is parsed, and not read
+  when it is longer than `MAX_LEN` (`read` and `understand` refuse it
+  themselves), when its openers nest deeper than `MAX_TREE_DEPTH`, or when
+  it holds more than a few of the shapes the grammars read two ways at once
+  at a cost that grows faster than the code, counted both as the text is
+  read and on its bytes alone; Python with more than four stars where Python
+  allows none (after an operator, or a keyword that takes an operand) is
+  code that does not parse, as Python says. Code with more than four spaces
+  outside its strings and comments that a grammar passes over but that are
+  not ASCII ones (a zero-width space, U+2060, a no-break space, the vertical
+  tab) is not read. No real file of 73,696 is refused, and every reading
+  within these bounds fits a thread of 1 MiB.
+- `milo-guards-shell`: every reading of the inline code of a line, and of the
+  code inside that code, is held to one budget for the line, so nesting and
+  pieces do not multiply the work. Code the reader stops on, or that has a
+  syntax error, given to `node -e`, `python3 -c`, on an interpreter's input
+  or in a here-document, is `unknown`, `runs code the guard does not read`,
+  and `effect` is `Unknown`, with what the line does beside it kept.
+- `milo-guards-script`: one budget for each piece of code, shared by its
+  judgings on each set of the paths; code the reader stops on is
+  `unreadable`, `takes too long to read`.
+- `milo-guards-code`: a list of arguments to a program is built in time
+  that grows with it, and a chain of assignments is followed to its end once
+  for the chain; past some hundred links the reader's own work stops it.
+- What changes for code that read before: code with a syntax error is not
+  read for the acts beside the error. In the shell guard a line that was
+  `delete` and `unknown` for such code is `unknown` alone; in the script
+  guard it was `unreadable` already, and is so alone. Of some 28,000 files
+  of real Python and JavaScript, 28 change: 22 of JavaScript with Flow
+  types, an editor's backup of a half-written file, and 7 of runnable
+  JavaScript the grammar does not read (private class fields after a line
+  with no semicolon in `undici`, `export { _null as null }` in `zod`, and
+  two more), in which the earlier reader found no file act. Code in syntax
+  newer than the grammars know runs, and is not read either: Python 3.15's
+  `lazy import` and `lazy from … import`, type parameter defaults (`def f[T
+  = int]()`), JavaScript's `export { _null as null }`: such code is not
+  read, as code past the length limit is not, and is `unknown` in the shell
+  guard where an act in it was found before. This is a known limit; reading
+  a tree with a few small errors beside them is possible later work. Two
+  case lines of the script guard (`import shutil; shutil.rmtree('/home/me');
+  if 1:`, and its JavaScript twin) no longer find the delete. Python with a
+  long run of comment lines in or after a block, read with tree-sitter's
+  log, is not read past the bytes handed (no real file has such a run); and
+  valid code longer than a kilobyte or two is read with tree-sitter's log,
+  since only the log sees two ways of reading the code that never part.
+
+The reader of Python and JavaScript reads code of at most 3 KiB, a
+deliberate limit of this release: `milo_guards_code::MAX_LEN` (and the
+script guard's `MAX_LEN`, the same) is 3 KiB, where it was 64 KiB.
+
+- Longer code is not read, before it is scanned or parsed: `read` gives an
+  `Unread` act, `understand` says `NotUnderstood` and `parses` no. The
+  script guard calls it `unreadable`, `is too long to read`; the shell
+  guard calls the inline code of a line that long (`python3 -c`, `node -e`,
+  an interpreter's input, a here-document) `unknown`, `runs code the guard
+  does not read`, as it calls any code the reader does not read. A shell
+  line's own limit stays 64 KiB.
+- The limit bounds the cost of a reading whatever the scan before a parse
+  makes of the code: within it, every costly shape measured costs at most
+  0.16 s and 221 MB for a call, a judged piece of code or a shell line in a
+  release build, and fits a thread of 1 MiB (the measurements are in
+  `docs/design/code.md`, The length limit).
+- Many real scripts are longer: of the corpora the limits were measured on,
+  some three in five files of Python and one in three of JavaScript (up to
+  64 KB) are, and the script guard no longer judges them act by act. No case
+  line and no everyday answer changed: none holds code that long.
+
+Answers that change, with no new rule and no change to the API: some
+are more serious than 0.1.4's.
+
+- `milo-guards-shell`: the command a program starts after its own
+  options is judged as written: Windows' `conhost`, Windows Terminal's
+  `wt` (each tab and pane), `psexec`, `PsExec64` and `paexec` (`elevated`
+  too), `gsudo` with its own options, `nircmd`, `pcalua`, and rundll32's
+  `ShellExec_RunDLL`, `FileProtocolHandler` and `RouteTheCall`; and on POSIX
+  systems `toybox`, `tsp`, `nq`, `dbus-launch`, `dbus-run-session`,
+  `xvfb-run`, `tini`, `dumb-init`, `runuser`, `sg`, `setpriv`, `numactl`,
+  `cgexec`, `capsh`, `gosu`, `su-exec`, `chpst`, daemontools' `setuidgid`,
+  `envuidgid`, `envdir`, `softlimit`, `setlock` and `pgrphack`,
+  `flatpak-spawn`, `distrobox enter`, `toolbox run`, and a terminal
+  emulator's `-e`, `-x` or `--`. An option the guard does not know given
+  to `conhost`, `wt`, `psexec`, `gsudo`, `tsp`, `nq`, `dbus-launch`,
+  `dbus-run-session`, `runuser`, `setpriv`, `numactl`, `cgexec`,
+  `dumb-init`, `flatpak-spawn` or `toolbox run` makes the command
+  `unreadable`. `Invoke-WmiMethod` and `Invoke-CimMethod` of
+  `Win32_Process` `Create` are `unknown`, as `wmic process call create` is.
+- `milo-guards-shell`: a command a program runs because the line names it
+  in a variable, set in front of the program, with `env`, `export`,
+  PowerShell's `$env:` or cmd's `set`, is read as a line and judged: git's
+  `GIT_SSH_COMMAND`, `GIT_SSH`, pager, editor, external diff, askpass and
+  proxy variables, `RSYNC_RSH`, `LESSOPEN`, `MANPAGER`, and the pager and
+  editor variables of `crontab`, `visudo`, `systemctl` and systemd's other
+  tools, `gh`, `aws`, `kubectl`, `bat`, `svn`, `hg` and OpenSSH. A value
+  only known when it runs is `unknown`; PowerShell's `$null` removes the
+  variable. psql's pager and editor are read on Windows lines too. A
+  program is read with at most 64 values of its variables, and the
+  readings share the bound of `npm_config_call`'s; past either, the line
+  is `unreadable`.
+- `milo-guards-shell`: so is a command an option names: OpenSSH's
+  `ProxyCommand`, `LocalCommand` and `KnownHostsCommand` settings (for
+  `ssh`, `scp`, `sftp`, `autossh`, `ssh-copy-id` and `sshfs`, with its
+  `ssh_command`), `scp -S`, `sftp -S` and `-D`, `mosh --ssh`, git's `rebase
+  -x`, `bisect run`, `grep -O`, `difftool -x`, `--upload-pack`,
+  `--receive-pack` and `send-email`'s `--sendmail-cmd`, `--to-cmd`,
+  `--cc-cmd` and `--header-cmd`, `sort --compress-program`, a `less`
+  command with `!`, `rg --pre`, and `fd -x` and `-X`, whose command is
+  judged as written. `git clone -c` is read as `git -c` is. A library
+  OpenSSH is told to load (`-I`, `PKCS11Provider`, `SecurityKeyProvider`)
+  is `unknown`. The `effect` of `fd -x rm` and of `less +'!rm x' f` is
+  `Changes`.
+- `milo-guards-shell`: the `effect` of a pattern that starts in a folder
+  above every workspace folder is `ReadsOnly(Reach::Beyond)`, whatever its
+  last name (`cat ~/work/*/.env`, `cat ../*/.git/config`, `Get-Content
+  ~\dev\*\.env`); one that starts in a workspace folder is
+  `ReadsOnly(Reach::Workspace)`, in a POSIX shell on Windows too.
+- `milo-guards-url`: `home.arpa` itself is `local_address`, as the names
+  under it are (RFC 8375).
+- `milo-guards-shell`: no answer depends on the host the guard runs on.
+  `effect_paths` orders and keeps the paths it lists by their parts as the
+  system the line is for reads a path, then by how each is read, and
+  `ReadPath`'s `Eq`, `Ord` and `Hash` read them so; the order can differ
+  from 0.1.4's on every host (a path sorts by its parts as written, a `..`
+  among them). The file `uv run` hands to Python and the file `bun run`
+  runs are told by the guard's own reading of the word.
+- `milo-guards-shell`: a program that installs a git hook, or sets
+  `core.hooksPath`, is judged as that write is, from any folder of the
+  workspace and through a package runner: `pre-commit install`, `lefthook
+  install` and `simple-git-hooks` are `overwrite`, "writes to the
+  repository's history"; `husky` and `husky install` are
+  `system_settings`, "sets git config that runs a program", as `git config
+  core.hooksPath` is; `pre-commit autoupdate` is `overwrite`, "writes to a
+  file a tool runs on its own"; `pre-commit try-repo` of a remote
+  repository is `run_downloaded`. `pre-commit run` is safe.
+- `milo-guards-shell`: code a line runs without showing it is `unknown`:
+  a function of a library `rundll32` runs (but those that start a program
+  and `LockWorkStation`) and `pcalua -a x.dll`, "runs code from a library";
+  `mshta` given anything but a file on this machine's disk, "runs code the
+  guard does not read", or `run_downloaded` for one on another machine;
+  `fc` (but `fc -l`), zsh's and ksh's `r` and PowerShell's
+  `Invoke-History`, "runs commands from the shell's history"; and a program
+  started with `LD_PRELOAD`, `LD_AUDIT` or `DYLD_INSERT_LIBRARIES`, "loads
+  a library into the program". `sudo -e FILE` and `sudoedit FILE` edit the
+  file as root, a write judged by where it lands, and the `effect` of `sudo
+  -e /etc/hosts` is `Changes`. nircmd's own commands that change the
+  registry, delete a file or shut the computer down are those findings,
+  and `history -w FILE` writes the file.
+- `milo-guards-shell`: in cmd, a `^"` outside quotes opens no quoted text,
+  as cmd reads it, so the `&`, `&&`, `|` and redirects after it split the
+  line into the commands cmd runs, each judged.
+- `milo-guards-shell`: more spellings of a path are read for the file
+  they name. In cmd, after a `cd` the guard cannot follow, a name that is a
+  key in the home directory is read as that key, as in a POSIX shell and
+  PowerShell (`%USERPROFILE%` is cmd's home). A
+  working directory spelled as a long path (`\\?\C:\…`) is on the drive
+  it names, so a path from that drive's own working directory lands there.
+  `~+` is `$PWD`. A quoted or escaped `~` (`cat "~/../.env"`) is judged
+  both as the home directory and as the name in the working directory the
+  shell hands on, in an argument and in a redirect, and so is a `~` in a
+  path inline Python or JavaScript reads, which they do not expand.
+- `milo-guards-script`: a read of a path that starts with `~` is judged as
+  the home directory's and as the name in the folder the code runs in
+  (`./~/…`), since Python and JavaScript do not expand it.
+- `milo-guards-core`: an administrative share of this machine
+  (`\\localhost\C$\…`, `\\127.0.0.1\C$\…`, `\\::1\C$\…`, and as
+  `\\?\UNC\…`) is placed on its disk as well as a share: `place` gives the
+  more serious of the two, so a key on it is the key. `spelling::network`
+  still calls it a share. The file guard's read of a key through one is
+  `read_secret` beside `network_share`, and the shell guard's is
+  `read_secret`, or `send_secret` for a sender.
+- `milo-guards-script`: a read of a file on a network share is `unknown`,
+  "opens a file on a network share".
+- `milo-guards-shell`: on a Windows machine, a POSIX word that starts
+  with a drive and a separator (`C:/Users/me`, `'C:\Users\me'`) is read as
+  the Windows path, as Git Bash and MSYS2 read it, for every rule that
+  places a path and in the inline code of such a line, so a delete, a read,
+  a write or a send by that spelling is judged by where it lands. `cmd //c` and
+  `cmd //k` in a POSIX line are `cmd /c` and `cmd /k`.
+- `milo-guards-core`: `Resolver::named_secret` also gives core's own
+  words for a key or a credential under a path the caller protects
+  (`your SSH keys` for `~/.ssh/id_rsa` with `~/.ssh` protected), which
+  `place` answers `Protected` for. A read of it is `read_secret` in the
+  shell, file and script guards, a send `send_secret`, and the URL guard's
+  `file:` reason is in core's words; a delete or a write keeps the
+  protected finding.
+- `milo-guards-shell`: every sender reads its words as the program is
+  handed them, as the read rule does: a brace list the shell spells out
+  (for `scp`, `rclone`, `aws s3 cp`, `gh gist create`, `mail -a`, `wget
+  --post-file` and the other senders), the words of a `for` written out in
+  place of its variable, and a Windows name with a stream or a trailing
+  space or dot, each sent, are `send_secret` for a key. `gh
+  release upload` and `release create` send their assets, and `gh`'s `-F`,
+  `--notes-file`, `--body-file`, `api --input` and `api -F key=@FILE` the
+  file they name.
+- `milo-guards-shell`: a copy from another machine writes where it lands
+  on this one: `scp` and `sftp` from `host:`, `rclone` from a remote, and
+  `aws s3`, `gsutil` and `gcloud storage` from a bucket are `overwrite`
+  for a destination such as `~/.ssh/authorized_keys` or `~/.bashrc`, as
+  `rsync` already was. So are curl's `--output-dir`, aria2c's `-d` and
+  `-o`, HTTPie's and xh's `-o`, `bitsadmin /transfer` and
+  `Start-BitsTransfer -Destination`.
+- `milo-guards-shell`: a line that holds a NUL is `unreadable`, "holds
+  a NUL character", in every shell. A POSIX line that holds a C0 control
+  character other than a tab and a line break (a carriage return only
+  before a line feed), or DEL, is `unreadable`, "holds a control character
+  a terminal acts on", wherever it stands in the line.
+- `milo-guards-shell`: a file a program takes its words or its options
+  from is read: `xargs -a FILE`, curl's `-K` and wget's `--config` and `-i`
+  are `read_secret` for a key, and curl's `-K` and wget's `--config` are
+  also `unknown`, "takes options from a file the guard does not read". `git
+  show REV:path`, `git cat-file -p REV:path` and `git blame path` read that
+  file. A script a shell or an interpreter runs by a path outside every
+  workspace folder and temporary folder (`bash ~/.ssh/x`, `python3
+  /opt/x.py`) is `unknown`, "runs a script outside the workspace"; a script
+  in the workspace, `source` and an init script are judged as before.
 
 ## 0.1.4 (2026-11-22)
 

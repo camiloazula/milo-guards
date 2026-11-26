@@ -2585,15 +2585,17 @@ impl Walker<'_> {
                     }
                 }
             } else {
+                let value = self.arg(arg);
                 if let Some(reading) = self.zsh_reading(arg) {
                     readings.push((args.len(), reading));
+                } else if let Some(literal) = literal_tilde(&value, arg, self.source) {
+                    readings.push((args.len(), vec![literal]));
                 }
-                let word = self.arg(arg);
-                let at = self.spot(arg.byte_range(), &word, true);
+                let at = self.spot(arg.byte_range(), &value, true);
                 if keep {
                     words.push(at);
                 }
-                args.push(word);
+                args.push(value);
             }
         }
         // `rm 2>/dev/null -rf ~`: the words the grammar took for more files
@@ -3966,8 +3968,12 @@ impl Walker<'_> {
         // `effect` judges where a read comes from: bash opens
         // `/dev/tcp/HOST/PORT` itself, so a read from it is a connection.
         // zsh with `extendedglob` on opens what its reading of the word
-        // matches; bash, the word as written: both are judged.
-        let reading = self.zsh_reading(destination).unwrap_or_default();
+        // matches; bash, the word as written: both are judged. A quoted `~`
+        // is judged both ways too (see `literal_tilde`).
+        let reading = self
+            .zsh_reading(destination)
+            .or_else(|| literal_tilde(&target, destination, self.source).map(|arg| vec![arg]))
+            .unwrap_or_default();
         if operator == Some("<") {
             self.split.read_at(Shell::Posix, target.clone(), file);
             for reading in &reading {
@@ -3995,6 +4001,22 @@ impl Walker<'_> {
         let source = unit::text(&node, self.source);
         match node.kind() {
             "word" | "number" => {
+                // `~+` is `$PWD`, and read as `$PWD` is (see `variable`).
+                if let Some(rest) = source
+                    .strip_prefix("~+")
+                    .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+                {
+                    let rest = unescape(rest);
+                    return match self.variable("$PWD") {
+                        Arg::Known(pwd) => Arg::Known(format!("{pwd}{rest}")),
+                        _ if rest.is_empty() => Arg::Unknown(source.to_string()),
+                        _ => Arg::Template {
+                            text: format!("{OPAQUE}{rest}"),
+                            source: source.into(),
+                            runs: false,
+                        },
+                    };
+                }
                 let value = unescape(source);
                 // `~` is `$HOME`: once the line sets `HOME`, it is unknown.
                 if value.starts_with('~') && self.split.reassigned("HOME") {
@@ -4239,6 +4261,38 @@ fn unescape(word: &str) -> String {
         }
     }
     value
+}
+
+/// `value`, the word at `node`, as the path it names when the `~` it starts
+/// with is quoted or escaped (`"~/x"`, `'~'/x`, `\~/x`): the shell leaves
+/// it, so the program is handed a name in the working directory (`./~/x`).
+/// A program that expands `~` itself reads the home directory, as the word
+/// is read too, so each is judged. `None` for any other word.
+fn literal_tilde(value: &Arg, node: Node<'_>, source: &str) -> Option<Arg> {
+    let text = value.known().filter(|text| text.starts_with('~'))?;
+    quotes_tilde(node, source).then(|| Arg::Known(format!("./{text}")))
+}
+
+/// Whether the `~` the word at `node` starts with is one the shell does not
+/// expand: escaped (`\~`), in quotes (`"~"`, `'~'`), or after quotes that
+/// hold nothing (`""~`). Asked only of a word whose value starts with `~`:
+/// one from `$HOME` (`"$HOME"/x`) is the home directory.
+fn quotes_tilde(node: Node<'_>, source: &str) -> bool {
+    let first = if node.kind() == "concatenation" {
+        node.named_child(0)
+    } else {
+        Some(node)
+    };
+    let Some(first) = first else {
+        return false;
+    };
+    let text = unit::text(&first, source);
+    match first.kind() {
+        "word" | "number" => text.starts_with("\\~"),
+        "raw_string" => true,
+        "string" => text.starts_with("\"~") || text == "\"\"",
+        _ => false,
+    }
 }
 
 /// Text inside double quotes: a backslash only escapes `"`, `\`, `$` and

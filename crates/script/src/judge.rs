@@ -62,6 +62,9 @@ const PARTIAL: &str = "opens a file whose path is only known when the code runs"
 /// one call may spend: as the shell guard says it.
 const LOST: &str = "reads a path only known when it runs";
 
+/// Why a read of a file on another machine's share is `unknown`.
+const SHARE_READ: &str = "opens a file on a network share";
+
 /// Why a path handed to a call the reader does not know is `unknown`.
 const HANDED: &str = "gives a path to a call the guard does not read";
 
@@ -127,19 +130,42 @@ pub(crate) struct Outcome {
     pub(crate) place_moves: usize,
     /// How many bytes of paths were joined, in all.
     pub(crate) joined_bytes: usize,
+    /// What the readings of the code did, within the one budget they share.
+    #[cfg(feature = "testing")]
+    pub(crate) reader: Option<milo_guards_code::testing::Work>,
 }
 
 /// Judge `code`.
+#[cfg(feature = "testing")]
 pub(crate) fn judge(language: Language, code: &str, paths: &Paths) -> Outcome {
+    judge_within(language, code, paths, reader::Budget::new(code.len())).0
+}
+
+/// Judge `code` within `budget`, and give the budget back: the code judged
+/// again on other paths (the paths as spelled) is read from what the budget
+/// kept, and draws from the same work.
+pub(crate) fn judge_within(
+    language: Language,
+    code: &str,
+    paths: &Paths,
+    budget: reader::Budget,
+) -> (Outcome, reader::Budget) {
     if code.len() > MAX_LEN {
-        return Outcome {
+        let outcome = Outcome {
             findings: vec![finding(Rule::Unreadable, "is too long to read", None)],
             ..Outcome::default()
         };
+        return (outcome, budget);
     }
-    let mut judge = Judge::new(paths);
-    let parses = reader::parses(language, code);
-    if !parses {
+    let mut judge = Judge::within(paths, budget);
+    let parses = judge.budget.parses(language, code);
+    // Code the reader stops on, past the work its grammar may do for it, is
+    // not code that does not parse: it is not read at all, so nothing is
+    // found in it, and it is not read again.
+    let stopped = !parses && judge.budget.is_spent();
+    if stopped {
+        judge.add(Rule::Unreadable, "takes too long to read", shown(code));
+    } else if !parses {
         judge.add(Rule::Unreadable, "does not parse", shown(code));
     }
     // Python honours a coding declaration when it reads code from a file or
@@ -147,26 +173,37 @@ pub(crate) fn judge(language: Language, code: &str, paths: &Paths) -> Outcome {
     if language == Language::Python && reader::declares_other_encoding(code) {
         judge.add(Rule::Unknown, UNREAD, shown(code));
     }
-    judge.apply(language, code, 0, false, !parses);
-    // Code the guard did not read whole is `unknown`, unless a finding of
-    // its own already asks (a delete, a key, something it does not read).
-    // A program is not such a finding: what the program does is the shell
-    // guard's to say, and code that starts one is never read whole.
-    let asks = judge.findings.iter().any(|f| f.rule != Rule::RunProgram);
-    if !asks && !judge.read_whole(language, code) {
-        judge.add(Rule::Unknown, UNREAD_FULLY, shown(code));
+    if !stopped {
+        judge.apply(language, code, 0, false, !parses);
+        // Code the guard did not read whole is `unknown`, unless a finding
+        // of its own already asks (a delete, a key, something it does not
+        // read). A program is not such a finding: what the program does is
+        // the shell guard's to say, and code that starts one is never read
+        // whole.
+        let asks = judge.findings.iter().any(|f| f.rule != Rule::RunProgram);
+        if !asks && !judge.read_whole(language, code) {
+            judge.add(Rule::Unknown, UNREAD_FULLY, shown(code));
+        }
+        // Code the reader stopped on further in (the code it runs, read
+        // again at each depth) is not read in full either.
+        if judge.budget.is_spent() && !judge.findings.iter().any(|f| f.rule == Rule::Unreadable) {
+            judge.add(Rule::Unreadable, "takes too long to read", shown(code));
+        }
     }
     let mut seen = HashSet::new();
     let findings = std::mem::take(&mut judge.findings)
         .into_iter()
         .filter(|found| seen.insert(found.clone()))
         .collect();
-    Outcome {
+    let outcome = Outcome {
         findings,
         judged: judge.judged,
         place_moves: judge.place_moves,
         joined_bytes: judge.joined_bytes.get(),
-    }
+        #[cfg(feature = "testing")]
+        reader: Some(milo_guards_code::testing::spent(&judge.budget)),
+    };
+    (outcome, judge.budget)
 }
 
 /// How a command line starts when the code runs it from where it is.
@@ -204,6 +241,10 @@ struct Here {
 }
 
 struct Judge {
+    /// The work the reader may do for the code: every reading of it, and of
+    /// the code inside it, draws from the one budget, so nesting does not
+    /// multiply the work.
+    budget: reader::Budget,
     resolver: Resolver,
     flavour: Flavour,
     here: Here,
@@ -247,10 +288,16 @@ fn shown(code: &str) -> Option<String> {
 }
 
 impl Judge {
-    fn new(paths: &Paths) -> Self {
+    #[cfg(test)]
+    fn new(paths: &Paths, len: usize) -> Self {
+        Self::within(paths, reader::Budget::new(len))
+    }
+
+    fn within(paths: &Paths, budget: reader::Budget) -> Self {
         let resolver = Resolver::new(paths);
         let flavour = resolver.flavour();
         Self {
+            budget,
             resolver,
             flavour,
             here: Here {
@@ -285,7 +332,7 @@ impl Judge {
     /// in the folder it runs in first for what it imports, run from the
     /// workspace's own folder.
     fn read_whole(&self, language: Language, code: &str) -> bool {
-        match reader::understand(language, code) {
+        match self.budget.understand(language, code) {
             Understanding::NotUnderstood => false,
             Understanding::Understood { imports: false } => true,
             Understanding::Understood { imports: true } => matches!(
@@ -516,7 +563,7 @@ impl Judge {
                 return;
             }
         }
-        let reading = reader::read(language, code);
+        let reading = self.budget.read(language, code);
         if reading.deep {
             self.add(Rule::Unreadable, "nests too deeply to read", None);
         }
@@ -528,7 +575,7 @@ impl Judge {
         // which Windows joins into the line: then none of its programs is
         // one the guard can write as a line there.
         let listed = self.listed_shell;
-        self.listed_shell |= self.windows() && reader::gives_shell_a_list(language, code);
+        self.listed_shell |= self.windows() && self.budget.gives_shell_a_list(language, code);
         let before = self.findings.len();
         // A `chdir` in the code moves its own process; what runs the code
         // stays where it was.
@@ -572,7 +619,7 @@ impl Judge {
         let programs = self.findings[before..]
             .iter()
             .any(|found| found.rule == Rule::RunProgram);
-        if programs && reader::gives_input(language, code) {
+        if programs && self.budget.gives_input(language, code) {
             self.add(Rule::Unknown, GIVEN_INPUT, None);
         }
     }
@@ -585,7 +632,7 @@ impl Judge {
         if depth > MAX_DEPTH || code.len() > MAX_LEN || self.nested > MAX_NESTED_READ {
             return true;
         }
-        let reading = reader::read(language, code);
+        let reading = self.budget.read(language, code);
         reading.deep
             || reading.acts.iter().any(|act| match act {
                 Act::Chdir(_) | Act::Unread(_) => true,
@@ -928,6 +975,16 @@ impl Judge {
                 return;
             }
         }
+        // A share of another machine, which is offered the user's Windows
+        // login, holds what the server gives: the guard cannot say.
+        if self.windows()
+            && path
+                .known()
+                .is_some_and(|text| milo_guards_core::spelling::network(text, self.flavour))
+        {
+            self.add_about(Rule::Unknown, SHARE_READ, path);
+            return;
+        }
         if let Some(doubt) = doubt {
             self.add_about(Rule::Unknown, doubt, path);
         } else if self.lost(path) {
@@ -946,6 +1003,18 @@ impl Judge {
             Arg::Below { folder, .. } => folder,
             Arg::Unknown(_) => return None,
         };
+        // Python and JavaScript do not expand a `~`: `open('~/x')` opens
+        // `./~/x`. The path is read as the home directory's too
+        // (`os.path.expanduser` gives the same text), so each is judged.
+        self.secret_of(text).or_else(|| {
+            text.starts_with('~')
+                .then(|| self.secret_of(&format!("./{text}")))
+                .flatten()
+        })
+    }
+
+    /// The words of the key or credential a read of the path `text` reads.
+    fn secret_of(&self, text: &str) -> Option<&'static str> {
         // From a directory only known when it runs, a name may be one in the
         // home directory, which that directory may be, or one the caller
         // named, wherever it is.
@@ -1469,7 +1538,7 @@ mod tests {
 
     #[test]
     fn code_run_past_the_depth_is_unreadable() {
-        let mut judge = Judge::new(&posix());
+        let mut judge = Judge::new(&posix(), MAX_LEN);
         judge.apply(
             Language::Python,
             "import shutil; shutil.rmtree('/home/me')",
@@ -1484,7 +1553,7 @@ mod tests {
             "runs code inside code too deeply to read"
         );
         // At the depth it is read.
-        let mut judge = Judge::new(&posix());
+        let mut judge = Judge::new(&posix(), MAX_LEN);
         judge.apply(
             Language::Python,
             "import shutil; shutil.rmtree('/home/me')",
@@ -1498,7 +1567,7 @@ mod tests {
     #[test]
     fn nested_code_past_the_budget_is_unreadable() {
         let code = "import shutil; shutil.rmtree('/home/me')";
-        let mut judge = Judge::new(&posix());
+        let mut judge = Judge::new(&posix(), MAX_LEN);
         judge.nested = MAX_NESTED_READ - code.len();
         judge.apply(Language::Python, code, 1, false, false);
         assert_eq!(judge.findings.len(), 1, "{:?}", judge.findings);
@@ -1507,11 +1576,11 @@ mod tests {
             "runs too much code inside code to read"
         );
         // Within it, it is read; the code at the top is not counted.
-        let mut judge = Judge::new(&posix());
+        let mut judge = Judge::new(&posix(), MAX_LEN);
         judge.nested = MAX_NESTED_READ - code.len() - 1;
         judge.apply(Language::Python, code, 1, false, false);
         assert_eq!(judge.findings[0].rule, Rule::Delete);
-        let mut judge = Judge::new(&posix());
+        let mut judge = Judge::new(&posix(), MAX_LEN);
         judge.nested = MAX_NESTED_READ;
         judge.apply(Language::Python, code, 0, false, false);
         assert_eq!(judge.findings[0].rule, Rule::Delete);

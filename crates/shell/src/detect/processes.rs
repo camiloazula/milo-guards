@@ -571,8 +571,19 @@ impl Checker<'_> {
 
     /// `Invoke-CimMethod -MethodName Terminate` and `Invoke-WmiMethod -Name
     /// Terminate` stop the processes their instances are, which come from a
-    /// listing the guard does not follow.
+    /// listing the guard does not follow. `Create` of the class
+    /// `Win32_Process` (or `CIM_Process`) starts the command line it is
+    /// given, as `wmic process call create` does.
     pub(super) fn wmi_method(&mut self, args: &[Arg]) {
+        let named = |name: &str| {
+            args.iter().any(|arg| {
+                arg.known()
+                    .is_some_and(|text| text.eq_ignore_ascii_case(name))
+            })
+        };
+        if (named("win32_process") || named("cim_process")) && named("create") {
+            self.add(Rule::Unknown, "starts a program through WMI", None);
+        }
         if let Some(method) = args.iter().find(|arg| {
             arg.known()
                 .is_some_and(|text| text.eq_ignore_ascii_case("terminate"))

@@ -331,16 +331,18 @@ posix effect=unknown | rg --pre ./filter TODO
 posix effect=unknown | rg --pre=./filter TODO
 posix effect=unknown | rg -z TODO archive.gz
 posix effect=unknown | rg --search-zip TODO a.gz
-posix effect=unknown | fd -x rm
-posix effect=unknown | fd --exec rm {}
-posix effect=unknown | fd -X rm
 posix effect=unknown | sort --compress-program=./sh names.txt
 posix effect=unknown | git diff --ext-diff
 posix effect=unknown | git log --help
-posix effect=unknown | less +'!rm x' README.md
 posix effect=unknown | printf -v PATH x
 posix effect=unknown | printf -vPATH x
 posix effect=unknown | printf "$fmt" a
+# A command a flag names is read, and what it runs decides: `rm` changes
+# the files it is given.
+posix effect=changes | fd -x rm
+posix effect=changes | fd --exec rm {}
+posix effect=changes | fd -X rm
+posix effect=changes | less +'!rm x' README.md
 # An option that names a file takes a place like any operand.
 posix effect=unknown | wc --files0-from="$f"
 # A file that lists the files to open is a list the guard never sees, whatever
@@ -513,7 +515,8 @@ posix effect=unknown | nohup cat a.txt
 posix effect=unknown | tmux new cat
 posix effect=unknown | screen -dm cat a.txt
 posix effect=unknown | sudo -i
-posix effect=unknown | sudo -e /etc/hosts
+# `sudo -e` edits its operands, which is a write.
+posix effect=changes | sudo -e /etc/hosts
 posix effect=unknown | command -v ls
 posix effect=unknown | exec
 # What changes which program runs or what it does.

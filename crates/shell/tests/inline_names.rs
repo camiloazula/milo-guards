@@ -93,10 +93,10 @@ fn a_name_that_holds_more_than_the_reader_keeps_is_not_read_as_any_string() {
     let paths: Vec<String> = (0..65).map(|at| format!("'a{at}.txt'")).collect();
     let many = format!("{}, '/home/me/.ssh/id_rsa'", paths.join(", "));
     let many_js = format!("{}, '/home/me/.ssh/id_rsa'", paths.join(", "));
-    // A thousand, in a line well under the length limit.
-    let thousands: Vec<String> = (0..1000).map(|at| format!("'a{at}'")).collect();
+    // Three hundred, in code under the reader's length limit.
+    let thousands: Vec<String> = (0..300).map(|at| format!("'a{at}'")).collect();
     let thousands = format!("{}, '/home/me/.ssh/id_rsa'", thousands.join(","));
-    let safe_thousands: Vec<String> = (0..1000).map(|at| format!("'a{at}'")).collect();
+    let safe_thousands: Vec<String> = (0..300).map(|at| format!("'a{at}'")).collect();
     let safe_thousands = safe_thousands.join(",");
     // A name set to more strings, in all, than the reader holds is a path it
     // does not read: not safe, as the key may be any of them. Strings made

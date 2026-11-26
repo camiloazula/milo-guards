@@ -20,6 +20,8 @@ use crate::{Rule, Shell};
 mod find;
 mod git;
 mod interpreters;
+mod launchers;
+mod named;
 mod nix;
 mod npm;
 mod packages;
@@ -37,6 +39,7 @@ pub(crate) use interpreters::{
     own_args, perl_edits, py_picks_three, valued_options, Options, BUN_VALUES, DENO_VALUES, SHELLS,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
+pub(crate) use named::{command_variable, is_command_variable};
 use wrappers::{
     cmd, env, env_sets, folder_option, getopt, in_folder, powershell, rsh, runner, start,
     start_process, tmux, xargs, Getopt,
@@ -312,8 +315,19 @@ fn add_launched(
         }
         // What the line sets for the program where it runs, which a runner
         // reads (`npm_config_call='…' npx`).
-        unit.argument_variables = Rc::clone(&split.argument_variables);
+        unit.argument_variables = split.argument_variables.clone();
         let input = fed(&unit) || split.inherits_input > 0;
+        // `LD_PRELOAD=x.so cmd`: the program loads a library the line does
+        // not show, once for the unit however many ways it reads.
+        if given.is_none() && !STARTS_NOTHING.contains(&key.as_str()) {
+            if let Some(library) = named::loaded_library(&unit) {
+                split.problem(
+                    Rule::Unknown,
+                    "loads a library into the program",
+                    Some(&library),
+                );
+            }
+        }
         // What a tracer, `script` or `time` writes its own output to, once
         // for the unit however many ways it reads.
         if given.is_none() && unit.shell != Shell::Cmd {
@@ -326,7 +340,15 @@ fn add_launched(
         if key == "do" && unit.shell == Shell::Posix && std::mem::take(&mut split.repeat_do) {
             given = Some(command_after(&unit.args, 0, true));
         }
-        let launched = given.take().unwrap_or_else(|| launch(&key, &unit, input));
+        // A command the line names for the program in a variable it sets or
+        // an option (`GIT_SSH_COMMAND='…' git fetch`) runs besides, once for
+        // the unit however many ways it reads.
+        let launched = if let Some(launched) = given.take() {
+            launched
+        } else {
+            let launched = launch(&key, &unit, input);
+            named::with_commands(split, &key, &unit, launched)
+        };
         // The command `npm_config_call` sets runs once for each `npx`: its
         // readings are bounded as a line's own text is.
         if let Launch::Script(_, script, _) = &launched {
@@ -627,6 +649,7 @@ fn runs_from_input(
     if key == "xargs" {
         if let Some(file) = wrappers::arg_file(unit.args.get(..start).unwrap_or_default()) {
             let at = split.units.len();
+            split.read(unit.shell, file.clone());
             split.redirect(at..at + 1, file, true);
         }
     }
@@ -1467,7 +1490,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         unread_item: false,
         listed: Vec::new(),
         joined: Vec::new(),
-        argument_variables: Rc::default(),
+        argument_variables: unit::Noted::default(),
         depth,
         names,
         place,
@@ -1483,7 +1506,8 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
     match key {
         // `sudo -D DIR` (`--chdir`) starts the command in `DIR`.
         "sudo" => sudo(args),
-        "doas" | "gsudo" | "pkexec" => runs(args, after_options(args, SUDO_VALUES)),
+        "doas" | "pkexec" => runs(args, after_options(args, SUDO_VALUES)),
+        "gsudo" => launchers::gsudo(args),
         // systemd's own `sudo`, and a command started as a transient unit.
         "run0" if posix => {
             let start = after_options(args, RUN0_VALUES);
@@ -1623,8 +1647,9 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
                 (None, known) => known,
             }
         }
-        // `busybox rm …` runs its applet: the applet is the program.
-        "busybox" if posix => runs(args, after_options(args, &[])),
+        // `busybox rm …` runs its applet: the applet is the program. So
+        // does `toybox`.
+        "busybox" | "toybox" if posix => runs(args, after_options(args, &[])),
         // `xtables-nft-multi iptables -F` runs the firewall program it names,
         // as busybox runs its applet.
         key if posix && MULTI_CALL.contains(&key) => runs(args, Some(0)),
@@ -1853,6 +1878,40 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
             Some(program) => Launch::Script(Shell::Cmd, (*program).clone(), Source::arg(program)),
             None => Launch::Itself,
         },
+        // Windows' console hosts and runners hand the command after their
+        // own options on, from any shell of Windows.
+        "conhost" => launchers::conhost(args),
+        "wt" => launchers::wt(unit),
+        "psexec" | "psexec64" | "paexec" => launchers::psexec(args),
+        "nircmd" | "nircmdc" => launchers::nircmd(unit, key),
+        "pcalua" => launchers::pcalua(args),
+        "rundll32" => launchers::rundll32(args),
+        "mshta" => launchers::mshta(args),
+        // Queues, session and display runners, and the programs that run a
+        // command as another user, with other limits or in a toolbox.
+        "tsp" if posix => launchers::tsp(args),
+        "nq" if posix => launchers::nq(args),
+        "dbus-launch" if posix => launchers::dbus_launch(args),
+        "dbus-run-session" if posix => launchers::dbus_run_session(args),
+        "xvfb-run" if posix => launchers::xvfb_run(args),
+        "runuser" if posix => launchers::runuser(args),
+        "sg" if posix => launchers::sg(args),
+        "setpriv" if posix => launchers::setpriv(args),
+        "numactl" if posix => launchers::numactl(args),
+        "cgexec" if posix => launchers::cgexec(args),
+        "capsh" if posix => launchers::capsh(unit),
+        "gosu" | "su-exec" if posix => launchers::as_user(args),
+        "chpst" if posix => launchers::chpst(args),
+        "setuidgid" | "envuidgid" | "envdir" | "softlimit" | "setlock" | "pgrphack" if posix => {
+            launchers::daemontools(key, args)
+        }
+        "tini" if posix => launchers::tini(args),
+        "dumb-init" if posix => launchers::dumb_init(args),
+        "flatpak-spawn" if posix => launchers::flatpak_spawn(args),
+        "distrobox" | "distrobox-enter" if posix => launchers::distrobox(key, args),
+        "toolbox" if posix => launchers::toolbox(args),
+        key if posix && launchers::TERMINALS.contains(&key) => launchers::terminal(args),
+        "fd" | "fdfind" => named::fd(unit, key),
         _ => Launch::Itself,
     }
 }
@@ -1861,6 +1920,11 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
 /// `--chd DIR`), then the command, which `-D DIR` (`--chdir`) starts in
 /// `DIR`.
 fn sudo(args: &[Arg]) -> Launch {
+    // `sudo -e FILE…` (`--edit`) edits its operands as `sudoedit` does: it
+    // runs no command of them.
+    if sudo_edits(args).is_some() {
+        return Launch::Itself;
+    }
     let Some(start) = after_options_by(args, |text, next| getopt(text, next, &SUDO_OPTIONS).0)
         .filter(|start| *start < args.len())
     else {
@@ -1888,6 +1952,42 @@ fn sudo(args: &[Arg]) -> Launch {
     // The `NAME=value` words after its options set the program's
     // environment.
     in_folder(folder, runs(args, Some(after_assignments(args, start))))
+}
+
+/// The files `sudo -e` (`--edit`, a bundle holding `e` too) edits, as
+/// `sudoedit` edits its operands: every word after its options. `None` when
+/// it is not told to edit. Its options are read as `getopt_long` reads them,
+/// up to the first operand.
+pub(crate) fn sudo_edits(args: &[Arg]) -> Option<&[Arg]> {
+    let start = after_options_by(args, |text, next| getopt(text, next, &SUDO_OPTIONS).0)
+        .unwrap_or(args.len());
+    let own = &args[..start];
+    let mut edits = false;
+    let mut at = 0;
+    while let Some(arg) = own.get(at) {
+        at += match arg.known() {
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                let (word, _) = getopt(text, own.get(at + 1), &SUDO_OPTIONS);
+                edits |= git_long(text, "edit")
+                    || text.strip_prefix('-').is_some_and(|bundle| {
+                        !bundle.starts_with('-')
+                            && bundle
+                                .chars()
+                                .take_while(|letter| {
+                                    !SUDO_OPTIONS.short.iter().any(|(s, _)| s == letter)
+                                })
+                                .any(|letter| letter == 'e')
+                    });
+                if matches!(word, Word::Value) {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => 1,
+        };
+    }
+    edits.then(|| &args[start..])
 }
 
 /// `sudo`'s options (sudo.ws, `sudo --help`).

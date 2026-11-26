@@ -671,6 +671,19 @@ impl Checker<'_> {
                     unit.others().into_iter().find_map(|dir| {
                         self.secret_read(&unit.in_folder(dir), flow.stdin(at), &flow.written)
                     })
+                })
+                // A `for` over words written out reads each in place of its
+                // variable, as the read rule reads it.
+                .or_else(|| {
+                    let enclosing: Vec<_> = self
+                        .split
+                        .bindings
+                        .iter()
+                        .filter(|binding| binding.units.contains(&at))
+                        .collect();
+                    crate::effect::operands::substituted(unit, &enclosing)?
+                        .iter()
+                        .find_map(|copy| self.secret_read(copy, flow.stdin(at), &flow.written))
                 });
             if let Some(slot) = flow.own.get_mut(at) {
                 *slot = own;
@@ -1209,6 +1222,24 @@ impl Checker<'_> {
         written: &HashMap<String, Hit>,
     ) -> Option<Hit> {
         let from = self.ident_of(arg);
+        // A brace list the shell spells out hands the program each word it
+        // makes (`scp ~/.ssh/id_rsa{,.pub} host:`): each is read, as the read
+        // rule reads them, and a secret among them is the word's.
+        // curl reads its own lists in `-T` (see `curl_glob`), which `-g` turns
+        // off, and the guard cannot tell a quoted list from a bare one.
+        if glob && unit.shell == Shell::Posix && unit.key().as_deref() != Some("curl") {
+            if let Some(list) = super::secrets::brace_words(arg, self.split) {
+                let target = arg.text().to_string();
+                return list
+                    .iter()
+                    .find_map(|word| self.secret_of(unit, word, home, glob, written))
+                    .map(|hit| Hit {
+                        target: target.clone(),
+                        from,
+                        ..hit
+                    });
+            }
+        }
         let name = super::named_in_unknown_folder(arg);
         let arg = name.as_ref().unwrap_or(arg);
         let text = arg.known().filter(|text| *text != "-")?;
@@ -1275,6 +1306,21 @@ impl Checker<'_> {
                             Place::Sensitive(words, Sensitivity::Secret) => Some(words),
                             _ => None,
                         }
+                    })
+                    // The read rule's own lookup: a Windows name the
+                    // spelling does not settle (a stream, a part that ends
+                    // in a space or a dot) is the file it is a name of.
+                    .or_else(|| {
+                        (unit.shell != Shell::Posix)
+                            .then(|| {
+                                self.resolver.secret(
+                                    unit.dir.as_ref(),
+                                    arg,
+                                    unit.shell,
+                                    unit.hidden,
+                                )
+                            })
+                            .flatten()
                     }),
             }
         };
@@ -1360,15 +1406,29 @@ impl Checker<'_> {
         // its name (`curl -T "$PWD/.env"`).
         let named = self.named_send(unit);
         let unit: &Unit = &named;
-        for file in uploads(unit, key) {
-            if let Some(hit) = self.secret(unit, &file.arg, false, file.word) {
-                self.sent(&hit);
+        // A `for` over words written out sends each word in place of its
+        // variable (`for f in ~/.ssh/id_rsa x; do curl -T "$f" …; done`), as
+        // the read rule reads it.
+        let enclosing: Vec<_> = self
+            .split
+            .bindings
+            .iter()
+            .filter(|binding| binding.units.contains(&at))
+            .collect();
+        let copies = crate::effect::operands::substituted(unit, &enclosing).unwrap_or_default();
+        for unit in std::iter::once(unit).chain(&copies) {
+            for file in uploads(unit, key) {
+                if let Some(hit) = self.secret(unit, &file.arg, false, file.word) {
+                    self.sent(&hit);
+                }
             }
         }
         if key == "sftp" {
             self.sftp_batch(at, unit);
         }
-        self.copy(unit, key);
+        for unit in std::iter::once(unit).chain(&copies) {
+            self.copy(unit, key);
+        }
         let network = NETWORK.contains(&key);
         let to_network = self.flow.to_network.get(at).copied().unwrap_or(false);
         let sink =
@@ -2584,7 +2644,9 @@ fn uploads(unit: &Unit, key: &str) -> Vec<Upload> {
             .collect(),
         "socat" => socat_files(&unit.args),
         key if MAILERS.contains(&key) => attachments(&unit.args),
-        "gh" => gist_files(&unit.args).unwrap_or_default(),
+        "gh" => gist_files(&unit.args)
+            .or_else(|| gh_files(&unit.args))
+            .unwrap_or_default(),
         "az" => blob_files(&unit.args),
         _ => Vec::new(),
     }
@@ -2682,6 +2744,107 @@ fn gist_files(args: &[Arg]) -> Option<Vec<Upload>> {
             })
             .collect(),
     )
+}
+
+/// The files `gh` sends to GitHub besides a gist's: the assets of `release
+/// upload TAG FILE…` and `release create TAG FILE…` (a `#label` after a name
+/// is its label), the notes or body read from a file (`-F`, `--notes-file`,
+/// `--body-file`) of a release, an issue or a pull request and their
+/// comments and reviews, and `api`'s `--input FILE` and `-F key=@FILE`
+/// (`--field`). `None` for any other command.
+fn gh_files(args: &[Arg]) -> Option<Vec<Upload>> {
+    const VALUED: [&str; 29] = [
+        "-F",
+        "--notes-file",
+        "--body-file",
+        "--input",
+        "--field",
+        "-f",
+        "--raw-field",
+        "-R",
+        "--repo",
+        "-t",
+        "--title",
+        "-n",
+        "--notes",
+        "--target",
+        "--notes-start-tag",
+        "--discussion-category",
+        "-b",
+        "--body",
+        "-B",
+        "--base",
+        "-H",
+        "--head",
+        "-a",
+        "--assignee",
+        "-l",
+        "--label",
+        "-m",
+        "--milestone",
+        "-X",
+    ];
+    let all = operands(args, &VALUED);
+    let word = |at: usize| all.get(at).and_then(|arg| arg.known());
+    let file = |arg: &Arg| Upload {
+        arg: arg.clone(),
+        word: true,
+    };
+    let mut files = Vec::new();
+    // A file named after an option, or after `=` in it.
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        at += 1;
+        let Some(text) = arg.known() else { continue };
+        let (option, value) = match text.split_once('=') {
+            Some((option, value)) if option.starts_with("--") => (option, Some(value)),
+            _ => (text, None),
+        };
+        let given = || {
+            value.map_or_else(
+                || args.get(at).cloned(),
+                |value| Some(Arg::Known(value.to_string())),
+            )
+        };
+        match option {
+            "-F" | "--notes-file" | "--body-file" | "--field" | "--input"
+                if !matches!(word(0), Some("api")) || option != "-F" && option != "--field" =>
+            {
+                if let Some(arg) = given() {
+                    files.push(file(&arg));
+                }
+            }
+            "-F" | "--field" => {
+                let named = given().and_then(|arg| {
+                    let text = arg
+                        .known()?
+                        .split_once('=')?
+                        .1
+                        .strip_prefix('@')?
+                        .to_string();
+                    Some(Arg::Known(text))
+                });
+                files.extend(named.map(|arg| file(&arg)));
+            }
+            _ => {}
+        }
+    }
+    match (word(0), word(1)) {
+        (Some("release"), Some("upload" | "create")) => {
+            files.extend(all.get(3..).unwrap_or_default().iter().map(|arg| {
+                let name = arg
+                    .known()
+                    .map(|text| text.split_once('#').map_or(text, |(name, _)| name));
+                match name {
+                    Some(name) => file(&Arg::Known(name.to_string())),
+                    None => file(arg),
+                }
+            }));
+        }
+        (Some("release" | "issue" | "pr" | "api"), _) => {}
+        _ => return None,
+    }
+    Some(files)
 }
 
 /// The file `az storage blob upload` sends: its `-f` (`--file`).

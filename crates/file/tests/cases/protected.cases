@@ -141,9 +141,18 @@ write rules=write_outside | ~/.agent/x
 paths ssh_file base=posix file=/home/me/.ssh/agent.conf words="the agent's settings"
 write@ssh_file rules=write_protected | ~/.ssh/agent.conf
 write@ssh_file rules=write_sensitive | ~/.ssh/config
-# A read is safe: reading the caller's own file is not what it gates.
-read@ssh_file safe | ~/.ssh/agent.conf
+# A read is safe: reading the caller's own file is not what it gates, unless
+# it is one of core's own secrets, which it stays when protected (every file
+# under `~/.ssh` is).
+read@ssh_file rules=read_secret first=read_secret reason="reads your SSH keys" | ~/.ssh/agent.conf
 read@ssh_file rules=read_secret | ~/.ssh/id_rsa
+paths ssh_folder base=posix folder=/home/me/.ssh words="the agent's keys"
+read@ssh_folder rules=read_secret first=read_secret reason="reads your SSH keys" | ~/.ssh/id_rsa
+read@ssh_folder rules=read_secret | /home/me/.ssh/id_ed25519
+write@ssh_folder rules=write_protected first=write_protected reason="writes to the agent's keys" | ~/.ssh/id_rsa
+read@ssh_folder safe | ~/.bashrc
+paths windows_ssh_folder base=windows folder=C:\\Users\\me\\.ssh words="the agent's keys"
+read@windows_ssh_folder rules=read_secret | C:\\Users\\me\\.ssh\\id_rsa
 
 # A protected path by the data volume or a wide fold is still protected:
 # relative, from `~`, and by the links to the root, all the same folder once

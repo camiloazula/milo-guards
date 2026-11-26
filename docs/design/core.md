@@ -594,6 +594,16 @@ itself.
   of its own, a `Disk`, like everything below `\\.\`. The folders in `Paths` may be
   spelled as long paths too (a canonical path on Windows is): the prefix is
   read the same way.
+- An **administrative share of this machine** is its disk: `C$` on a name
+  every Windows machine gives itself (`localhost`, an address of the
+  loopback `127.x.x.x`, `::1` and its UNC spelling `0--1.ipv6-literal.net`),
+  directly or as a long path (`\\localhost\C$\Users\me`,
+  `\\?\UNC\127.0.0.1\C$\Users\me`), is `C:\Users\me`. It is a share as
+  spelled too, which is outside, and the more serious place wins, so a key
+  on it is the key and a path of the workspace through it is outside.
+  `spelling::network` still calls it a share. A name of this machine that
+  is its own (`\\my-pc\C$`) is not one the spelling says, and another
+  machine's share is only a share.
 - Devices are told by their spelling. On POSIX the path's `.` and `..` are
   applied first, then the name must be exactly one of `/dev/null`,
   `/dev/stdout`, `/dev/stderr`, `/dev/tty`, `/dev/zero`, `/dev/random`,
@@ -987,8 +997,12 @@ path made absolute, with the working directory and `~` applied.
   being a character of its name (what a pattern can pick is
   `picks_secret`'s). The shell guard also asks it first for a file sent off
   the machine, so a named file is sent in the caller's words where the guard
-  has words of its own for its name (`an .env file`). It is `None` for a
-  path no secret was named at, a device and a path known only when it runs.
+  has words of its own for its name (`an .env file`). Under a path the
+  caller protects, a key or a credential of core's own (`~/.ssh/id_rsa`
+  with `~/.ssh` protected) is `Protected` to `place` too, and this gives
+  core's words for it (`your SSH keys`), so protecting a key's folder never
+  hides a read of the key. It is `None` for a path no secret was named at
+  and that is no such key, a device and a path known only when it runs.
 - `named_secret_in_unknown_folder(rest, flavour, hidden)` is `Some(words)`
   for a secret the caller named that `rest`, a relative path written from a
   folder only known when it runs (after `cd "$x"`), can name wherever that

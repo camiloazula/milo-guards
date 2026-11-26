@@ -20,11 +20,11 @@ workspace = true
 
 [features]
 # What only the guard's own tests read: the count of what judging a piece of
-# code costs (the acts judged, the places built). Its tests turn it on,
-# through the dev-dependency on this crate below. It is not for callers and
-# not part of the API (hidden from the docs): it may change or go without
-# notice.
-testing = []
+# code costs (the acts judged, the places built, and the reader's work, by
+# the reader's own `testing` feature). Its tests turn it on, through the
+# dev-dependency on this crate below. It is not for callers and not part of
+# the API (hidden from the docs): it may change or go without notice.
+testing = ["milo-guards-code/testing"]
 
 [dependencies]
 milo-guards-core.workspace = true
@@ -37,3 +37,6 @@ milo-guards-core = { workspace = true, features = ["testing"] }
 # This crate with `testing` on, so every build of its tests reads the counts
 # of what judging costs (`tests/work.rs`).
 milo-guards-script = { path = ".", features = ["testing"] }
+# The code reader with its `testing` feature on, so `tests/work.rs` reads the
+# count of the work the parses the guard asks of it do.
+milo-guards-code = { workspace = true, features = ["testing"] }

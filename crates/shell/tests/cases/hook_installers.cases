@@ -1,0 +1,67 @@
+# A program that installs a git hook, which runs code at every later commit,
+# or sets `core.hooksPath`, or rewrites the config of a hook manager, is
+# judged as the write it makes is: in the same rule and words, from where it
+# runs, through every package runner. Running the hooks writes neither. The
+# format is in CONTRIBUTING.md.
+
+# pre-commit writes the hook of each type it is given, `pre-commit` when
+# none is.
+posix finds=overwrite reason="writes to the repository's history" | pre-commit install
+posix rules=overwrite,overwrite | pre-commit install -t pre-push -t commit-msg
+posix finds=overwrite reason="writes to the repository's history" | pre-commit install --hook-type pre-push
+posix finds=overwrite | pre-commit install --hook-type=pre-push
+posix finds=overwrite reason="writes to the repository's history" | prek install
+posix finds=overwrite reason="writes to a file outside the workspace" | pre-commit init-templatedir ~/.git-template
+powershell finds=overwrite reason="writes to the repository's history" | pre-commit install
+cmd finds=overwrite reason="writes to the repository's history" | pre-commit install
+# As the same write does: one in a temporary folder is a temporary file.
+posix safe | cd /tmp/x && pre-commit install
+# Its config, rewritten from the network.
+posix finds=overwrite reason="writes to a file a tool runs on its own" | pre-commit autoupdate
+posix finds=overwrite reason="writes to a file a tool runs on its own" | pre-commit migrate-config
+posix safe | pre-commit autoupdate -c ci/pre-commit.yaml
+# husky sets `core.hooksPath`, as `git config core.hooksPath` does.
+posix finds=system_settings reason="sets git config that runs a program" | npx husky
+posix finds=system_settings reason="sets git config that runs a program" | npx husky install
+posix finds=system_settings reason="sets git config that runs a program" | husky install
+posix finds=system_settings | npx --yes husky init
+posix finds=system_settings reason="sets git config that runs a program" | git config core.hooksPath .husky/_
+powershell finds=system_settings | npx husky
+posix safe | husky --help
+# lefthook and simple-git-hooks write the hooks.
+posix finds=overwrite reason="writes to the repository's history" | lefthook install
+posix finds=overwrite | lefthook add pre-push
+posix finds=overwrite reason="writes to the repository's history" | npx simple-git-hooks
+posix safe | lefthook run pre-commit
+# Through the package runners.
+posix finds=system_settings | pnpm exec husky
+posix finds=system_settings | yarn dlx husky
+posix finds=system_settings | bunx husky install
+posix finds=system_settings | yarn husky install
+posix finds=overwrite | uvx pre-commit install
+posix finds=overwrite | pipx run pre-commit install
+# Running the hooks installs none.
+posix safe | pre-commit run --all-files
+posix safe | pre-commit run ruff
+posix safe | uvx pre-commit run --all-files
+# The tools find the repository's `.git` by going up from where they run:
+# from anywhere inside a workspace folder the hooks are the workspace's own.
+paths in_src cwd=/home/me/work/repo/src home=/home/me workspace=/home/me/work/repo
+paths win_src cwd=C:\\Users\\me\\dev\\repo\\src home=C:\\Users\\me workspace=C:\\Users\\me\\dev\\repo
+posix finds=overwrite reason="writes to the repository's history" | cd src && pre-commit install
+posix finds=overwrite reason="writes to the repository's history" | cd src && lefthook install
+posix finds=overwrite reason="writes to the repository's history" | cd src && npx simple-git-hooks
+posix finds=overwrite | cd src && pre-commit install -t pre-push
+posix@in_src finds=overwrite reason="writes to the repository's history" | pre-commit install
+posix@in_src finds=overwrite | lefthook install
+powershell finds=overwrite reason="writes to the repository's history" | cd src; pre-commit install
+cmd finds=overwrite reason="writes to the repository's history" | cd src && pre-commit install
+powershell@win_src finds=overwrite reason="writes to the repository's history" | pre-commit install
+cmd@win_src finds=overwrite | npx simple-git-hooks
+posix finds=overwrite reason="writes to a file outside the workspace" | cd ~ && pre-commit install
+# `python3 -m pre_commit` is pre-commit, and `try-repo` runs the hooks of a
+# repository it clones: a download when it is remote.
+posix finds=overwrite reason="writes to the repository's history" | python3 -m pre_commit install
+posix finds=run_downloaded reason="runs a downloaded script" | pre-commit try-repo https://github.com/x/y
+posix finds=run_downloaded | pre-commit try-repo git@github.com:x/y
+posix finds=unknown reason="runs code the guard does not read" | pre-commit try-repo ../hooks

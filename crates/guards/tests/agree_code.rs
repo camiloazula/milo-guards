@@ -137,15 +137,23 @@ const WINDOWS_MAPPED: &[(&str, &str, &str, &str)] = &[];
 
 /// What the script guard says where the shell guard says another thing, as
 /// `(script's rule, script's reason, shell's rule, shell's reason)`: code
-/// that does not parse is `unreadable` to the script guard, as a line that
-/// does not parse is to the shell guard, and `unknown` to the shell guard's
-/// inline reading.
-const MAPPED: [(&str, &str, &str, &str); 1] = [(
-    "unreadable",
-    "does not parse",
-    "unknown",
-    "runs code the guard does not read",
-)];
+/// that does not parse, and code the reader stops on past the work its
+/// grammar may do, is `unreadable` to the script guard, as such a line is to
+/// the shell guard, and `unknown` to the shell guard's inline reading.
+const MAPPED: [(&str, &str, &str, &str); 2] = [
+    (
+        "unreadable",
+        "does not parse",
+        "unknown",
+        "runs code the guard does not read",
+    ),
+    (
+        "unreadable",
+        "takes too long to read",
+        "unknown",
+        "runs code the guard does not read",
+    ),
+];
 
 /// The code the two guards do not agree on, beyond [`BY_DESIGN`], as
 /// `(machine, language, code, why)`.
@@ -192,6 +200,11 @@ const LEFT_OUT: &[(&str, &str, &str, &str)] = &[
 /// writes.
 const WRITTEN_THEN_RUN: &str = "both unknown, for different reasons: the shell guard \
      says `runs a script the same line writes`, which the target `sh x.sh` alone cannot show";
+
+/// Why a case the shell guard does not read is left to the script guard: a
+/// line with a control character a terminal acts on is `unreadable`.
+const UNREAD_HERE: &str =
+    "the shell guard does not read a line with a control character a terminal acts on";
 
 /// One piece of code, where it came from, and the machine it is judged on.
 struct Code {
@@ -775,6 +788,16 @@ fn compare(case: &Code) -> Compared {
     } = case;
     let script = script::judge(*language, code, paths);
     let shell = shell::classify(&line_of(*language, code), Shell::Posix, paths);
+    // The shell guard does not read a line with a control character a
+    // terminal acts on: it says so where the script guard says what the
+    // code does.
+    let unread_here = shell
+        .findings()
+        .iter()
+        .any(|finding| finding.reason == "holds a control character a terminal acts on");
+    if unread_here && !shell.is_safe() {
+        return Compared::ByDesign(vec![UNREAD_HERE]);
+    }
     let shell_of_targets = shell_of(paths);
     let windows = shell_of_targets == Shell::Cmd;
     let mut combined: BTreeSet<Said> = BTreeSet::new();

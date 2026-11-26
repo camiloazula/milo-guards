@@ -1,13 +1,23 @@
-# Code that does not parse is `unreadable`, never safe; what the reader still
-# finds in it is kept. Code too long or nested too deeply is in
+# Code that does not parse is `unreadable`, never safe, and is not read
+# through its error: nothing beside it is found (the interpreter raises
+# before it runs a thing). Code too long or nested too deeply is in
 # `tests/robust.rs`.
 
 python rules=unreadable first=unreadable reason="does not parse" target="print(" | print(
 python rules=unreadable | def f(:\n    pass
-python first=unreadable finds=delete | import shutil; shutil.rmtree('/home/me'); if 1:
+python rules=unreadable lacks=delete | import shutil; shutil.rmtree('/home/me'); if 1:
 javascript rules=unreadable first=unreadable reason="does not parse" target="if (" | if (
 javascript rules=unreadable | console.log(1
 javascript rules=unreadable | function f( {}
-javascript first=unreadable finds=delete | require('fs').rmSync('/home/me'); }
+javascript rules=unreadable lacks=delete | require('fs').rmSync('/home/me'); }
 # Code nested in code that does not parse is code the guard does not read.
 python finds=unknown lacks=unreadable | exec('print(')
+# A recovery from an error that goes round with no end is stopped where it
+# starts: code that does not parse, `unreadable`, and nothing in it is found.
+# Nested, it is code the guard does not read, as any code nested that does
+# not parse. Longer such code, and code the reader stops on past the work it
+# may do for it (`takes too long to read`), are in `tests/work.rs`.
+javascript rules=unreadable first=unreadable reason="does not parse" target="c(.c(''.(X%'''\"';c(=" | c(.c(''.(X%'''"';c(=
+javascript rules=unreadable | x;\nc(.c(''.(X%'''"';c(=
+javascript rules=unreadable | require('fs').rmSync('/home/me'); c(.c(''.(X%'''"';c(=
+javascript finds=unknown lacks=unreadable | eval("c(.c(''.(X%'''\\"';c(=")

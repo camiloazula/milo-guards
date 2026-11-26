@@ -341,7 +341,7 @@ powershell safe | powershell -File .\\scripts\\build.ps1
 powershell safe | powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Verbose
 powershell safe | pwsh -File build.ps1
 powershell safe | pwsh build.ps1
-powershell safe | pwsh -NoProfile -File C:\\tools\\setup.ps1
+powershell finds=unknown reason="runs a script outside the workspace" | pwsh -NoProfile -File C:\\tools\\setup.ps1
 # (`& .\\build.ps1` is in read_secret.cases.)
 powershell safe | .\\build.ps1
 powershell safe | . .\\profile.ps1
@@ -357,7 +357,7 @@ powershell safe | Invoke-WebRequest https://x.example/x.json -OutFile data.json;
 powershell safe | 'x' > j.ps1; powershell -File i.ps1
 powershell safe | 'x' > sub\\i.ps1; powershell -File i.ps1
 powershell safe | 'x' > i.ps1; powershell -File sub\\i.ps1
-powershell safe | 'x' > i.ps1; pwsh -File ..\\i.ps1
+powershell rules=unknown first=unknown reason="runs a script outside the workspace" | 'x' > i.ps1; pwsh -File ..\\i.ps1
 powershell safe | Set-Location sub; 'x' > i.ps1; Set-Location ..; powershell -File i.ps1
 powershell safe | 'x' > i.ps1; Invoke-Command -FilePath other.ps1
 # The script is not a file the line names.

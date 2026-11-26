@@ -93,6 +93,18 @@ const INIT_FOLDERS: [&str; 4] = [
     "usr/local/etc/rc.d",
 ];
 
+/// Whether `text` is a path to an init script (`/etc/init.d/ufw`), which a
+/// shell runs as the program it is (see [`Checker::init_script`]).
+pub(super) fn is_init_script(text: &str) -> bool {
+    let below = text.trim_start_matches('/');
+    text.starts_with('/')
+        && INIT_FOLDERS.iter().any(|folder| {
+            below
+                .strip_prefix(folder)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
 /// Whether `folder`, a path below the root, is one of System V's runlevel
 /// folders, whose links run the init scripts as the system enters or leaves
 /// a runlevel: `etc/rc0.d` to `etc/rc6.d` and `etc/rcS.d`, and the same
@@ -1531,7 +1543,7 @@ impl Checker<'_> {
         if !sourced && !SHELLS.contains(&key) {
             return;
         }
-        let Some(script) = script_operand(key, args) else {
+        let Some(script) = script_operand(key, args, unit.shell) else {
             return;
         };
         let Some(at) = args.iter().position(|arg| std::ptr::eq(arg, script)) else {

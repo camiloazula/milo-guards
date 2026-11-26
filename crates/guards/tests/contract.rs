@@ -700,8 +700,47 @@ fn a_guard_builds_on_the_core_and_never_on_another_guard() -> Result<(), String>
 /// The tools of the repository, by folder: programs that start processes or
 /// read the disk, which no crate under `crates/` may, so they live outside
 /// it. Each is a package of its own, which the workspace excludes, never
-/// published (`tools/grammar-check` starts the real shells).
-const TOOLS: [&str; 1] = ["tools/grammar-check"];
+/// published (`tools/grammar-check` starts the real shells, `tools/fuzz`
+/// starts cargo-fuzz).
+const TOOLS: [&str; 2] = ["tools/fuzz", "tools/grammar-check"];
+
+/// The files of each tool that may start a process, by their path in it: no
+/// other Rust file of the tool names `process` at all.
+const STARTS_PROCESSES: [(&str, &[&str]); 2] = [
+    ("tools/fuzz", &["src/run.rs"]),
+    (
+        "tools/grammar-check",
+        &["src/room.rs", "tests/fixtures/hold_output_open.rs"],
+    ),
+];
+
+/// The packages a tool's lockfile may hold that the workspace's does not:
+/// the fuzzing harness, `libfuzzer-sys`, and what it alone builds on (its
+/// input type, and the build helper's job server with what that reads the
+/// system through). They are in no build of the gates, so `just deny` and
+/// `just advisories` read the tool's lockfile too. Every other package of a
+/// tool's lockfile is in the workspace's, at the same version and from the
+/// same source.
+const HARNESS: [(&str, &[&str]); 1] = [(
+    "tools/fuzz",
+    &[
+        "arbitrary",
+        "cfg-if",
+        "getrandom",
+        "jobserver",
+        "libc",
+        "libfuzzer-sys",
+        "r-efi",
+    ],
+)];
+
+/// What [`HARNESS`] lets `tool`'s lockfile hold beside the workspace's.
+fn harness_of(tool: &str) -> &'static [&'static str] {
+    HARNESS
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .map_or(&[], |(_, packages)| packages)
+}
 
 /// The strings of the list `key = [...]` in `manifest`'s `[workspace]`.
 fn workspace_list(manifest: &str, key: &str) -> Vec<String> {
@@ -859,9 +898,18 @@ fn a_tool_is_a_package_of_its_own_that_nothing_ships() -> Result<(), String> {
         // advisories` audits. (Not the reverse: the workspace's lockfile also
         // holds its members' dev-dependencies, which the tool does not build.)
         let tool_lock = read(root().join(tool).join("Cargo.lock"))?;
+        let harness = harness_of(tool);
+        let mut beside = Vec::new();
         for package in locked(&tool_lock) {
             // The tool itself, named as its folder is.
             if tool.rsplit('/').next() == Some(package.0.as_str()) {
+                continue;
+            }
+            // Its fuzzing harness, which no build of the workspace has.
+            if harness.contains(&package.0.as_str())
+                && !root_lock.iter().any(|(name, ..)| *name == package.0)
+            {
+                beside.push(package.0);
                 continue;
             }
             assert!(
@@ -873,12 +921,24 @@ fn a_tool_is_a_package_of_its_own_that_nothing_ships() -> Result<(), String> {
                 package.2
             );
         }
+        // The harness names what the tool's lockfile holds beside the
+        // workspace's, and nothing it does not: the list cannot go stale.
+        beside.sort();
+        let mut named = harness.to_vec();
+        named.sort_unstable();
+        assert_eq!(
+            beside, named,
+            "{tool}/Cargo.lock holds, beside Cargo.lock, exactly its harness (HARNESS)"
+        );
     }
-    // In a tool, one file starts processes, `src/room.rs` with its layers,
-    // and the program its tests start, named: no other Rust file of it
+    // In a tool, the files STARTS_PROCESSES names start processes
+    // (grammar-check's `src/room.rs` with its layers, and the program its
+    // tests start; the fuzz runner's `src/run.rs`): no other Rust file of it
     // names `process` at all, however it is imported, and it has no target
     // outside `src/` and `tests/` and no build script.
-    for tool in TOOLS {
+    let named: Vec<&str> = STARTS_PROCESSES.iter().map(|(tool, _)| *tool).collect();
+    assert_eq!(named, TOOLS, "STARTS_PROCESSES names each tool");
+    for (tool, starts) in STARTS_PROCESSES {
         let folder = root().join(tool);
         let mut files = Vec::new();
         for part in ["src", "tests", "examples", "benches"] {
@@ -890,12 +950,14 @@ fn a_tool_is_a_package_of_its_own_that_nothing_ships() -> Result<(), String> {
             !folder.join("build.rs").exists(),
             "{tool} has a build script"
         );
+        for start in starts {
+            assert!(folder.join(start).is_file(), "{tool}/{start} is gone");
+        }
         for file in files {
-            let allowed = file.ends_with("src/room.rs")
-                || file.ends_with(Path::new("tests/fixtures/hold_output_open.rs"));
+            let allowed = starts.iter().any(|start| file.ends_with(Path::new(start)));
             assert!(
                 allowed || !names_process(&read(file.clone())?),
-                "{} names `process`: in {tool} only src/room.rs starts a process",
+                "{} names `process`: in {tool} only {starts:?} start a process",
                 file.display()
             );
         }

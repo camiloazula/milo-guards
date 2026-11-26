@@ -34,6 +34,124 @@ impl Checker<'_> {
                 );
             }
             "awk" | "gawk" | "mawk" | "nawk" => self.awk(unit),
+            // Programs that install a git hook, which runs code at every
+            // later commit, or rewrite the config of one.
+            "pre-commit" | "prek" => self.pre_commit(unit, &unit.args),
+            // `python3 -m pre_commit install` is `pre-commit install`.
+            key if crate::launch::is_python(key) => {
+                let args = unit.args.as_slice();
+                let module = args.iter().position(|arg| arg.known() == Some("-m"));
+                if let Some(at) =
+                    module.filter(|at| args.get(at + 1).and_then(Arg::known) == Some("pre_commit"))
+                {
+                    self.pre_commit(unit, &args[at + 2..]);
+                }
+            }
+            "husky" => self.husky(unit),
+            "lefthook" => {
+                let installs = unit
+                    .args
+                    .iter()
+                    .find_map(|arg| arg.known().filter(|text| !text.starts_with('-')))
+                    .is_some_and(|sub| matches!(sub, "install" | "add"));
+                if installs {
+                    self.installs_hooks(unit, ".git/hooks");
+                }
+            }
+            "simple-git-hooks" => {
+                let help = unit
+                    .args
+                    .iter()
+                    .filter_map(Arg::known)
+                    .any(|text| matches!(text, "-h" | "--help" | "-v" | "--version"));
+                if !help {
+                    self.installs_hooks(unit, ".git/hooks");
+                }
+            }
+            // A function of a library rundll32 runs is native code; the ones
+            // that start a program are read as launchers (`launch`), and a
+            // function known to do nothing else is let through.
+            "rundll32" if !rundll32_harmless(&unit.args) => {
+                self.add(Rule::Unknown, "runs code from a library", unit.args.first());
+            }
+            // `pcalua -a x.dll` loads a library and runs its code.
+            "pcalua" => {
+                let args = unit.args.as_slice();
+                let program = args
+                    .iter()
+                    .position(|arg| {
+                        arg.known()
+                            .is_some_and(|text| text.eq_ignore_ascii_case("-a"))
+                    })
+                    .and_then(|at| args.get(at + 1));
+                if program
+                    .and_then(Arg::known)
+                    .is_some_and(|text| text.to_ascii_lowercase().ends_with(".dll"))
+                {
+                    self.add(Rule::Unknown, "runs code from a library", program);
+                }
+            }
+            // NirSoft's nircmd does what its own commands say: some change the
+            // registry, delete a file, or shut the computer down.
+            "nircmd" | "nircmdc" => self.nircmd(unit),
+            // `fc` runs again, or edits and runs, commands of the shell's
+            // history, which the line does not show; `fc -l` lists them.
+            // PowerShell's `Invoke-History` (`r`, `ihy`) runs one again.
+            // zsh's and ksh's `r` is `fc -e -`. A program named by a path or
+            // with an extension (`fc.exe`, Windows' file compare) is no
+            // builtin.
+            "fc" | "r"
+                if shell == Shell::Posix
+                    && unit.program.known() == Some(key)
+                    && (key == "r" || !fc_lists(&unit.args)) =>
+            {
+                self.add(
+                    Rule::Unknown,
+                    "runs commands from the shell's history",
+                    None,
+                );
+            }
+            // `history -w FILE` and `-a FILE` write the history to the file.
+            "history" if shell == Shell::Posix => {
+                let args = unit.args.as_slice();
+                let writes = args.iter().filter_map(Arg::known).any(|text| {
+                    text.strip_prefix('-').is_some_and(|bundle| {
+                        !bundle.starts_with('-') && bundle.contains(['w', 'a'])
+                    })
+                });
+                if writes {
+                    for file in args
+                        .iter()
+                        .filter(|arg| arg.known().is_none_or(|text| !text.starts_with('-')))
+                    {
+                        self.write(shell, unit.scope(), file, "writes to");
+                    }
+                }
+            }
+            "invoke-history" if shell == Shell::PowerShell => {
+                self.add(
+                    Rule::Unknown,
+                    "runs commands from the shell's history",
+                    None,
+                );
+            }
+            // `sudoedit FILE…` and `sudo -e FILE…` edit each file as root.
+            "sudoedit" => {
+                for file in unit
+                    .args
+                    .iter()
+                    .filter(|arg| arg.known().is_none_or(|text| !text.starts_with('-')))
+                {
+                    self.write(shell, unit.scope(), file, "edits");
+                }
+            }
+            "sudo" => {
+                if let Some(files) = crate::launch::sudo_edits(&unit.args) {
+                    for file in files {
+                        self.write(shell, unit.scope(), file, "edits");
+                    }
+                }
+            }
             "osascript" => self.add(
                 Rule::Unknown,
                 "runs AppleScript the guard does not read",
@@ -41,6 +159,186 @@ impl Checker<'_> {
             ),
             _ => {}
         }
+    }
+
+    /// The commands of nircmd that change the machine themselves: the
+    /// registry (`regdelkey`, `regdelval`, `regsetval`), a file it fills and
+    /// deletes (`filldelete`), and `exitwin`, which shuts the computer down,
+    /// restarts it or logs off. Its commands that run a program are read as
+    /// launchers.
+    fn nircmd(&mut self, unit: &Unit) {
+        let args = unit.args.as_slice();
+        let Some(command) = args
+            .first()
+            .and_then(Arg::known)
+            .map(str::to_ascii_lowercase)
+        else {
+            return;
+        };
+        match command.as_str() {
+            "regdelkey" | "regdelval" | "regsetval" => {
+                self.add(Rule::SystemSettings, "changes the registry", args.get(1));
+            }
+            "filldelete" => {
+                let files: Vec<&Arg> = args.iter().skip(1).collect();
+                self.delete(unit, &files, "deletes");
+            }
+            "exitwin" => self.add(
+                Rule::StopSystem,
+                "shuts the computer down or restarts it",
+                None,
+            ),
+            _ => {}
+        }
+    }
+
+    /// `pre-commit` (and `prek`, which reads the same commands): `install`
+    /// writes the git hook of each `-t` (`--hook-type`), `pre-commit` when
+    /// none is given, as a write of `.git/hooks/<type>` is judged, since the
+    /// hook runs code at every later commit; `init-templatedir DIR` writes
+    /// the hooks of the repositories git makes from `DIR`; `autoupdate` and
+    /// `migrate-config` rewrite the config (`-c`, `--config`, or
+    /// `.pre-commit-config.yaml`), the first from the network, as a write of
+    /// it is judged. `run` and the others write neither.
+    /// `try-repo REPO` clones a repository of hooks and runs them: a script
+    /// it downloads when the repository is remote, code the guard does not
+    /// read when it is a folder.
+    fn pre_commit(&mut self, unit: &Unit, args: &[Arg]) {
+        let values = |names: &[&str]| -> Vec<Arg> {
+            let mut found = Vec::new();
+            let mut iter = args.iter();
+            while let Some(arg) = iter.next() {
+                let Some(text) = arg.known() else { continue };
+                if text == "--" {
+                    break;
+                }
+                for name in names {
+                    if text == *name {
+                        found.extend(iter.clone().next().cloned());
+                    } else if let Some(value) = text
+                        .strip_prefix(name)
+                        .filter(|_| name.starts_with("--"))
+                        .and_then(|rest| rest.strip_prefix('='))
+                    {
+                        found.push(Arg::Known(value.to_string()));
+                    }
+                }
+            }
+            found
+        };
+        const VALUED: [&str; 4] = ["-c", "--config", "-t", "--hook-type"];
+        let mut operands = Vec::new();
+        let mut at = 0;
+        while let Some(arg) = args.get(at) {
+            at += 1;
+            match arg.known() {
+                Some(text) if VALUED.contains(&text) => at += 1,
+                Some(text) if text.starts_with('-') => {}
+                _ => operands.push(arg),
+            }
+        }
+        let Some(sub) = operands.first().and_then(|arg| arg.known()) else {
+            return;
+        };
+        match sub {
+            "install" => {
+                let types = values(&["-t", "--hook-type"]);
+                if types.is_empty() {
+                    self.installs_hooks(unit, ".git/hooks/pre-commit");
+                }
+                for kind in types {
+                    match kind.known() {
+                        Some(name) => self.installs_hooks(unit, &format!(".git/hooks/{name}")),
+                        None => self.write(unit.shell, unit.scope(), &kind, "writes to"),
+                    }
+                }
+            }
+            "init-templatedir" | "init-template-dir" => {
+                if let Some(dir) = operands.get(1) {
+                    let hook = match dir.known() {
+                        Some(dir) => Arg::Known(format!("{dir}/hooks/pre-commit")),
+                        None => (*dir).clone(),
+                    };
+                    self.write(unit.shell, unit.scope(), &hook, "writes to");
+                }
+            }
+            "try-repo" => match operands.get(1).map(|repo| repo.known()) {
+                Some(Some(repo)) if !remote_repository(repo) => {
+                    self.add(Rule::Unknown, "runs code the guard does not read", None);
+                }
+                Some(_) => self.add(Rule::RunDownloaded, Said::downloaded_script(), None),
+                None => {}
+            },
+            "autoupdate" | "migrate-config" => {
+                let configs = values(&["-c", "--config"]);
+                if configs.is_empty() {
+                    let config = Arg::Known(".pre-commit-config.yaml".to_string());
+                    self.write(unit.shell, unit.scope(), &config, "writes to");
+                }
+                for config in configs {
+                    self.write(unit.shell, unit.scope(), &config, "writes to");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `husky` (alone, `install`, or `init`) sets `core.hooksPath` to the
+    /// folder of hooks it makes, as `git config core.hooksPath` does: git
+    /// runs what is there at every later commit.
+    fn husky(&mut self, unit: &Unit) {
+        let sub = unit
+            .args
+            .iter()
+            .find(|arg| arg.known().is_none_or(|text| !text.starts_with('-')));
+        let sets = match sub.map(Arg::known) {
+            None => !unit
+                .args
+                .iter()
+                .filter_map(Arg::known)
+                .any(|text| matches!(text, "-h" | "--help" | "-v" | "--version")),
+            Some(Some(sub)) => matches!(sub, "install" | "init"),
+            // A subcommand only known when it runs may be one that does.
+            Some(None) => true,
+        };
+        if sets {
+            self.add(
+                Rule::SystemSettings,
+                "sets git config that runs a program",
+                None,
+            );
+        }
+    }
+
+    /// A program that writes the git hooks under `hooks` (a hook or the
+    /// folder of them, from where it runs), as a write there is judged.
+    ///
+    /// The program finds the repository's `.git` by going up from where it
+    /// runs, so from inside a workspace folder the hooks are the
+    /// workspace's own, at its top (`cd src && pre-commit install`);
+    /// anywhere else they are read from where it runs.
+    fn installs_hooks(&mut self, unit: &Unit, hooks: &str) {
+        let here = Arg::Known(".".to_string());
+        let hooks = match self
+            .resolver
+            .workspace_of(unit.dir.as_ref(), &here, unit.shell)
+        {
+            Some(top) => {
+                let separator = if unit.shell == Shell::Posix && top.text().starts_with('/') {
+                    "/"
+                } else {
+                    "\\"
+                };
+                let rest = if separator == "/" {
+                    hooks.to_string()
+                } else {
+                    hooks.replace('/', "\\")
+                };
+                Arg::Known(format!("{}{separator}{rest}", top.text()))
+            }
+            None => Arg::Known(hooks.to_string()),
+        };
+        self.write(unit.shell, unit.scope(), &hooks, "writes to");
     }
 
     /// awk code that runs commands (`system(…)`, a pipe) or writes files
@@ -164,6 +462,47 @@ impl Checker<'_> {
         });
     }
 
+    /// The config `git clone -c` (`--config`, also `--config=…`) gives the
+    /// new repository, read as `git -c` is: one whose value git runs is
+    /// `unknown`, "runs a command through git config", and one only known
+    /// when it runs is unless its key is one git only records.
+    fn clone_config(&mut self, rest: &[Arg], shell: Shell) {
+        let mut iter = rest.iter();
+        while let Some(arg) = iter.next() {
+            let Some(text) = arg.known() else { continue };
+            if text == "--" {
+                break;
+            }
+            let value = if text == "-c" || text == "--config" {
+                iter.next().cloned()
+            } else {
+                text.strip_prefix("--config=")
+                    .or_else(|| text.strip_prefix("-c").filter(|value| !value.is_empty()))
+                    .map(|value| Arg::Known(value.to_string()))
+            };
+            let Some(value) = value else { continue };
+            match value.known() {
+                Some(config) if config_executes(config) => {
+                    self.add(Rule::Unknown, "runs a command through git config", None);
+                }
+                Some(_) => {}
+                None => {
+                    let setting = Unread {
+                        arg: &value,
+                        prefix: "",
+                    };
+                    if !harmless_setting(&setting, shell) {
+                        self.add(
+                            Rule::Unknown,
+                            "gives git config only known when it runs",
+                            Some(&value),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// git's commands that throw work away. An argument only known when it
     /// runs that may be the option that makes one do so (`git push $F
     /// origin main`, `git push "-$F" origin main`, see [`may_be_option`])
@@ -226,6 +565,12 @@ impl Checker<'_> {
             return;
         };
         let rest = &args[at + 1..];
+        // `git clone -c KEY=VALUE` (`--config`) sets config in the new
+        // repository, which the clone itself already uses (its
+        // `core.sshCommand`), as `git -c` does.
+        if sub == "clone" {
+            self.clone_config(rest, shell);
+        }
         let flag = |short: Option<char>, long: Option<&str>| git_flag(rest, short, long);
         // Whether an argument only known when it runs may be the option.
         let unread = |short: Option<char>, long: Option<&str>| {
@@ -1044,6 +1389,52 @@ fn skip_blanks(mut code: &str) -> &str {
     }
 }
 
+/// Whether `repo`, a repository a tool clones, is on another machine: a URL
+/// (`https://…`, `ssh://…`, `git://…`) or git's `user@host:path` form.
+fn remote_repository(repo: &str) -> bool {
+    repo.contains("://")
+        || repo
+            .split_once(':')
+            .is_some_and(|(host, _)| host.contains('@') && !host.contains(['/', '\\']))
+}
+
+/// The functions of rundll32 known to run nothing but themselves: locking
+/// the workstation. Any other is native code the guard does not read.
+fn rundll32_harmless(args: &[Arg]) -> bool {
+    // PowerShell hands `user32.dll,LockWorkStation` on as two words.
+    let joined = match args {
+        [library, function, ..] if library.known().is_some_and(|text| !text.contains(',')) => {
+            library
+                .known()
+                .zip(function.known())
+                .map(|(library, function)| format!("{library},{function}"))
+        }
+        _ => args.first().and_then(Arg::known).map(str::to_string),
+    };
+    joined
+        .map(|text| text.to_ascii_lowercase().replace(' ', ""))
+        .is_some_and(|text| {
+            let text = text.rsplit(['\\', '/']).next().unwrap_or(&text);
+            matches!(
+                text,
+                "user32.dll,lockworkstation" | "user32,lockworkstation"
+            )
+        })
+}
+
+/// Whether `fc` is given `-l`, which lists the history and runs nothing (in
+/// a bundle too, `-ln`), before any operand.
+fn fc_lists(args: &[Arg]) -> bool {
+    args.iter()
+        .map_while(Arg::known)
+        .take_while(|text| text.starts_with('-') && *text != "--")
+        .any(|text| {
+            text.strip_prefix('-').is_some_and(|bundle| {
+                !bundle.starts_with(|c: char| c.is_ascii_digit()) && bundle.contains('l')
+            })
+        })
+}
+
 /// Whether an awk operand is an assignment (`x=1`, `ns::x=1`), which awk
 /// reads as one and not as a file.
 fn assigns(text: &str) -> bool {
@@ -1195,7 +1586,7 @@ const MOST_PAIRS: usize = 64;
 /// which may then be in the environment. A pair whose key the line does not
 /// give may be any key the environment holds.
 fn environment_config(unit: &Unit) -> Environment {
-    let variables = unit.argument_variables.as_slice();
+    let variables: Vec<(&String, &Arg)> = unit.argument_variables.iter().collect();
     let mut found = Environment {
         configs: Vec::new(),
         unread: None,
@@ -1207,8 +1598,8 @@ fn environment_config(unit: &Unit) -> Environment {
         variables
             .iter()
             .rev()
-            .find(|(noted, _)| noted == name)
-            .map(|(_, value)| value)
+            .find(|(noted, _)| *noted == name)
+            .map(|(_, value)| *value)
     };
     let unread = |found: &mut Environment, arg: &Arg| {
         if found.unread.is_none() {

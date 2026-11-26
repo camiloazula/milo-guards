@@ -70,11 +70,11 @@ while it fails. It runs, in order, over the whole workspace:
 | `just format-check` | `cargo fmt --all --check` |
 | `just lint` | clippy, `--all-targets --all-features`, zero warnings (`cargo lint` runs the same) |
 | `just coverage` | every unit and integration test, `--all-features --locked`, run once in an instrumented build, and line coverage against the floor in the `justfile` (`--fail-under-lines`); raise it as coverage lands, never lower it to pass |
-| `just timing` | the timing tests, and nothing else, in an optimized build: `cargo test --release --locked --all-features -p <crate> --test timing -- --show-output` for each crate with a `tests/timing.rs` (the shell guard and the secrets guard). Every test that reads the clock is in one of those files, and no other test does; they compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here |
+| `just timing` | the timing tests, and nothing else, in an optimized build: `cargo test --release --locked --all-features -p <crate> --test timing -- --show-output` for each crate with a `tests/timing.rs` (the shell guard and the secrets guard). Every test that reads the clock is in one of those files, and no other test does; they compare against limits that describe an optimized build, so they are ignored in the instrumented and debug builds (`cfg(any(coverage, debug_assertions))`) and run here; and the stack tests of the code reader, the script guard and the shell guard (`tests/stack.rs`), which read no clock and run in every build, again in the optimized one, where each reading runs on a thread of 1 MiB |
 | `just doc-test` | every doctest, README example included (`cargo test --doc --workspace --all-features --locked`), which coverage does not run |
 | `just doc` | rustdoc on the workspace with warnings denied, so a broken intra-doc link fails (`--all-features --no-deps --locked`) |
 | `just no-inline` | the shell guard without its `inline` feature (no readers of Python and JavaScript, no grammars): clippy on all its targets with zero warnings, and `tests/inline_off.rs`, which holds every inline line to `unknown`; `--all-features` never builds it that way |
-| `just deny` | the dependency gates in `deny.toml`: permissive licences only, crates.io only, no banned crates (`cargo deny check bans licenses sources`) |
+| `just deny` | the dependency gates in `deny.toml`: permissive licences only, crates.io only, no banned crates (`cargo deny check bans licenses sources`), for the workspace's lockfile and the fuzz tool's ([Fuzzing](#fuzzing)) |
 
 The code is compiled by clippy's check pass, by the one instrumented build
 every unit and integration test but the timing tests runs from, and by one
@@ -189,11 +189,15 @@ each depth: the recoveries counted and the depth a nest is read to bound
 it, far below the budget, and the runner took about thirty times as long
 on it as here. The POSIX
 grammar's shapes that reach the same budget stay timed until the runner
-shows them out of line with the machine. A timed table names every row that
+shows them out of line with the machine. The code reader holds its grammars
+to a budget of the same kind (Limits in `docs/design/code.md`), and its
+`tests/parse_budget.rs` holds the shapes it stops to that count, each with
+its answer pinned, through the reader's own `testing` feature. A timed table names every row that
 is over its bound before it fails, so one run on the runner shows them all.
 
 `just advisories` is not part of `just verify`. It checks the RustSec database
-(`cargo deny check advisories`), which needs the network and changes without a
+(`cargo deny check advisories`, for the workspace's lockfile and the fuzz
+tool's), which needs the network and changes without a
 commit, so CI runs it as its own job and a failure there is not a code
 failure. Run it when you add or update a dependency.
 
@@ -380,7 +384,92 @@ cp Cargo.lock tools/grammar-check/Cargo.lock
 cargo metadata --manifest-path tools/grammar-check/Cargo.toml --format-version 1 > /dev/null
 ```
 
-which keeps every version and leaves out what the tool does not use.
+which keeps every version and leaves out what the tool does not use. The
+same two commands, with `tools/fuzz`, bring the fuzz tool's in step; cargo
+puts its fuzzing harness back, which `Cargo.lock` does not hold.
+
+### Fuzzing
+
+Each entry point of the guards has a fuzz target in `tools/fuzz`: the shell
+guard's `classify`, `effect`, `explain` and `effect_paths` for each shell
+(`shell_posix`, `shell_powershell`, `shell_cmd`), the file guard (`file`),
+the URL guard's `judge` and `judge_address` (`url`, `url_address`), the
+secrets guard (`secrets`), the code reader's `read`, `understand` and
+`Budget` (`code`) and the script guard (`script`). Each holds the promises
+true of any input, written once in `crates/guards/tests/common/promises.rs`
+(its module documentation lists them): it returns, inside the limits; the
+same input gives the same answer twice; a line `classify` calls unreadable
+is never safe and never reads-only; `classify`, `effect`, `explain` and
+`effect_paths` agree; a secrets finding never holds the value and its
+spans are inside the text; and each guard's own, as its `tests/robust.rs`
+holds them. An input's first byte picks the machine it is judged on (and
+the access or the language), and the rest is the text. A target starts
+from the text of every case of its guard, each on the test machine nearest
+the one its case names: the case files are its seeds.
+
+The gate holds the same promises: `crates/guards/tests/promises.rs` runs
+the same functions, with no fuzzer and no nightly, on the case lines changed
+at random by a seeded generator, 300 inputs for each target (a few seconds
+in all). The fuzz targets go further, after coverage into the rarer
+branches, which a seeded generator never does, so they run outside the
+gate:
+
+```sh
+just fuzz shell_posix 300         # a target, for 300 seconds (the default)
+just fuzz code 600 --keep-going   # the whole time, past what it finds
+```
+
+`just fuzz` needs a nightly Rust, the one `tools/fuzz/rust-toolchain.toml`
+names by its date, and cargo-fuzz; install them once:
+
+```sh
+rustup toolchain install nightly-2026-11-10 --profile minimal
+cargo install --locked cargo-fuzz
+```
+
+The recipe formats, lints and tests the tool with the pinned Rust, then its
+runner writes the seeds of the target to `target/fuzz/seeds/<target>`,
+builds the target with cargo-fuzz and that nightly (it names it to the
+cargo-fuzz it starts: the workspace never builds with it), and runs it under
+libFuzzer, each input held to five seconds and 2 GB (`-timeout=5`,
+`-rss_limit_mb=2048`), with what it learns in `target/fuzz/corpus/<target>`.
+It never runs an input in a shell or an interpreter: a target only calls the
+guards' functions. `--out DIR` puts those folders elsewhere.
+
+What a run finds, an input that breaks a promise, a hang, a crash or a run
+out of memory, is a security report: it goes through
+[SECURITY.md](SECURITY.md), never into an issue, a pull request, a case file
+or a commit message, until the fix is public. libFuzzer prints the input it
+found, and the panic names it, so the runner prints none of what libFuzzer
+prints: it keeps it in a log, `target/fuzz/found/<target>/log.txt`, beside
+the input, and says only that it found something and where it kept it, and
+fails. `--private` prints the log too, on a machine of your own. Once the
+fix is public, the input that broke the promise becomes a case line, with
+the answer it must get, in the case file of what it checks
+([Case files](#case-files)).
+
+CI runs every target for five minutes, once a week and when started by hand,
+in `.github/workflows/fuzz.yml`: one job for each target (`fuzz (<target>)`),
+none a required check, and never on a push or a pull request. A job that
+finds something fails, and its last step keeps that target's `found` folder,
+the inputs and the log, as an artifact of the run, `found-<target>`, for
+three days; nothing of it is in the job's log. Anyone who can read the
+repository can download an artifact: a maintainer downloads it, reports what
+it holds as [SECURITY.md](SECURITY.md) says, and deletes it from the run.
+`crates/guards/tests/ci_jobs.rs` holds the job to `just fuzz` alone, for
+every target `tools/fuzz/Cargo.toml` names, with its one `if:` on that last
+step, and `toolchain.rs` holds the nightly it installs to the one
+`tools/fuzz/rust-toolchain.toml` names, by its date.
+
+The tool is a package of its own, which the workspace excludes, as
+`tools/grammar-check` is: never published, built by no gate, with the
+workspace's lints, edition and `rust-version`, and a lockfile of its own
+that `contract.rs` holds to `Cargo.lock`, but for the fuzzing harness
+(`libfuzzer-sys`, under the NCSA licence of LLVM's libFuzzer, which
+`deny.toml` allows for it alone, and what it alone builds on). Its one file
+that starts a process is `src/run.rs`, which starts cargo-fuzz. Move its
+nightly to a newer date by hand, in `rust-toolchain.toml` and the fuzz
+workflow together.
 
 ## Case files
 
@@ -552,8 +641,8 @@ and `network=` give `yes` or `no`. The code reader's case is `WHAT ANSWER... | C
 `python`, `javascript`, `python2` (`understand_python2`) or `module` (a
 module specifier), and the answer is `acts="..."` (the acts `read` finds,
 as `tests/common` spells them),
-`understand=yes|importing|no`, `other_encoding=yes|no` (Python), `parses=yes|no`
-`input=yes|no` (`gives_input`) and `shell_list=yes|no` (`gives_shell_a_list`;
+`understand=yes|importing|no`, `other_encoding=yes|no` (Python), `parses=yes|no`,
+`stops=yes|no` (the reader stops on it), `input=yes|no` (`gives_input`) and `shell_list=yes|no` (`gives_shell_a_list`;
 Python and JavaScript), and
 `data_url=yes|no` and `foreign=yes|no` (a module). Their dumps are the same
 command with `-p milo-guards-core` and `-p milo-guards-code`.
@@ -675,9 +764,10 @@ its path. A release is:
 
 1. Bump `version` in `Cargo.toml` and the `version` of every
    `milo-guards-*` entry under `[workspace.dependencies]`, to the same
-   number, and bring `tools/grammar-check/Cargo.lock` in step with
-   `Cargo.lock` ([the command](#the-grammars-beside-the-real-shells);
-   `just verify` fails until it is): a new rule, a raise of `rust-version`
+   number, and bring `tools/grammar-check/Cargo.lock` and
+   `tools/fuzz/Cargo.lock` in step with `Cargo.lock`
+   ([the command](#the-grammars-beside-the-real-shells); `just verify` fails
+   until they are): a new rule, a raise of `rust-version`
    or any other change to what a caller compiles against is a minor bump at
    `0.x`; a change to what a guard answers with the same API is a patch
    ([Versions](README.md#versions)). Before choosing, check:
@@ -701,6 +791,14 @@ its path. A release is:
    the set and not to an answer, and `just
    everyday` gives the false-alarm share the release leaves, overall and for
    each shell.
+
+   Write the release notes in `docs/releases/X.Y.Z.md`, beside the
+   changelog: what a caller needs to upgrade, in a page, and not every
+   detail. They say what to change in a caller's requirement and Rust, the
+   answers that became more serious, the security fixes as what the guards
+   now do (never a line or code that a guard got wrong), the limits the
+   release keeps on purpose, what is new, and what is left for a later
+   release; and they link the changelog's section for the rest.
 3. `just verify` and `just oldest-rust`, then `just package`: every crate
    packaged and built from its package, as crates.io will build it, with
    the case files left out (`exclude` in each crate's manifest). The
@@ -715,7 +813,13 @@ its path. A release is:
    each missed mutant into a case line, a written reason or a private
    report ([The gates](#the-gates)).
 4. Merge, tag the merge commit `vX.Y.Z` and push the tag. Only the owner
-   can create a release tag.
+   can create a release tag. The tag is annotated, with the release's
+   name as its message, and it is the only tag pushed:
+   `git tag -a vX.Y.Z -m "milo-guards X.Y.Z" <merge commit>`, then
+   `git push origin vX.Y.Z`. Once the crates are on crates.io, publish the
+   notes as the tag's release on GitHub, with links to the release's
+   security advisories added below them once those are published:
+   `gh release create vX.Y.Z --verify-tag --title "milo-guards X.Y.Z" --notes-file docs/releases/X.Y.Z.md`.
 5. The tag starts `.github/workflows/release.yml`, which does the rest. It
    refuses a tag that is not `v` and the version in `Cargo.toml`, a commit
    that is not one `main` took from a pull request (a commit inside the

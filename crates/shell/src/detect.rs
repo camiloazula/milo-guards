@@ -42,8 +42,9 @@ mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
-const ELEVATORS: [&str; 8] = [
+const ELEVATORS: [&str; 12] = [
     "sudo",
+    "sudoedit",
     "doas",
     "su",
     "pkexec",
@@ -51,6 +52,9 @@ const ELEVATORS: [&str; 8] = [
     "runas",
     "run0",
     "systemd-run",
+    "psexec",
+    "psexec64",
+    "paexec",
 ];
 
 /// Whether a POSIX `sh` may be interactive, the only one that runs the file
@@ -1208,7 +1212,11 @@ impl Checker<'_> {
             .chain(std::iter::once(key))
             .find(|name| ELEVATORS.contains(name));
         if let Some(elevator) = elevator {
-            let administrator = unit.shell != Shell::Posix || matches!(elevator, "runas" | "gsudo");
+            let administrator = unit.shell != Shell::Posix
+                || matches!(
+                    elevator,
+                    "runas" | "gsudo" | "psexec" | "psexec64" | "paexec"
+                );
             let reason = if administrator {
                 "runs as administrator"
             } else {
@@ -1868,6 +1876,9 @@ impl Checker<'_> {
             if self.found.len() == before {
                 self.extension_then_run(unit, &file);
             }
+            if self.found.len() == before {
+                self.runs_outside(unit, &file);
+            }
             return;
         }
         let runner = SHELLS.contains(&key)
@@ -1879,13 +1890,59 @@ impl Checker<'_> {
         }
         // `node -r ./s.js main.js`: a module loaded before the script runs as
         // the script does.
-        for module in preloaded(key, &unit.args) {
+        for module in preloaded(key, &unit.args, unit.shell) {
             self.runs_written(unit, &module, unit.dir.as_ref());
         }
-        let Some(script) = script_operand(key, &unit.args) else {
+        let Some(script) = script_operand(key, &unit.args, unit.shell) else {
             return;
         };
+        let before = self.found.len();
         self.runs_written(unit, script, unit.dir.as_ref());
+        // `source` and `.` read the shell's own settings (`source
+        // ~/.nvm/nvm.sh`) as often as anything; what they read is judged
+        // as a read.
+        if self.found.len() == before && !matches!(key, "source" | ".") {
+            self.runs_outside(unit, script);
+        }
+    }
+
+    /// A script a shell or an interpreter runs by its path from outside
+    /// every workspace folder and temporary folder (`bash ~/.ssh/x`,
+    /// `python3 /opt/x.py`): it is not the workspace's own code, which a
+    /// script file in the workspace is, and the guard does not read it. A
+    /// path only known when it runs is said so elsewhere.
+    fn runs_outside(&mut self, unit: &Unit, script: &Arg) {
+        // An init script is judged as the program it is; a relative name
+        // after a `cd` is in the folder the `cd` moved to, which the line's
+        // own rules judge.
+        if script.known().is_some_and(settings::is_init_script) {
+            return;
+        }
+        let rooted = script.known().is_some_and(|text| {
+            text.starts_with(['/', '~'])
+                || (unit.shell != Shell::Posix
+                    && (text.starts_with('\\') || path::drive_of(text).is_some()))
+        });
+        if !rooted && unit.dir.is_some() {
+            return;
+        }
+        let place = self.place(unit.shell, unit.scope(), script, Access::Item);
+        let ours = matches!(
+            place,
+            Place::Inside
+                | Place::Workspace { .. }
+                | Place::Temp { .. }
+                | Place::Null
+                | Place::Unknown
+                | Place::Sensitive(_, milo_guards_core::Sensitivity::History)
+        );
+        if !ours {
+            self.add(
+                Rule::Unknown,
+                "runs a script outside the workspace",
+                Some(script),
+            );
+        }
     }
 
     /// A program started by a path (`./x.sh`, `x/run`, `/tmp/x`) is that
@@ -2876,6 +2933,7 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
     let mut files = Vec::new();
     let mut remote = key == "wget";
     let mut prefix: Option<String> = None;
+    let mut folder: Option<Arg> = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else { continue };
@@ -2887,6 +2945,10 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
             "--remote-name" | "--remote-name-all" => remote = true,
             "-P" | "--directory-prefix" => {
                 prefix = iter.next().and_then(Arg::known).map(str::to_string);
+            }
+            // curl saves every file it names in this folder (`-o x`, `-O`).
+            "--output-dir" if key == "curl" => {
+                folder = iter.next().cloned();
             }
             _ => {
                 if let Some(file) = text
@@ -2935,6 +2997,16 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
         }
     }
     files.retain(|file| file.known() != Some("-"));
+    if let Some(folder) = folder {
+        files = files
+            .into_iter()
+            .map(|file| match (folder.known(), file.known()) {
+                (_, Some(name)) if name.starts_with(['/', '~']) => file,
+                (Some(dir), Some(name)) => Arg::Known(format!("{dir}/{name}")),
+                _ => Arg::Unknown(format!("{}/{}", folder.text(), file.text())),
+            })
+            .collect();
+    }
     files
 }
 
@@ -3013,12 +3085,12 @@ fn separators(shell: Shell) -> &'static [char] {
 /// `--experimental-loader` before the script, php's `auto_prepend_file`, the
 /// libraries ruby's `-r` and perl's `-M` load, and bun's and deno's
 /// `--preload`, `-r`, `--require` and `--import` anywhere before a `--`.
-fn preloaded(key: &str, args: &[Arg]) -> Vec<Arg> {
+fn preloaded(key: &str, args: &[Arg], shell: Shell) -> Vec<Arg> {
     if is_node(key) || key == "php" {
         return options(key, args).preloads;
     }
     if key == "ruby" || key == "perl" {
-        return libraries(key, &options(key, args));
+        return libraries(key, &options(key, args), shell);
     }
     if key != "bun" && key != "deno" {
         return Vec::new();
@@ -3046,7 +3118,7 @@ fn preloaded(key: &str, args: &[Arg]) -> Vec<Arg> {
 /// each `-I` folder, with its extension (`-r s` is `s.rb`, `-MFoo::Bar=x` is
 /// `Foo/Bar.pm`), and for ruby a path (`-r ./s`, `-r/tmp/s.rb`) from where
 /// the line is.
-fn libraries(key: &str, read: &Options) -> Vec<Arg> {
+fn libraries(key: &str, read: &Options, shell: Shell) -> Vec<Arg> {
     let mut found = Vec::new();
     for library in &read.requires {
         let Some(text) = library.known() else {
@@ -3060,10 +3132,7 @@ fn libraries(key: &str, read: &Options) -> Vec<Arg> {
                 .next()
                 .unwrap_or_default();
             format!("{}.pm", name.replace("::", "/"))
-        } else if std::path::Path::new(text)
-            .extension()
-            .is_some_and(|extension| extension == "rb")
-        {
+        } else if path::extension(text, shell) == Some("rb") {
             text.to_string()
         } else {
             format!("{text}.rb")
@@ -3086,13 +3155,13 @@ fn libraries(key: &str, read: &Options) -> Vec<Arg> {
 
 /// The script a shell or interpreter runs from a file: its first operand
 /// after its options and their values; `None` for a module (`python -m`).
-fn script_operand<'a>(key: &str, args: &'a [Arg]) -> Option<&'a Arg> {
+fn script_operand<'a>(key: &str, args: &'a [Arg], shell: Shell) -> Option<&'a Arg> {
     if matches!(key, "source" | ".") {
         return args.first();
     }
     // `uv run file.py` runs Python on the file.
     if key == "uv" {
-        return uv_script(args);
+        return uv_script(args, shell);
     }
     // `bun run file` and `deno run file` run the file after the subcommand,
     // which may stand after options (`bun --hot run file`).

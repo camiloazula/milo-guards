@@ -74,6 +74,13 @@ first=local_address reason="fetches a machine on your own network" | http://[feb
 first=local_address reason="fetches a machine on your own network" | http://[fec0::1]/
 finds=local_address | http://router.lan/
 finds=local_address | http://nas.home.arpa/
+# RFC 8375 makes `home.arpa.` itself local, not only the names under it.
+first=local_address reason="fetches a machine on your own network" | http://home.arpa/
+finds=local_address | http://home.arpa./
+finds=local_address | http://HOME.ARPA:8080/x
+finds=local_address | https://home.arpa./
+safe | http://home.arpa.example.com/
+safe | http://xhome.arpa/
 first=local_address reason="fetches a machine on your own network" | http://printer.local/
 finds=local_address | http://printer.local./
 finds=local_address | http://api.internal/

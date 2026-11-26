@@ -181,18 +181,15 @@ pub(crate) fn name(name: &str) -> Verdict {
     if let Some(provider) = metadata_name(name) {
         return Verdict::Metadata(provider);
     }
-    if name == LOOPBACK_NAME || ends_with_name(name, LOOPBACK_NAME) {
+    if is_or_under(name, LOOPBACK_NAME) {
         return Verdict::Local(Reach::ThisMachine);
     }
     // A name with no dot is a name on a local network: every public one has
     // at least a registered name under a top-level one.
-    if labels.len() == 1 || NETWORK_SUFFIXES.iter().any(|s| ends_with_name(name, s)) {
+    if labels.len() == 1 || NETWORK_SUFFIXES.iter().any(|s| is_or_under(name, s)) {
         return Verdict::Local(Reach::Network);
     }
-    if REBINDING
-        .iter()
-        .any(|s| name == *s || ends_with_name(name, s))
-    {
+    if REBINDING.iter().any(|s| is_or_under(name, s)) {
         return Verdict::Local(Reach::Rebinding);
     }
     // The top-level name must look like one: letters, or the `xn--` form of
@@ -205,6 +202,13 @@ pub(crate) fn name(name: &str) -> Verdict {
     } else {
         Verdict::Local(Reach::NotPublicName)
     }
+}
+
+/// Whether `name` is `suffix` or a name under it. Every table of names a
+/// host is judged by holds an ending that is itself one of the names it
+/// means: `localhost`, `home.arpa` (RFC 8375), `nip.io`.
+fn is_or_under(name: &str, suffix: &str) -> bool {
+    ends_with_name(name, suffix) || name == suffix
 }
 
 /// Whether `name` is a name under `suffix`: it ends in a dot and `suffix`.

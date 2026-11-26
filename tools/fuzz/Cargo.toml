@@ -1,0 +1,176 @@
+[package]
+name = "fuzz"
+description = "Fuzz targets for every entry point of the guards, each holding the promises true of any input, and the tool that seeds and runs them."
+# A tool of this repository, never published: its targets are built by
+# cargo-fuzz with a nightly Rust and libFuzzer, and its runner starts
+# cargo-fuzz, which no crate under `crates/` may do. It is a package of its
+# own, which the workspace excludes (`exclude` in the root `Cargo.toml`), so
+# no gate of the workspace builds it, and `just package`, `just publish` and
+# the release workflow never see it. `just fuzz` formats, lints and runs it.
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+publish = false
+# The runner; the other programs are the fuzz targets.
+default-run = "fuzz"
+# Every program is named below.
+autobins = false
+
+# cargo-fuzz looks for this to know the package holds fuzz targets.
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace, so cargo reads it apart from the one around it, with its
+# own `Cargo.lock`. `crates/guards/tests/contract.rs` holds every package
+# that lock names but the fuzzing harness (`HARNESS` there) to the version
+# the workspace's `Cargo.lock` holds it at, so it builds what the gates
+# build, and its lints below to the workspace's, word for word.
+[workspace]
+
+# The runner: it writes the seeds of a target from the case files, builds
+# the target with cargo-fuzz and runs it, and keeps what libFuzzer prints in
+# a log of its own (`just fuzz`, CONTRIBUTING.md).
+[[bin]]
+name = "fuzz"
+path = "src/main.rs"
+test = false
+doctest = false
+bench = false
+
+# One fuzz target for each entry point of the guards. Each is two lines: the
+# promises it holds are in `crates/guards/tests/common/promises.rs`, which
+# the gate's `tests/promises.rs` holds on every change.
+[[bin]]
+name = "shell_posix"
+path = "src/bin/shell_posix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shell_powershell"
+path = "src/bin/shell_powershell.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shell_cmd"
+path = "src/bin/shell_cmd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file"
+path = "src/bin/file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "url"
+path = "src/bin/url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "url_address"
+path = "src/bin/url_address.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "secrets"
+path = "src/bin/secrets.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "code"
+path = "src/bin/code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "script"
+path = "src/bin/script.rs"
+test = false
+doc = false
+bench = false
+
+[dependencies]
+# The fuzzing harness: libFuzzer, and the macro a target is written with.
+libfuzzer-sys = "0.4"
+# The guards, each through the front door as a caller has them.
+milo-guards = { path = "../../crates/guards", features = ["shell", "file", "url", "secrets", "code", "script"] }
+# The test machines (`testing::posix` and its kin).
+milo-guards-core = { path = "../../crates/core", features = ["testing"] }
+# What only the guards' own tests read: the count of what the shell guard's
+# lexers and the code reader's parses are handed, which the promises hold
+# to their budgets. Not for callers, and it may change with the guards.
+milo-guards-shell = { path = "../../crates/shell", features = ["testing"] }
+milo-guards-code = { path = "../../crates/code", features = ["testing"] }
+milo-guards-script = { path = "../../crates/script", features = ["testing"] }
+
+# The workspace's `[workspace.lints]`, copied: a package outside the
+# workspace cannot inherit them.
+[lints.rust]
+# `unsafe_code = forbid`: no guard needs unsafe, and a crate that ever does
+# must downgrade this consciously rather than slip it in.
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+elided_lifetimes_in_paths = "allow"  # part of rust_2018_idioms; pure style, very noisy, no bug value
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+# Every public item is documented: docs.rs is where a caller reads a guard
+# first, and `just lint` denies warnings, so an undocumented `pub` item does
+# not build.
+missing_docs = "warn"
+# `cargo llvm-cov` sets `cfg(coverage)`; the timing tests skip themselves there.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+
+[lints.clippy]
+# Strict-but-sensible bar across the workspace. `pedantic` catches "you
+# should know better as a Rust dev" issues; a hand-picked slice of
+# `restriction` catches leftover scaffolding (todo/dbg) and forces a
+# conscious choice around panicking APIs. The whole `restriction` and
+# `nursery` groups stay off (too many false positives for a stable bar).
+pedantic = { level = "warn", priority = -1 }
+# The one nursery lint with clear value.
+redundant_clone = "warn"
+module_name_repetitions = "allow"   # `shell::Shell` style is fine
+missing_errors_doc = "allow"         # we don't doc internal error variants
+missing_panics_doc = "allow"         # we don't doc internal panic conditions
+must_use_candidate = "allow"         # noisy on small accessors
+return_self_not_must_use = "allow"   # noisy for builder methods
+similar_names = "allow"              # `arg` / `args`, `dir` / `dirs`, etc.
+too_many_lines = "allow"             # a rule's table reads clearer in one place
+unused_self = "allow"                # often intentional for trait-shaped methods
+match_same_arms = "allow"            # explicit arms aid readability over fall-through
+items_after_statements = "allow"     # localised helper fns inside callers are fine
+match_wildcard_for_single_variants = "allow"  # forwards-compat against new variants
+assert_is_empty = "allow"            # new in 1.99: `assert!(v.is_empty())` would become `assert_eq!(v, [] as [T; 0])`, which reads worse
+needless_continue = "allow"          # explicit `continue` reads cleaner in long loops
+needless_pass_by_value = "allow"     # owned data passed in by design
+struct_field_names = "allow"         # repeated prefixes match domain vocabulary
+
+# --- hand-picked `restriction` lints (NOT the whole group) ---
+# Leftover scaffolding that must never reach a release build.
+dbg_macro = "deny"
+todo = "warn"                        # flag but don't block work-in-progress
+unimplemented = "deny"
+# Panicking APIs: force a conscious choice. A guard runs on every command an
+# agent sends, so a panic there fails the caller's turn. Tests are exempt via
+# `allow-{unwrap,expect,panic}-in-tests` in clippy.toml.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+# Misc correctness/clarity hardening with low false-positive rates.
+mem_forget = "deny"
+exit = "deny"                        # a library never ends the caller's process

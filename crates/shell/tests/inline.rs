@@ -5,8 +5,9 @@
 //! long code is read in linear time.
 //!
 //! The lines and their answers are in `tests/cases/inline.cases`; here are
-//! the path a finding names and the code nested past the limit. The time
-//! long code takes is in `tests/timing.rs`.
+//! the path a finding names, the code nested past the limit, and long code
+//! whose parse the reader stops. The time long code takes is in
+//! `tests/timing.rs`.
 
 mod common;
 
@@ -101,6 +102,171 @@ fn long_inline_code_is_read_unless_it_nests_too_deep() {
         assert_eq!(deep, line.contains(&chain), "{:?}", &line[..20]);
         if line.contains(&"f(".repeat(500)) {
             assert!(!assessment.is_safe(), "{:?}", &line[..20]);
+        }
+    }
+}
+
+#[test]
+fn code_whose_parse_the_reader_stops_is_unknown() {
+    // Code the reader does not read (it meets an error, or its reading is
+    // stopped, as the reader's `tests/parse_budget.rs` holds), up to the
+    // reader's length limit, given with `-c` or `-e`, on its input or in a
+    // here-document: a finding that the guard does not read it, never safe,
+    // and an effect that is unknown, never reads only. tree-sitter-javascript's
+    // recovery goes round the last few tokens of the first with no end, and
+    // wraps the error the second starts with again at each of its tokens;
+    // the third, Python, starts with an error and goes over comments after
+    // it; each is stopped where the recovery starts.
+    let paths = posix();
+    let round = "c(.c(''.(X%'''\"';c(=";
+    // Each within the reader's length limit, 3 KiB; longer code is not read
+    // for its length, and gets the same answer.
+    let javascript = format!("{}{round}", "x;\n".repeat(1_000));
+    let python = format!("!=]0x ]{}", "\n#".repeat(1_400));
+    let wrapped = format!("in {}", "%c=>; ".repeat(500));
+    for (interpreter, code) in [
+        ("node", &javascript),
+        ("node", &wrapped),
+        ("python3", &python),
+    ] {
+        let flag = if interpreter == "node" { "-e" } else { "-c" };
+        // The code as one double-quoted word of the line.
+        let word = format!("\"{}\"", code.replace('\\', "\\\\").replace('"', "\\\""));
+        for line in [
+            format!("{interpreter} {flag} {word}"),
+            format!("printf %s {word} | {interpreter}"),
+            format!("{interpreter} <<'END'\n{code}\nEND"),
+        ] {
+            let at = format!("{:?}", &line[..line.len().min(30)]);
+            assert!(line.len() <= 64 * 1024, "{at}: {}", line.len());
+            let assessment = classify(&line, Shell::Posix, &paths);
+            assert!(
+                assessment
+                    .findings()
+                    .iter()
+                    .any(|finding| finding.rule == Rule::Unknown
+                        && finding.reason == "runs code the guard does not read"),
+                "{at}: {assessment:?}"
+            );
+            assert_eq!(
+                milo_guards_shell::effect(&line, Shell::Posix, &paths),
+                milo_guards_shell::Effect::Unknown,
+                "{at}"
+            );
+        }
+    }
+}
+
+// The reader's work is counted only where the guard reads inline code.
+#[cfg(feature = "inline")]
+#[test]
+fn every_reading_of_a_line_s_code_draws_from_one_budget() {
+    // The reader reads the code of a line, and the code `eval` and `exec`
+    // run inside it, within one budget made for the line: code nested four
+    // deep costs what the line's length allows, not four times it. Each row
+    // is a shape the reader stops on (an error after which a lexer goes over
+    // the same comments again, the round, a chain of calls named again from
+    // each link) and one it reads whole, nested in `eval` or `exec` from
+    // none to four deep, given as a here-document: its work is held to the
+    // budget of the line, written out (see the reader's
+    // `tests/parse_budget.rs`), and the answer is never safe.
+    use milo_guards_shell::testing::lexed;
+    let paths = posix();
+    let rows: [(&str, &str, String); 5] = [
+        (
+            "node",
+            "eval",
+            format!("/*xfrom  @catch{}", "@/*== ".repeat(250)),
+        ),
+        ("python3", "exec", format!("!=]0x ]{}", "\n#".repeat(700))),
+        ("node", "eval", format!("x{}", "()".repeat(700))),
+        (
+            "node",
+            "eval",
+            format!("x;\n{}c(.c(''.(X%'''\"';c(=", "x;\n".repeat(450)),
+        ),
+        ("python3", "exec", "print(1); x = [1, 2, 3]\n".repeat(60)),
+    ];
+    for (interpreter, runs, code) in rows {
+        let mut code = code;
+        for depth in 0..=4 {
+            let line = format!("{interpreter} - <<'END'\n{code}\nEND");
+            let at = format!(
+                "{interpreter} {depth} deep: {:?}",
+                &code[..code.len().min(30)]
+            );
+            if line.len() > 64 * 1024 {
+                break;
+            }
+            let read = lexed(&line, Shell::Posix, &paths);
+            assert!(!read.answer.is_safe(), "{at}");
+            let work = read.reader.unwrap_or_else(|| panic!("{at}: nothing read"));
+            let len = line.len();
+            // The bounds of a budget for the line, as the reader's own tests
+            // write them, and what a count may go past one before it is seen.
+            let bounds = [
+                ("reports", work.reports, len / 6 + 64 + 1),
+                ("quiet", work.quiet, 64 + 1),
+                ("tangled", work.tangled, 384 + 16),
+                ("selected", work.selected, 1024 + 4096),
+                ("handed", work.handed, len * 64 + (24 << 20) + 259 * 12),
+                ("walked", work.walked, len * 16 + (64 << 10) + len),
+            ];
+            for (what, count, most) in bounds {
+                assert!(count <= most, "{at}: {what} {count}, over {most}");
+            }
+            code = format!("{runs}({code:?})");
+        }
+    }
+}
+
+// The reader's work is counted only where the guard reads inline code.
+#[cfg(feature = "inline")]
+#[test]
+fn pieces_of_a_line_each_read_whole_are_held_together() {
+    // Python each piece of which tree-sitter reads two ways at once (versions
+    // merged at each token, built at the end way by way), given in piece
+    // after piece of one line: each piece has
+    // stars where Python allows none, and is refused before it is parsed;
+    // pieces that each meet an error are each
+    // stopped where the recovery starts. Every piece is code the guard does
+    // not read, and the line is held to its reports.
+    use milo_guards_shell::testing::lexed;
+    let paths = posix();
+    let rows = [
+        ("+*a".repeat(256), 80, false),
+        ("if/*a".repeat(512), 24, false),
+        ("+*a".repeat(170), 110, false),
+        // Lines of four at the top level, and `if` then `-*a`: Python with
+        // stars where Python
+        // allows none, refused before each is parsed.
+        ("+*a+*a+*a+*a\n".repeat(60), 70, false),
+        (format!("if{}", "-*a".repeat(260)), 70, false),
+    ];
+    for (code, pieces, stopped) in rows {
+        let line = (0..pieces)
+            .map(|piece| format!("python3 -c '{code}#{piece}'"))
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        let at = format!("{pieces} pieces of {:?}", &code[..6]);
+        assert!(line.len() <= 64 * 1024, "{at}: {} bytes", line.len());
+        let read = lexed(&line, Shell::Posix, &paths);
+        assert!(!read.answer.is_safe(), "{at}");
+        let work = read.reader.unwrap_or_else(|| panic!("{at}: nothing read"));
+        assert_eq!(work.stopped, stopped, "{at}: {work:?}");
+        if !stopped {
+            assert_eq!(work.errors, pieces, "{at}: {work:?}");
+        }
+        // The bounds in all of a budget, as the reader's own tests write
+        // them, and what a count may go past one before it is seen.
+        let bounds = [
+            ("quiet", work.quiet, 64 + 1),
+            ("tangled", work.tangled, 384 + 16),
+            ("selected", work.selected, 1024 + 4096),
+            ("reports", work.reports, line.len() / 6 + 64 + 1),
+        ];
+        for (what, count, most) in bounds {
+            assert!(count <= most, "{at}: {what} {count}, over {most}");
         }
     }
 }

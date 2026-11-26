@@ -1280,7 +1280,7 @@ fn bun_subcommand(unit: &Unit, first: usize, input: bool) -> Launch {
                 Launch::Reads(Reads::Interpreter)
             }
             Some(at) if reads_input(&args[at]) => Launch::Reads(Reads::Interpreter),
-            Some(at) if !is_file(&args[at]) => runner_in(
+            Some(at) if !is_file(&args[at], unit.shell) => runner_in(
                 "bun",
                 args,
                 at,
@@ -1294,11 +1294,14 @@ fn bun_subcommand(unit: &Unit, first: usize, input: bool) -> Launch {
 }
 
 /// Whether the word `bun run` is given names a file: it has a folder in it or
-/// an extension (`./build.ts`, `src/main`, `build.ts`). A word only known when
+/// an extension, or on Windows a drive (`./build.ts`, `src/main`, `build.ts`,
+/// `C:.ts`). A word only known when
 /// the line runs is not known to be one.
-fn is_file(arg: &Arg) -> bool {
+fn is_file(arg: &Arg, shell: Shell) -> bool {
     arg.known().is_some_and(|text| {
-        text.contains(['/', '\\']) || std::path::Path::new(text).extension().is_some()
+        let drive = shell != Shell::Posix
+            && matches!(text.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic());
+        text.contains(['/', '\\']) || drive || crate::path::extension(text, shell).is_some()
     })
 }
 

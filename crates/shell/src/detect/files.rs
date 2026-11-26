@@ -692,9 +692,40 @@ impl Checker<'_> {
                 for file in downloads_to(key, args) {
                     self.write(shell, unit.scope(), &file, "writes to");
                 }
+                // curl's `-K` and wget's `--config` hold options the line
+                // does not show: a file to upload, one to write, a URL.
+                if let Some(file) = super::secrets::config_files(key, args)
+                    .find(|file| key == "curl" || is_config(args, file.as_ref()))
+                {
+                    self.add(
+                        Rule::Unknown,
+                        "takes options from a file the guard does not read",
+                        Some(file.as_ref()),
+                    );
+                }
             }
             "certutil" => {
                 for file in certutil_writes(args) {
+                    self.write(shell, unit.scope(), &file, "writes to");
+                }
+            }
+            // A copy from another machine writes where it lands on this one,
+            // as `cp` and `rsync` do.
+            "scp" | "sftp" | "rclone" | "aws" | "gsutil" | "gcloud" => {
+                if let Some(copy) = fetched(key, args) {
+                    let sources: Vec<&Arg> = copy.sources.iter().collect();
+                    let leaves = leaves(unit, &sources);
+                    self.copy_to(
+                        shell,
+                        unit.scope(),
+                        &leaves,
+                        &copy.destination,
+                        copy.recursive,
+                    );
+                }
+            }
+            "aria2c" | "http" | "https" | "xh" | "bitsadmin" | "start-bitstransfer" => {
+                for file in saved_to(key, args) {
                     self.write(shell, unit.scope(), &file, "writes to");
                 }
             }
@@ -1248,6 +1279,201 @@ fn sed_files(args: &[Arg]) -> Vec<&Arg> {
 }
 
 /// An rsync `host:path` operand, which is not on this machine.
+/// What a copy that may come from another machine lands as on this one:
+/// the names of its sources as the file system reads them (a remote one's
+/// path, without its host or bucket), the destination, and whether it goes
+/// down into folders. `scp` and `sftp` take `host:path`, `rclone` a
+/// remote's `name:path` (`copy`, `copyto`, `sync`, `move`, `moveto`,
+/// `copyurl`), and `aws s3`, `gsutil` and `gcloud storage` a `s3://` or
+/// `gs://` URL (`cp`, `mv`, `sync`, `rsync`). `None` when the destination is
+/// on another machine (a send, the send rule's) or not given.
+struct Fetched {
+    sources: Vec<Arg>,
+    destination: Arg,
+    recursive: bool,
+}
+
+fn fetched(key: &str, args: &[Arg]) -> Option<Fetched> {
+    const SCP: [&str; 10] = ["-c", "-D", "-F", "-i", "-J", "-l", "-o", "-P", "-S", "-X"];
+    const SFTP: [&str; 15] = [
+        "-B", "-b", "-c", "-D", "-F", "-i", "-J", "-l", "-o", "-P", "-R", "-S", "-s", "-X", "-a",
+    ];
+    let words = |args: &[Arg], valued: &[&str]| -> Vec<Arg> {
+        operands(args, valued).into_iter().cloned().collect()
+    };
+    let (mut operands, url, recursive) = match key {
+        "scp" => (words(args, &SCP), false, has_flag(args, Some('r'), None)),
+        "sftp" => {
+            let operands = words(args, &SFTP);
+            // `sftp host:file [local]`: with no local name the file lands in
+            // the working directory under its own.
+            if operands.len() < 2 {
+                return None;
+            }
+            (operands, false, has_flag(args, Some('r'), None))
+        }
+        "rclone" => {
+            let all = words(args, &[]);
+            let verb = all.first()?.known()?;
+            if !matches!(
+                verb,
+                "copy" | "copyto" | "sync" | "move" | "moveto" | "copyurl"
+            ) {
+                return None;
+            }
+            (all[1..].to_vec(), false, !verb.ends_with("to"))
+        }
+        "aws" | "gsutil" | "gcloud" => {
+            let all = words(args, &[]);
+            let rest = match (key, all.first()?.known()?) {
+                ("aws", "s3") | ("gcloud", "storage") => &all[1..],
+                ("gsutil", _) => &all[..],
+                _ => return None,
+            };
+            let verb = rest.first()?.known()?;
+            if !matches!(verb, "cp" | "mv" | "sync" | "rsync") {
+                return None;
+            }
+            let recursive = matches!(verb, "sync" | "rsync")
+                || has_flag(args, Some('r'), Some("recursive"))
+                || has_flag(args, Some('R'), None);
+            (rest[1..].to_vec(), true, recursive)
+        }
+        _ => return None,
+    };
+    if operands.len() < 2 {
+        return None;
+    }
+    let destination = operands.pop()?;
+    let elsewhere = |arg: &Arg| {
+        if url {
+            arg.known()
+                .is_some_and(|text| text.starts_with("s3://") || text.starts_with("gs://"))
+        } else {
+            remote(arg)
+        }
+    };
+    if elsewhere(&destination) {
+        return None;
+    }
+    let sources = operands
+        .iter()
+        .map(|source| {
+            let Some(text) = source.known().filter(|_| elsewhere(source)) else {
+                return source.clone();
+            };
+            let path = if url {
+                // `s3://bucket/key`: the key, from the bucket's root.
+                text.split_once("://")
+                    .and_then(|(_, rest)| rest.split_once('/'))
+                    .map_or("", |(_, key)| key)
+            } else {
+                text.split_once(':').map_or(text, |(_, path)| path)
+            };
+            Arg::Known(path.to_string())
+        })
+        .collect();
+    Some(Fetched {
+        sources,
+        destination,
+        recursive,
+    })
+}
+
+/// The files a download tool saves to besides curl's and wget's: aria2c's
+/// `-o` in its `-d` folder (or in the working directory), `HTTPie`'s and
+/// xh's `-o` (`--output`) when it downloads, `bitsadmin /transfer`'s local
+/// name (the word after each URL), and the `-Destination` of a
+/// `Start-BitsTransfer` that downloads (its `-Source` an address).
+fn saved_to(key: &str, args: &[Arg]) -> Vec<Arg> {
+    let value = |names: &[&str]| -> Option<Arg> {
+        let mut iter = args.iter();
+        while let Some(arg) = iter.next() {
+            let Some(text) = arg.known() else { continue };
+            if names.contains(&text) {
+                return iter.next().cloned();
+            }
+            for name in names.iter().filter(|name| name.starts_with("--")) {
+                if let Some(value) = text
+                    .strip_prefix(*name)
+                    .and_then(|rest| rest.strip_prefix('='))
+                {
+                    return Some(Arg::Known(value.to_string()));
+                }
+            }
+        }
+        None
+    };
+    match key {
+        "aria2c" => {
+            let Some(name) = value(&["-o", "--out"]) else {
+                return Vec::new();
+            };
+            match (value(&["-d", "--dir"]), name.known()) {
+                (Some(Arg::Known(dir)), Some(name)) => vec![Arg::Known(format!("{dir}/{name}"))],
+                (Some(dir), _) => vec![Arg::Unknown(format!("{}/{}", dir.text(), name.text()))],
+                (None, _) => vec![name],
+            }
+        }
+        "http" | "https" | "xh" => value(&["-o", "--output"]).into_iter().collect(),
+        "bitsadmin" => {
+            let transfer = args.iter().any(|arg| {
+                arg.known()
+                    .is_some_and(|text| text.eq_ignore_ascii_case("/transfer"))
+            });
+            if !transfer {
+                return Vec::new();
+            }
+            args.windows(2)
+                .filter(|pair| pair[0].known().is_some_and(|text| text.contains("://")))
+                .map(|pair| pair[1].clone())
+                .collect()
+        }
+        // A download: its source is an address, and it is no upload.
+        "start-bitstransfer" => {
+            let params = Params::read(args);
+            let source = params
+                .values(&["source"])
+                .first()
+                .copied()
+                .or_else(|| params.positional.first().copied());
+            let upload = params.values(&["transfertype"]).iter().any(|kind| {
+                kind.known()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("upload"))
+            });
+            if upload
+                || !source
+                    .and_then(Arg::known)
+                    .is_some_and(|text| text.contains("://"))
+            {
+                return Vec::new();
+            }
+            let mut files: Vec<Arg> = params
+                .values(&["destination"])
+                .into_iter()
+                .cloned()
+                .collect();
+            if files.is_empty() {
+                files.extend(params.positional.get(1).map(|arg| (*arg).clone()));
+            }
+            files
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `file`, a file wget reads, is the one its `--config` names, not
+/// a list of addresses (`-i`).
+fn is_config(args: &[Arg], file: &Arg) -> bool {
+    args.iter().enumerate().any(|(at, arg)| match arg.known() {
+        Some("--config") => args.get(at + 1) == Some(file),
+        Some(text) => text
+            .strip_prefix("--config=")
+            .is_some_and(|value| file.known() == Some(value)),
+        None => false,
+    })
+}
+
 pub(super) fn remote(arg: &Arg) -> bool {
     arg.known().is_some_and(|text| {
         text.find(':')

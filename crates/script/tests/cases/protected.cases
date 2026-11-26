@@ -34,6 +34,13 @@ python@env finds=overwrite reason="writes to the project's environment file" | o
 python@env finds=delete reason="deletes the project's environment file" | import os\nos.remove('.env')
 javascript@env finds=read_secret reason="reads the project's environment file" | require('fs').readFileSync('.env', 'utf8')
 javascript@env finds=read_secret reason="reads your password vault" | require('fs').readFileSync('/home/me/.vault/x')
+# Python and JavaScript expand no `~`: `open('~/../.env')` opens the
+# workspace's `.env` through a folder named `~`, and the same text from
+# `os.path.expanduser` is the home directory's. Each is judged.
+python@env finds=read_secret reason="reads the project's environment file" | print(open('~/../.env').read())
+javascript@env finds=read_secret | require('fs').readFileSync('~/../.env')
+python@env safe | print(open('~/src/x').read())
+python safe | print(open('~/../.env').read())
 # Without the secret named, a project's `.env` is the workspace's own.
 python rules=unknown | import os\nprint(open('.env').read(), os.getcwd())
 python safe | print(open('.env').read())
@@ -44,3 +51,9 @@ paths both base=posix file=/home/me/work/repo/.env words="the agent's settings" 
 python@both finds=read_secret reason="reads the project's environment file" | print(open('.env').read())
 python@both finds=overwrite reason="writes to the agent's settings" | open('.env', 'w')
 python@both finds=delete reason="deletes the agent's settings" | import os\nos.remove('.env')
+
+# A key of core's own under a protected path is still a key to read.
+paths ssh_folder base=posix folder=/home/me/.ssh words="the agent's keys"
+python@ssh_folder finds=read_secret reason="reads your SSH keys" | print(open('/home/me/.ssh/id_rsa').read())
+python@ssh_folder finds=overwrite reason="writes to the agent's keys" | open('/home/me/.ssh/id_rsa', 'w')
+javascript@ssh_folder finds=read_secret | require('fs').readFileSync('/home/me/.ssh/id_rsa')

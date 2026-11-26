@@ -496,6 +496,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "nmo" => "new-module",
         "icim" => "invoke-cimmethod",
         "iwmi" => "invoke-wmimethod",
+        "r" | "ihy" => "invoke-history",
         "%" | "foreach" => "foreach-object",
         "tee" => "tee-object",
         "cd" | "sl" | "chdir" => "set-location",
@@ -1090,8 +1091,16 @@ impl Walker<'_> {
                 }
                 match self.expr(right) {
                     known @ Arg::Known(_) if right.kind() == "string_literal" => known,
-                    // `$env:BASH_ENV = $null` removes the variable.
-                    Arg::Null if startup => Arg::Null,
+                    // `$env:BASH_ENV = $null` removes the variable, and so
+                    // does `$env:PAGER = $null` (a command a program runs).
+                    Arg::Null
+                        if startup
+                            || terraform
+                                .as_deref()
+                                .is_some_and(|name| launch::command_variable(name).is_some()) =>
+                    {
+                        Arg::Null
+                    }
                     _ => Arg::Unknown(unit::text(&node, self.source).to_string()),
                 }
             }

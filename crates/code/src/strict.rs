@@ -33,28 +33,30 @@ use std::collections::HashSet;
 use tree_sitter::Node;
 
 use super::{walk, Ancestor, Language};
-use crate::unit::MAX_TREE_DEPTH;
+use crate::unit::{Budget, Parsed, MAX_TREE_DEPTH};
 
 /// Whether `code` is read whole: nothing in it is outside the subset above.
 /// `None` when it is not; when it is, `Some(true)` if it may load a module,
 /// which looks in the folder the code runs in first (all Python code does,
 /// with or without an `import`).
-pub(super) fn reads_whole(language: Language, code: &str) -> Option<bool> {
+/// The code is parsed within `budget`: code whose parse is stopped is not
+/// read whole.
+pub(super) fn reads_whole(language: Language, code: &str, budget: &Budget) -> Option<bool> {
     if has_odd_character(code) {
         return None;
     }
     match language {
-        Language::Python => python(code, false),
-        Language::JavaScript => javascript(code).then_some(false),
+        Language::Python => python(code, false, budget),
+        Language::JavaScript => javascript(code, budget).then_some(false),
     }
 }
 
 /// [`reads_whole`] for Python 2, which has fewer modules built in.
-pub(super) fn reads_whole_python2(code: &str) -> Option<bool> {
+pub(super) fn reads_whole_python2(code: &str, budget: &Budget) -> Option<bool> {
     if has_odd_character(code) {
         return None;
     }
-    python(code, true)
+    python(code, true, budget)
 }
 
 /// Whether a node with `above` over it is within [`MAX_TREE_DEPTH`]: the
@@ -187,14 +189,12 @@ fn has_statement(root: Node<'_>) -> bool {
 }
 
 /// Python code that is read whole, and whether it imports a module.
-fn python(code: &str, python2: bool) -> Option<bool> {
-    let mut parser = tree_sitter::Parser::new();
-    let tree = parser
-        .set_language(&tree_sitter_python::LANGUAGE.into())
-        .ok()
-        .and_then(|()| parser.parse(code, None))?;
+fn python(code: &str, python2: bool, budget: &Budget) -> Option<bool> {
+    let Parsed::Tree(tree) = crate::python::parse(budget, code) else {
+        return None;
+    };
     let root = tree.root_node();
-    if root.has_error() || !has_statement(root) {
+    if !has_statement(root) {
         return None;
     }
     // The names the code sets, none of which may be a name the reader gives a
@@ -203,7 +203,7 @@ fn python(code: &str, python2: bool) -> Option<bool> {
     let mut assigned = HashSet::new();
     let mut imported = HashSet::new();
     let mut clean = true;
-    walk(root, |node, _, _| {
+    walk(budget, root, |node, _, _| {
         if node.kind() == "import_statement" {
             let mut cursor = node.walk();
             for name in node.named_children(&mut cursor) {
@@ -215,7 +215,7 @@ fn python(code: &str, python2: bool) -> Option<bool> {
             _ => None,
         };
         if let Some(left) = left {
-            walk(left, |name, _, _| {
+            walk(budget, left, |name, _, _| {
                 if name.kind() == "identifier" {
                     let name = text(name, code);
                     clean &= plain_name(name)
@@ -235,7 +235,7 @@ fn python(code: &str, python2: bool) -> Option<bool> {
         return None;
     }
     let mut whole = true;
-    walk(root, |node, field, above| {
+    walk(budget, root, |node, field, above| {
         whole =
             shallow(above) && python_node(node, field, above, code, &assigned, &imported, python2);
         whole
@@ -463,22 +463,17 @@ fn javascript_member(object: &str, name: &str, call: bool) -> bool {
     }
 }
 
-fn javascript(code: &str) -> bool {
-    let mut parser = tree_sitter::Parser::new();
-    let Some(tree) = parser
-        .set_language(&tree_sitter_javascript::LANGUAGE.into())
-        .ok()
-        .and_then(|()| parser.parse(code, None))
-    else {
+fn javascript(code: &str, budget: &Budget) -> bool {
+    let Parsed::Tree(tree) = crate::javascript::parse(budget, code) else {
         return false;
     };
     let root = tree.root_node();
-    if root.has_error() || !has_statement(root) {
+    if !has_statement(root) {
         return false;
     }
     let mut assigned = HashSet::new();
     let mut clean = true;
-    walk(root, |node, _, _| {
+    walk(budget, root, |node, _, _| {
         let name = match node.kind() {
             "variable_declarator" => node.child_by_field_name("name"),
             "assignment_expression" | "augmented_assignment_expression" => {
@@ -501,7 +496,7 @@ fn javascript(code: &str) -> bool {
         return false;
     }
     let mut whole = true;
-    walk(root, |node, field, above| {
+    walk(budget, root, |node, field, above| {
         whole = shallow(above) && javascript_node(node, field, above, code, &assigned);
         whole
     });

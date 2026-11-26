@@ -1377,6 +1377,19 @@ posix safe | cd "$(git rev-parse --show-toplevel)" && bash scripts/check.sh
 posix safe | cd "$(dirname "$0")" && bash x.sh
 posix safe | cd $DIR && bash x.sh
 posix safe | cd "$DIR" && node build.js
+# A script a shell or an interpreter runs by its path from outside every
+# workspace folder and temporary folder is not the workspace's own code:
+# `unknown`. `source` and `.` read the shell's own settings, judged as reads.
+posix finds=unknown reason="runs a script outside the workspace" | bash ~/.ssh/x
+posix finds=unknown | sh -x ~/.netrc
+posix finds=unknown | python3 /opt/x.py
+posix finds=unknown | node ~/.netrc
+posix finds=unknown | bash ../other/x.sh
+powershell finds=unknown reason="runs a script outside the workspace" | powershell -File C:\\Users\\me\\.ssh\\x.ps1
+posix safe | bash /tmp/x.sh
+posix safe | bash ./script.sh
+posix safe | source ~/.nvm/nvm.sh
+powershell safe | pwsh -File .\\build.ps1
 posix safe | cd - && bash x.sh
 posix safe | cd $DIR && bash x.sh 2>/dev/null
 posix safe | cd $DIR && bash x.sh > /dev/null 2>&1

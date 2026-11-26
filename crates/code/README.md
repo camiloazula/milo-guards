@@ -24,6 +24,13 @@ The reader judges nothing. Whether a delete of a path is risky is the
 caller's: the shell guard of milo-guards turns an act into what it already
 judges (a delete is `rm -rf PATH`, a command line a script a shell reads).
 
+**Code longer than 3 KiB is not read.** In this release the reader reads at
+most 3 KiB of code (`MAX_LEN`), a deliberate limit that bounds the work any
+reading takes: longer code is an `Act::Unread` and not understood. The
+script guard calls it `unreadable`, and the shell guard calls such inline
+code (`python3 -c`, `node -e`, a here-document) `unknown`. Later releases
+will raise the limit.
+
 ## Install
 
 Through the front door, where it is the `code` feature (on by default) and
@@ -31,14 +38,14 @@ what the shell guard reads inline code with:
 
 ```toml
 [dependencies]
-milo-guards = "0.1"
+milo-guards = "0.2"
 ```
 
 Or on its own:
 
 ```toml
 [dependencies]
-milo-guards-code = "0.1"
+milo-guards-code = "0.2"
 ```
 
 If your program also links tree-sitter, it has to be on the 0.26 runtime:
@@ -67,6 +74,30 @@ assert_eq!(understand(Language::Python, code), Understanding::NotUnderstood);
 let reading = read(Language::JavaScript, "require('fs').rmSync(process.argv[1])");
 assert!(matches!(&reading.acts[..], [Act::Remove(Arg::Unknown(_))]));
 ```
+
+Each function parses the code it is given. A caller that asks more than one
+question of a piece of code, or reads several pieces of one line, asks them
+through one `Budget` made for the whole: the code is parsed once for all its
+questions, and all the readings share one bound on the work, so reading the
+code inside code, or many pieces, does not multiply it.
+
+```rust
+use milo_guards_code::{Budget, Language, Understanding};
+
+let code = "import shutil\nshutil.rmtree('/home/me')";
+let budget = Budget::new(code.len());
+let reading = budget.read(Language::Python, code);
+// Answered from the same parse.
+assert_eq!(budget.understand(Language::Python, code), Understanding::NotUnderstood);
+assert!(budget.parses(Language::Python, code));
+assert_eq!(reading.acts.len(), 1);
+assert!(!budget.is_spent());
+```
+
+Code with a syntax error is not read through it: `read` gives an
+`Act::Unread` alone. Code the reader stops on, past the work its budget
+allows (counted, never timed), is not read either, and the budget is then
+spent: every later question within it gets the cautious answer.
 
 ## Contract
 

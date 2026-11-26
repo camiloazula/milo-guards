@@ -248,15 +248,49 @@ pub fn path_disagreement(shell: Shell, paths: &Paths, line: &str) -> Option<Stri
             "paths are {listed:?} but effect is {effect:?}: {line}"
         ));
     }
+    if let Some(unordered) = listed.as_deref().and_then(unordered) {
+        return Some(format!("{unordered}: {line}"));
+    }
     if effect != Effect::ReadsOnly(Reach::Workspace) {
         return None;
     }
-    let windows = shell != Shell::Posix;
+    // The paths are spelled as the machine spells them: the Windows way on
+    // a Windows machine, in a POSIX shell there too (Git Bash).
+    let windows =
+        shell != Shell::Posix || paths.cwd.to_string_lossy().as_bytes().get(1) == Some(&b':');
     listed?
         .iter()
         .map(|read| read.path.to_string_lossy().into_owned())
         .find(|path| !stays(path, paths, windows))
         .map(|path| format!("reads only in the workspace, but lists {path}: {line}"))
+}
+
+/// Where `list`, an `effect_paths` answer, is not in order or holds a path
+/// twice by its text, read as the system it is spelled for reads a path and
+/// not as the host the tests run on does: a Windows path (a drive or a `\`
+/// first) split at `\` and `/`, any other at `/` alone, empty parts and `.`
+/// left out, then how it is read. The same list on every host.
+fn unordered(list: &[ReadPath]) -> Option<String> {
+    fn key(read: &ReadPath) -> (bool, Vec<String>, How) {
+        let text = read.path.to_string_lossy();
+        let windows = matches!(text.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic())
+            || text.starts_with('\\');
+        let separators: &[char] = if windows { &['\\', '/'] } else { &['/'] };
+        let parts = text
+            .split(separators)
+            .filter(|part| !part.is_empty() && *part != ".")
+            .map(str::to_string)
+            .collect();
+        (windows, parts, read.how.clone())
+    }
+    list.windows(2)
+        .find(|pair| key(&pair[0]) >= key(&pair[1]))
+        .map(|pair| {
+            format!(
+                "paths not in order or listed twice: {:?} then {:?}",
+                pair[0], pair[1]
+            )
+        })
 }
 
 /// Whether `path` is inside a workspace folder or a temporary folder, as

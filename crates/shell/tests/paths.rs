@@ -18,7 +18,9 @@ fn places(line: &str, shell: Shell, paths: &Paths) -> Option<Vec<PathBuf>> {
         .into_iter()
         .map(|read| read.path)
         .collect();
-    places.dedup();
+    // By the text, not by `Path`'s own equality, which on Windows takes `\`
+    // for `/` and would merge `a\b` and `a/b`, two places in a POSIX line.
+    places.dedup_by(|a, b| a.as_os_str() == b.as_os_str());
     Some(places)
 }
 
@@ -285,6 +287,32 @@ fn the_list_is_sorted_and_holds_each_path_once() {
             Some(&list)
         );
     }
+}
+
+#[test]
+fn paths_are_kept_and_ordered_by_their_spelling_on_any_host() {
+    let paths = posix();
+    // A backslash is a letter of a POSIX name, on every host: `a\b` and
+    // `a/b` are two places. On Windows they are one.
+    assert_eq!(
+        places("cat 'a\\b' a/b", Shell::Posix, &paths),
+        Some(vec![
+            PathBuf::from(format!("{ROOT}/a/b")),
+            PathBuf::from(format!("{ROOT}/a\\b")),
+        ])
+    );
+    assert_eq!(
+        places("Get-Content a\\b, a/b", Shell::PowerShell, &windows()).map(|list| list.len()),
+        Some(1)
+    );
+    // Part by part, as the system reads a path: `a/x` before `a.b`.
+    assert_eq!(
+        places("cat a.b a/x", Shell::Posix, &paths),
+        Some(vec![
+            PathBuf::from(format!("{ROOT}/a/x")),
+            PathBuf::from(format!("{ROOT}/a.b")),
+        ])
+    );
 }
 
 #[test]

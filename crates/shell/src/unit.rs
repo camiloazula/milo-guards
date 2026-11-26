@@ -197,7 +197,7 @@ pub(crate) struct Unit {
     /// config git reads from its environment (`GIT_CONFIG_PARAMETERS`).
     /// Shared with the line's, so a long value is not copied for each
     /// program.
-    pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
+    pub(crate) argument_variables: Noted,
     /// How many levels deep the script it came from is nested: `0` for the
     /// line itself, one more for each `bash -c`, `eval` or `cmd /c`, and one
     /// more for a part of the line the grammar reads again (what follows the
@@ -304,7 +304,7 @@ impl Unit {
             unread_item: false,
             listed: Vec::new(),
             joined: Vec::new(),
-            argument_variables: Rc::default(),
+            argument_variables: Noted::default(),
             depth: 0,
             names: None,
             place: Placed::default(),
@@ -961,10 +961,91 @@ pub(crate) fn git_config_variable(name: &str) -> bool {
         || index("GIT_CONFIG_VALUE_")
 }
 
+/// The values the line gives the variables a program reads (see
+/// [`read_as_arguments`]), as a list each unit keeps as it was where the
+/// unit runs. It is persistent: a unit holds the list by a pointer, and
+/// noting one more value shares what is there, so a line that sets a
+/// variable at every command (`PAGER=a1; git log; PAGER=a2; git log; …`)
+/// copies nothing, where a copy at each value made the work grow with the
+/// square of the line.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Noted(Option<Rc<NotedValue>>);
+
+/// One value of [`Noted`], with the ones noted before it.
+#[derive(Debug)]
+struct NotedValue {
+    name: String,
+    value: Arg,
+    /// How many values the list holds up to this one.
+    len: usize,
+    before: Option<Rc<NotedValue>>,
+}
+
+impl Drop for NotedValue {
+    /// Drop the values before this one in a loop, never by recursion: the
+    /// list may be as long as a line has assignments.
+    fn drop(&mut self) {
+        let mut before = self.before.take();
+        while let Some(value) = before {
+            match Rc::try_unwrap(value) {
+                Ok(mut value) => before = value.before.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+impl PartialEq for Noted {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.newest_first().eq(other.newest_first())
+    }
+}
+
+impl Noted {
+    /// How many values the list holds.
+    pub(crate) fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |value| value.len)
+    }
+
+    /// Note one more value, after the others.
+    fn push(&mut self, name: String, value: Arg) {
+        let before = self.0.take();
+        let len = before.as_ref().map_or(0, |value| value.len) + 1;
+        self.0 = Some(Rc::new(NotedValue {
+            name,
+            value,
+            len,
+            before,
+        }));
+    }
+
+    /// Keep the first `len` values.
+    fn truncate(&mut self, len: usize) {
+        while self.len() > len {
+            self.0 = self.0.as_ref().and_then(|value| value.before.clone());
+        }
+    }
+
+    /// Each value with its name, the last noted first.
+    pub(crate) fn newest_first(&self) -> impl Iterator<Item = (&String, &Arg)> {
+        std::iter::successors(self.0.as_deref(), |value| value.before.as_deref())
+            .map(|value| (&value.name, &value.value))
+    }
+
+    /// Each value with its name, in the order the line gave them.
+    pub(crate) fn iter(&self) -> std::vec::IntoIter<(&String, &Arg)> {
+        let mut values: Vec<(&String, &Arg)> = self.newest_first().collect();
+        values.reverse();
+        values.into_iter()
+    }
+}
+
 /// Whether a program reads the variable `name` as arguments or a command
 /// line of its own: terraform's [`tf_cli_args`], npm's [`npm_call`], the
-/// editor, pager and shell `psql` runs ([`PSQL_PROGRAMS`]), and the config
-/// git reads from its environment ([`git_config_variable`]). The line's
+/// editor, pager and shell `psql` runs ([`PSQL_PROGRAMS`]), the config git
+/// reads from its environment ([`git_config_variable`]), and the commands
+/// other programs run that a variable names (`GIT_SSH_COMMAND`,
+/// `LESSOPEN`; see [`crate::launch::is_command_variable`]). The line's
 /// values of these are noted where it sets them (see
 /// [`Split::argument_variables`]).
 pub(crate) fn read_as_arguments(name: &str) -> bool {
@@ -972,15 +1053,25 @@ pub(crate) fn read_as_arguments(name: &str) -> bool {
         || npm_call(name)
         || PSQL_PROGRAMS.contains(&name)
         || git_config_variable(name)
+        || crate::launch::is_command_variable(name)
 }
 
 /// The name a program reads, when `name` is one of [`read_as_arguments`]'s
 /// written in any case, as Windows reads the names of variables
 /// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`, `$env:NPM_CONFIG_CALL`
-/// is `npm_config_call`, `$env:git_config_count` is `GIT_CONFIG_COUNT`).
+/// is `npm_config_call`, `$env:git_config_count` is `GIT_CONFIG_COUNT`,
+/// `$env:git_ssh_command` is `GIT_SSH_COMMAND`, `set pager=…` is `PAGER`).
 pub(crate) fn argument_variable(name: &str) -> Option<String> {
     if npm_call(name) {
         return Some("npm_config_call".to_string());
+    }
+    if let Some(program) = PSQL_PROGRAMS
+        .iter()
+        .copied()
+        .find(|program| program.eq_ignore_ascii_case(name))
+        .or_else(|| crate::launch::command_variable(name))
+    {
+        return Some(program.to_string());
     }
     let upper = name.to_ascii_uppercase();
     if upper == "TF_CLI_ARGS" || git_config_variable(&upper) {
@@ -1060,6 +1151,13 @@ impl NodeOptions {
     reason = "each flag is a separate fact the one walk of the line latches"
 )]
 pub(crate) struct Split {
+    /// The length of the line, which the work the reader of its inline code
+    /// may do is made for.
+    pub(crate) line_len: usize,
+    /// The work the reader of the line's inline code may do, shared by
+    /// every reading of it (made at the first).
+    #[cfg(feature = "inline")]
+    pub(crate) reader: Option<milo_guards_code::Budget>,
     pub(crate) units: Vec<Unit>,
     pub(crate) writes: Vec<Write>,
     /// The redirects' writes made where the line may be in more than one
@@ -1286,7 +1384,7 @@ pub(crate) struct Split {
     /// exec` run, and `psql` runs `PAGER`, `EDITOR` and the like as command
     /// lines. Each unit shares the list (see
     /// [`Split::note_argument_variable`]).
-    pub(crate) argument_variables: Rc<Vec<(String, Arg)>>,
+    pub(crate) argument_variables: Noted,
     /// How many assignments and wrappers hand the program being added an
     /// environment of its own (`FOO=1 python3 -c …`, `env`, `sudo`): the
     /// interpreter loads what that environment tells it to, which the code
@@ -1951,32 +2049,37 @@ impl Split {
     }
 
     /// Note the value `value` the line gives the variable `name`, one of
-    /// [`read_as_arguments`]'s. The list is copied only when a unit shares
-    /// it, so a unit is handed the list without copying its values. A value
-    /// only known when it runs is noted once for a name until a known one
-    /// follows it: the readers count every value, so another adds nothing,
-    /// and noting each would copy the list for every unit that sets one
-    /// (`Set-Item Env:$n x` repeated).
+    /// [`read_as_arguments`]'s. The list is shared with every unit that
+    /// holds it, and noting one more shares the rest (see [`Noted`]). The
+    /// same value given again right after (`export PAGER=cat` repeated) adds
+    /// nothing; nor does a value only known when it runs after the last one
+    /// of the name was too: the readers count every value, so another adds
+    /// nothing (`Set-Item Env:$n x` repeated).
     pub(crate) fn note_argument_variable(&mut self, name: String, value: Arg) {
+        if self
+            .argument_variables
+            .newest_first()
+            .next()
+            .is_some_and(|(noted, last)| *noted == name && *last == value)
+        {
+            return;
+        }
         if value.known().is_none()
             && self
                 .argument_variables
-                .iter()
-                .rev()
-                .find(|(noted, _)| *noted == name)
+                .newest_first()
+                .find(|(noted, _)| **noted == name)
                 .is_some_and(|(_, last)| last.known().is_none())
         {
             return;
         }
-        Rc::make_mut(&mut self.argument_variables).push((name, value));
+        self.argument_variables.push(name, value);
     }
 
     /// Keep the first `len` of [`Split::argument_variables`]: those noted
     /// after are the program's that was added.
     pub(crate) fn truncate_argument_variables(&mut self, len: usize) {
-        if self.argument_variables.len() > len {
-            Rc::make_mut(&mut self.argument_variables).truncate(len);
-        }
+        self.argument_variables.truncate(len);
     }
 
     /// Add a unit, run where the line has moved to; a `cd` moves the line.
@@ -1989,7 +2092,7 @@ impl Split {
         unit.elsewhere.clone_from(&self.elsewhere);
         unit.stayed.clone_from(&self.stayed);
         unit.adrift = self.adrift;
-        unit.argument_variables = Rc::clone(&self.argument_variables);
+        unit.argument_variables = self.argument_variables.clone();
         self.last_stayed.clear();
         unit.hidden = self.hidden();
         unit.repeated = self.repeats > 0;
@@ -5600,6 +5703,7 @@ pub(crate) fn split(
         split.placing = Some(Box::new(Placing::new(command.len())));
     }
     start(&mut split, false, (drive, home_drive));
+    split.line_len = command.len();
     split.kept.on = effect;
     script(&mut split, command, shell, 0);
     // How the grammar read the line in this first read: a read again starts
@@ -5610,6 +5714,7 @@ pub(crate) fn split(
         // A drive the line makes may be entered before the text that makes
         // it (a function body, a loop), so read the line again knowing it.
         start(&mut split, true, (drive, home_drive));
+        split.line_len = command.len();
         script(&mut split, command, shell, 0);
     }
     // A function body or a loop may run after the line turns `extendedglob`
@@ -5621,6 +5726,7 @@ pub(crate) fn split(
             && split.read_in_body.is_empty())
     {
         start_again_extended(&mut split);
+        split.line_len = command.len();
         script(&mut split, command, shell, 0);
     }
     #[cfg(feature = "testing")]
@@ -5732,6 +5838,35 @@ pub(crate) fn within_limits(split: &mut Split, text: &str, depth: usize) -> bool
     depth == 0 || read_again(split, text, "starts too many scripts to read")
 }
 
+/// Why the caller's line, run by `shell`, reads another way than its text:
+/// a NUL, which no program can be handed in an argument and a shell fed by
+/// its input drops, in any shell; or, in a POSIX shell, a control
+/// character a terminal acts on before the shell sees the line when the
+/// line is typed into one, wherever it stands (a terminal does not know
+/// quotes): every C0 control character but a tab and a line break (a
+/// carriage return only before a line feed, where it ends the line), and
+/// DEL. `\x15` makes the terminal drop what came before it on the line,
+/// `\x08` and DEL erase, `\x17` erases a
+/// word, `\x03` and `\x1a` stop the command, `\x04` ends the input, `\x16`
+/// quotes the next character, a lone `\r` is a line break, and `\x1b`
+/// starts the sequences an editing shell reads as keys. `None` for a line
+/// with none of them.
+fn controlled(text: &str, shell: Shell) -> Option<&'static str> {
+    if text.contains('\0') {
+        return Some("holds a NUL character");
+    }
+    if shell != Shell::Posix {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let control = bytes.iter().enumerate().any(|(at, &b)| match b {
+        b'\t' | b'\n' => false,
+        b'\r' => bytes.get(at + 1) != Some(&b'\n'),
+        b => b < 0x20 || b == 0x7f,
+    });
+    control.then_some("holds a control character a terminal acts on")
+}
+
 /// Whether `text`, a part of the line read again as a script of its own
 /// (cmd's `ver && if …`, see [`crate::cmd`]), may be read: it is counted
 /// against the budget of nested text, so a part that holds another such
@@ -5753,7 +5888,17 @@ pub(crate) fn read_again(split: &mut Split, text: &str, why: &str) -> bool {
 /// longest line, as they would be had the line written the command out each
 /// time (`npx -c '…'; npx -c '…'`). Past it, the line is unreadable.
 pub(crate) fn read_from_variable(split: &mut Split, text: &str) -> bool {
-    split.variable_read += text.len() + 1;
+    read_variable_command(split, text.len() + 1)
+}
+
+/// [`read_from_variable`] for a reading that costs `cost` bytes of the
+/// budget. Once it is spent no command a variable sets is read again, and
+/// the line has said so once.
+pub(crate) fn read_variable_command(split: &mut Split, cost: usize) -> bool {
+    if split.variable_read > MAX_LEN {
+        return false;
+    }
+    split.variable_read += cost;
     if split.variable_read > MAX_LEN {
         split.problem(
             Rule::Unreadable,
@@ -5775,6 +5920,11 @@ pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) 
 pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usize, here: bool) {
     if !within_limits(split, text, depth) {
         return;
+    }
+    if depth == 0 {
+        if let Some(why) = controlled(text, shell) {
+            split.problem(Rule::Unreadable, why, None);
+        }
     }
     if let Some(why) = crate::tangled::too_tangled(text, shell) {
         split.problem(Rule::Unreadable, why, None);
@@ -6510,7 +6660,48 @@ pub(crate) fn plain(args: &[Arg]) -> Vec<&Arg> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, Recovery, Split, MAX_QUIET};
+    use super::{parse, read_variable_command, Arg, Recovery, Split, MAX_LEN, MAX_QUIET};
+
+    #[test]
+    fn a_command_a_variable_names_is_read_to_the_budget_and_said_once() {
+        let mut split = Split::default();
+        assert!(read_variable_command(&mut split, MAX_LEN));
+        assert!(split.findings.is_empty());
+        // Past the budget: no more reading, and the line says so once.
+        assert!(!read_variable_command(&mut split, 1));
+        assert!(!read_variable_command(&mut split, 1));
+        assert!(!read_variable_command(&mut split, 0));
+        assert_eq!(split.findings.len(), 1);
+    }
+
+    #[test]
+    fn a_value_given_again_right_after_is_noted_once() {
+        let mut split = Split::default();
+        for _ in 0..3 {
+            split.note_argument_variable("PAGER".to_string(), Arg::Known("a".to_string()));
+        }
+        assert_eq!(split.argument_variables.len(), 1);
+        split.note_argument_variable("PAGER".to_string(), Arg::Known("b".to_string()));
+        split.note_argument_variable("PAGER".to_string(), Arg::Known("a".to_string()));
+        assert_eq!(split.argument_variables.len(), 3);
+        split.truncate_argument_variables(1);
+        let kept: Vec<_> = split
+            .argument_variables
+            .iter()
+            .map(|(name, value)| (name.clone(), value.text().to_string()))
+            .collect();
+        assert_eq!(kept, [("PAGER".to_string(), "a".to_string())]);
+    }
+
+    #[test]
+    fn a_long_list_of_values_drops_without_recursing() {
+        let mut split = Split::default();
+        for at in 0..200_000 {
+            split.note_argument_variable("PAGER".to_string(), Arg::Known(at.to_string()));
+        }
+        assert_eq!(split.argument_variables.len(), 200_000);
+        drop(split);
+    }
 
     fn parsed(text: &str, language: &tree_sitter::Language) -> Split {
         let mut split = Split::default();

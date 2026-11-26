@@ -9,45 +9,55 @@ use super::{
     environment, join, mode, named_path, path, read_path, walk, writes, Act, Ancestor, Constants,
     Expansion, Holds, Language, Parts, Reading, MAX_ROUNDS,
 };
-use crate::unit::{self, Arg, MAX_TREE_DEPTH};
+use crate::scan;
+use crate::unit::{self, Arg, Budget, Parsed, Refusal, MAX_TREE_DEPTH};
 
-pub(super) fn read(code: &str) -> Reading {
+pub(super) fn read(code: &str, budget: &Budget) -> Reading {
     let ended = end_hashbang(code);
     let code = ended.as_str();
-    let mut reader = Reader::new(code, HashMap::new(), HashSet::new(), 0);
-    let Some(tree) = parse(code) else {
+    let mut reader = Reader::new(code, budget, HashMap::new(), HashSet::new(), 0);
+    // Code with an error is not read through it, and code whose parse is
+    // stopped is not read.
+    let Parsed::Tree(tree) = parse(reader.budget, code) else {
         reader.reading.unread(code);
         return reader.reading;
     };
     let root = tree.root_node();
-    if root.has_error() {
-        reader.reading.unread(code);
-    }
     reader.collect_aliases(root);
     reader.walk_all(root);
+    // Code inside it whose parse was stopped is not read, wherever the
+    // reader met it.
+    if reader.budget.spent().stopped
+        && !reader
+            .reading
+            .acts
+            .iter()
+            .any(|act| matches!(act, Act::Unread(_)))
+    {
+        reader.reading.unread(code);
+    }
     reader.reading
 }
 
 /// Whether `code` parses whole, read as [`read`] reads it.
-pub(super) fn parses(code: &str) -> bool {
-    parse(&end_hashbang(code)).is_some_and(|tree| !tree.root_node().has_error())
+///
+/// Code whose parse is stopped (see [`Budget`]) is not said to parse.
+pub(super) fn parses(code: &str, budget: &Budget) -> bool {
+    matches!(parse(budget, &end_hashbang(code)), Parsed::Tree(_))
 }
 
 /// Whether `code` may hand a program it starts something to read on its
 /// input: an option `input`, `stdin` or `stdio` (`execSync(…, { input })`),
 /// or a `stdin` member (`child.stdin.write(…)`). Code that does not parse
 /// may.
-pub(super) fn gives_input(code: &str) -> bool {
+pub(super) fn gives_input(code: &str, budget: &Budget) -> bool {
     let code = end_hashbang(code);
-    let Some(tree) = parse(&code) else {
+    // Code not read, as code that does not parse, may.
+    let Parsed::Tree(tree) = parse(budget, &code) else {
         return true;
     };
-    let root = tree.root_node();
-    if root.has_error() {
-        return true;
-    }
     let mut found = false;
-    unit::for_each_node(root, |node| {
+    unit::for_each_node(budget, tree.root_node(), |node| {
         let name = match node.kind() {
             "pair" | "pair_pattern" => node.child_by_field_name("key"),
             "member_expression" => node.child_by_field_name("property"),
@@ -60,7 +70,8 @@ pub(super) fn gives_input(code: &str) -> bool {
             matches!(text, "input" | "stdin" | "stdio")
         });
     });
-    found
+    // A walk cut short has not read the code: it may.
+    found || budget.is_spent()
 }
 
 /// Whether `code` may hand a shell a list of words: a call given an array
@@ -68,17 +79,14 @@ pub(super) fn gives_input(code: &str) -> bool {
 /// spread (a name, a call, `{ ...o }`), which may hold `shell: true`, or any
 /// call with a spread among its arguments. An object written out is read for `shell`
 /// where the call is read. Code that does not parse may.
-pub(super) fn gives_shell_a_list(code: &str) -> bool {
+pub(super) fn gives_shell_a_list(code: &str, budget: &Budget) -> bool {
     let code = end_hashbang(code);
-    let Some(tree) = parse(&code) else {
+    // Code not read, as code that does not parse, may.
+    let Parsed::Tree(tree) = parse(budget, &code) else {
         return true;
     };
-    let root = tree.root_node();
-    if root.has_error() {
-        return true;
-    }
     let mut found = false;
-    unit::for_each_node(root, |node| {
+    unit::for_each_node(budget, tree.root_node(), |node| {
         if node.kind() != "call_expression" {
             return;
         }
@@ -111,15 +119,30 @@ pub(super) fn gives_shell_a_list(code: &str) -> bool {
                 _ => true,
             });
     });
-    found
+    // A walk cut short has not read the code: it may.
+    found || budget.is_spent()
 }
 
-fn parse(code: &str) -> Option<tree_sitter::Tree> {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_javascript::LANGUAGE.into())
-        .ok()
-        .and_then(|()| parser.parse(code, None))
+/// Parse `code` as JavaScript, within what is left of `budget`. Code whose
+/// brackets and templates nest deeper than [`MAX_TREE_DEPTH`] (as the text is
+/// read, or on its bytes alone),
+/// with more than [`scan::MAX_AWAITED_SLASHES`] `await`s before a `/` (see
+/// [`scan::javascript`]), or with more than [`scan::MAX_ODD_SPACES`] spaces
+/// of [`scan::odd_space`] outside its strings and comments, is not read.
+pub(super) fn parse(budget: &Budget, code: &str) -> Parsed {
+    unit::parse(
+        budget,
+        &tree_sitter_javascript::LANGUAGE.into(),
+        code,
+        |code| {
+            let scanned = scan::javascript(code);
+            let refused = scanned.depth > MAX_TREE_DEPTH
+                || scanned.raw_depth > MAX_TREE_DEPTH
+                || scanned.marks > scan::MAX_AWAITED_SLASHES
+                || scanned.odd > scan::MAX_ODD_SPACES;
+            (scanned, refused.then_some(Refusal::Stopped))
+        },
+    )
 }
 
 /// `code` with the line a hashbang (`#!…`) starts ended as JavaScript ends
@@ -829,6 +852,11 @@ fn value_used(above: &[Ancestor<'_>]) -> bool {
 
 struct Reader<'s> {
     src: &'s str,
+    /// The work the parses of the call that reads this code may do, shared
+    /// with the readers of the code inside it.
+    budget: &'s Budget,
+    /// The grammar's id of the field `right`, the value of an assignment.
+    right: u16,
     /// What each name a `require`, an `import` or a destructuring binds
     /// stands for: `rm` from `const { rm } = require('fs/promises')` is
     /// `fs.promises.rm`.
@@ -918,12 +946,17 @@ impl<'t> Args<'t> {
 impl<'s> Reader<'s> {
     fn new(
         src: &'s str,
+        budget: &'s Budget,
         aliases: HashMap<String, String>,
         modules: HashSet<String>,
         nesting: usize,
     ) -> Self {
         Self {
             src,
+            budget,
+            right: tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE)
+                .field_id_for_name("right")
+                .map_or(0, u16::from),
             aliases,
             modules,
             names: HashMap::new(),
@@ -959,7 +992,7 @@ impl<'s> Reader<'s> {
             self.constants.mark(&name);
         }
         let mut found = Vec::new();
-        unit::for_each_node(root, |node| match node.kind() {
+        unit::for_each_node(self.budget, root, |node| match node.kind() {
             "variable_declarator"
             | "assignment_expression"
             | "augmented_assignment_expression"
@@ -968,6 +1001,7 @@ impl<'s> Reader<'s> {
             }
             _ => {}
         });
+        let ends = unit::chain_ends(&found, "assignment_expression");
         // A name found to be unresolved after a value was worked out from it
         // makes that value stale: the strings are noted again, with it
         // unresolved. Each round marks one more name, so they settle; if they
@@ -978,7 +1012,7 @@ impl<'s> Reader<'s> {
                 self.constants.everything();
             }
             self.constants.start_round();
-            self.note_round(&found);
+            self.note_round(&found, &ends);
             if !self.constants.stale() || round == MAX_ROUNDS {
                 break;
             }
@@ -988,7 +1022,7 @@ impl<'s> Reader<'s> {
 
     /// One round of noting the strings the names are set to
     /// ([`Self::collect_constants`]).
-    fn note_round(&mut self, found: &[Node<'_>]) {
+    fn note_round<'t>(&mut self, found: &[Node<'t>], ends: &HashMap<usize, Node<'t>>) {
         self.constants_on = true;
         for &node in found {
             let looped = node.kind() == "for_in_statement";
@@ -1024,12 +1058,7 @@ impl<'s> Reader<'s> {
                 continue;
             }
             // `a = b = 'x'` sets `a` to the string too.
-            while value.kind() == "assignment_expression" {
-                let Some(next) = value.child_by_field_name("right") else {
-                    break;
-                };
-                value = next;
-            }
+            value = unit::chain_end(value, "assignment_expression", ends);
             self.constants.lost = false;
             let mut values = Vec::new();
             // Whether every value the name is set to is a string the reader
@@ -1120,7 +1149,7 @@ impl<'s> Reader<'s> {
         loose: &mut Vec<String>,
     ) -> bool {
         let mut found = Vec::new();
-        unit::for_each_node(root, |node| match node.kind() {
+        unit::for_each_node(self.budget, root, |node| match node.kind() {
             "variable_declarator"
             | "assignment_expression"
             | "augmented_assignment_expression"
@@ -1298,15 +1327,17 @@ impl<'s> Reader<'s> {
             return true;
         }
         let ended = end_hashbang(&text);
-        let Some(tree) = parse(&ended) else {
-            return false;
+        let tree = match parse(self.budget, &ended) {
+            Parsed::Tree(tree) => tree,
+            // Code not read may bind any name.
+            Parsed::Stopped => return true,
+            // Code that does not parse raises before it runs a thing.
+            Parsed::Error | Parsed::Failed => return false,
         };
         let inner_root = tree.root_node();
-        if inner_root.has_error() {
-            return false;
-        }
         let mut inner = Reader::new(
             &ended,
+            self.budget,
             self.aliases.clone(),
             self.modules.clone(),
             self.nesting + 1,
@@ -1412,7 +1443,7 @@ impl<'s> Reader<'s> {
     fn walk_all(&mut self, root: Node<'_>) {
         self.collect_constants(root);
         self.walking = true;
-        walk(root, |node, field, above| {
+        walk(self.budget, root, |node, field, above| {
             // A name written with an escape (`\u0072mSync`) is the name it
             // spells; the reader does not decode it, so it follows none.
             if node.kind().ends_with("identifier") && self.text(node).contains('\\') {
@@ -1478,16 +1509,17 @@ impl<'s> Reader<'s> {
             return true;
         }
         let ended = end_hashbang(text);
-        let Some(tree) = parse(&ended) else {
-            return false;
+        let tree = match parse(self.budget, &ended) {
+            Parsed::Tree(tree) => tree,
+            // Code not read may share any name.
+            Parsed::Stopped => return true,
+            // Code that does not parse raises before it runs a thing.
+            Parsed::Error | Parsed::Failed => return false,
         };
         let root = tree.root_node();
-        // Code that does not parse raises before it runs a thing.
-        if root.has_error() {
-            return false;
-        }
         let mut inner = Reader::new(
             &ended,
+            self.budget,
             self.aliases.clone(),
             self.modules.clone(),
             self.nesting + 1,
@@ -1498,7 +1530,7 @@ impl<'s> Reader<'s> {
                 .aliases
                 .iter()
                 .any(|(name, value)| *value != self.resolve(name) && inner.followed(value));
-        walk(root, |node, _, _| {
+        walk(self.budget, root, |node, _, _| {
             if matches!(node.kind(), "identifier" | "shorthand_property_identifier") {
                 let name = unit::text(&node, &ended);
                 if let Some(value) = self.aliases.get(name) {
@@ -1516,7 +1548,7 @@ impl<'s> Reader<'s> {
 
     fn collect_aliases(&mut self, root: Node<'_>) {
         let mut found = Vec::new();
-        unit::for_each_node(root, |node| match node.kind() {
+        unit::for_each_node(self.budget, root, |node| match node.kind() {
             "variable_declarator" | "assignment_expression" | "import_statement" => {
                 found.push(node);
             }
@@ -1712,7 +1744,50 @@ impl<'s> Reader<'s> {
     /// The dotted name `node` stands for, once the names bound by `require`,
     /// `import` and destructuring are put back: `fs.promises.rm`,
     /// `child_process.execSync`. `None` for what is not a name.
+    /// The name a chain of assignments (`a = b = c`) ends in, from its first
+    /// assignment, `level` deep: each assignment in it is a level, as when
+    /// each is asked for in turn, and each is given the name the chain ends
+    /// in. Followed in one loop, so a chain of thousands (`x = a = a = …`)
+    /// costs each of its assignments the few steps to the end, or to one
+    /// whose name is known, not a call of [`Self::qualified`] for each
+    /// assignment after it, which took a second at the length limit.
+    fn qualified_chain(&mut self, node: Node<'_>, level: usize) -> Option<String> {
+        let mut links = Vec::new();
+        let mut value = node;
+        let mut level = level;
+        let name = loop {
+            if value.kind() != "assignment_expression" {
+                break self.qualified(value, level);
+            }
+            if level > MAX_TREE_DEPTH {
+                self.reading.deep = true;
+                return None;
+            }
+            if self.walking && value.id() != node.id() {
+                if let Some(known) = self.names.get(&value.id()) {
+                    break known.clone();
+                }
+            }
+            links.push(value.id());
+            if !self.budget.walk(1) {
+                return None;
+            }
+            value = value.child_by_field_id(self.right)?;
+            level += 1;
+        };
+        if self.walking && !self.reading.deep {
+            for link in links.into_iter().skip(1) {
+                self.names.insert(link, name.clone());
+            }
+        }
+        name
+    }
+
     fn qualified(&mut self, node: Node<'_>, level: usize) -> Option<String> {
+        // Each name worked out is a unit of the reader's own work.
+        if !self.budget.walk(1) {
+            return None;
+        }
         if level > MAX_TREE_DEPTH {
             self.reading.deep = true;
             return None;
@@ -1793,10 +1868,7 @@ impl<'s> Reader<'s> {
                 self.qualified(inner, level + 1)
             }
             // `a = b = require('fs')`: `a` is the module too.
-            "assignment_expression" => {
-                let right = node.child_by_field_name("right")?;
-                self.qualified(right, level + 1)
-            }
+            "assignment_expression" => self.qualified_chain(node, level),
             "call_expression" => {
                 let function = node.child_by_field_name("function")?;
                 let called = self.qualified(function, level + 1);

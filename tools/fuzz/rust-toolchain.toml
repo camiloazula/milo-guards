@@ -1,0 +1,11 @@
+# The Rust cargo-fuzz builds the fuzz targets with: a nightly, which its
+# sanitizer and coverage flags need, named by its date so every run builds
+# with the same one. The workspace builds with the stable Rust its own
+# rust-toolchain.toml pins, and `just verify` never needs this one; the
+# runner (`just fuzz`) is built with that stable Rust too, and names this
+# one to the cargo-fuzz it starts. `crates/guards/tests/toolchain.rs` holds
+# it dated, and the fuzz workflow's install of it to the same date. Move it
+# to a newer nightly by hand, when one is wanted.
+[toolchain]
+channel = "nightly-2026-11-10"
+profile = "minimal"

@@ -359,3 +359,33 @@ posix safe | find . -fprint list.txt
 posix safe | find . -fprintf list.txt '%p\\n'
 posix safe | find . -name -fprint -print
 posix safe | find . -exec echo -fprint /etc/x \\;
+
+# A copy from another machine writes where it lands on this one, as `cp`
+# and `rsync` do: `scp` and `sftp` from `host:`, `rclone` from a remote,
+# `aws s3`, `gsutil` and `gcloud storage` from a bucket. A download tool
+# writes the file it saves to.
+posix finds=overwrite reason="writes to your SSH keys" | scp host:authorized_keys ~/.ssh/authorized_keys
+posix finds=overwrite reason="writes to a shell startup file" | scp host:x ~/.bashrc
+posix finds=overwrite reason="writes to your SSH keys" | scp host:x ~/.ssh/
+posix finds=overwrite reason="writes to your home directory" | scp -r host:dir ~
+posix finds=overwrite | sftp host:x ~/.ssh/authorized_keys
+posix finds=overwrite | rclone copy remote:x ~/.ssh/
+posix finds=overwrite | rclone copy remote:x ~/.bashrc
+posix finds=overwrite | aws s3 cp s3://b/k ~/.ssh/authorized_keys
+posix finds=overwrite reason="writes to your home directory" | aws s3 sync s3://b ~
+posix finds=overwrite | gsutil cp gs://b/k ~/.bashrc
+posix finds=overwrite | gcloud storage cp gs://b/k ~/.bashrc
+posix finds=overwrite reason="writes to your SSH keys" | curl -O --output-dir ~/.ssh https://x.example/authorized_keys
+posix finds=overwrite reason="writes to a shell startup file" | aria2c -d ~ -o .bashrc https://x.example
+posix finds=overwrite | http --download -o ~/.bashrc https://x.example
+powershell finds=overwrite reason="writes to a shell startup file" | Start-BitsTransfer -Source https://x.example -Destination ~\\.bashrc
+cmd finds=overwrite reason="writes to a shell startup file" | bitsadmin /transfer j https://x.example %USERPROFILE%\\.bashrc
+posix safe | scp host:x out.txt
+posix safe | scp host:x src/
+posix safe | scp a.txt b.txt
+posix safe | rclone copy ./dist remote:b
+posix safe | aws s3 cp s3://b/k ./out
+posix safe | aws s3 cp ./x s3://b/k
+posix safe | aria2c -o .bashrc https://x.example
+posix safe | xh --download -o out.txt https://x.example
+posix safe | curl -O --output-dir build https://x.example/a.tgz

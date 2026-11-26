@@ -53,7 +53,7 @@ the `-code` reader), published together at one version.
 
 ```toml
 [dependencies]
-milo-guards = "0.1"
+milo-guards = "0.2"
 ```
 
 Each guard sits behind a cargo feature. `shell`, `file`, `url`, `script` and
@@ -62,17 +62,17 @@ not a table of credential patterns in their binary.
 
 ```toml
 # Everything, the secrets guard included
-milo-guards = { version = "0.1", features = ["secrets"] }
+milo-guards = { version = "0.2", features = ["secrets"] }
 
 # Only the shell guard
-milo-guards = { version = "0.1", default-features = false, features = ["shell"] }
+milo-guards = { version = "0.2", default-features = false, features = ["shell"] }
 ```
 
 To depend on a commit instead, the git form works too, pinned to a release
-tag (`v0.1.4` is the latest):
+tag (`v0.2.0` is the latest):
 
 ```toml
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.1.4" }
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.2.0" }
 ```
 
 The crates declare Rust 1.90, and are built and tested with it against the

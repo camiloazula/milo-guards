@@ -23,7 +23,9 @@ that guards build on, and the front door:
   `understand`. It reads Python and JavaScript and says what the code is
   certain to do, or that it does not understand it. It judges nothing; the
   shell guard builds on it for inline code, behind its `inline` feature, and
-  the script guard for the code it judges.
+  the script guard for the code it judges. It shows its own tests the count
+  of the work its parses do behind its `testing` feature, which is not for
+  callers.
   [Its design](docs/design/code.md).
 - `crates/shell` (`milo-guards-shell`) - the shell guard, `classify`. It
   parses POSIX shell, PowerShell and cmd and judges programs, flags, operands
@@ -61,7 +63,9 @@ crates depend on each other and how that is enforced is in
 - **Every guard keeps the contract**: no I/O and no environment reads,
   deterministic, no policy, what cannot be read is risky, never panics. No
   I/O and the direction of the dependencies are enforced by `contract.rs` and
-  clippy; never panics and unreadable-is-risky by each guard's `robust.rs`.
+  clippy; never panics and unreadable-is-risky by each guard's `robust.rs`,
+  and for any input by the front door's `tests/promises.rs` and the fuzz
+  targets of `tools/fuzz` ([Fuzzing](CONTRIBUTING.md#fuzzing)).
   [Architecture](docs/design/architecture.md)
 - **Policy stays with the caller.** A guard reports findings; it never decides
   to ask, refuse or allow, and has no modes.

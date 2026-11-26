@@ -464,14 +464,75 @@ fn windows_root(text: &str) -> Option<(Root, &str)> {
         let (kind, tail) = rest.split_once(['/', '\\']).unwrap_or((rest, ""));
         if kind.eq_ignore_ascii_case("unc") {
             let (share, tail) = unc_parts(tail)?;
-            return Some((Root::Unc(share), tail));
+            return Some((share_root(share), tail));
         }
         return None;
     }
     if let Some((share, rest)) = unc(text) {
-        return Some((Root::Unc(share), rest));
+        return Some((share_root(share), rest));
     }
     drive(text).map(|(letter, rest)| (Root::Drive(letter), rest))
+}
+
+/// The root a share (`server/share`, lower case) is: the disk itself for an
+/// administrative share of this machine (see [`local_drive`]), the share
+/// otherwise.
+fn share_root(share: String) -> Root {
+    match local_drive(&share) {
+        Some(letter) => Root::Drive(letter),
+        None => Root::Unc(share),
+    }
+}
+
+/// The drive an administrative share of this machine is: `C$` on a name
+/// every Windows machine gives itself (`localhost`, an address of the
+/// loopback, `::1` and its UNC spelling `0--1.ipv6-literal.net`) is the disk
+/// `C:`, which no other machine is asked for. `share` is `server/share`;
+/// case does not count. `None` for any other share: a name of this machine
+/// that is its own (`\\my-pc\C$`) is not one the spelling says.
+fn local_drive(share: &str) -> Option<char> {
+    let (server, share) = share.split_once('/')?;
+    let mut chars = share.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    (chars.next() == Some('$') && chars.next().is_none() && this_machine(server))
+        .then(|| letter.to_ascii_uppercase())
+}
+
+/// Whether `text` is spelled from an administrative share of this machine
+/// (see [`local_drive`]): `\\localhost\C$\x`, `\\?\UNC\127.0.0.1\C$\x`.
+fn local_share(text: &str) -> bool {
+    let share = match verbatim(text) {
+        Some(rest) => {
+            let (kind, tail) = rest.split_once(['/', '\\']).unwrap_or((rest, ""));
+            if !kind.eq_ignore_ascii_case("unc") {
+                return false;
+            }
+            unc_parts(tail).map(|(share, _)| share)
+        }
+        None => unc(text).map(|(share, _)| share),
+    };
+    share.is_some_and(|share| local_drive(&share).is_some())
+}
+
+/// Whether a share's server is this machine by a name every Windows machine
+/// answers to: `localhost`, `127.x.x.x`, `::1`, `0--1.ipv6-literal.net`.
+fn this_machine(server: &str) -> bool {
+    let server = server.to_ascii_lowercase();
+    if matches!(
+        server.as_str(),
+        "localhost" | "::1" | "0--1.ipv6-literal.net"
+    ) {
+        return true;
+    }
+    let parts: Vec<&str> = server.split('.').collect();
+    parts.len() == 4
+        && parts[0] == "127"
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.len() <= 3
+                && part.bytes().all(|b| b.is_ascii_digit())
+                && part.parse::<u16>().is_ok_and(|n| n <= 255)
+        })
 }
 
 /// What follows `\\?\` (with either kind of separator) when `text` starts
@@ -1653,6 +1714,11 @@ impl Resolver {
     /// read the caller's words where it has words of its own (a name that
     /// looks like a secret).
     ///
+    /// A key or a credential of core's own under a path the caller protects
+    /// (`~/.ssh/id_rsa`, with `~/.ssh` protected) is `Protected` to `place`
+    /// too, for the same reason, and this gives its words (`your SSH keys`),
+    /// so a read of it is a read of the key.
+    ///
     /// The path is read literally: a wildcard is a character of the name, so
     /// `app/[id]/secret.json` is the secret named at that path, and `.e*` is
     /// a file named `.e*`, not the `.env` it can pick (what a pattern can
@@ -1678,6 +1744,27 @@ impl Resolver {
     #[must_use]
     pub fn named_secret(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
         self.named_literally(path, flavour)
+            .or_else(|| self.protected_secret(path, flavour))
+    }
+
+    /// The words of a key or a credential of core's own that `path`, read
+    /// literally, is under a path the caller protects: what `judge` would
+    /// call it were it not protected (see [`named_secret`](Self::named_secret)).
+    fn protected_secret(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        if self.protected.is_empty() {
+            return None;
+        }
+        self.literal(path, flavour).iter().find_map(|loc| {
+            let stripped = loc.stripped();
+            let strip = stripped.as_ref().unwrap_or(loc);
+            if !self.protected.iter().any(|(file, ..)| below(strip, file)) {
+                return None;
+            }
+            match self.judge_plain(loc, strip, flavour) {
+                Place::Sensitive(words, Sensitivity::Secret) => Some(words),
+                _ => None,
+            }
+        })
     }
 
     /// The caller's words for a secret it named that `rest`, a relative path
@@ -2013,6 +2100,13 @@ impl Resolver {
         // knows (see `through_fd`): as spelled, and as unknown.
         if flavour == Flavour::Posix && matches!(path, Spelling::Plain(text) if through_fd(text)) {
             places.push((Place::Unknown, None));
+        }
+        // An administrative share of this machine is its disk (see
+        // `local_drive`), and a share as spelled, which is outside: the more
+        // serious wins.
+        if flavour == Flavour::Windows && matches!(path, Spelling::Plain(text) if local_share(text))
+        {
+            places.push((Place::Outside, None));
         }
         places
     }
@@ -2978,7 +3072,7 @@ impl Resolver {
                 return Loc::at(Root::Drive(letter)).walk_dots(rest, flavour, keep);
             }
             if let Some((share, rest)) = unc(text) {
-                return Loc::at(Root::Unc(share)).walk_dots(rest, flavour, keep);
+                return Loc::at(share_root(share)).walk_dots(rest, flavour, keep);
             }
         }
         if text.starts_with(separators) {
