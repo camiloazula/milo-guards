@@ -99,6 +99,17 @@ fn a_windows_target_read_by_cmd_finds_what_the_program_does() {
             "delete",
             "deletes a shell startup file",
         ),
+        // A launcher hands the command after its options on.
+        (
+            r"import subprocess; subprocess.run(['conhost', 'cmd', '/c', 'rd /s /q C:\\Users\\me'])",
+            "delete",
+            "deletes your home directory",
+        ),
+        (
+            r"import subprocess; subprocess.run(['psexec', '-s', 'cmd', '/c', 'rd /s /q C:\\Users\\me'])",
+            "delete",
+            "deletes your home directory",
+        ),
     ] {
         let lines = targets(Language::Python, code, &paths);
         assert!(!lines.is_empty(), "{code}");
@@ -151,6 +162,19 @@ fn a_posix_target_read_by_a_posix_shell_finds_what_the_program_does() {
             "import os, sys; os.chdir(sys.argv[1]); os.system('cat .ssh/id_rsa')",
             "read_secret",
             "reads your SSH keys",
+        ),
+        // A command an option names, and one a launcher hands on.
+        (
+            Language::Python,
+            "import subprocess; subprocess.run(['ssh', '-o', 'ProxyCommand=rm -rf ~', 'host'])",
+            "delete",
+            "deletes your home directory",
+        ),
+        (
+            Language::JavaScript,
+            "require('child_process').spawnSync('xterm', ['-e', 'rm -rf ~'])",
+            "delete",
+            "deletes your home directory",
         ),
     ] {
         let lines = targets(language, code, &paths);
@@ -225,4 +249,51 @@ fn a_target_for_cmd_or_a_batch_file_is_the_line_cmd_reads() {
             .any(|(rule, reason)| *rule == "delete" && reason == "deletes your home directory"),
         "{lines:?}: {reads:?}"
     );
+}
+
+#[test]
+fn a_command_an_environment_in_the_code_names_leaves_the_code_unknown() {
+    // The shell guard reads a command a variable names when the line sets it
+    // (`GIT_SSH_COMMAND='…' git fetch`). The script guard gives the program
+    // as its target without the environment the code sets for it, and says
+    // `unknown` for the code itself whatever that environment holds, so
+    // the command the variable names is never missed: the caller asks.
+    let paths = posix();
+    for (language, code) in [
+        (
+            Language::Python,
+            "import subprocess\nsubprocess.run(['git', 'fetch'], env={'GIT_SSH_COMMAND': 'rm -rf ~'})",
+        ),
+        (
+            Language::Python,
+            "import os, subprocess\nos.environ['GIT_PAGER'] = 'rm -rf ~'\nsubprocess.run(['git', 'log'])",
+        ),
+        (
+            Language::JavaScript,
+            "require('child_process').spawnSync('git', ['fetch'], {env: {GIT_SSH_COMMAND: 'rm -rf ~'}})",
+        ),
+    ] {
+        let assessment = script::judge(language, code, &paths);
+        assert!(
+            assessment.findings().iter().any(|finding| {
+                finding.rule == script::Rule::Unknown
+                    && finding.reason == "starts a program with an environment set in the code"
+            }),
+            "{code}: {assessment:?}"
+        );
+    }
+    // The same program, with the environment written on the line, runs
+    // the command the variable names to the shell guard.
+    for line in [
+        "GIT_SSH_COMMAND='rm -rf ~' git fetch",
+        "GIT_PAGER='rm -rf ~' git log",
+    ] {
+        let found = found(line, shell_of(&paths), &paths);
+        assert!(
+            found
+                .iter()
+                .any(|(rule, said)| *rule == "delete" && said == "deletes your home directory"),
+            "{line}: {found:?}"
+        );
+    }
 }

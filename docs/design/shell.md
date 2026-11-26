@@ -607,13 +607,66 @@ each with the options it reads and those of them that take a value, as
   `parallel` is `sem` too with `--semaphore`, or an option that starts
   semaphore mode as it does (`--id`, `--semaphorename`, `--st`,
   `--semaphoretimeout`, `--bg`, `--wait`, and `--fg` without `--tmux`).
+- Windows' console hosts and runners, from any shell: `conhost` (its
+  options compare without case, a handle such as `0x4` among them, and
+  `--` ends them), Windows Terminal's `wt` (each `new-tab`/`nt` and
+  `split-pane`/`sp`, and the command written with neither, runs the
+  command line after its options, in the folder `-d`/`--startingDirectory`
+  names; a `;` word sets the commands apart, each judged, and the
+  subcommands that only move the focus or a pane run none), Sysinternals'
+  `psexec` and `PsExec64` and their kin `paexec` (after a `\\COMPUTER` or
+  `@FILE`, also after the options, options with `-` or `/` in any case,
+  `-w DIR` the folder, `-i`
+  taking a session only when a number follows; they run the program through
+  a service they install, so as an administrator: `elevated`), `gsudo` (its
+  own options, `-i`/`--integrity`, `-u`/`--user` and `--loglevel` taking a
+  value), NirSoft's `nircmd` and `nircmdc` (`exec SHOW PROGRAM…`, `exec2
+  SHOW FOLDER PROGRAM…`, `elevate` and `runassystem` run a program, `execmd
+  …` a line of cmd, `elevatecmd …` and `cmdwait MS …` a command of its own),
+  `pcalua -a PROGRAM -c ARGS -d FOLDER` (the program and its arguments read
+  as a line of cmd) and `rundll32`'s functions that start the program after
+  them (shell32's `ShellExec_RunDLL`, url's `FileProtocolHandler`, zipfldr's
+  `RouteTheCall`). Windows' own `sudo` reads as `sudo` does. PowerShell's
+  `Invoke-WmiMethod` and `Invoke-CimMethod` of `Create` on `Win32_Process`
+  start the command line they are given, as `wmic process call create`
+  does: `unknown`, "starts a program through WMI".
+- On POSIX systems, from any shell but cmd: `toybox` runs its applet as
+  `busybox` does; the queues `tsp` (task-spooler; an option that acts on
+  the queue, `-l`, `-t`, `-k` and the like, runs none) and `nq` run the
+  command after their options later; `dbus-launch`, `dbus-run-session`,
+  `xvfb-run`, `tini` and `dumb-init` run it on a bus, a display or as an
+  init; `runuser` (`-c` a shell line, as `su -c`, also among the words
+  after `--`, which it hands the shell; with `-u` the command after the
+  options), `sg GROUP [-c] CMD` (a shell line; words a shell reads back as
+  they are are the program and its arguments), `setpriv`,
+  `numactl`, `cgexec`, `capsh` (the words after `--` handed to bash, or to
+  the shell `--shell=` names; `==` runs capsh again), `gosu`, `su-exec`,
+  runit's `chpst` (`-C DIR` starts it in `DIR`; `-/ ROOT` in a file system
+  rooted elsewhere, read as bubblewrap's is) and daemontools' `setuidgid`,
+  `envuidgid`, `envdir`, `softlimit`, `setlock` and `pgrphack` run it as
+  another user or with other limits; `flatpak-spawn` (`--directory` the
+  folder), `distrobox enter … -- CMD` and `toolbox run CMD`, whose
+  containers share the home directory, run it there; and the terminal
+  emulators (`xterm`, `uxterm`, `urxvt`, `rxvt`, `st`, `alacritty`,
+  `konsole`, `gnome-terminal`, `mate-terminal`, `xfce4-terminal`,
+  `terminator`, `tilix`, `lxterminal`, `sakura`, `qterminal`,
+  `terminology`, `x-terminal-emulator`, `kgx`, `ptyxis`, `cool-retro-term`,
+  `guake`, `eterm`, `aterm`) run the words after `-x`, `--execute` or `--`
+  as a program, and after `-e`, `--command`, `--exec` or
+  `--execute-command` the words or the one word as a line, since terminals
+  differ there (xterm and alacritty take the words, gnome-terminal and
+  xfce4-terminal a line), both judged.
 
 An option one of `nix run`, `nix shell`, `nix develop`, `nix-shell`,
-`limactl shell`, `doppler run` or `sem` does not know may take the word
-after it as its value, so where the command starts, or what it is, is not
-known: `Unreadable`, `runs a command after an option that cannot be read`
-(`nix develop --frobnicate x -c ls`, `limactl shell --frobnicate default
-ls`, `doppler run --frobnicate x rm -rf ~`). One before the subcommand
+`limactl shell`, `doppler run`, `sem` or a launcher above that reads a
+table of its own options (`conhost`, `wt`, `psexec`, `gsudo`, `tsp`, `nq`,
+`dbus-launch`, `dbus-run-session`, `runuser`, `setpriv`, `numactl`,
+`cgexec`, `dumb-init`, `flatpak-spawn`, `toolbox run`) does not know may
+take the word after it as its value, so where the command
+starts, or what it is, is not known: `Unreadable`, `runs a command after
+an option that cannot be read` (`nix develop --frobnicate x -c ls`,
+`limactl shell --frobnicate default ls`, `doppler run --frobnicate x rm
+-rf ~`, `conhost --frobnicate cmd /c rd /s /q C:\Users\me`). One before the subcommand
 (`nix --frobnicate x develop -c ls`, `limactl --frobnicate shell …`, `doppler
 --frobnicate x run …`) is read the same when a subcommand that runs a command
 follows it, since the option may be what takes the word; otherwise the
@@ -808,6 +861,83 @@ the guard reads again as a statement of its own (`ver && if …`, `i^f`,
 `call call`, a line with the `'VBS` marker) counts against the same budget.
 Past either, the line is unreadable.
 
+**A command a variable or an option names** is run by the program beside
+what it does itself, and is read as a line of the shell the program hands
+it to and judged by every rule, as `rsync -e` and `man -P` are. git runs
+every one through `sh`, on Windows too (Git for Windows ships one), and so
+do the POSIX tools ported there (rsync, less, man and the rest); the
+others (`ssh`, `gh`, `aws`, `kubectl`, `bat`, `svn`, `hg`, `rg`) run
+it through the system's shell, `sh` on a POSIX line and cmd on a Windows
+one. A value that names a program run with no shell is read as a line of
+that one word.
+
+- Variables, set in front of the program, with `env`, `export` (also a
+  plain assignment exported later, `X=…; export X`), PowerShell's `$env:`
+  and cmd's `set` (the name in any case there, as Windows reads it): git's
+  `GIT_SSH_COMMAND`, `GIT_SSH` (a program), `GIT_PAGER`, `PAGER`,
+  `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `VISUAL`, `EDITOR`,
+  `GIT_EXTERNAL_DIFF`, `GIT_ASKPASS`, `SSH_ASKPASS` and
+  `GIT_PROXY_COMMAND`; rsync's `RSYNC_RSH` and `RSYNC_CONNECT_PROG`;
+  less's `LESSOPEN` and `LESSCLOSE` (the line after the `|`, `||` or `-`
+  that say how less reads it); man's `MANPAGER`, `PAGER` and `BROWSER`;
+  `VISUAL` and `EDITOR` for `crontab`, `vipw` and `vigr`, and with
+  `SUDO_EDITOR` for `visudo` and `sudoedit`; `SYSTEMD_PAGER` and `PAGER`
+  for systemd's tools (`journalctl`, `loginctl`, `busctl` and the rest),
+  with `SYSTEMD_EDITOR`, `EDITOR` and `VISUAL` for `systemctl`;
+  `SSH_ASKPASS` for OpenSSH's programs and `ssh-add`; `GH_PAGER`, `PAGER`,
+  `GH_EDITOR`, `VISUAL`, `EDITOR`, `GH_BROWSER` and `BROWSER` for `gh`;
+  `AWS_PAGER` and `PAGER` for `aws`; `KUBE_EDITOR` and `EDITOR` for
+  `kubectl`; `BAT_PAGER` and `PAGER` for `bat`; `SVN_EDITOR`, `VISUAL`,
+  `EDITOR` and `SVN_SSH` for `svn`; `HGEDITOR`, `VISUAL`, `EDITOR`,
+  `HGMERGE` and `PAGER` for `hg`. `psql`'s (`PAGER`, `EDITOR` and the rest,
+  under [Data in a database](#data-in-a-database)) are read on Windows
+  lines too. An empty value names no command. A variable that names a file
+  of settings (`GIT_CONFIG_GLOBAL`), a folder of programs
+  (`GIT_EXEC_PATH`) or the program's own options (`LESS`, `MANOPT`,
+  `TAR_OPTIONS`) is not one of them, nor is a variable a program reads only
+  when a person presses a key (less's `v` and its `EDITOR`).
+- Options: OpenSSH's `-o` settings `ProxyCommand`, `LocalCommand` and
+  `KnownHostsCommand` (the key in any case, its value after `=` or white
+  space, `none` running nothing; read after the host too, where OpenSSH
+  reads options as well) for `ssh`, `scp`, `sftp`, `autossh` and
+  `ssh-copy-id`, and among `sshfs -o`'s comma-separated options with its
+  `ssh_command`; `scp -S` and `sftp -S` (a program), `sftp -D` and `mosh
+  --ssh`; git's `rebase -x`
+  (`--exec`), `bisect run`, `grep -O` (`--open-files-in-pager`), `difftool
+  -x` (`--extcmd`), `clone -u` and the `--upload-pack` of `clone`,
+  `fetch`, `pull`, `ls-remote` and `archive`, the `--receive-pack` of
+  `push` and `send-pack`, and `send-email`'s `--sendmail-cmd`,
+  `--to-cmd`, `--cc-cmd`, `--header-cmd` and a `--smtp-server` that is a
+  program's path, a long one by any prefix of its
+  name, as git takes it; GNU `sort --compress-program` (a program, by any
+  prefix that names it alone); `less` started with `+!CMD`, also after
+  other commands (`+G!CMD`), or `+|mCMD`;
+  `rg --pre` and `--hostname-bin` (a program); and `fd -x` (`--exec`) and
+  `-X` (`--exec-batch`), whose command, the words after the option up to a
+  `;`, is judged as written, each placeholder (`{}`, `{/}`, `{//}`, `{.}`,
+  `{/.}`) a path only known when it runs, put after the words when none is
+  written (`fd -x rm -rf` deletes a path only known when it runs).
+
+`git clone -c KEY=VALUE` (`--config`) is read as `git -c` is, since the
+clone already uses the config it sets (`core.sshCommand`). A library
+OpenSSH is told to load (`ssh -I LIB`, the `PKCS11Provider` and
+`SecurityKeyProvider` settings) is native code the guard does not read:
+`unknown`, "loads a library into the program". PowerShell's `$env:NAME =
+$null` removes the variable, and names no command.
+
+A value only known when it runs (`GIT_SSH_COMMAND="$cmd" git fetch`,
+`GIT_SSH_COMMAND="ssh -i $key" git fetch`, whose value the shell the
+program starts reads again, `ssh -o "ProxyCommand=$x" host`) is `unknown`,
+"runs a command only known when it runs"; an ssh setting only known when it
+runs is one unless its key is written out and is none of those three. The
+line sets a variable once and may run it at many programs (`export
+GIT_SSH_COMMAND=…; git fetch; git fetch; …`), each a reading of the whole
+value, so those readings share the budget of `npm_config_call`'s (the
+longest line), each counted as 64 bytes at the least, since a short one is
+a parse of its own; and one program is read with at most 64 values its
+variables were given. Past either, the line is unreadable, "runs the
+command a variable sets too many times to read".
+
 The other limits, each read as unreadable past it, and each pinned by a test
 that finds the edge by measuring it and asserts both sides (see Tests):
 
@@ -821,6 +951,7 @@ that finds the edge by measuring it and asserts both sides (see Tests):
 | `find -exec` work | 1 MiB | each level runs its program once per place it searches, so levels multiply; counted in the bytes built to hand on, `{}` replaced, because a count of arguments misses one that holds thousands of `{}` |
 | Jobs `parallel` runs | 256 | each a line built from the command and a value of each source, judged one by one |
 | Sources of values to `parallel` | 32 | each job holds a value of each `:::`, `::::` or `-a` |
+| Values the variables of one program are given | 64 | each value a command the program may run (`GIT_PAGER`, `EDITOR`, `LESSOPEN`), read where the program runs; with the readings of what variables name counted against the longest line, 64 bytes at the least for each (see [A command a variable or an option names](#wrappers-and-scripts)) |
 | Lines `parallel` builds | 64 KiB | the jobs' lines together are one script, read no further than the longest line, so built no further; a value put in at each of thousands of `{}` is megabytes otherwise |
 | Brackets opened with none closed | 400 | counted before parsing, outside the literals below: `(` in every shell, `${` in a POSIX shell (where any other `{` may be a word) and `{`, `${` and `[` in PowerShell, each kind closed only by its own closer, all added up. Past the parse tree depth the line is unreadable whatever the grammar makes of it, and the grammars take long to find that out: cmd's time grows with the square of the depth, PowerShell's lexer reads on to the next `}` at every `${` (`${` repeated took 21 ms on one machine, stopped by the budget of what a lexer reads, and 3.4 s on a slower one), and the grammars recover from an error at each bracket (at the length limit, in POSIX `a${` 0.28 s, `${a` 0.26 s, `${` 0.17 s; in PowerShell `$a{` 0.9 s, `${a}{` 0.8 s, `$[` 0.1 s) |
 | `&`, and `|`, in cmd | 400 of each (`&&` and `||` once) | counted before parsing, outside a string: cmd's grammar nests a chain a level for each, so past the parse tree depth the line is unreadable anyway, and for `&` it takes time that grows with the square of the chain to find that out (a chain of 7,280 commands took 1.6 s on one machine and 2.5 s on another) |
@@ -7281,7 +7412,10 @@ when it runs, is `Unknown`.
   program. `file -C` writes. `less -o`, `less -O` and `--log-file` write, `less -k`
   reads a lesskey file (whose `#env` section can set `LESSOPEN`), and an
   argument that starts with `+` is a `less` command. `rg --pre`, `rg
-  --hostname-bin` and `rg -z` run a program; `fd -x` and `fd -X` run one.
+  --hostname-bin` and `rg -z` run a program; `fd -x` and `fd -X` run one,
+  a unit of its own, judged as one as `find -exec`'s are (`fd -x wc -l`
+  is still `Unknown` for `fd`, `fd -x rm` changes), and so is the shell
+  command a `less` `+!` names (`less +'!rm x' f` changes).
   `printf -v NAME` sets a variable. All the others in the first group have no
   flag that writes or runs anything.
 - `find` is `Changes` with `-delete`, `-fprint`, `-fprint0`, `-fprintf` or

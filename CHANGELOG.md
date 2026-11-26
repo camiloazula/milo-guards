@@ -501,6 +501,50 @@ script guard's `MAX_LEN`, the same) is 3 KiB, where it was 64 KiB.
   64 KB) are, and the script guard no longer judges them act by act. No case
   line and no everyday answer changed: none holds code that long.
 
+Answers that change, with no new rule and no change to the API: some
+are more serious than 0.1.4's.
+
+- `milo-guards-shell`: the command a program starts after its own
+  options is judged as written: Windows' `conhost`, Windows Terminal's
+  `wt` (each tab and pane), `psexec`, `PsExec64` and `paexec` (`elevated`
+  too), `gsudo` with its own options, `nircmd`, `pcalua`, and rundll32's
+  `ShellExec_RunDLL`, `FileProtocolHandler` and `RouteTheCall`; and on POSIX
+  systems `toybox`, `tsp`, `nq`, `dbus-launch`, `dbus-run-session`,
+  `xvfb-run`, `tini`, `dumb-init`, `runuser`, `sg`, `setpriv`, `numactl`,
+  `cgexec`, `capsh`, `gosu`, `su-exec`, `chpst`, daemontools' `setuidgid`,
+  `envuidgid`, `envdir`, `softlimit`, `setlock` and `pgrphack`,
+  `flatpak-spawn`, `distrobox enter`, `toolbox run`, and a terminal
+  emulator's `-e`, `-x` or `--`. An option the guard does not know given
+  to `conhost`, `wt`, `psexec`, `gsudo`, `tsp`, `nq`, `dbus-launch`,
+  `dbus-run-session`, `runuser`, `setpriv`, `numactl`, `cgexec`,
+  `dumb-init`, `flatpak-spawn` or `toolbox run` makes the command
+  `unreadable`. `Invoke-WmiMethod` and `Invoke-CimMethod` of
+  `Win32_Process` `Create` are `unknown`, as `wmic process call create` is.
+- `milo-guards-shell`: a command a program runs because the line names it
+  in a variable, set in front of the program, with `env`, `export`,
+  PowerShell's `$env:` or cmd's `set`, is read as a line and judged: git's
+  `GIT_SSH_COMMAND`, `GIT_SSH`, pager, editor, external diff, askpass and
+  proxy variables, `RSYNC_RSH`, `LESSOPEN`, `MANPAGER`, and the pager and
+  editor variables of `crontab`, `visudo`, `systemctl` and systemd's other
+  tools, `gh`, `aws`, `kubectl`, `bat`, `svn`, `hg` and OpenSSH. A value
+  only known when it runs is `unknown`; PowerShell's `$null` removes the
+  variable. psql's pager and editor are read on Windows lines too. A
+  program is read with at most 64 values of its variables, and the
+  readings share the bound of `npm_config_call`'s; past either, the line
+  is `unreadable`.
+- `milo-guards-shell`: so is a command an option names: OpenSSH's
+  `ProxyCommand`, `LocalCommand` and `KnownHostsCommand` settings (for
+  `ssh`, `scp`, `sftp`, `autossh`, `ssh-copy-id` and `sshfs`, with its
+  `ssh_command`), `scp -S`, `sftp -S` and `-D`, `mosh --ssh`, git's `rebase
+  -x`, `bisect run`, `grep -O`, `difftool -x`, `--upload-pack`,
+  `--receive-pack` and `send-email`'s `--sendmail-cmd`, `--to-cmd`,
+  `--cc-cmd` and `--header-cmd`, `sort --compress-program`, a `less`
+  command with `!`, `rg --pre`, and `fd -x` and `-X`, whose command is
+  judged as written. `git clone -c` is read as `git -c` is. A library
+  OpenSSH is told to load (`-I`, `PKCS11Provider`, `SecurityKeyProvider`)
+  is `unknown`. The `effect` of `fd -x rm` and of `less +'!rm x' f` is
+  `Changes`.
+
 ## 0.1.4 (2026-11-22)
 
 What the URL guard answers for a few `file:` URLs and odd spellings, nothing

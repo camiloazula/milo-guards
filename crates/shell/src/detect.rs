@@ -42,7 +42,7 @@ mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
-const ELEVATORS: [&str; 8] = [
+const ELEVATORS: [&str; 11] = [
     "sudo",
     "doas",
     "su",
@@ -51,6 +51,9 @@ const ELEVATORS: [&str; 8] = [
     "runas",
     "run0",
     "systemd-run",
+    "psexec",
+    "psexec64",
+    "paexec",
 ];
 
 /// Whether a POSIX `sh` may be interactive, the only one that runs the file
@@ -1208,7 +1211,11 @@ impl Checker<'_> {
             .chain(std::iter::once(key))
             .find(|name| ELEVATORS.contains(name));
         if let Some(elevator) = elevator {
-            let administrator = unit.shell != Shell::Posix || matches!(elevator, "runas" | "gsudo");
+            let administrator = unit.shell != Shell::Posix
+                || matches!(
+                    elevator,
+                    "runas" | "gsudo" | "psexec" | "psexec64" | "paexec"
+                );
             let reason = if administrator {
                 "runs as administrator"
             } else {

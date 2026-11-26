@@ -481,6 +481,39 @@ fn wrappers_that_build_their_command_are_read_in_time() {
             "micromamba --log-level info run ".repeat(1_500)
         ),
         format!("micromamba{} run rm -rf ~", " --a x".repeat(10_000)),
+        // A command a variable names, set once and run by each program that
+        // reads it, set again and again, or set to many values; and
+        // commands options name, many times over.
+        format!(
+            "export GIT_SSH_COMMAND='{}'; {}",
+            "rm -rf ~; ".repeat(4_800),
+            "git fetch; ".repeat(200)
+        ),
+        format!(
+            "export GIT_SSH_COMMAND='rm -rf ~'; {}",
+            "git fetch; ".repeat(5_000)
+        ),
+        format!(
+            "{}{}",
+            "export PAGER=a; ".repeat(2_000),
+            "git log; ".repeat(3_000)
+        ),
+        format!(
+            "{}{}",
+            (0..2_000).fold(String::new(), |line, at| line
+                + "PAGER=a"
+                + &at.to_string()
+                + "; "),
+            "git log; ".repeat(2_000)
+        ),
+        format!("git rebase{} HEAD~1", " -x 'rm -rf ~'".repeat(4_000)),
+        format!("ssh{} host", " -o ProxyCommand=a".repeat(3_000)),
+        format!("fd -x rm{}", " -rf".repeat(15_000)),
+        // Launchers read a command after their options, in turn.
+        format!("{}rm -rf ~", "tsp -n ".repeat(9_000)),
+        format!("{}rm -rf ~", "xterm -e ".repeat(7_000)),
+        format!("wt{}", " nt cmd /c rd \\;".repeat(3_500)),
+        format!("psexec{} cmd", " -i".repeat(20_000)),
     ];
     for line in &rows {
         assert!(line.len() <= 64 * 1024, "{}", line.len());
@@ -3457,4 +3490,62 @@ fn the_files_database_clients_write_are_read_in_linear_time() {
             format!("{{ {said}}} | {{ {clients}}}; sh 0.sh")
         },
     );
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the guard keeps no clock; only this test times it, to catch a stall"
+)]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn commands_variables_and_options_name_are_read_in_linear_time() {
+    let _serial = serial();
+    // A variable set again before each program that reads it copied the list
+    // of values at each (now shared, `unit::Noted`), a chain of `sg` read the
+    // rest of the line again at each (now its plain words are the program
+    // and its arguments), and ssh's settings are each a line of their own.
+    // Each row, at the length limit and a quarter as long, takes about four
+    // times as long as the other.
+    let distinct = |unit: fn(usize) -> String| {
+        move |size: usize| {
+            let mut line = String::new();
+            for at in 0.. {
+                let next = unit(at);
+                if line.len() + next.len() > size {
+                    break;
+                }
+                line += &next;
+            }
+            line
+        }
+    };
+    let posix = paths_for(Shell::Posix);
+    let windows = paths_for(Shell::PowerShell);
+    assert_linear(
+        "PAGER=aN; git log; …",
+        Shell::Posix,
+        &posix,
+        distinct(|at| format!("PAGER=a{at}; git log; ")),
+    );
+    assert_linear(
+        "$env:PAGER=\"aN\"; git log; …",
+        Shell::PowerShell,
+        &windows,
+        distinct(|at| format!("$env:PAGER=\"a{at}\"; git log; ")),
+    );
+    for unit in ["sg g ", "sg - g -c "] {
+        assert_linear(unit, Shell::Posix, &posix, |size| {
+            format!("{}ls", unit.repeat(size.saturating_sub(2) / unit.len()))
+        });
+    }
+    let ssh = " -o ProxyCommand=a -o LocalCommand=b";
+    assert_linear("ssh -o … host", Shell::Posix, &posix, |size| {
+        format!(
+            "ssh{} host",
+            ssh.repeat(size.saturating_sub(10) / ssh.len())
+        )
+    });
 }

@@ -164,6 +164,47 @@ impl Checker<'_> {
         });
     }
 
+    /// The config `git clone -c` (`--config`, also `--config=…`) gives the
+    /// new repository, read as `git -c` is: one whose value git runs is
+    /// `unknown`, "runs a command through git config", and one only known
+    /// when it runs is unless its key is one git only records.
+    fn clone_config(&mut self, rest: &[Arg], shell: Shell) {
+        let mut iter = rest.iter();
+        while let Some(arg) = iter.next() {
+            let Some(text) = arg.known() else { continue };
+            if text == "--" {
+                break;
+            }
+            let value = if text == "-c" || text == "--config" {
+                iter.next().cloned()
+            } else {
+                text.strip_prefix("--config=")
+                    .or_else(|| text.strip_prefix("-c").filter(|value| !value.is_empty()))
+                    .map(|value| Arg::Known(value.to_string()))
+            };
+            let Some(value) = value else { continue };
+            match value.known() {
+                Some(config) if config_executes(config) => {
+                    self.add(Rule::Unknown, "runs a command through git config", None);
+                }
+                Some(_) => {}
+                None => {
+                    let setting = Unread {
+                        arg: &value,
+                        prefix: "",
+                    };
+                    if !harmless_setting(&setting, shell) {
+                        self.add(
+                            Rule::Unknown,
+                            "gives git config only known when it runs",
+                            Some(&value),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// git's commands that throw work away. An argument only known when it
     /// runs that may be the option that makes one do so (`git push $F
     /// origin main`, `git push "-$F" origin main`, see [`may_be_option`])
@@ -226,6 +267,12 @@ impl Checker<'_> {
             return;
         };
         let rest = &args[at + 1..];
+        // `git clone -c KEY=VALUE` (`--config`) sets config in the new
+        // repository, which the clone itself already uses (its
+        // `core.sshCommand`), as `git -c` does.
+        if sub == "clone" {
+            self.clone_config(rest, shell);
+        }
         let flag = |short: Option<char>, long: Option<&str>| git_flag(rest, short, long);
         // Whether an argument only known when it runs may be the option.
         let unread = |short: Option<char>, long: Option<&str>| {
@@ -1195,7 +1242,7 @@ const MOST_PAIRS: usize = 64;
 /// which may then be in the environment. A pair whose key the line does not
 /// give may be any key the environment holds.
 fn environment_config(unit: &Unit) -> Environment {
-    let variables = unit.argument_variables.as_slice();
+    let variables: Vec<(&String, &Arg)> = unit.argument_variables.iter().collect();
     let mut found = Environment {
         configs: Vec::new(),
         unread: None,
@@ -1207,8 +1254,8 @@ fn environment_config(unit: &Unit) -> Environment {
         variables
             .iter()
             .rev()
-            .find(|(noted, _)| noted == name)
-            .map(|(_, value)| value)
+            .find(|(noted, _)| *noted == name)
+            .map(|(_, value)| *value)
     };
     let unread = |found: &mut Environment, arg: &Arg| {
         if found.unread.is_none() {

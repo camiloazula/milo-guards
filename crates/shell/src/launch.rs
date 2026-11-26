@@ -20,6 +20,8 @@ use crate::{Rule, Shell};
 mod find;
 mod git;
 mod interpreters;
+mod launchers;
+mod named;
 mod nix;
 mod npm;
 mod packages;
@@ -37,6 +39,7 @@ pub(crate) use interpreters::{
     own_args, perl_edits, py_picks_three, valued_options, Options, BUN_VALUES, DENO_VALUES, SHELLS,
 };
 use interpreters::{bun, deno, interpreter, shell, trap, trap_inherited};
+pub(crate) use named::{command_variable, is_command_variable};
 use wrappers::{
     cmd, env, env_sets, folder_option, getopt, in_folder, powershell, rsh, runner, start,
     start_process, tmux, xargs, Getopt,
@@ -312,7 +315,7 @@ fn add_launched(
         }
         // What the line sets for the program where it runs, which a runner
         // reads (`npm_config_call='…' npx`).
-        unit.argument_variables = Rc::clone(&split.argument_variables);
+        unit.argument_variables = split.argument_variables.clone();
         let input = fed(&unit) || split.inherits_input > 0;
         // What a tracer, `script` or `time` writes its own output to, once
         // for the unit however many ways it reads.
@@ -326,7 +329,15 @@ fn add_launched(
         if key == "do" && unit.shell == Shell::Posix && std::mem::take(&mut split.repeat_do) {
             given = Some(command_after(&unit.args, 0, true));
         }
-        let launched = given.take().unwrap_or_else(|| launch(&key, &unit, input));
+        // A command the line names for the program in a variable it sets or
+        // an option (`GIT_SSH_COMMAND='…' git fetch`) runs besides, once for
+        // the unit however many ways it reads.
+        let launched = if let Some(launched) = given.take() {
+            launched
+        } else {
+            let launched = launch(&key, &unit, input);
+            named::with_commands(split, &key, &unit, launched)
+        };
         // The command `npm_config_call` sets runs once for each `npx`: its
         // readings are bounded as a line's own text is.
         if let Launch::Script(_, script, _) = &launched {
@@ -1467,7 +1478,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         unread_item: false,
         listed: Vec::new(),
         joined: Vec::new(),
-        argument_variables: Rc::default(),
+        argument_variables: unit::Noted::default(),
         depth,
         names,
         place,
@@ -1483,7 +1494,8 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
     match key {
         // `sudo -D DIR` (`--chdir`) starts the command in `DIR`.
         "sudo" => sudo(args),
-        "doas" | "gsudo" | "pkexec" => runs(args, after_options(args, SUDO_VALUES)),
+        "doas" | "pkexec" => runs(args, after_options(args, SUDO_VALUES)),
+        "gsudo" => launchers::gsudo(args),
         // systemd's own `sudo`, and a command started as a transient unit.
         "run0" if posix => {
             let start = after_options(args, RUN0_VALUES);
@@ -1623,8 +1635,9 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
                 (None, known) => known,
             }
         }
-        // `busybox rm …` runs its applet: the applet is the program.
-        "busybox" if posix => runs(args, after_options(args, &[])),
+        // `busybox rm …` runs its applet: the applet is the program. So
+        // does `toybox`.
+        "busybox" | "toybox" if posix => runs(args, after_options(args, &[])),
         // `xtables-nft-multi iptables -F` runs the firewall program it names,
         // as busybox runs its applet.
         key if posix && MULTI_CALL.contains(&key) => runs(args, Some(0)),
@@ -1853,6 +1866,39 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
             Some(program) => Launch::Script(Shell::Cmd, (*program).clone(), Source::arg(program)),
             None => Launch::Itself,
         },
+        // Windows' console hosts and runners hand the command after their
+        // own options on, from any shell of Windows.
+        "conhost" => launchers::conhost(args),
+        "wt" => launchers::wt(unit),
+        "psexec" | "psexec64" | "paexec" => launchers::psexec(args),
+        "nircmd" | "nircmdc" => launchers::nircmd(unit, key),
+        "pcalua" => launchers::pcalua(args),
+        "rundll32" => launchers::rundll32(args),
+        // Queues, session and display runners, and the programs that run a
+        // command as another user, with other limits or in a toolbox.
+        "tsp" if posix => launchers::tsp(args),
+        "nq" if posix => launchers::nq(args),
+        "dbus-launch" if posix => launchers::dbus_launch(args),
+        "dbus-run-session" if posix => launchers::dbus_run_session(args),
+        "xvfb-run" if posix => launchers::xvfb_run(args),
+        "runuser" if posix => launchers::runuser(args),
+        "sg" if posix => launchers::sg(args),
+        "setpriv" if posix => launchers::setpriv(args),
+        "numactl" if posix => launchers::numactl(args),
+        "cgexec" if posix => launchers::cgexec(args),
+        "capsh" if posix => launchers::capsh(unit),
+        "gosu" | "su-exec" if posix => launchers::as_user(args),
+        "chpst" if posix => launchers::chpst(args),
+        "setuidgid" | "envuidgid" | "envdir" | "softlimit" | "setlock" | "pgrphack" if posix => {
+            launchers::daemontools(key, args)
+        }
+        "tini" if posix => launchers::tini(args),
+        "dumb-init" if posix => launchers::dumb_init(args),
+        "flatpak-spawn" if posix => launchers::flatpak_spawn(args),
+        "distrobox" | "distrobox-enter" if posix => launchers::distrobox(key, args),
+        "toolbox" if posix => launchers::toolbox(args),
+        key if posix && launchers::TERMINALS.contains(&key) => launchers::terminal(args),
+        "fd" | "fdfind" => named::fd(unit, key),
         _ => Launch::Itself,
     }
 }
