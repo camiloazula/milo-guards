@@ -91,6 +91,9 @@ rules=local_file first=local_file reason="reads a path inside the workspace" | f
 # A path both protected and secret: a fetch reads the secret.
 paths env_both base=posix file=/home/me/work/repo/.env words="the agent's settings" secret_file=/home/me/work/repo/.env words="the project's environment file"
 @env_both rules=local_file first=local_file reason="reads the project's environment file" | file:///home/me/work/repo/.env
+# A key of core's own under a protected path: a fetch reads the key.
+paths ssh_folder base=posix folder=/home/me/.ssh words="the agent's keys"
+@ssh_folder rules=local_file first=local_file reason="reads your SSH keys" | file:///home/me/.ssh/id_rsa
 # A bracket in a named path's name is a character of it.
 paths bracket base=posix secret_file=/home/me/work/repo/app/[id]/secret.json words="the app's secret"
 @bracket rules=local_file first=local_file reason="reads the app's secret" | file:///home/me/work/repo/app/[id]/secret.json

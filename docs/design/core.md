@@ -997,8 +997,12 @@ path made absolute, with the working directory and `~` applied.
   being a character of its name (what a pattern can pick is
   `picks_secret`'s). The shell guard also asks it first for a file sent off
   the machine, so a named file is sent in the caller's words where the guard
-  has words of its own for its name (`an .env file`). It is `None` for a
-  path no secret was named at, a device and a path known only when it runs.
+  has words of its own for its name (`an .env file`). Under a path the
+  caller protects, a key or a credential of core's own (`~/.ssh/id_rsa`
+  with `~/.ssh` protected) is `Protected` to `place` too, and this gives
+  core's words for it (`your SSH keys`), so protecting a key's folder never
+  hides a read of the key. It is `None` for a path no secret was named at
+  and that is no such key, a device and a path known only when it runs.
 - `named_secret_in_unknown_folder(rest, flavour, hidden)` is `Some(words)`
   for a secret the caller named that `rest`, a relative path written from a
   folder only known when it runs (after `cd "$x"`), can name wherever that

@@ -51,3 +51,9 @@ paths both base=posix file=/home/me/work/repo/.env words="the agent's settings" 
 python@both finds=read_secret reason="reads the project's environment file" | print(open('.env').read())
 python@both finds=overwrite reason="writes to the agent's settings" | open('.env', 'w')
 python@both finds=delete reason="deletes the agent's settings" | import os\nos.remove('.env')
+
+# A key of core's own under a protected path is still a key to read.
+paths ssh_folder base=posix folder=/home/me/.ssh words="the agent's keys"
+python@ssh_folder finds=read_secret reason="reads your SSH keys" | print(open('/home/me/.ssh/id_rsa').read())
+python@ssh_folder finds=overwrite reason="writes to the agent's keys" | open('/home/me/.ssh/id_rsa', 'w')
+javascript@ssh_folder finds=read_secret | require('fs').readFileSync('/home/me/.ssh/id_rsa')

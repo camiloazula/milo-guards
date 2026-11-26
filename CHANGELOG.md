@@ -611,6 +611,13 @@ are more serious than 0.1.4's.
   places a path and in the inline code of such a line, so a delete, a read,
   a write or a send by that spelling is judged by where it lands. `cmd //c` and
   `cmd //k` in a POSIX line are `cmd /c` and `cmd /k`.
+- `milo-guards-core`: `Resolver::named_secret` also gives core's own
+  words for a key or a credential under a path the caller protects
+  (`your SSH keys` for `~/.ssh/id_rsa` with `~/.ssh` protected), which
+  `place` answers `Protected` for. A read of it is `read_secret` in the
+  shell, file and script guards, a send `send_secret`, and the URL guard's
+  `file:` reason is in core's words; a delete or a write keeps the
+  protected finding.
 
 ## 0.1.4 (2026-11-22)
 

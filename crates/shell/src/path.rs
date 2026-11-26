@@ -186,8 +186,9 @@ pub(crate) struct Resolver {
     /// Whether a plain relative path (see [`plain_relative`]) is the agent's
     /// own, since the working directory is in a workspace that holds no key.
     clear: Clear,
-    /// Whether the caller names any secret (`Paths::secrets`): only then is
-    /// a path looked up among them (see [`Resolver::named_secret`]).
+    /// Whether the caller names any secret (`Paths::secrets`) or protects any
+    /// path: only then is a path looked up among the named secrets and core's
+    /// own under a protected path (see [`Resolver::named_secret`]).
     named: bool,
     /// Whether the caller names a link (`Paths::links`), and one with a
     /// wildcard or a brace in its name.
@@ -260,7 +261,7 @@ impl Resolver {
             } else {
                 Clear::No
             },
-            named: !paths.secrets.is_empty(),
+            named: !paths.secrets.is_empty() || !paths.protected.is_empty(),
             linked: if core.wild_links() {
                 Linked::Wild
             } else if paths.links.is_empty() {

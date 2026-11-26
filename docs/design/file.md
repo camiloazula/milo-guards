@@ -95,7 +95,9 @@ path is one literal path, so a bracket is a character of a named path's name:
 `app/[id]/secret.json` reads the secret named there (and a write to it is
 `write_sensitive`), and a protected path with a bracket in its name is that
 path: a write is `write_protected` and a read is safe, as a read of any
-protected path is (core's `named_protected`). A bracket class that picks a
+protected path is (core's `named_protected`), but for a key or a credential
+of core's own, which is `read_secret` protected or not (`~/.ssh/id_rsa` with
+`~/.ssh` protected). A bracket class that picks a
 protected path by the pattern and not by its name (`~/.ag[e]nt/x`) is
 `unreadable`, as before. A Mac's `/private/tmp`, `/private/var` and
 `/private/etc` are `/tmp`, `/var` and `/etc` for a named or a protected path,

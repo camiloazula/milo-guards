@@ -1714,6 +1714,11 @@ impl Resolver {
     /// read the caller's words where it has words of its own (a name that
     /// looks like a secret).
     ///
+    /// A key or a credential of core's own under a path the caller protects
+    /// (`~/.ssh/id_rsa`, with `~/.ssh` protected) is `Protected` to `place`
+    /// too, for the same reason, and this gives its words (`your SSH keys`),
+    /// so a read of it is a read of the key.
+    ///
     /// The path is read literally: a wildcard is a character of the name, so
     /// `app/[id]/secret.json` is the secret named at that path, and `.e*` is
     /// a file named `.e*`, not the `.env` it can pick (what a pattern can
@@ -1739,6 +1744,27 @@ impl Resolver {
     #[must_use]
     pub fn named_secret(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
         self.named_literally(path, flavour)
+            .or_else(|| self.protected_secret(path, flavour))
+    }
+
+    /// The words of a key or a credential of core's own that `path`, read
+    /// literally, is under a path the caller protects: what `judge` would
+    /// call it were it not protected (see [`named_secret`](Self::named_secret)).
+    fn protected_secret(&self, path: Spelling<'_>, flavour: Flavour) -> Option<&'static str> {
+        if self.protected.is_empty() {
+            return None;
+        }
+        self.literal(path, flavour).iter().find_map(|loc| {
+            let stripped = loc.stripped();
+            let strip = stripped.as_ref().unwrap_or(loc);
+            if !self.protected.iter().any(|(file, ..)| below(strip, file)) {
+                return None;
+            }
+            match self.judge_plain(loc, strip, flavour) {
+                Place::Sensitive(words, Sensitivity::Secret) => Some(words),
+                _ => None,
+            }
+        })
     }
 
     /// The caller's words for a secret it named that `rest`, a relative path

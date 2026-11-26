@@ -4461,7 +4461,11 @@ The guard needs no rule of its own: wherever a rule reads a place it takes
 anything that is not harmless, so `Protected` is judged as `Sensitive` is, with
 the caller's words in the reason. Reading is not a finding; what a read of a
 protected file means is not decided here, unless the caller names the path a
-secret too (see [Secrets the caller names](#secrets-the-caller-names)).
+secret too (see [Secrets the caller names](#secrets-the-caller-names)), or it
+is a key or a credential of core's own: with `~/.ssh` protected, `cat
+~/.ssh/id_rsa` is still `read_secret` and `curl -T ~/.ssh/id_rsa …`
+`send_secret`, in core's words, while a delete or a write of it is in the
+caller's.
 
 With `Protected::folder("/home/me/.agent", "the agent's settings")`:
 
