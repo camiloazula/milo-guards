@@ -90,6 +90,19 @@ security fixes: each line below was judged safer than what it does.
   could hide a command; the grammar is now handed another character in its
   place, as the shell reads the line with the NUL dropped, and the words
   are read from the line as written.
+- `milo-guards-shell`: `split` and `csplit` read the file they cut into
+  pieces (`read_secret` for a key; their options are read in clusters and
+  a long one by any prefix of its name) and write the pieces, a prefix and
+  a suffix (with `split`'s additional suffix, or the format `csplit` is
+  given, expanded when it is a simple integer one; the numbering options are
+  read in order, and the last start given is the one that counts, a bare one
+  leaving it), judged where they land,
+  and the pattern of the names not judged one by one, also for the pieces
+  `csplit` may make past those. A piece `split` sends to its output is
+  written nowhere. The command `split` is told to run on
+  each piece is judged as a line for each name the pieces can have, so a
+  sender there sends the file (`send_secret`), and one only known when it
+  runs is `unknown`.
 
 ## 0.2.1 (2026-11-28)
 

@@ -702,6 +702,19 @@ impl Checker<'_> {
                     );
                 }
             }
+            // The pieces `split` and `csplit` cut a file into are written
+            // by the prefix and a suffix.
+            "split" | "csplit" if shell == Shell::Posix => {
+                for name in crate::launch::pieces_names(key, args) {
+                    // A pattern stands for the names not judged one by one.
+                    let verb = if name.known().is_some_and(|text| text.contains('?')) {
+                        "writes pieces that may be"
+                    } else {
+                        "writes to"
+                    };
+                    self.write(shell, unit.scope(), &name, verb);
+                }
+            }
             "certutil" => {
                 for file in certutil_writes(args) {
                     self.write(shell, unit.scope(), &file, "writes to");

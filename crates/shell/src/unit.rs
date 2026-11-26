@@ -6427,6 +6427,63 @@ pub(crate) fn option_values(args: &[Arg], short: &str, long: &[&str], valued: &s
     values
 }
 
+/// The operands of a POSIX-style program as [`operands`] reads them, but
+/// with its options as `getopt` does: `short` holds the letters that take a
+/// value, which is the rest of the word or the next one when the letter ends
+/// it (`-db 100 f`, `-sf p f`), `valued` the names of the long options that
+/// do, as their own word or after `=`; a long option is read by any prefix of
+/// its name that no other of `all` starts with, as GNU programs read it.
+pub(crate) fn operands_clustered<'a>(
+    args: &'a [Arg],
+    short: &str,
+    valued: &[&str],
+    all: &[&str],
+) -> Vec<&'a Arg> {
+    let mut operands = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some("--") => {
+                operands.extend(iter);
+                break;
+            }
+            Some(text) if text.starts_with("--") => {
+                if !text.contains('=')
+                    && long_named(&text[2..], all).is_some_and(|name| valued.contains(&name))
+                {
+                    iter.next();
+                }
+            }
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                let bundle = &text[1..];
+                if let Some((at, letter)) = bundle
+                    .char_indices()
+                    .find(|(_, letter)| short.contains(*letter))
+                {
+                    if at + letter.len_utf8() == bundle.len() {
+                        iter.next();
+                    }
+                }
+            }
+            _ => operands.push(arg),
+        }
+    }
+    operands
+}
+
+/// The long option of `all` that `name`, written without its `--` and with
+/// no `=`, names: exactly, or by the one option it is a prefix of.
+pub(crate) fn long_named<'a>(name: &str, all: &[&'a str]) -> Option<&'a str> {
+    if let Some(exact) = all.iter().find(|full| **full == name) {
+        return Some(exact);
+    }
+    let mut starts = all
+        .iter()
+        .filter(|full| !name.is_empty() && full.starts_with(name));
+    let first = starts.next()?;
+    starts.next().is_none().then_some(*first)
+}
+
 /// Whether `arg`, a value only known when it runs, may be several words when
 /// it does, any of which may be an option or another operand: in a POSIX
 /// shell an expansion outside quotes (`$f`, `x$f`, `$(…)`, a backtick), which

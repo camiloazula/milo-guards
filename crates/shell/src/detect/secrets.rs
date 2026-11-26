@@ -414,6 +414,8 @@ fn opens(shell: Shell, key: &str) -> bool {
                 | "7zz"
                 | "curl"
                 | "wget"
+                | "split"
+                | "csplit"
         ),
         Shell::PowerShell => matches!(
             key,
@@ -518,6 +520,11 @@ fn posix<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
         "wget" => config_files(key, args)
             .into_iter()
             .map(Cow::Owned)
+            .collect(),
+        // `split` and `csplit` read the file they cut into pieces.
+        "split" | "csplit" => crate::launch::split_input(key, args)
+            .map(Cow::Owned)
+            .into_iter()
             .collect(),
         _ => table::extra_paths(unit, key).unwrap_or_default(),
     }

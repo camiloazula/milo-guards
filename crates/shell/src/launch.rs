@@ -523,7 +523,19 @@ fn add_launched(
                 commands,
                 moves,
             } => {
+                // `split --filter` hands each piece of its file to the
+                // command's input.
+                let input = (key == "split")
+                    .then(|| split_input(&key, &unit.args))
+                    .flatten();
+                let start = split.units.len() + 1;
                 run_commands(split, unit, shell, commands, moves, depth);
+                if let Some(file) = input {
+                    let end = split.units.len();
+                    if start < end {
+                        split.redirect(start..end, file, true);
+                    }
+                }
                 return;
             }
             Launch::Inline(language, code) => {
@@ -1144,6 +1156,488 @@ fn run_commands(
         }
         split.nest(at..at + 1, first..split.units.len());
         split.restore_hidden(outer);
+    }
+}
+
+/// The letters and the names of the options of `split` (GNU's and BSD's)
+/// and of `csplit` that take a value.
+const SPLIT_SHORT: &str = "abClntp";
+const SPLIT_LONG: [&str; 8] = [
+    "suffix-length",
+    "bytes",
+    "line-bytes",
+    "lines",
+    "number",
+    "separator",
+    "additional-suffix",
+    "filter",
+];
+/// Every long option of `split`, for the prefixes of their names.
+const SPLIT_ALL: [&str; 15] = [
+    "suffix-length",
+    "bytes",
+    "line-bytes",
+    "lines",
+    "number",
+    "separator",
+    "additional-suffix",
+    "filter",
+    "elide-empty-files",
+    "numeric-suffixes",
+    "hex-suffixes",
+    "unbuffered",
+    "verbose",
+    "help",
+    "version",
+];
+const CSPLIT_SHORT: &str = "bfn";
+const CSPLIT_LONG: [&str; 3] = ["suffix-format", "prefix", "digits"];
+const CSPLIT_ALL: [&str; 10] = [
+    "suffix-format",
+    "prefix",
+    "digits",
+    "keep-files",
+    "quiet",
+    "silent",
+    "elide-empty-files",
+    "suppress-matched",
+    "help",
+    "version",
+];
+
+/// The operands of `split` or `csplit`, past its options as `getopt` reads
+/// them (`split -db 100 FILE`, `csplit -sf PREFIX FILE`).
+fn pieces_operands<'a>(key: &str, args: &'a [Arg]) -> Vec<&'a Arg> {
+    if key == "csplit" {
+        unit::operands_clustered(args, CSPLIT_SHORT, &CSPLIT_LONG, &CSPLIT_ALL)
+    } else {
+        unit::operands_clustered(args, SPLIT_SHORT, &SPLIT_LONG, &SPLIT_ALL)
+    }
+}
+
+/// The file `split` or `csplit` reads: its first operand, or its input for
+/// none or `-`.
+pub(crate) fn split_input(key: &str, args: &[Arg]) -> Option<Arg> {
+    pieces_operands(key, args)
+        .first()
+        .filter(|file| file.known() != Some("-"))
+        .map(|file| (*file).clone())
+}
+
+/// The most names of pieces the guard judges for one command.
+const MOST_PIECES: usize = 32;
+
+/// The values of an option of `split` or `csplit`, by its letter and its
+/// long name, which may be written by any prefix of it that no other long
+/// option starts with, attached after `=` or as the next word.
+fn piece_option(key: &str, args: &[Arg], short: &str, long: &str) -> Vec<Arg> {
+    let (all, valued) = if key == "csplit" {
+        (&CSPLIT_ALL[..], CSPLIT_SHORT)
+    } else {
+        (&SPLIT_ALL[..], SPLIT_SHORT)
+    };
+    let mut found = unit::option_values(args, short, &[], valued);
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        let Some(name) = text.strip_prefix("--") else {
+            continue;
+        };
+        let (name, value) = name
+            .split_once('=')
+            .map_or((name, None), |(name, value)| (name, Some(value)));
+        if unit::long_named(name, all) == Some(long) {
+            match value {
+                Some(value) => found.push(Arg::Known(value.to_string())),
+                None => found.extend(iter.next().cloned()),
+            }
+        }
+    }
+    found
+}
+
+/// The names `csplit` gives the suffix of its pieces by `format`, a `printf`
+/// format of one integer conversion (`%02d.txt`, `c%.0d`): for the numbers
+/// of the first pieces, and the pattern of every name it makes
+/// (`chap*.md`). `None` for a format that is not one of those.
+fn formatted_suffixes(format: &str) -> Option<(Vec<String>, String)> {
+    let at = {
+        let mut chars = format.char_indices();
+        loop {
+            let (at, c) = chars.next()?;
+            if c == '%' {
+                if format[at + 1..].starts_with('%') {
+                    chars.next();
+                    continue;
+                }
+                break at;
+            }
+        }
+    };
+    let (before, spec) = format.split_at(at);
+    let spec = &spec[1..];
+    let flags_end = spec
+        .find(|c: char| !"-+ #0'".contains(c))
+        .unwrap_or(spec.len());
+    let (flags, spec) = spec.split_at(flags_end);
+    let width_end = spec
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(spec.len());
+    let (width, spec) = spec.split_at(width_end);
+    let (precision, spec) = match spec.strip_prefix('.') {
+        Some(rest) => {
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            (
+                Some(rest[..end].parse::<usize>().unwrap_or(0)),
+                &rest[end..],
+            )
+        }
+        None => (None, spec),
+    };
+    let conversion = spec.chars().next()?;
+    let after = &spec[conversion.len_utf8()..];
+    if !"diuoxX".contains(conversion) || after.replace("%%", "").contains('%') {
+        return None;
+    }
+    let width = width.parse::<usize>().unwrap_or(0).min(64);
+    let literal = |text: &str| text.replace("%%", "%");
+    let names = (0..MOST_PIECES)
+        .map(|number| {
+            let mut digits = match conversion {
+                'o' => format!("{number:o}"),
+                'x' => format!("{number:x}"),
+                'X' => format!("{number:X}"),
+                _ => number.to_string(),
+            };
+            if let Some(precision) = precision {
+                if precision == 0 && number == 0 {
+                    digits.clear();
+                }
+                while digits.len() < precision.min(64) {
+                    digits.insert(0, '0');
+                }
+            }
+            if flags.contains('#') && number != 0 {
+                match conversion {
+                    'x' => digits.insert_str(0, "0x"),
+                    'X' => digits.insert_str(0, "0X"),
+                    'o' => digits.insert(0, '0'),
+                    _ => {}
+                }
+            }
+            if flags.contains('+') && "di".contains(conversion) {
+                digits.insert(0, '+');
+            }
+            while digits.len() < width {
+                if flags.contains('-') {
+                    digits.push(' ');
+                } else if flags.contains('0') && precision.is_none() {
+                    digits.insert(0, '0');
+                } else {
+                    digits.insert(0, ' ');
+                }
+            }
+            format!("{}{digits}{}", literal(before), literal(after))
+        })
+        .collect();
+    Some((names, format!("{}*{}", literal(before), literal(after))))
+}
+
+/// What the options `-d`, `-x`, `--numeric-suffixes` and `--hex-suffixes` of
+/// `split` have said so far of the names of its pieces.
+#[derive(Default)]
+struct Numbering<'a> {
+    /// The names are numbers or hex digits.
+    numbered: bool,
+    /// They are hex digits.
+    hex: bool,
+    /// Where they start, as the last option that said so wrote it.
+    from: Option<&'a str>,
+    /// A FROM was not digits the option allowed.
+    refused: bool,
+}
+
+impl<'a> Numbering<'a> {
+    fn set(&mut self, hex: bool, value: Option<&'a str>) {
+        self.numbered = true;
+        self.hex = hex;
+        if let Some(text) = value {
+            self.refused |= !Self::digits(text, hex);
+            self.from = Some(text);
+        }
+    }
+
+    /// Whether `text` is a number in digits, or in lower case hex digits.
+    fn digits(text: &str, hex: bool) -> bool {
+        !text.is_empty()
+            && text
+                .chars()
+                .all(|c| c.is_ascii_digit() || (hex && matches!(c, 'a'..='f')))
+    }
+}
+
+/// The suffixes `split` or `csplit` gives its pieces, in order: letters, or
+/// digits for `-d` and for `csplit` (hex for `-x`), as many as `-a` (`-n` of
+/// `csplit`) says, two without it, and `split`'s `--additional-suffix` after
+/// it. The pieces a `-n N` makes, or every suffix when there are few, as far
+/// as [`MOST_PIECES`]; otherwise only the first. Also whether those are every
+/// suffix there can be, how long a suffix is, and what ends each name. `None`
+/// when the pieces go to the output (`split -n K/N`).
+fn piece_suffixes(key: &str, args: &[Arg]) -> Option<(Vec<String>, bool, usize, String)> {
+    let csplit = key == "csplit";
+    let (short, long, valued) = if csplit {
+        ("n", "digits", CSPLIT_SHORT)
+    } else {
+        ("a", "suffix-length", SPLIT_SHORT)
+    };
+    let length = piece_option(key, args, short, long)
+        .pop()
+        .and_then(|text| text.known()?.parse::<u32>().ok())
+        .unwrap_or(2)
+        .clamp(1, 8);
+    // GNU `split` reads `-d`, `-x`, `--numeric-suffixes[=FROM]` and
+    // `--hex-suffixes[=FROM]` in order: each says whether the names are
+    // numbers or hex digits, and one with a FROM says where they start, which
+    // it checks against the digits it allows then. One without a FROM leaves
+    // the FROM an earlier option gave.
+    let mut numbering = Numbering::default();
+    for text in args.iter().filter_map(Arg::known) {
+        if text == "--" {
+            break;
+        }
+        if let Some(long) = text.strip_prefix("--") {
+            let (name, value) = long
+                .split_once('=')
+                .map_or((long, None), |(name, value)| (name, Some(value)));
+            match unit::long_named(name, &SPLIT_ALL) {
+                Some("numeric-suffixes") => numbering.set(false, value),
+                Some("hex-suffixes") => numbering.set(true, value),
+                _ => {}
+            }
+        } else if text.len() > 1 && text.starts_with('-') {
+            for letter in text[1..].chars().take_while(|c| !valued.contains(*c)) {
+                match letter {
+                    'd' => numbering.set(false, None),
+                    'x' => numbering.set(true, None),
+                    _ => {}
+                }
+            }
+        }
+    }
+    // A FROM refused when it was given writes no piece.
+    if numbering.refused {
+        return None;
+    }
+    let (hex, from) = (numbering.hex, numbering.from);
+    let numbered = csplit || numbering.numbered;
+    let alphabet: Vec<char> = if csplit || (numbered && !hex) {
+        ('0'..='9').collect()
+    } else if numbered {
+        ('0'..='9').chain('a'..='f').collect()
+    } else {
+        ('a'..='z').collect()
+    };
+    let radix = alphabet.len();
+    let room = radix.checked_pow(length).unwrap_or(usize::MAX);
+    let width = usize::try_from(length).unwrap_or(2);
+    let extra = (!csplit)
+        .then(|| piece_option(key, args, "", "additional-suffix").pop())
+        .flatten()
+        .and_then(|text| text.known().map(str::to_string))
+        .unwrap_or_default();
+    // FROM is a number the program reads, and refuses past what the names
+    // hold: no piece is then written. One given in digits that a later option
+    // does not allow (`--hex-suffixes=c -d`) is used as it is written, and
+    // the names after it are any the pattern matches.
+    let start = match from {
+        None => 0,
+        Some(text) if !Numbering::digits(text, hex) => {
+            return Some((Vec::new(), false, width, extra));
+        }
+        Some(text) => match usize::from_str_radix(text, u32::try_from(radix).unwrap_or(10)) {
+            Ok(start) if start < room => start,
+            _ => return None,
+        },
+    };
+    // `-n N` and `-n l/N`, `-n r/N`: N pieces; `-n K/N` and `-n l/K/N` write
+    // one of them to the output, and no file.
+    let mut count = None;
+    if !csplit {
+        if let Some(text) = piece_option(key, args, "n", "number").pop() {
+            if let Some(text) = text.known() {
+                let number = text
+                    .strip_prefix("l/")
+                    .or_else(|| text.strip_prefix("r/"))
+                    .unwrap_or(text);
+                if number.contains('/') {
+                    return None;
+                }
+                count = number.parse::<usize>().ok();
+            }
+        }
+    }
+    let wanted = match count {
+        Some(count) => count.min(room.saturating_sub(start)),
+        None if room <= MOST_PIECES => room.saturating_sub(start),
+        None => 1,
+    };
+    let complete = wanted <= MOST_PIECES && (count.is_some() || room <= MOST_PIECES);
+    let wanted = wanted.clamp(1, MOST_PIECES);
+    let suffixes = (0..wanted)
+        .map(|at| {
+            let mut at = start.saturating_add(at);
+            let mut name = vec![alphabet[0]; width];
+            for place in name.iter_mut().rev() {
+                *place = alphabet[at % radix];
+                at /= radix;
+            }
+            format!("{}{extra}", name.into_iter().collect::<String>())
+        })
+        .collect();
+    Some((suffixes, complete, width, extra))
+}
+
+/// The most pieces `csplit` makes from its patterns: one more than the
+/// patterns, and a count after one (`{N}`) repeats it N times more; `None`
+/// when one repeats as often as it can (`{*}`).
+fn csplit_pieces(args: &[Arg]) -> Option<usize> {
+    let mut pieces: usize = 1;
+    for pattern in pieces_operands("csplit", args).into_iter().skip(1) {
+        let text = pattern.known()?;
+        match text
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+        {
+            Some("*") => return None,
+            Some(count) => pieces = pieces.checked_add(count.parse::<usize>().ok()?)?,
+            None => pieces += 1,
+        }
+    }
+    Some(pieces)
+}
+
+/// What the pieces of `split` (its prefix, `x` without one) or `csplit`
+/// (`-f`'s, `xx` without one) are named, each as a path: the prefix and a
+/// suffix, a name in the folder the line is in. A prefix only known when it
+/// runs makes the name so. None when no piece is written to a file.
+pub(crate) fn pieces_names(key: &str, args: &[Arg]) -> Vec<Arg> {
+    let prefix = if key == "csplit" {
+        piece_option(key, args, "f", "prefix")
+            .pop()
+            .unwrap_or_else(|| Arg::Known("xx".to_string()))
+    } else {
+        pieces_operands(key, args)
+            .get(1)
+            .map_or_else(|| Arg::Known("x".to_string()), |prefix| (*prefix).clone())
+    };
+    let Some(prefix) = prefix.known() else {
+        return vec![prefix];
+    };
+    // A format `csplit` is given for the suffix: the names it makes, or only
+    // known when it runs for one that is not a simple integer.
+    if key == "csplit" {
+        if let Some(format) = piece_option(key, args, "b", "suffix-format").pop() {
+            let unknown = Arg::Unknown(format!("{prefix}${{SPLIT_PIECE_SUFFIX}}"));
+            return match format.known().and_then(formatted_suffixes) {
+                Some((suffixes, pattern)) => {
+                    let mut names: Vec<Arg> = suffixes
+                        .into_iter()
+                        .map(|suffix| Arg::Known(format!("{prefix}{suffix}")))
+                        .collect();
+                    // Past the names judged, more pieces are named as the
+                    // format makes them: any name its pattern matches.
+                    if csplit_pieces(args).is_none_or(|pieces| pieces > MOST_PIECES) {
+                        names.push(Arg::Known(format!("{prefix}{pattern}")));
+                    }
+                    names
+                }
+                None => vec![unknown],
+            };
+        }
+    }
+    let Some((suffixes, complete, width, extra)) = piece_suffixes(key, args) else {
+        return Vec::new();
+    };
+    let mut names: Vec<Arg> = suffixes
+        .into_iter()
+        .map(|suffix| Arg::Known(format!("{prefix}{suffix}")))
+        .collect();
+    // Past the names judged, any file the pattern of a piece's name matches
+    // may be one.
+    if !complete {
+        names.push(Arg::Known(format!("{prefix}{}{extra}", "?".repeat(width))));
+    }
+    names
+}
+
+/// `split --filter=CMD` (`--filter CMD`) runs `CMD` through the shell for
+/// each piece of its input, the piece on the command's input, with `$FILE`
+/// the piece's name (see [`pieces_names`]): the command is read once for
+/// each name. Itself alone without a command.
+fn split_filter(args: &[Arg]) -> Launch {
+    let mut names = pieces_names("split", args);
+    if names.is_empty() {
+        names.push(Arg::Unknown(String::new()));
+    }
+    let mut given = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        // A long option by any unambiguous prefix of its name; one only
+        // known when it runs may be the option, and its value a command.
+        let text = arg.known().unwrap_or_else(|| arg.text());
+        if text == "--" && arg.known().is_some() {
+            break;
+        }
+        let Some(long) = text.strip_prefix("--") else {
+            continue;
+        };
+        let (name, value) = long
+            .split_once('=')
+            .map_or((long, None), |(name, value)| (name, Some(value)));
+        if unit::long_named(name, &SPLIT_ALL) != Some("filter") {
+            continue;
+        }
+        match (value, arg.known()) {
+            (Some(value), Some(_)) => given.push(Arg::Known(value.to_string())),
+            (Some(value), None) => given.push(Arg::Unknown(value.to_string())),
+            (None, _) => given.extend(iter.next().cloned()),
+        }
+    }
+    let mut commands = Vec::new();
+    for command in given {
+        match command.known() {
+            Some(text) if text.contains("$FILE") || text.contains("${FILE}") => {
+                for name in &names {
+                    // A name only known when it runs is a variable the
+                    // command is given that nothing sets.
+                    let name = name
+                        .known()
+                        .filter(|text| {
+                            text.chars()
+                                .all(|c| c.is_ascii_alphanumeric() || "_./~-+@%,:=?".contains(c))
+                        })
+                        .map_or_else(|| "${SPLIT_PIECE_NAME}".to_string(), str::to_string);
+                    commands.push(Arg::Known(
+                        text.replace("${FILE}", &name).replace("$FILE", &name),
+                    ));
+                }
+            }
+            _ => commands.push(command),
+        }
+    }
+    if commands.is_empty() {
+        Launch::Itself
+    } else {
+        Launch::Commands {
+            shell: Shell::Posix,
+            commands,
+            moves: false,
+        }
     }
 }
 
@@ -1880,6 +2374,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         // An archiver that runs commands through a shell besides: `/bin/sh`
         // on a POSIX system, and `cmd` on Windows.
         "tar" | "gtar" | "bsdtar" | "zip" => archiver(key, unit),
+        "split" if unit.shell == Shell::Posix => split_filter(args),
         "git" => git::launch(args),
         "bun" => bun(unit, input),
         "deno" => deno(unit, input),

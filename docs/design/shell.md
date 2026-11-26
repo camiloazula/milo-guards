@@ -5278,7 +5278,32 @@ a file is `unknown` too, "takes options from a file the guard does not
 read" (`-K -` reads the input). git shows a file of the repository's history
 by its path: `git show REV:path`, `git show :path` (the index), `git
 cat-file -p REV:path` and `git blame path` read that file, so a secret there
-is read as it is in the work tree.
+is read as it is in the work tree. `split` and `csplit`
+read the file they cut into pieces, with their options read in clusters
+(`split -db 100 f`, `csplit -sf p f`) and a long option by any prefix of its
+name that no other starts with (`--fi`), and write the pieces: the prefix
+(`x` and `xx` without one), a suffix of the length `-a` (`-n` of `csplit`)
+says, two without it, in letters, or digits for `-d`, and `split`'s
+`--additional-suffix`. The guard judges each name the pieces can have when
+there are few (a `-n N` makes N, and a suffix of one letter or digit has
+few; at most 32), and otherwise the first and the pattern of the rest (the
+prefix, a `?` for each letter of the suffix, and the additional suffix); a
+name whose prefix is only known when it runs is judged as such, and so is
+one `csplit` is given a suffix format for that is not a `printf` format of
+one integer (`%d`, `%02d`, `%x`, `%o`, with literals), which is expanded
+for the first pieces. `split -n K/N` writes to the output, and no file. The
+`-d`, `-x`, `--numeric-suffixes[=FROM]` and `--hex-suffixes[=FROM]`, in
+order, say whether the names are numbers or hex digits, and one with a FROM
+says where they start, which is the last FROM given (one without leaves it);
+a FROM that is empty, not lower case hex for hex, or past the names, is
+refused when it is given, and no piece is written. A FROM the digits at the
+end do not allow (`--hex-suffixes=c -d`) is written as it is, and the
+pattern stands for the names after it. When the
+pieces `csplit` makes with a format may be more than are judged (`{*}`, a
+large repeat), the pattern of its names stands for the rest (`chap*.md`).
+`split --filter=CMD` runs `CMD` through the shell, as `sh -c` does, with each
+piece on its input and `$FILE` the piece's name, so a sender in `CMD` sends
+the file and a write in it is judged where it lands.
 
 ### The spelling of the file
 

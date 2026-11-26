@@ -231,11 +231,35 @@ posix safe | history -c
 powershell safe | rundll32 user32.dll,LockWorkStation
 powershell finds=unknown reason="runs code from a library" | rundll32 evil.dll,Entry
 
+# `split --filter` runs its command through the shell, as `sh -c` does,
+# with `$FILE` the name of each piece.
+posix finds=delete reason="deletes your home directory" | split --filter='rm -rf ~' x.txt
+posix finds=delete | split --filter 'rm -rf ~' x.txt
+posix finds=overwrite reason="writes to a shell startup file" | split --filter='gzip > ~/.bashrc' big.log
+posix safe | split --filter='gzip > $FILE.gz' big.log
+
+# `$FILE` is the name of a piece, the prefix and a suffix: a command is read
+# for each name the suffixes can make, and when the prefix is not known the
+# name is not.
+posix finds=overwrite reason="writes to a file only known when it runs" | split --filter='cat > $FILE' x.txt "$P"
+posix rules=overwrite,overwrite,overwrite | split -a 1 -n 3 --filter='cat > $FILE' x.txt /home/me/.bashr
+posix finds=overwrite | split --filter='cat > ${FILE}' x.txt /home/me/.ssh/
+
 # `-e`, `-i` and `-l` of GNU xargs take only the rest of their word, so the
 # word after the cluster is the program.
 posix finds=delete | xargs -ea rm -rf ~
 posix finds=delete | xargs -ed rm -rf ~
 posix finds=delete | xargs -0ia rm -rf ~
+
+# A long option of `split` is read by any prefix of its name that no other
+# starts with, and one only known when it runs may hold a command.
+posix finds=delete | split --fi='rm -rf ~' x.txt
+posix finds=delete | split --filt 'rm -rf ~' x.txt
+posix finds=unknown | split --filter="$C" x.txt
+posix finds=unknown | split --filter=$C x.txt
+posix finds=unknown | split --fi="$C" x.txt
+posix safe | split --by=10 x.txt part-
+posix finds=read_secret | split --sepa , /home/me/.ssh/id_rsa part-
 
 # `-I` and `-J` in a cluster put each word in place of their string.
 posix finds=unknown | ls | xargs -tI % sh -c 'rm -rf %'
