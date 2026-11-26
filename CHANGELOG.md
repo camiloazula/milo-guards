@@ -25,6 +25,13 @@ security fixes: each line below was judged safer than what it does.
   machine a place it may land. An option with an optional value takes the
   next word only when it is one of the values, and one with several values
   leaves every operand a place it may land.
+- `milo-guards-shell`: a `~` followed by quoting is judged as the home
+  directory and as a name in the working directory: a quoted, escaped or
+  empty-quoted character, a variable, or a locale string in the prefix up
+  to the first slash stops the shell's tilde expansion. A `..` after a
+  folder only known when it runs may leave it for any other, so what stays
+  a name is the file the word ends in, read as it is after any such folder
+  (`name/..` pairs of the word go first).
 
 ## 0.2.1 (2026-11-28)
 

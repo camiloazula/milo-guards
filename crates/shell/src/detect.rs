@@ -2183,7 +2183,30 @@ fn named_in_unknown_folder(arg: &Arg) -> Option<Arg> {
         return None;
     }
     let name = text.replace(&folder, "");
-    (!name.contains(crate::posix::OPAQUE)).then_some(Arg::Known(name))
+    if name.contains(crate::posix::OPAQUE) {
+        return None;
+    }
+    // A `..` after a folder only known when it runs may leave it for any
+    // other: what stays a name is the file the word ends in (`"$x/../.env"`
+    // is `.env`), a name of one part.
+    // A `name/..` pair of the word goes first.
+    let mut parts: Vec<&str> = Vec::new();
+    for part in name
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+    {
+        if part == ".." && parts.last().is_some_and(|last| *last != "..") {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    if let Some((last, folders)) = parts.split_last() {
+        if !folders.is_empty() && *last != ".." && folders.iter().all(|part| *part == "..") {
+            return Some(Arg::Known((*last).to_string()));
+        }
+    }
+    Some(Arg::Known(name))
 }
 
 /// `unit` with its words read by the name they end in, for the rules that

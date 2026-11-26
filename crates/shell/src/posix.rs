@@ -2974,6 +2974,13 @@ impl Walker<'_> {
                     .source
                     .get(arg.start_byte()..string.end_byte())
                     .unwrap_or_default();
+                // Its text is a locale's translation, the text itself where
+                // there is none: a `~` in it is a plain character there.
+                if let Arg::Known(inner) = self.arg(string) {
+                    if inner.starts_with('~') {
+                        readings.push((args.len(), vec![Arg::Known(format!("./{inner}"))]));
+                    }
+                }
                 let word = Arg::Unknown(word.to_string());
                 let at = self.spot(arg.start_byte()..string.end_byte(), &word, true);
                 if keep {
@@ -4818,16 +4825,27 @@ fn unescape(word: &str) -> String {
 /// A program that expands `~` itself reads the home directory, as the word
 /// is read too, so each is judged. `None` for any other word.
 fn literal_tilde(value: &Arg, node: Node<'_>, source: &str) -> Option<Arg> {
-    let text = value.known().filter(|text| text.starts_with('~'))?;
+    // A part of the prefix only known when it runs (`~"$x"/y`) is a name of
+    // one part, the folder the word is read through.
+    let text = match value {
+        Arg::Template { text, .. } => text.replace(OPAQUE, "_"),
+        other => other.known()?.to_string(),
+    };
+    if !text.starts_with('~') {
+        return None;
+    }
     quotes_tilde(node, source).then(|| Arg::Known(format!("./{text}")))
 }
 
 /// Whether the `~` the word at `node` starts with is one the shell does not
-/// expand: escaped (`\~`), in quotes (`"~"`, `'~'`), or after quotes that
-/// hold nothing (`""~`). Asked only of a word whose value starts with `~`:
-/// one from `$HOME` (`"$HOME"/x`) is the home directory.
+/// expand: escaped (`\~`), in quotes (`"~"`, `'~'`), after quotes that hold
+/// nothing (`""~`), or one whose tilde-prefix (the text up to the first
+/// slash the shell reads as one) holds a quoted or escaped character:
+/// `~"/x"`, `~'/x'`, `~\/x`, `~a"b"/x`. Asked only of a word whose value
+/// starts with `~`: one from `$HOME` (`"$HOME"/x`) is the home directory.
 fn quotes_tilde(node: Node<'_>, source: &str) -> bool {
-    let first = if node.kind() == "concatenation" {
+    let concatenated = node.kind() == "concatenation";
+    let first = if concatenated {
         node.named_child(0)
     } else {
         Some(node)
@@ -4837,8 +4855,15 @@ fn quotes_tilde(node: Node<'_>, source: &str) -> bool {
     };
     let text = unit::text(&first, source);
     match first.kind() {
-        "word" | "number" => text.starts_with("\\~"),
-        "raw_string" => true,
+        "word" | "number" => {
+            let prefix = text.split('/').next().unwrap_or(text);
+            text.starts_with("\\~")
+                || prefix.contains('\\')
+                // `~` and a quoted part before any slash: the prefix holds
+                // the quoted text.
+                || (concatenated && !text.contains('/') && node.named_child_count() > 1)
+        }
+        "raw_string" | "ansi_c_string" => true,
         "string" => text.starts_with("\"~") || text == "\"\"",
         _ => false,
     }
