@@ -62,6 +62,9 @@ const PARTIAL: &str = "opens a file whose path is only known when the code runs"
 /// one call may spend: as the shell guard says it.
 const LOST: &str = "reads a path only known when it runs";
 
+/// Why a read of a file on another machine's share is `unknown`.
+const SHARE_READ: &str = "opens a file on a network share";
+
 /// Why a path handed to a call the reader does not know is `unknown`.
 const HANDED: &str = "gives a path to a call the guard does not read";
 
@@ -971,6 +974,16 @@ impl Judge {
                 );
                 return;
             }
+        }
+        // A share of another machine, which is offered the user's Windows
+        // login, holds what the server gives: the guard cannot say.
+        if self.windows()
+            && path
+                .known()
+                .is_some_and(|text| milo_guards_core::spelling::network(text, self.flavour))
+        {
+            self.add_about(Rule::Unknown, SHARE_READ, path);
+            return;
         }
         if let Some(doubt) = doubt {
             self.add_about(Rule::Unknown, doubt, path);

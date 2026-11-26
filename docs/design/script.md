@@ -236,6 +236,14 @@ is the path on `C:`, `\??\PhysicalDrive0` a disk, `\??\UNC\…` a share,
 `\??\GLOBALROOT\Device\…` a volume by its device name, each placed as its
 `\\?\` spelling is.
 
+A read of a file on another machine's share (`\\server\share\x`,
+`//server/share/x`, `\\?\UNC\…`) is `unknown`, `opens a file on a network
+share`: what it holds is the server's to say, and Windows offers the user's
+login to the server, which the file guard's `network_share` is for. An
+administrative share of this machine (`\\localhost\C$\…`) is its disk, so a
+key on it is `read_secret`. A write to a share is `overwrite`, outside the
+workspace.
+
 A read of a path that cannot be placed (on another drive's own working
 directory, `D:x`; another user's home directory that holds no key) is
 `unknown`: `opens a file whose path is only known when the code runs`. So is

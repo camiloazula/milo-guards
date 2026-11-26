@@ -417,6 +417,11 @@ read@windows finds=network_share | \\\\127.0.0.1\\C$\\x
 read@windows finds=network_share | \\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa
 read@windows finds=network_share | \\\\wsl.localhost\\Ubuntu\\home\\me\\x
 read@windows finds=network_share | \\\\server\\..\\x
+# An administrative share of this machine is its disk too: a key on it is
+# the key, and a write is outside the workspace.
+read@windows rules=read_secret,network_share | \\\\localhost\\C$\\Users\\me\\.ssh\\id_rsa
+read@windows rules=read_secret,network_share | \\\\?\\UNC\\127.0.0.1\\C$\\Users\\me\\.netrc
+write@windows finds=write_outside,network_share | \\\\localhost\\C$\\Users\\me\\dev\\repo\\x
 write@windows finds=network_share | \\\\server\\share\\x
 write@windows finds=network_share | //server/share/x
 write@windows finds=network_share | \\\\server\\share
@@ -431,7 +436,6 @@ write@windows finds=network_share | \\\\wsl.localhost\\Ubuntu\\home\\me\\x
 write@windows finds=network_share | \\\\server\\..\\x
 read@windows rules=network_share | \\\\server\\share\\x
 read@windows rules=network_share | \\\\?\\UNC\\server\\share\\x
-read@windows rules=network_share | \\\\localhost\\C$\\Users\\me\\.ssh\\id_rsa
 # The device namespace is a disk as well.
 read@windows rules=read_secret,network_share | \\\\.\\UNC\\server\\share\\x
 read@windows rules=read_secret,network_share | \\\\?\\GLOBALROOT\\Device\\Mup\\server\\share\\x

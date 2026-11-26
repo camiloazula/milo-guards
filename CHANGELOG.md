@@ -596,6 +596,15 @@ are more serious than 0.1.4's.
 - `milo-guards-script`: a read of a path that starts with `~` is judged as
   the home directory's and as the name in the folder the code runs in
   (`./~/…`), since Python and JavaScript do not expand it.
+- `milo-guards-core`: an administrative share of this machine
+  (`\\localhost\C$\…`, `\\127.0.0.1\C$\…`, `\\::1\C$\…`, and as
+  `\\?\UNC\…`) is placed on its disk as well as a share: `place` gives the
+  more serious of the two, so a key on it is the key. `spelling::network`
+  still calls it a share. The file guard's read of a key through one is
+  `read_secret` beside `network_share`, and the shell guard's is
+  `read_secret`, or `send_secret` for a sender.
+- `milo-guards-script`: a read of a file on a network share is `unknown`,
+  "opens a file on a network share".
 
 ## 0.1.4 (2026-11-22)
 

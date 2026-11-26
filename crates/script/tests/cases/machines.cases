@@ -38,6 +38,17 @@ python@windows finds=wipe_disk | open('\\\\??\\\\PhysicalDrive0', 'wb').write(b'
 python@windows finds=read_secret | print(open('\\\\??\\\\PhysicalDrive0', 'rb').read())
 python@windows finds=overwrite | open('\\\\??\\\\UNC\\\\localhost\\\\C$\\\\Users\\\\me\\\\.ssh\\\\authorized_keys', 'w')
 python@windows lacks=unknown | print(open('\\\\??\\\\UNC\\\\localhost\\\\C$\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
+
+# A read of another machine's share holds what the server gives, which the
+# guard cannot say: `unknown`. An administrative share of this machine is its
+# disk, and a key on it is the key. POSIX has no shares.
+python@windows rules=unknown first=unknown reason="opens a file on a network share" | print(open('\\\\\\\\server\\\\share\\\\x').read())
+python@windows finds=unknown | print(open('//server/share/x').read())
+python@windows finds=unknown | print(open('\\\\\\\\?\\\\UNC\\\\server\\\\share\\\\x').read())
+javascript@windows finds=unknown reason="opens a file on a network share" | require('fs').readFileSync('//server/share/x')
+python@windows finds=read_secret reason="reads your SSH keys" | print(open('\\\\\\\\localhost\\\\C$\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
+python@windows finds=overwrite | open('\\\\\\\\server\\\\share\\\\x', 'w')
+python safe | print(open('//server/share/x').read())
 python@windows finds=wipe_disk | open('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me\\\\.ssh\\\\id_rsa', 'w')
 python@windows finds=read_secret | print(open('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me\\\\.ssh\\\\id_rsa').read())
 python@windows finds=wipe_disk | import shutil\nshutil.rmtree('\\\\??\\\\GLOBALROOT\\\\Device\\\\HarddiskVolume1\\\\Users\\\\me')
