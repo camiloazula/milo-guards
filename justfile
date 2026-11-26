@@ -151,16 +151,21 @@ no-inline:
     cargo clippy -p milo-guards-shell --no-default-features --all-targets --locked -- -D warnings
     cargo test -p milo-guards-shell --no-default-features --test inline_off --locked
 
-# Metadata only, no build.
-# Dependency gates (deny.toml): bans, licences and sources.
+# Metadata only, no build. The fuzz tool's lockfile is read too: its
+# harness (`libfuzzer-sys` and what it builds on) is in no build of the
+# workspace, and every other package of it is the workspace's
+# (`crates/guards/tests/contract.rs`).
+# Dependency gates (deny.toml): bans, licences and sources, of the workspace and the fuzz tool.
 deny:
     cargo deny check bans licenses sources
+    cargo deny --manifest-path tools/fuzz/Cargo.toml check bans licenses sources
 
 # Needs the network (the RustSec database), and the answer changes without a
 # commit, so `just verify` does not run it; CI runs it as its own job.
-# Dependency advisories (deny.toml): RustSec and yanked crates.
+# Dependency advisories (deny.toml): RustSec and yanked crates, of the workspace and the fuzz tool.
 advisories:
     cargo deny check advisories
+    cargo deny --manifest-path tools/fuzz/Cargo.toml check advisories
 
 # Whether a change since the last release breaks a caller's build: empty
 # while none does, and `minor` from the pull request whose change does (it
@@ -245,3 +250,23 @@ grammars *flags:
     cargo run --manifest-path tools/grammar-check/Cargo.toml --target-dir target/grammar-check --locked --quiet -- --sandbox-profile target/grammar-check/sandbox.sb
     GRAMMAR_CHECK_SANDBOXED={{grammars_sandboxed}} cargo test --manifest-path tools/grammar-check/Cargo.toml --target-dir target/grammar-check --locked {{grammars_sandbox}}
     cargo run --manifest-path tools/grammar-check/Cargo.toml --target-dir target/grammar-check --locked {{grammars_sandbox}} -- {{flags}}
+
+# The fuzz targets in `tools/fuzz`, a package of its own the workspace
+# excludes: formatted, linted and tested first with the pinned Rust, then
+# the runner seeds `target` from the case files, builds it with cargo-fuzz
+# and the nightly `tools/fuzz/rust-toolchain.toml` names (both installed
+# once, CONTRIBUTING.md), and runs it for `seconds` under libFuzzer, each
+# input held to five seconds and 2 GB. It prints none of what libFuzzer
+# prints, which names an input it found: that goes to a log beside what it
+# found, in `target/fuzz/found/<target>`, a security report (SECURITY.md).
+# `flags`: `--keep-going` (run the whole time past a find), `--private`
+# (print the log, on a machine of your own), `--out DIR`. `just verify`
+# does not run it: it needs a nightly, and what it finds depends on how
+# long it runs; `tests/promises.rs` holds the same promises in the gate,
+# and CI runs every target weekly in `.github/workflows/fuzz.yml`.
+# One fuzz target, seeded from the case files and run for a time (`just fuzz shell_posix 300`).
+fuzz target seconds="300" *flags:
+    cargo fmt --manifest-path tools/fuzz/Cargo.toml --check
+    cargo clippy --manifest-path tools/fuzz/Cargo.toml --target-dir target/fuzz/tool --all-targets --locked -- -D warnings
+    cargo test --manifest-path tools/fuzz/Cargo.toml --target-dir target/fuzz/tool --locked
+    cargo run --manifest-path tools/fuzz/Cargo.toml --target-dir target/fuzz/tool --locked --quiet -- run {{target}} {{seconds}} {{flags}}

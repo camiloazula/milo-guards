@@ -1,13 +1,20 @@
-//! Two Rust versions are named here, each in several places, and each must
+//! Three Rust versions are named here, each in several places, and each must
 //! be named the same everywhere it is.
 //!
 //! The pinned toolchain, `channel` in rust-toolchain.toml, is the one the
 //! gate and CI build with: each workflow that installs Rust names it in its
 //! `RUSTUP_TOOLCHAIN` variable and in the `toolchain:` input of each Rust
 //! install step. Every workflow in `.github/workflows` is read. It is the
-//! one toolchain file: none other is in a folder rustup reads one in when
-//! cargo runs here (the root, the workspace's members and excluded folders,
-//! and the folders between).
+//! one toolchain file of the workspace: no other is in a folder rustup reads
+//! one in when cargo runs here (the root, the workspace's members and
+//! excluded folders, and the folders between), but the fuzz tool's.
+//!
+//! The fuzz tool's, `tools/fuzz/rust-toolchain.toml`, names the nightly
+//! cargo-fuzz builds the fuzz targets with, by its date (`nightly-YYYY-MM-DD`,
+//! never a moving `nightly`), and nothing of the workspace builds with it.
+//! The `fuzz` job of fuzz.yml installs it beside the pinned one, in one
+//! install step of its own, and overrides nothing: the runner names it to
+//! the cargo-fuzz it starts. No other job installs it.
 //!
 //! The oldest the crates support, `rust-version` in Cargo.toml, which every
 //! crate inherits, is at most the pinned one. The `oldest-rust` job of
@@ -35,8 +42,58 @@ use std::path::Path;
 /// The workflow that holds the job for the oldest supported Rust.
 const CI: &str = ".github/workflows/ci.yml";
 
-/// That job, the one that installs another Rust than the pinned one.
+/// That job, the one that installs another Rust than the pinned one for the
+/// workspace.
 const OLDEST_JOB: &str = "oldest-rust";
+
+/// The workflow that fuzzes the guards.
+const FUZZ: &str = ".github/workflows/fuzz.yml";
+
+/// Its job, which installs the fuzzing nightly beside the pinned Rust.
+const FUZZ_JOB: &str = "fuzz";
+
+/// The fuzz tool's toolchain file, which names the fuzzing nightly.
+const FUZZ_TOOLCHAIN: &str = "tools/fuzz/rust-toolchain.toml";
+
+/// The fuzzing nightly the samples below name.
+const NIGHTLY: &str = "nightly-2026-11-10";
+
+/// The fuzzing nightly: the channel of the fuzz tool's toolchain file, a
+/// nightly named by its date.
+fn nightly() -> Result<String, String> {
+    let nightly = value(&read(FUZZ_TOOLCHAIN)?, "channel", FUZZ_TOOLCHAIN)?;
+    dated(&nightly)?;
+    Ok(nightly)
+}
+
+/// Whether `channel` is a nightly named by a date (`nightly-2026-11-10`),
+/// never the moving `nightly`, or why not.
+fn dated(channel: &str) -> Result<(), String> {
+    let refused = || {
+        format!(
+            "{FUZZ_TOOLCHAIN} names `{channel}`: the fuzzing nightly is named by its date, \
+             `nightly-YYYY-MM-DD`, so every run builds with the same one"
+        )
+    };
+    let date = channel.strip_prefix("nightly-").ok_or_else(refused)?;
+    let parts: Vec<&str> = date.split('-').collect();
+    let [year, month, day] = parts[..] else {
+        return Err(refused());
+    };
+    let digits = |part: &str, len: usize| {
+        (part.len() == len && part.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| part.parse::<u32>().ok())
+            .flatten()
+    };
+    match (digits(year, 4), digits(month, 2), digits(day, 2)) {
+        (Some(year), Some(month), Some(day))
+            if year >= 2015 && (1..=12).contains(&month) && (1..=31).contains(&day) =>
+        {
+            Ok(())
+        }
+        _ => Err(refused()),
+    }
+}
 
 /// The lines of the justfile's recipe of the same name, as written: what a
 /// caller builds (default features, and the shell guard without them), then
@@ -381,10 +438,19 @@ fn refused_command(text: &str) -> Option<String> {
 
 /// Whether `workflow`, the file `file`, names the pinned Rust everywhere but
 /// in the oldest-rust job of ci.yml, which names the oldest supported one,
-/// and nothing else picks a toolchain; or the first place it does not.
-fn check_workflow(file: &str, workflow: &str, pinned: &str, oldest: &str) -> Result<(), String> {
+/// and beside it in the fuzz job of fuzz.yml, which installs the fuzzing
+/// nightly too, and nothing else picks a toolchain; or the first place it
+/// does not.
+fn check_workflow(
+    file: &str,
+    workflow: &str,
+    pinned: &str,
+    oldest: &str,
+    nightly: &str,
+) -> Result<(), String> {
     let installs = install_steps(workflow);
     let held = (file == CI).then_some(OLDEST_JOB);
+    let fuzzing = (file == FUZZ).then_some(FUZZ_JOB);
     let lines = lines(workflow);
     // Everything a step could run, read whole: every line but a blank, a
     // comment and a label, whether a key reads it or not.
@@ -463,7 +529,12 @@ fn check_workflow(file: &str, workflow: &str, pinned: &str, oldest: &str) -> Res
         ));
     }
     let mut oldest_inputs = 0;
+    let mut nightly_inputs = 0;
     for input in inputs {
+        if fuzzing.is_some() && input.job() == fuzzing && input.value == nightly {
+            nightly_inputs += 1;
+            continue;
+        }
         let (want, what) = if held.is_some() && input.job() == held {
             oldest_inputs += 1;
             (
@@ -499,6 +570,14 @@ fn check_workflow(file: &str, workflow: &str, pinned: &str, oldest: &str) -> Res
         if env != ["RUSTUP_TOOLCHAIN"] {
             return Err(format!(
                 "the `env:` of the job `{job}` in {file} holds RUSTUP_TOOLCHAIN alone: found {env:?}"
+            ));
+        }
+    }
+    if let Some(job) = fuzzing {
+        if nightly_inputs != 1 {
+            return Err(format!(
+                "{file} has a job `{job}` that installs the fuzzing nightly, `{nightly}` \
+                 ({FUZZ_TOOLCHAIN}), in one install step of its own: found {nightly_inputs}"
             ));
         }
     }
@@ -584,18 +663,21 @@ fn every_crate_inherits_rust_version_from_the_workspace() -> Result<(), String> 
 fn every_workflow_installs_the_pinned_rust_but_the_oldest_rust_job() -> Result<(), String> {
     let pinned = pinned()?;
     let oldest = oldest()?;
+    let nightly = nightly()?;
     let workflows = workflows()?;
-    assert!(
-        workflows.iter().any(|file| file == CI),
-        "{CI} is read: {workflows:?}"
-    );
+    for held in [CI, FUZZ] {
+        assert!(
+            workflows.iter().any(|file| file == held),
+            "{held} is read: {workflows:?}"
+        );
+    }
     let mut installing = 0;
     for file in workflows {
         let workflow = read(&file)?;
         if install_steps(&workflow) > 0 {
             installing += 1;
         }
-        check_workflow(&file, &workflow, &pinned, &oldest)?;
+        check_workflow(&file, &workflow, &pinned, &oldest, &nightly)?;
     }
     assert!(installing >= 2, "ci.yml and release.yml both install Rust");
     Ok(())
@@ -723,7 +805,10 @@ jobs:
 
 #[test]
 fn a_workflow_is_held_to_the_two_versions() {
-    assert_eq!(check_workflow(CI, SAMPLE, "1.99.1", "1.90"), Ok(()));
+    assert_eq!(
+        check_workflow(CI, SAMPLE, "1.99.1", "1.90", NIGHTLY),
+        Ok(())
+    );
     let read = lines(SAMPLE);
     let inputs: Vec<(Option<&str>, &str)> = read
         .iter()
@@ -737,7 +822,7 @@ fn a_workflow_is_held_to_the_two_versions() {
         [(Some("verify"), "1.99.1"), (Some("oldest-rust"), "1.90")]
     );
     // The oldest-rust job is held in ci.yml alone.
-    assert!(check_workflow("release.yml", SAMPLE, "1.99.1", "1.90").is_err());
+    assert!(check_workflow("release.yml", SAMPLE, "1.99.1", "1.90", NIGHTLY).is_err());
     let forms = [
         ("the job removed", SAMPLE.split("  oldest-rust:").next().unwrap_or_default().to_string()),
         (
@@ -902,7 +987,7 @@ fn a_workflow_is_held_to_the_two_versions() {
     ];
     for (what, workflow) in forms.into_iter().chain(more) {
         assert_ne!(workflow, SAMPLE, "{what}: the form was not put in");
-        let checked = check_workflow(CI, &workflow, "1.99.1", "1.90");
+        let checked = check_workflow(CI, &workflow, "1.99.1", "1.90", NIGHTLY);
         assert!(checked.is_err(), "{what} is not refused");
     }
     // What does not pick a Rust is read and let through.
@@ -943,10 +1028,88 @@ fn a_workflow_is_held_to_the_two_versions() {
     for (what, workflow) in allowed {
         assert_ne!(workflow, SAMPLE, "{what}: the form was not put in");
         assert_eq!(
-            check_workflow(CI, &workflow, "1.99.1", "1.90"),
+            check_workflow(CI, &workflow, "1.99.1", "1.90", NIGHTLY),
             Ok(()),
             "{what} is refused"
         );
+    }
+}
+
+/// A workflow as fuzz.yml writes its job: the pinned Rust, and the fuzzing
+/// nightly in a step of its own.
+const FUZZ_SAMPLE: &str = "\
+env:
+  RUSTUP_TOOLCHAIN: \"1.99.1\"
+
+jobs:
+  fuzz:
+    steps:
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@abc # master
+        with:
+          toolchain: \"1.99.1\"
+      - name: Install the fuzzing nightly
+        uses: dtolnay/rust-toolchain@abc # master
+        with:
+          toolchain: \"nightly-2026-11-10\"
+      - run: just fuzz x 300
+";
+
+#[test]
+fn a_fuzz_workflow_installs_the_nightly_in_its_job_alone() {
+    let check = |workflow: &str| check_workflow(FUZZ, workflow, "1.99.1", "1.90", NIGHTLY);
+    assert_eq!(check(FUZZ_SAMPLE), Ok(()));
+    // The nightly is held in fuzz.yml alone.
+    assert!(check_workflow(CI, FUZZ_SAMPLE, "1.99.1", "1.90", NIGHTLY).is_err());
+    let forms = [
+        (
+            "another nightly",
+            FUZZ_SAMPLE.replacen("nightly-2026-11-10", "nightly-2026-11-11", 1),
+        ),
+        (
+            "the moving nightly",
+            FUZZ_SAMPLE.replacen("\"nightly-2026-11-10\"", "nightly", 1),
+        ),
+        (
+            "the nightly installed twice",
+            FUZZ_SAMPLE.replacen(
+                "toolchain: \"1.99.1\"",
+                "toolchain: \"nightly-2026-11-10\"",
+                1,
+            ),
+        ),
+        (
+            "no nightly",
+            FUZZ_SAMPLE.replacen(
+                "toolchain: \"nightly-2026-11-10\"",
+                "toolchain: \"1.99.1\"",
+                1,
+            ),
+        ),
+        (
+            "the nightly in another job",
+            FUZZ_SAMPLE.replacen("  fuzz:\n", "  other:\n", 1),
+        ),
+        (
+            "the job overriding the pinned Rust",
+            FUZZ_SAMPLE.replacen(
+                "  fuzz:\n",
+                "  fuzz:\n    env:\n      RUSTUP_TOOLCHAIN: \"nightly-2026-11-10\"\n",
+                1,
+            ),
+        ),
+        (
+            "a command picking the nightly",
+            FUZZ_SAMPLE.replacen(
+                "run: just fuzz x 300",
+                "run: cargo +nightly-2026-11-10 fuzz",
+                1,
+            ),
+        ),
+    ];
+    for (what, workflow) in forms {
+        assert_ne!(workflow, FUZZ_SAMPLE, "{what}: the form was not put in");
+        assert!(check(&workflow).is_err(), "{what} is not refused");
     }
 }
 
@@ -1072,12 +1235,14 @@ fn workspace_folders(root: &Path, pattern: &str) -> Result<Vec<String>, String> 
 }
 
 #[test]
-fn rust_toolchain_toml_at_the_root_is_the_only_toolchain_file() -> Result<(), String> {
+fn the_toolchain_files_are_the_roots_and_the_fuzz_tools() -> Result<(), String> {
     // rustup reads a toolchain file in the folder cargo runs in and in each
     // folder above it: here, the root, each member or excluded folder of the
     // workspace, and the folders between them and the root. No other folder
     // is looked in, a symlink is not followed, and a folder that holds
-    // another checkout is not this repository's.
+    // another checkout is not this repository's. The fuzz tool's names the
+    // nightly its targets are built with, by its date, and is held here on
+    // purpose: no member of the workspace is in its folder.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let manifest = read("Cargo.toml")?;
     let patterns: Vec<String> = workspace_list(&manifest, "members")
@@ -1112,12 +1277,55 @@ fn rust_toolchain_toml_at_the_root_is_the_only_toolchain_file() -> Result<(), St
     }
     assert_eq!(
         found,
-        ["rust-toolchain.toml"],
+        ["rust-toolchain.toml", FUZZ_TOOLCHAIN],
         "rustup reads a `rust-toolchain` file, or a `rust-toolchain.toml` in a folder cargo \
-         runs in, before the root's: the one toolchain file is rust-toolchain.toml at the root \
-         (looked for in {folders:?})"
+         runs in, before the root's: the toolchain files are rust-toolchain.toml at the root \
+         and the fuzz tool's (looked for in {folders:?})"
+    );
+    let members = workspace_list(&manifest, "members");
+    assert!(
+        members.iter().all(|member| !member.starts_with("tools/")),
+        "no member of the workspace is under tools/, where the fuzz tool's nightly would be read"
+    );
+    // The fuzz tool's names a dated nightly and nothing else picks a Rust.
+    nightly()?;
+    let keys: Vec<String> = read(FUZZ_TOOLCHAIN)?
+        .lines()
+        .map(|line| uncommented(line).trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "[toolchain]".to_string(),
+            format!("channel = \"{}\"", nightly()?),
+            "profile = \"minimal\"".to_string(),
+        ],
+        "{FUZZ_TOOLCHAIN} names its dated nightly, with the minimal profile, and nothing else"
     );
     Ok(())
+}
+
+#[test]
+fn the_fuzzing_nightly_is_named_by_its_date() {
+    assert_eq!(dated(NIGHTLY), Ok(()));
+    assert_eq!(dated("nightly-2015-01-01"), Ok(()));
+    for refused in [
+        "nightly",
+        "stable",
+        "1.99.1",
+        "nightly-2026-11",
+        "nightly-2026-13-10",
+        "nightly-2026-11-32",
+        "nightly-2026-00-10",
+        "nightly-26-11-10",
+        "nightly-2026-1-10",
+        "nightly-2026-11-10-x",
+        "nightly-2026-11-+1",
+        "beta-2026-11-10",
+    ] {
+        assert!(dated(refused).is_err(), "{refused} is not refused");
+    }
 }
 
 #[test]

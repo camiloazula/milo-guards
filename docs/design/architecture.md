@@ -34,6 +34,21 @@ same version and source, so it builds what the gates build and `just
 advisories` audits, and in it only `src/room.rs` (and a program its tests
 start) names `process`, and it has no target outside `src/` and `tests/`.
 
+`tools/fuzz` is the other: a fuzz target for each entry point of the guards,
+which cargo-fuzz builds with libFuzzer and a dated nightly Rust named in its
+own `rust-toolchain.toml` (the workspace never builds with it), and a runner
+that seeds a target from the case files, starts cargo-fuzz and keeps what it
+finds out of what it prints ([CONTRIBUTING.md](../../CONTRIBUTING.md#fuzzing)).
+`contract.rs` holds it as it holds the grammar tool, with two differences:
+its lockfile may hold, beside the workspace's packages, the fuzzing harness
+(`libfuzzer-sys` and what it alone builds on) and nothing else, which `just
+deny` and `just advisories` read too; and its one file that names `process`
+is `src/run.rs`. Its targets hold the promises of the table below that are
+true of any input; they are written once, in
+`crates/guards/tests/common/promises.rs`, which the gate's
+`tests/promises.rs` runs on the case lines changed at random and the fuzz
+targets include by its path.
+
 The front door has no logic of its own. It re-exports the types every guard
 shares: `Paths` with its `Protected`, `Secret`, `Links` and `Link`, `Assessment`, `Finding` and the trait
 `RuleName`. It does not
@@ -149,9 +164,9 @@ What enforces each promise, and where:
 | --- | --- |
 | No I/O, no environment | `contract.rs` and the `disallowed-*` lists in `clippy.toml` |
 | Dependency direction | `contract.rs` |
-| Never panics | each guard's `tests/robust.rs` (seeded random noise through every grammar), and for the shell guard also `tests/timing.rs` (wider noise, and the time a line may take); clippy warns on `unwrap`, `expect` and `panic!` outside tests |
+| Never panics | each guard's `tests/robust.rs` (seeded random noise through every grammar), and for the shell guard also `tests/timing.rs` (wider noise, and the time a line may take); the front door's `tests/promises.rs` (the case lines changed at random, through every entry point); the fuzz targets of `tools/fuzz`, which follow coverage, outside the gate (`just fuzz`); clippy warns on `unwrap`, `expect` and `panic!` outside tests |
 | What cannot be read is risky | each guard's `tests/robust.rs` for a line that is too long or too deeply nested; for the shell guard also `tests/limits.rs` for a line left open and for the limits; the guard's own tables of risky lines for the rest |
-| Deterministic | no test of its own: it follows from the first promise |
+| Deterministic | it follows from the first promise; `tests/promises.rs` and the fuzz targets also hold every entry point to the same answer twice |
 | No policy | no test of its own: a guard's API only reports findings |
 
 The code reader ([Code](code.md)) is not a guard but keeps the promises the

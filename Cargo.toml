@@ -71,11 +71,12 @@ members = [
     "crates/script",
     "crates/guards",
 ]
-# A tool of the repository, never published, and a package of its own with
-# its own lockfile: it holds the shell guard's grammars to the real shells
-# and starts them, so no gate of the workspace builds it and no release
-# lists it (`just grammars`, CONTRIBUTING.md).
-exclude = ["tools/grammar-check"]
+# The tools of the repository, never published, each a package of its own
+# with its own lockfile, so no gate of the workspace builds them and no
+# release lists them: one holds the shell guard's grammars to the real
+# shells and starts them (`just grammars`), the other holds the fuzz targets,
+# which cargo-fuzz builds with a nightly Rust (`just fuzz`, CONTRIBUTING.md).
+exclude = ["tools/fuzz", "tools/grammar-check"]
 
 [workspace.package]
 version = "0.1.4"

@@ -56,3 +56,10 @@ milo-guards-script = { workspace = true, optional = true }
 # The test kit of the shell guard's test helpers, which `tests/everyday.rs`
 # and `tests/everyday_answers.rs` share to run their case files.
 milo-guards-core = { workspace = true, features = ["testing"] }
+# What only the guards' own tests read: the count of what the shell guard's
+# lexers and the code reader's parses are handed, and what judging code
+# costs, which `tests/promises.rs` holds to their budgets, as the fuzz
+# targets do (`tests/common/promises.rs`). Not for callers.
+milo-guards-shell = { workspace = true, features = ["testing"] }
+milo-guards-code = { workspace = true, features = ["testing"] }
+milo-guards-script = { workspace = true, features = ["testing"] }

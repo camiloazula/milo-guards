@@ -15,12 +15,17 @@
 //! read the repository, and installs cargo-semver-checks at a full version,
 //! `MAJOR.MINOR.PATCH`, the one CONTRIBUTING.md installs once and no other;
 //! the justfile's `next_bump`, which it reads, is empty or `minor`, and
-//! empty while CHANGELOG.md's Unreleased section is.
+//! empty while CHANGELOG.md's Unreleased section is. The `fuzz` job of
+//! fuzz.yml, a workflow of its own that runs weekly and by hand, never on a
+//! push or a pull request, runs `just fuzz` alone for each fuzz target
+//! `tools/fuzz/Cargo.toml` names, one job each, and its one `if:` is the
+//! step that keeps what a failed run found as an artifact, never in the
+//! log.
 //!
 //! The workflow is read line by line, as plain block YAML: each job under
-//! `jobs:`, each key by where it sits, comments skipped. In the seven jobs
+//! `jobs:`, each key by where it sits, comments skipped. In the eight jobs
 //! held here, some ways a job could run less than it shows are refused, never
-//! read: the keys `if:`, `continue-on-error:`, `needs:`, `shell:`,
+//! read: the keys `if:` (but the fuzz job's one, above), `continue-on-error:`, `needs:`, `shell:`,
 //! `include:`, `exclude:` and `working-directory:`; a quoted key, an explicit
 //! `? key` and any other line without a key; a flow mapping, a merge key, an
 //! anchor, an alias and a tag; a `run:` written as a block or off a step; a
@@ -177,6 +182,16 @@ fn plain(value: &str) -> String {
 /// The keys of the job `name` in `workflow`, in order, or why a line of it
 /// is refused.
 fn job(workflow: &str, name: &str) -> Result<Vec<Entry>, String> {
+    parse(workflow, name, false)
+}
+
+/// The step that keeps what a failed fuzz run found: the one step of a held
+/// job an `if:` may be on, this one.
+const KEEPS_FOUND: &str = "${{ failure() }}";
+
+/// [`job`], with `if: ${{ failure() }}` read rather than refused when
+/// `failure_step` is set: [`fuzz_job`] holds where it is.
+fn parse(workflow: &str, name: &str, failure_step: bool) -> Result<Vec<Entry>, String> {
     let refuse = |line: &str, why: &str| Err(format!("job `{name}`, `{}`: {why}", line.trim()));
     let mut entries: Vec<Entry> = Vec::new();
     let mut seen = HashSet::new();
@@ -247,14 +262,17 @@ fn job(workflow: &str, name: &str) -> Result<Vec<Entry>, String> {
                  merge `<<` are refused, not read",
             );
         }
-        if REFUSED.contains(&key) {
+        let kept = failure_step && key == "if" && plain(value) == KEEPS_FOUND;
+        if REFUSED.contains(&key) && !kept {
             return refuse(
                 line,
                 "this key can keep the job from running what it shows, so it is refused here",
             );
         }
         let value = value.trim();
-        if value.starts_with(['{', '&', '*', '!']) || value.starts_with('[') && key != "os" {
+        if value.starts_with(['{', '&', '*', '!'])
+            || value.starts_with('[') && key != "os" && key != "target"
+        {
             return refuse(
                 line,
                 "a flow mapping or list, an anchor, an alias and a tag are refused, not read",
@@ -314,14 +332,96 @@ fn setting(workflow: &str, name: &str, path: &[&str]) -> Result<String, String> 
 /// The systems the job `name` runs on: its `strategy.matrix.os: [a, b]`, in
 /// order.
 fn systems(workflow: &str, name: &str) -> Result<Vec<String>, String> {
-    let list = setting(workflow, name, &["strategy", "matrix", "os"])?;
+    matrix(workflow, name, "os")
+}
+
+/// The list `strategy.matrix.KEY: [a, b]` of the job `name`, in order.
+fn matrix(workflow: &str, name: &str, key: &str) -> Result<Vec<String>, String> {
+    let list = setting(workflow, name, &["strategy", "matrix", key])?;
     let inner = list
         .strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
         .ok_or_else(|| {
-            format!("the job `{name}` of ci.yml names its systems `os: [a, b]`, not `os: {list}`")
+            format!("the job `{name}` names its matrix `{key}: [a, b]`, not `{key}: {list}`")
         })?;
-    Ok(inner.split(',').map(|os| os.trim().to_string()).collect())
+    Ok(inner
+        .split(',')
+        .map(|item| item.trim().to_string())
+        .collect())
+}
+
+/// The fuzz job's keys, with its one `if:` read: only on its last step,
+/// which uses `actions/upload-artifact` and runs nothing; or why not.
+fn fuzz_job(workflow: &str, name: &str) -> Result<Vec<Entry>, String> {
+    let entries = parse(workflow, name, true)?;
+    let step = |entry: &Entry| entry.path.get(1).cloned();
+    let last = entries
+        .iter()
+        .filter(|entry| entry.path.first().is_some_and(|key| key == "steps"))
+        .filter_map(step)
+        .next_back();
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.path.last().is_some_and(|key| key == "if"))
+    {
+        let on_last = entry.at(&["steps", "-", "if"]) && step(entry) == last;
+        let uploads = entries.iter().any(|other| {
+            step(other) == step(entry)
+                && other.at(&["steps", "-", "uses"])
+                && other.value.starts_with("actions/upload-artifact@")
+        });
+        let runs = entries
+            .iter()
+            .any(|other| step(other) == step(entry) && other.at(&["steps", "-", "run"]));
+        if !on_last || !uploads || runs {
+            return Err(format!(
+                "job `{name}`: `if: {KEEPS_FOUND}` is on its last step alone, which keeps what a \
+                 failed run found with actions/upload-artifact and runs nothing: found it at `{}`",
+                entry.path.join(".")
+            ));
+        }
+    }
+    Ok(entries)
+}
+
+/// The names of the keys right under the top-level key `top` of
+/// `workflow` (its `on:` triggers), in order.
+fn under_top(workflow: &str, top: &str) -> Vec<String> {
+    let head = format!("{top}:");
+    workflow
+        .lines()
+        .skip_while(|line| uncommented(line) != head)
+        .skip(1)
+        .take_while(|line| blank(line) || indent(line) > 0)
+        .filter(|line| !blank(line) && indent(line) == 2)
+        .filter_map(|line| {
+            line.trim()
+                .strip_suffix(':')
+                .or_else(|| line.trim().split_once(": ").map(|(key, _)| key))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The names of the `[[bin]]` programs `manifest` names, in order.
+fn programs(manifest: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut in_bin = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_bin = line == "[[bin]]";
+            continue;
+        }
+        if let Some(name) = in_bin
+            .then(|| line.strip_prefix("name"))
+            .flatten()
+            .and_then(|rest| rest.trim_start().strip_prefix('='))
+        {
+            found.push(name.trim().trim_matches('"').to_string());
+        }
+    }
+    found
 }
 
 #[test]
@@ -626,6 +726,78 @@ fn the_semver_job_reads_the_next_bump_with_the_checker_contributing_installs() -
     Ok(())
 }
 
+#[test]
+fn the_fuzz_workflow_runs_just_fuzz_for_each_target_weekly() -> Result<(), String> {
+    let justfile = read("justfile")?;
+    let workflow = read(".github/workflows/fuzz.yml")?;
+    assert!(
+        justfile
+            .lines()
+            .any(|line| line == "fuzz target seconds=\"300\" *flags:"),
+        "the justfile has the recipe `fuzz target seconds=\"300\" *flags:`, which runs its own \
+         commands"
+    );
+    for recipe in ["verify", "test"] {
+        assert!(
+            !dependencies(&justfile, recipe)?.iter().any(|r| r == "fuzz"),
+            "`just {recipe}` must not run `fuzz`: it needs a nightly Rust and cargo-fuzz"
+        );
+    }
+    // Weekly and by hand, never on a push or a pull request.
+    assert_eq!(
+        under_top(&workflow, "on"),
+        ["schedule", "workflow_dispatch"],
+        "fuzz.yml runs on a schedule and by hand alone"
+    );
+    let entries = fuzz_job(&workflow, "fuzz")?;
+    let found: Vec<&str> = entries
+        .iter()
+        .filter(|entry| entry.at(&["steps", "-", "run"]))
+        .map(|entry| entry.value.as_str())
+        .collect();
+    assert_eq!(
+        found,
+        ["just fuzz ${{ matrix.target }} 300"],
+        "the fuzz job runs `just fuzz` alone, on its target, for five minutes"
+    );
+    assert_eq!(
+        setting_of(&entries, &["name"]),
+        Some("fuzz (${{ matrix.target }})"),
+        "the fuzz job's checks are named `fuzz (<target>)`"
+    );
+    assert_eq!(
+        setting_of(&entries, &["runs-on"]),
+        Some("ubuntu-latest"),
+        "the fuzz job runs on Linux"
+    );
+    // Every target of the tool, and only those, each in a job of its own.
+    let manifest = read("tools/fuzz/Cargo.toml")?;
+    let targets: Vec<String> = programs(&manifest)
+        .into_iter()
+        .filter(|name| name != "fuzz")
+        .collect();
+    assert!(targets.len() >= 9, "the fuzz targets: {targets:?}");
+    let matrix = {
+        let list = setting_of(&entries, &["strategy", "matrix", "target"]).unwrap_or_default();
+        list.trim_matches(['[', ']'])
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        matrix, targets,
+        "the fuzz job runs every target of tools/fuzz/Cargo.toml, in its order"
+    );
+    // What a failed run found is kept as an artifact of the run, never
+    // printed: the folder the runner keeps it in.
+    assert_eq!(
+        setting_of(&entries, &["steps", "-", "with", "path"]),
+        Some("target/fuzz/found/${{ matrix.target }}"),
+        "the fuzz job keeps the folder the runner keeps what it found in"
+    );
+    Ok(())
+}
+
 /// Whether `version` is a full version, `MAJOR.MINOR.PATCH`, and nothing
 /// else.
 fn full_version(version: &str) -> bool {
@@ -684,6 +856,101 @@ fn a_tool_version_is_read_whole_and_full() {
     assert_eq!(installed(doc, "t"), ["0.51.0", "0.51.01", ""]);
     assert_eq!(installed(doc, "other"), ["1.0.0"]);
     assert!(installed(doc, "none").is_empty());
+}
+
+/// The value at `path` among `entries`.
+fn setting_of<'a>(entries: &'a [Entry], path: &[&str]) -> Option<&'a str> {
+    entries
+        .iter()
+        .find(|entry| entry.at(path))
+        .map(|entry| entry.value.as_str())
+}
+
+/// A fuzz job as fuzz.yml writes it.
+const FUZZ_SAMPLE: &str = "\
+on:
+  schedule:
+    - cron: \"17 4 * * 1\"
+  workflow_dispatch:
+jobs:
+  fuzz:
+    strategy:
+      matrix:
+        target: [a, b]
+    steps:
+      - uses: x@sha
+      - run: just fuzz ${{ matrix.target }} 300
+      - name: Keep
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@sha # v4
+        with:
+          path: target/fuzz/found/${{ matrix.target }}
+";
+
+#[test]
+fn the_fuzz_job_keeps_what_it_found_in_its_last_step_alone() -> Result<(), String> {
+    assert_eq!(
+        under_top(FUZZ_SAMPLE, "on"),
+        ["schedule", "workflow_dispatch"]
+    );
+    let entries = fuzz_job(FUZZ_SAMPLE, "fuzz")?;
+    assert_eq!(
+        setting_of(&entries, &["strategy", "matrix", "target"]),
+        Some("[a, b]")
+    );
+    let unkept = FUZZ_SAMPLE.replacen("        if: ${{ failure() }}\n", "", 1);
+    assert_eq!(matrix(&unkept, "fuzz", "target")?, ["a", "b"]);
+    assert!(entries.iter().any(|entry| entry.at(&["steps", "-", "if"])));
+    // Elsewhere an `if:` is still refused, in this job and in the others.
+    assert!(
+        job(FUZZ_SAMPLE, "fuzz").is_err(),
+        "an `if:` in a job held by `job`"
+    );
+    let forms = [
+        (
+            "on the run",
+            FUZZ_SAMPLE.replacen(
+                "      - run: just fuzz ${{ matrix.target }} 300\n",
+                "      - run: just fuzz ${{ matrix.target }} 300\n        if: ${{ failure() }}\n",
+                1,
+            ),
+        ),
+        (
+            "another condition",
+            FUZZ_SAMPLE.replacen("if: ${{ failure() }}", "if: ${{ always() }}", 1),
+        ),
+        (
+            "on the job",
+            FUZZ_SAMPLE.replacen(
+                "    strategy:\n",
+                "    if: ${{ failure() }}\n    strategy:\n",
+                1,
+            ),
+        ),
+        (
+            "on a step that is not the last",
+            FUZZ_SAMPLE.replacen(
+                "      - uses: x@sha\n",
+                "      - uses: actions/upload-artifact@sha\n        if: ${{ failure() }}\n",
+                1,
+            ),
+        ),
+        (
+            "on a step that runs",
+            FUZZ_SAMPLE.replacen(
+                "        uses: actions/upload-artifact@sha # v4\n",
+                "        run: just x\n",
+                1,
+            ),
+        ),
+    ];
+    for (what, workflow) in forms {
+        assert_ne!(workflow, FUZZ_SAMPLE, "{what}: the form was not put in");
+        assert!(fuzz_job(&workflow, "fuzz").is_err(), "{what} is read");
+    }
+    let manifest = "[package]\nname = \"fuzz\"\n[[bin]]\nname = \"fuzz\"\npath = \"a\"\n\n[[bin]]\nname = \"x\"\n[dependencies]\nname = \"no\"\n";
+    assert_eq!(programs(manifest), ["fuzz", "x"]);
+    Ok(())
 }
 
 /// A workflow with two jobs, the first as ci.yml writes its `test` job.

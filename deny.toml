@@ -37,7 +37,19 @@ allow = [
     "Unicode-3.0",
 ]
 # Per-crate exceptions. Keep this list empty unless a line is justified.
-exceptions = []
+exceptions = [
+    # libFuzzer, which `libfuzzer-sys` builds the fuzz targets with: LLVM's
+    # code, under the University of Illinois/NCSA licence, a permissive,
+    # OSI-approved licence in the family of BSD. Only `tools/fuzz` builds
+    # it, which is never published and which no crate depends on
+    # (`just deny` reads its lockfile beside the workspace's).
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
+# The exception above is met by the fuzz tool's lockfile alone, which
+# `just deny` reads in a run of its own: the workspace's run does not meet
+# it, and says nothing of it. `crates/guards/tests/contract.rs` keeps
+# `libfuzzer-sys` in the tool's lockfile, so it cannot go stale unseen.
+unused-license-exception = "allow"
 
 [licenses.private]
 ignore = true
