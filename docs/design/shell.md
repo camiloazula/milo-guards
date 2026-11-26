@@ -5472,7 +5472,10 @@ A line is never safe because the guard gave up on it. These come back risky:
 - A line that holds a NUL (U+0000), in every shell, `unreadable`, "holds a
   NUL character": no program can be handed one in an argument, and a shell
   fed the line by its input drops it, so the line runs as no reading of it
-  says: a NUL inside a word joins what is on either side of it.
+  says. A grammar's scanner reads a NUL as the end of its input, so the
+  grammar is handed a space in its place where the NUL stands by a space or
+  an operator, and a `,` inside a word, and what the line does past it is
+  still found, as the shell finds it with the NUL dropped.
 - A POSIX line that holds a control character a terminal acts on,
   `unreadable`, "holds a control character a terminal acts on": every C0
   control character (U+0001 to U+001F) but a tab and a line feed, a carriage

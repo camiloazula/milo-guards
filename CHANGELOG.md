@@ -84,6 +84,12 @@ security fixes: each line below was judged safer than what it does.
   only `-C`, it goes on to run the script it is handed, unknown when it is
   named by a relative path, or to read its input. A word only known when it
   runs among its options makes the line unknown.
+- `milo-guards-shell`: a line that holds a NUL is `unreadable`, as it was,
+  and what the guard reads past the NUL is kept: a grammar's scanner reads
+  a NUL as the end of its input, so what came after it was not read and
+  could hide a command; the grammar is now handed another character in its
+  place, as the shell reads the line with the NUL dropped, and the words
+  are read from the line as written.
 
 ## 0.2.1 (2026-11-28)
 

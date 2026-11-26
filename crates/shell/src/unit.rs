@@ -6064,6 +6064,29 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
 }
 
+/// `text` with each NUL written as another character of the same length (see
+/// [`parse`]): a space where it is at a word's edge, a `,` inside one.
+fn without_nul(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let edge =
+        |c: Option<&char>| c.is_none_or(|c| c.is_whitespace() || ";|&(){}<>`\0".contains(*c));
+    chars
+        .iter()
+        .enumerate()
+        .map(|(at, &c)| {
+            if c != '\0' {
+                c
+            } else if edge(at.checked_sub(1).and_then(|before| chars.get(before)))
+                || edge(chars.get(at + 1))
+            {
+                ' '
+            } else {
+                ','
+            }
+        })
+        .collect()
+}
+
 /// Parse `text` with `language`; `None` (and a finding) when the parser
 /// gives nothing back or reads past its budget (see [`MAX_LEXED`], and for a
 /// grammar whose recoveries are counted, [`MAX_RECOVERIES`] and
@@ -6083,6 +6106,20 @@ pub(crate) fn parse(
     language: &tree_sitter::Language,
     recovery: Recovery,
 ) -> Option<tree_sitter::Tree> {
+    // A grammar's scanner reads a NUL as the end of its input, and stops
+    // there inside quotes: a line with one is unreadable already
+    // (`controlled`), and the grammar is handed another character in its
+    // place, so what follows it is still read. A shell fed the line drops a
+    // NUL, so one that starts or ends a word, or stands by a space, is a
+    // space; one inside a word is a `,`, which keeps the word whole. The walk
+    // reads the text as written.
+    let stood;
+    let text = if text.contains('\0') {
+        stood = without_nul(text);
+        stood.as_str()
+    } else {
+        text
+    };
     let bytes = text.as_bytes();
     // The budgets are the line's, shared by every script and piece of code
     // in it, so a line that starts many cannot spend them many times over.
