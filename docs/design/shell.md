@@ -4287,8 +4287,19 @@ path is `overwrite`, and a file in the workspace stays safe. A program the
 guard does not know is not judged as a writer; these are the ones it knows.
 
 - **`curl.exe` and `wget.exe` in PowerShell** are read as `curl` and `wget`
-  are in the other shells (`-o`, `-O`, `--output`, `-P`): a bare `curl` or
-  `wget` there is `Invoke-WebRequest`, judged by its `-OutFile`.
+  are in the other shells (`-o`, `-O`, `--output`, `-P`, and curl's
+  `--output-dir`, the folder its files land in): a bare `curl` or `wget`
+  there is `Invoke-WebRequest`, judged by its `-OutFile`.
+- **A copy from another machine** writes where it lands on this one, as
+  `cp` and `rsync` do: `scp` and `sftp` from `host:path`, `rclone` (`copy`,
+  `copyto`, `sync`, `move`, `moveto`, `copyurl`) from a remote's
+  `name:path`, `aws s3`, `gsutil` and `gcloud storage` (`cp`, `mv`,
+  `sync`, `rsync`) from a bucket: `scp host:x ~/.ssh/authorized_keys` and
+  `aws s3 cp s3://b/k ~/.bashrc` are `overwrite`. A destination on another
+  machine is a send, the send rule's.
+- **`aria2c`** writes its `-o` in its `-d` folder, **HTTPie** and **xh**
+  their `-o` (`--output`), **`bitsadmin /transfer`** the local name after
+  each URL, and **`Start-BitsTransfer`** its `-Destination`.
 - **`certutil`**: `-urlcache` downloads its URL to each operand after it, and
   with `-split` and no file to the URL's name in the folder the line is in
   (`cd /d C:\Windows & certutil -urlcache -split -f URL/a.dll`);

@@ -627,6 +627,13 @@ are more serious than 0.1.4's.
   release upload` and `release create` send their assets, and `gh`'s `-F`,
   `--notes-file`, `--body-file`, `api --input` and `api -F key=@FILE` the
   file they name.
+- `milo-guards-shell`: a copy from another machine writes where it lands
+  on this one: `scp` and `sftp` from `host:`, `rclone` from a remote, and
+  `aws s3`, `gsutil` and `gcloud storage` from a bucket are `overwrite`
+  for a destination such as `~/.ssh/authorized_keys` or `~/.bashrc`, as
+  `rsync` already was. So are curl's `--output-dir`, aria2c's `-d` and
+  `-o`, HTTPie's and xh's `-o`, `bitsadmin /transfer` and
+  `Start-BitsTransfer -Destination`.
 
 ## 0.1.4 (2026-11-22)
 

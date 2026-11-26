@@ -2884,6 +2884,7 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
     let mut files = Vec::new();
     let mut remote = key == "wget";
     let mut prefix: Option<String> = None;
+    let mut folder: Option<Arg> = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else { continue };
@@ -2895,6 +2896,10 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
             "--remote-name" | "--remote-name-all" => remote = true,
             "-P" | "--directory-prefix" => {
                 prefix = iter.next().and_then(Arg::known).map(str::to_string);
+            }
+            // curl saves every file it names in this folder (`-o x`, `-O`).
+            "--output-dir" if key == "curl" => {
+                folder = iter.next().cloned();
             }
             _ => {
                 if let Some(file) = text
@@ -2943,6 +2948,16 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
         }
     }
     files.retain(|file| file.known() != Some("-"));
+    if let Some(folder) = folder {
+        files = files
+            .into_iter()
+            .map(|file| match (folder.known(), file.known()) {
+                (_, Some(name)) if name.starts_with(['/', '~']) => file,
+                (Some(dir), Some(name)) => Arg::Known(format!("{dir}/{name}")),
+                _ => Arg::Unknown(format!("{}/{}", folder.text(), file.text())),
+            })
+            .collect();
+    }
     files
 }
 
