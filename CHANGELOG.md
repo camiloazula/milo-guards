@@ -6,6 +6,24 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+## 0.2.0 (2026-11-26)
+
+A minor release, with security fixes. What a caller compiles against grows:
+a new guard, `milo-guards-script`, for the Python and JavaScript an agent
+runs directly; the shell guard's `locate`, which says where in the line
+each finding is; the URL guard's `judge_address`; the code reader's
+`Budget`; and `Paths` that name secret files, drive mounts, a Windows home
+and resolved links. The crates declare Rust 1.90. The security fixes: the
+code reader holds every reading of Python and JavaScript to a bounded
+amount of work, reads no code through a syntax error, and reads code of at
+most 3 KiB, a deliberate limit of this release (longer code is not read:
+`unreadable` to the script guard, `unknown` to the shell guard); and the
+guards read more commands, paths and spellings for what they do (the
+answers that change, below), so some answers are more serious than 0.1.4's.
+Of the 2,934 everyday answers, 2,908 are safe: a false-alarm share of 0.9 %
+(0.3 % in a POSIX shell, none in PowerShell, 4.6 % in cmd). Their record
+is new in this release.
+
 The crates declare an older Rust (#312): `rust-version` is 1.90, where it
 was 1.99, the Rust this repository's own checks are pinned to. Nothing a
 caller compiles against or a guard answers changed.

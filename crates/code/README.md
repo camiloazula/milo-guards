@@ -38,14 +38,14 @@ what the shell guard reads inline code with:
 
 ```toml
 [dependencies]
-milo-guards = "0.1"
+milo-guards = "0.2"
 ```
 
 Or on its own:
 
 ```toml
 [dependencies]
-milo-guards-code = "0.1"
+milo-guards-code = "0.2"
 ```
 
 If your program also links tree-sitter, it has to be on the 0.26 runtime:

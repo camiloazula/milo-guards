@@ -32,14 +32,14 @@ Through the front door, where it is the `script` feature (on by default):
 
 ```toml
 [dependencies]
-milo-guards = "0.1"
+milo-guards = "0.2"
 ```
 
 Or on its own:
 
 ```toml
 [dependencies]
-milo-guards-script = "0.1"
+milo-guards-script = "0.2"
 ```
 
 ## Example

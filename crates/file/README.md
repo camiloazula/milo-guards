@@ -38,14 +38,14 @@ Through the front door, where it is the `file` feature (on by default):
 
 ```toml
 [dependencies]
-milo-guards = "0.1"
+milo-guards = "0.2"
 ```
 
 Or on its own:
 
 ```toml
 [dependencies]
-milo-guards-file = "0.1"
+milo-guards-file = "0.2"
 ```
 
 ## Example
