@@ -1,0 +1,24 @@
+# A path is read by the rules of the system the shell given is for, never by
+# those of the host the guard runs on: its last name and its extension, and
+# how `effect_paths` orders and keeps the paths a line reads (each case is
+# also held to a list ordered by its text, read so). These answers are the
+# same on Windows, macOS and Linux. The format is in CONTRIBUTING.md.
+
+# `C:.py` is a Python file the line wrote, in every shell, though Windows
+# reads its last name as `.py`.
+posix finds=unknown reason="runs a script the same line writes" | echo x > C:.py && uv run C:.py
+powershell finds=unknown reason="runs a script the same line writes" | echo x > C:.py; uv run C:.py
+cmd finds=unknown | echo x > C:.py && uv run C:.py
+posix finds=unknown reason="runs a script the same line writes" | echo x > s.PY && uv run s.PY
+powershell finds=unknown reason="runs a script the same line writes" | echo x > C:\\x\\s.py; uv run C:\\x\\s.py
+# A word `bun run` is given is a file: a folder, an extension, or on Windows
+# a drive.
+posix effect=changes | bun run C:.ts
+powershell effect=changes | bun run C:.ts
+cmd effect=changes | bun run C:.ts
+cmd effect=changes | bun run C:build
+# A backslash is a letter of a POSIX name, and a separator on Windows.
+posix effect=reads_workspace | cat 'a\\b' a/b
+posix effect=reads_workspace | cat a.b a/x a
+powershell effect=reads_workspace | Get-Content a\\b, a/b
+cmd effect=reads_workspace | type a\\b a/b

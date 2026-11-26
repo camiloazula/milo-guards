@@ -1763,6 +1763,39 @@ fn spelled_flavour(text: &str, flavour: Flavour) -> Flavour {
     }
 }
 
+/// The last name of `text`, a path as `shell`'s system spells it: after the
+/// last `/` (on Windows also `\`, and the drive of `C:name`), trailing
+/// separators left off; `None` for a path that ends in `..` or names no
+/// file (`/`, `C:`). The guard's own reading, the same on every host, where
+/// `std::path` reads a path by the rules of the host it runs on.
+pub(crate) fn last_name(text: &str, shell: Shell) -> Option<&str> {
+    let separators = flavour(shell).separators();
+    let mut text = text.trim_end_matches(separators);
+    if shell != Shell::Posix {
+        if let [letter, b':', ..] = text.as_bytes() {
+            if letter.is_ascii_alphabetic() {
+                text = &text[2..];
+            }
+        }
+    }
+    let name = text.rsplit(separators).next().unwrap_or(text);
+    (!name.is_empty() && name != "..").then_some(name)
+}
+
+/// The extension of the last name of `text` (see [`last_name`]), as
+/// `std::path::Path::extension` reads one: what follows its last dot, unless
+/// that dot is its first character (`.bashrc` has none) or the name is `.`.
+/// The same on every host for the shell given: `C:.py` is the name `.py` on
+/// Windows, with no extension, and the name `C:.py` in a POSIX shell, whose
+/// extension is `py`.
+pub(crate) fn extension(text: &str, shell: Shell) -> Option<&str> {
+    let name = last_name(text, shell)?;
+    match name.rsplit_once('.') {
+        Some(("", _)) | None => None,
+        Some((_, extension)) => Some(extension),
+    }
+}
+
 /// The folder a pattern starts in: what comes before its first wildcard,
 /// up to the last separator before it (`.` when nothing does), or the text
 /// itself when it holds none.
@@ -1774,5 +1807,49 @@ pub(crate) fn pattern_folder(text: &str) -> String {
         Some(0) => text[..1].to_string(),
         Some(at) => text[..at].to_string(),
         None => ".".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_last_name_is_read_by_the_rules_of_the_shell_given() {
+        for (text, posix, windows) in [
+            ("a/b.py", Some("b.py"), Some("b.py")),
+            (r"a\b.py", Some(r"a\b.py"), Some("b.py")),
+            ("C:.py", Some("C:.py"), Some(".py")),
+            ("C:x.py", Some("C:x.py"), Some("x.py")),
+            ("src/", Some("src"), Some("src")),
+            (r"src\", Some(r"src\"), Some("src")),
+            ("a/..", None, None),
+            ("/", None, None),
+            ("C:", Some("C:"), None),
+        ] {
+            assert_eq!(last_name(text, Shell::Posix), posix, "{text}");
+            assert_eq!(last_name(text, Shell::PowerShell), windows, "{text}");
+            assert_eq!(last_name(text, Shell::Cmd), windows, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_extension_is_read_as_std_reads_one_whatever_the_host() {
+        for (text, posix, windows) in [
+            ("build.ts", Some("ts"), Some("ts")),
+            ("a/b.tar.gz", Some("gz"), Some("gz")),
+            (".bashrc", None, None),
+            ("x/.bashrc", None, None),
+            (".x.rb", Some("rb"), Some("rb")),
+            ("foo.", Some(""), Some("")),
+            (".", None, None),
+            ("noext", None, None),
+            ("C:.py", Some("py"), None),
+            (r"a.d\b", Some(r"d\b"), None),
+            (r"C:\x\s.PY", Some("PY"), Some("PY")),
+        ] {
+            assert_eq!(extension(text, Shell::Posix), posix, "{text}");
+            assert_eq!(extension(text, Shell::PowerShell), windows, "{text}");
+        }
     }
 }

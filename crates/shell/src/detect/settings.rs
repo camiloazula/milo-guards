@@ -1531,7 +1531,7 @@ impl Checker<'_> {
         if !sourced && !SHELLS.contains(&key) {
             return;
         }
-        let Some(script) = script_operand(key, args) else {
+        let Some(script) = script_operand(key, args, unit.shell) else {
             return;
         };
         let Some(at) = args.iter().position(|arg| std::ptr::eq(arg, script)) else {

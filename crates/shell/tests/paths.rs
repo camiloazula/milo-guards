@@ -288,6 +288,32 @@ fn the_list_is_sorted_and_holds_each_path_once() {
 }
 
 #[test]
+fn paths_are_kept_and_ordered_by_their_spelling_on_any_host() {
+    let paths = posix();
+    // A backslash is a letter of a POSIX name, on every host: `a\b` and
+    // `a/b` are two places. On Windows they are one.
+    assert_eq!(
+        places("cat 'a\\b' a/b", Shell::Posix, &paths),
+        Some(vec![
+            PathBuf::from(format!("{ROOT}/a/b")),
+            PathBuf::from(format!("{ROOT}/a\\b")),
+        ])
+    );
+    assert_eq!(
+        places("Get-Content a\\b, a/b", Shell::PowerShell, &windows()).map(|list| list.len()),
+        Some(1)
+    );
+    // Part by part, as the system reads a path: `a/x` before `a.b`.
+    assert_eq!(
+        places("cat a.b a/x", Shell::Posix, &paths),
+        Some(vec![
+            PathBuf::from(format!("{ROOT}/a/x")),
+            PathBuf::from(format!("{ROOT}/a.b")),
+        ])
+    );
+}
+
+#[test]
 fn a_loop_lists_the_paths_of_each_word() {
     check(
         Shell::Posix,

@@ -551,6 +551,13 @@ are more serious than 0.1.4's.
   `ReadsOnly(Reach::Workspace)`, in a POSIX shell on Windows too.
 - `milo-guards-url`: `home.arpa` itself is `local_address`, as the names
   under it are (RFC 8375).
+- `milo-guards-shell`: no answer depends on the host the guard runs on.
+  `effect_paths` orders and keeps the paths it lists by their parts as the
+  system the line is for reads a path, then by how each is read, and
+  `ReadPath`'s `Eq`, `Ord` and `Hash` read them so; the order can differ
+  from 0.1.4's on every host (a path sorts by its parts as written, a `..`
+  among them). The file `uv run` hands to Python and the file `bun run`
+  runs are told by the guard's own reading of the word.
 
 ## 0.1.4 (2026-11-22)
 

@@ -1886,10 +1886,10 @@ impl Checker<'_> {
         }
         // `node -r ./s.js main.js`: a module loaded before the script runs as
         // the script does.
-        for module in preloaded(key, &unit.args) {
+        for module in preloaded(key, &unit.args, unit.shell) {
             self.runs_written(unit, &module, unit.dir.as_ref());
         }
-        let Some(script) = script_operand(key, &unit.args) else {
+        let Some(script) = script_operand(key, &unit.args, unit.shell) else {
             return;
         };
         self.runs_written(unit, script, unit.dir.as_ref());
@@ -3020,12 +3020,12 @@ fn separators(shell: Shell) -> &'static [char] {
 /// `--experimental-loader` before the script, php's `auto_prepend_file`, the
 /// libraries ruby's `-r` and perl's `-M` load, and bun's and deno's
 /// `--preload`, `-r`, `--require` and `--import` anywhere before a `--`.
-fn preloaded(key: &str, args: &[Arg]) -> Vec<Arg> {
+fn preloaded(key: &str, args: &[Arg], shell: Shell) -> Vec<Arg> {
     if is_node(key) || key == "php" {
         return options(key, args).preloads;
     }
     if key == "ruby" || key == "perl" {
-        return libraries(key, &options(key, args));
+        return libraries(key, &options(key, args), shell);
     }
     if key != "bun" && key != "deno" {
         return Vec::new();
@@ -3053,7 +3053,7 @@ fn preloaded(key: &str, args: &[Arg]) -> Vec<Arg> {
 /// each `-I` folder, with its extension (`-r s` is `s.rb`, `-MFoo::Bar=x` is
 /// `Foo/Bar.pm`), and for ruby a path (`-r ./s`, `-r/tmp/s.rb`) from where
 /// the line is.
-fn libraries(key: &str, read: &Options) -> Vec<Arg> {
+fn libraries(key: &str, read: &Options, shell: Shell) -> Vec<Arg> {
     let mut found = Vec::new();
     for library in &read.requires {
         let Some(text) = library.known() else {
@@ -3067,10 +3067,7 @@ fn libraries(key: &str, read: &Options) -> Vec<Arg> {
                 .next()
                 .unwrap_or_default();
             format!("{}.pm", name.replace("::", "/"))
-        } else if std::path::Path::new(text)
-            .extension()
-            .is_some_and(|extension| extension == "rb")
-        {
+        } else if path::extension(text, shell) == Some("rb") {
             text.to_string()
         } else {
             format!("{text}.rb")
@@ -3093,13 +3090,13 @@ fn libraries(key: &str, read: &Options) -> Vec<Arg> {
 
 /// The script a shell or interpreter runs from a file: its first operand
 /// after its options and their values; `None` for a module (`python -m`).
-fn script_operand<'a>(key: &str, args: &'a [Arg]) -> Option<&'a Arg> {
+fn script_operand<'a>(key: &str, args: &'a [Arg], shell: Shell) -> Option<&'a Arg> {
     if matches!(key, "source" | ".") {
         return args.first();
     }
     // `uv run file.py` runs Python on the file.
     if key == "uv" {
-        return uv_script(args);
+        return uv_script(args, shell);
     }
     // `bun run file` and `deno run file` run the file after the subcommand,
     // which may stand after options (`bun --hot run file`).

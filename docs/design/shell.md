@@ -7379,7 +7379,14 @@ the workspace, and `effect_paths` lists it like any other.
   pattern keeps them too: the folder a pattern expands in is a path the shell
   opens (`link/../*.rs` is the folder `link/..` and `*.rs`), and a `..` in the
   rest of the pattern is the pattern's own, as written.
-- **Sorted, each entry once**, so the answer is the same every time.
+- **Sorted, each entry once**, so the answer is the same every time and on
+  every host: a path is compared, ordered and kept by its parts as the system
+  it is spelled for splits it (a Windows path at `\` and `/`, any other at
+  `/` alone, where a `\` is a letter of a name: `cat 'a\b' a/b` lists both),
+  then by how it is read, never by the host's own `Path` rules. A last name
+  and an extension the guard reads from a word (a `.py` file `uv run` hands
+  to Python, a file `bun run` runs) are read the same way, by the rules of
+  the shell the line is for.
 - **No path, not listed.** A read that is not a place on a disk has no path:
   the null device and other devices, a registry hive or another PowerShell
   drive, and a path on another drive's own working directory (`D:x` from `C:`).
