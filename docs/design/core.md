@@ -595,12 +595,13 @@ itself.
   spelled as long paths too (a canonical path on Windows is): the prefix is
   read the same way.
 - An **administrative share of this machine** is its disk: `C$` on a name
-  every Windows machine gives itself (`localhost`, an address of the
-  loopback `127.x.x.x`, `::1` and its UNC spelling `0--1.ipv6-literal.net`),
-  directly or as a long path (`\\localhost\C$\Users\me`,
-  `\\?\UNC\127.0.0.1\C$\Users\me`), is `C:\Users\me`. It is a share as
-  spelled too, which is outside, and the more serious place wins, so a key
-  on it is the key and a path of the workspace through it is outside.
+  every Windows machine gives itself (`localhost`, and the loopback address
+  in every spelling an address takes, IPv4 or IPv6, written out or as a UNC
+  name), directly or as a long path (`\\localhost\C$\Users\me`,
+  `\\?\UNC\127.0.0.1\C$\Users\me`), is `C:\Users\me`, and `ADMIN$` is the
+  Windows folder. It is a share
+  as spelled too, which is outside, and the more serious place wins, so a
+  key on it is the key and a path of the workspace through it is outside.
   `spelling::network` still calls it a share. A name of this machine that
   is its own (`\\my-pc\C$`) is not one the spelling says, and another
   machine's share is only a share.

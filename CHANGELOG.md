@@ -39,6 +39,14 @@ security fixes: each line below was judged safer than what it does.
   is handed on unchanged and read as Windows reads it. A share stays a
   share, but an administrative one, also as a long path, is read as cmd
   reads it.
+- `milo-guards-core`: an administrative share of this machine is placed on
+  its disk when the server is the loopback address in every spelling an
+  address takes (IPv4 in one to four parts, in decimal, hex or octal, and
+  IPv6 in every spelling, mapped from IPv4 or as a UNC name,
+  with or without a trailing dot), where only a few spellings were. Its
+  `ADMIN$` is the Windows folder, so a file there is judged by where it is.
+  A share of another machine, and of an address that is not the loopback,
+  is only a share.
 
 ## 0.2.1 (2026-11-28)
 

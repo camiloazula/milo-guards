@@ -3957,7 +3957,11 @@ machine it is a relative name, as it was. Git Bash hands a word that is
 program whose switches the guard reads; a share (`//server/share`) stays a
 share. A word `//C:/x` is the drive's `C:/x`, and a device or long path
 (`//./C:/x`, `//?/C:/x`) is handed on unchanged and opened by Windows as the
-drive's, so each is read as `cmd` reads it.
+drive's, so each is read as `cmd` reads it; `//./C:/x` is the drive's `C:/x`
+in every rule. An administrative share (`//localhost/C$/x`,
+`\\localhost\ADMIN$\x`, and as a long path `\\?\UNC\localhost\C$\x`) is
+read as cmd reads it, as it is one on Windows; `\\.\C:\x` is the drive's
+`C:\x` too.
 What is left: with the directories spelled as Git Bash spells them (`/c/…`),
 a word `C:/…` is still read as a relative name, and `scp C:/x host:` reads
 `C:` as scp's host. The cases are in `tests/cases/drives.cases`.
