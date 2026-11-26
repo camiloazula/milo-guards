@@ -791,6 +791,14 @@ its path. A release is:
    the set and not to an answer, and `just
    everyday` gives the false-alarm share the release leaves, overall and for
    each shell.
+
+   Write the release notes in `docs/releases/X.Y.Z.md`, beside the
+   changelog: what a caller needs to upgrade, in a page, and not every
+   detail. They say what to change in a caller's requirement and Rust, the
+   answers that became more serious, the security fixes as what the guards
+   now do (never a line or code that a guard got wrong), the limits the
+   release keeps on purpose, what is new, and what is left for a later
+   release; and they link the changelog's section for the rest.
 3. `just verify` and `just oldest-rust`, then `just package`: every crate
    packaged and built from its package, as crates.io will build it, with
    the case files left out (`exclude` in each crate's manifest). The
@@ -805,7 +813,13 @@ its path. A release is:
    each missed mutant into a case line, a written reason or a private
    report ([The gates](#the-gates)).
 4. Merge, tag the merge commit `vX.Y.Z` and push the tag. Only the owner
-   can create a release tag.
+   can create a release tag. The tag is annotated, with the release's
+   name as its message, and it is the only tag pushed:
+   `git tag -a vX.Y.Z -m "milo-guards X.Y.Z" <merge commit>`, then
+   `git push origin vX.Y.Z`. Once the crates are on crates.io, publish the
+   notes as the tag's release on GitHub, with links to the release's
+   security advisories added below them once those are published:
+   `gh release create vX.Y.Z --verify-tag --title "milo-guards X.Y.Z" --notes-file docs/releases/X.Y.Z.md`.
 5. The tag starts `.github/workflows/release.yml`, which does the rest. It
    refuses a tag that is not `v` and the version in `Cargo.toml`, a commit
    that is not one `main` took from a pull request (a commit inside the
