@@ -549,6 +549,8 @@ are more serious than 0.1.4's.
   last name (`cat ~/work/*/.env`, `cat ../*/.git/config`, `Get-Content
   ~\dev\*\.env`); one that starts in a workspace folder is
   `ReadsOnly(Reach::Workspace)`, in a POSIX shell on Windows too.
+- `milo-guards-url`: `home.arpa` itself is `local_address`, as the names
+  under it are (RFC 8375).
 
 ## 0.1.4 (2026-11-22)
 

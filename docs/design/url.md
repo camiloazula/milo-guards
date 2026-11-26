@@ -124,8 +124,12 @@ turned it into ASCII.
   host has at least a name under a top-level one.
 - A name ending in `.local`, `.internal`, `.home.arpa`, `.lan`, `.localdomain`,
   `.intranet`, `.svc` (a Kubernetes service), `.corp`, `.home`, `.private`, `.test` or
-  `.example` is a name only a local network answers. (`.test` and `.example` are reserved for tests,
-  and local development servers answer for them.)
+  `.example` is a name only a local network answers, and so is each ending
+  itself where it is a name of its own: RFC 8375 makes `home.arpa.` a local
+  name (`http://home.arpa/`), as it makes the names under it. (`.test` and
+  `.example` are reserved for tests, and local development servers answer
+  for them.) A rebinding service's own name and `localhost` are read the
+  same way, the name and every name under it.
 - A name under a **rebinding service** answers with the address written in it,
   or with loopback, so the name says nothing about where the request goes:
   `nip.io`, `sslip.io`, `xip.io`, `traefik.me`, `localtest.me`, `lvh.me`,

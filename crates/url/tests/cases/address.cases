@@ -195,6 +195,7 @@ address rules=unreadable | example.com
 address rules=unreadable | metadata.google.internal
 address rules=unreadable | metadata
 address rules=unreadable | localhost:80
+address rules=unreadable | home.arpa
 address rules=unreadable | example.com:443
 address rules=unreadable | 127.0.0.1.nip.io
 address rules=unreadable | http://127.0.0.1/
