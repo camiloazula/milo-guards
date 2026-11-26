@@ -230,7 +230,7 @@ posix finds=delete | node -e "eval('#!x\\u2028require(\\"fs\\").rmSync(\\"/home/
 # comment.)
 posix finds=unknown | node -e "#!x require('fs').rmSync('/home/me',{recursive:true})"
 posix finds=unknown | node -e "#!x\nconsole.log(1)"
-posix finds=unknown | node -e "#!x\rconsole.log(1)"
+posix finds=unreadable | node -e "#!x\rconsole.log(1)"
 posix finds=unknown | node -e "#!x\r\nconsole.log(1)"
 posix finds=unknown | node -e "#!x\u{2028}console.log(1)"
 posix finds=unknown | node -e "#!x\u{2029}console.log(1)"
@@ -269,8 +269,8 @@ posix finds=delete | python3 <<'PY'\n# x\rimport shutil;shutil.rmtree("/home/me"
 posix finds=delete | python3 <<'PY'\n# x\r\nimport shutil;shutil.rmtree("/home/me")\nPY
 posix finds=delete | python3 -c 'exec("# x\\rimport shutil;shutil.rmtree(\\"/home/me\\")")'
 # Not read whole by the strict gate: unknown.
-posix finds=unknown | python3 -c 'print(1)\r\nprint(2)\r'
-posix finds=unknown | python3 -c '# a comment\rprint(1)'
+posix finds=unreadable | python3 -c 'print(1)\r\nprint(2)\r'
+posix finds=unreadable | python3 -c '# a comment\rprint(1)'
 posix finds=unknown | python3 <<'PY'\r\nprint(1)\r\nPY
 # Code in a `data:` URL is not read.
 posix finds=unknown | node -e "import 'data:text/javascript,import fs from \\"fs\\"; fs.rmSync(\\"/home/me\\",{recursive:true})'"

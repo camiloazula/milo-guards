@@ -5838,6 +5838,35 @@ pub(crate) fn within_limits(split: &mut Split, text: &str, depth: usize) -> bool
     depth == 0 || read_again(split, text, "starts too many scripts to read")
 }
 
+/// Why the caller's line, run by `shell`, reads another way than its text:
+/// a NUL, which no program can be handed in an argument and a shell fed by
+/// its input drops, in any shell; or, in a POSIX shell, a control
+/// character a terminal acts on before the shell sees the line when the
+/// line is typed into one, wherever it stands (a terminal does not know
+/// quotes): every C0 control character but a tab and a line break (a
+/// carriage return only before a line feed, where it ends the line), and
+/// DEL. `\x15` makes the terminal drop what came before it on the line,
+/// `\x08` and DEL erase, `\x17` erases a
+/// word, `\x03` and `\x1a` stop the command, `\x04` ends the input, `\x16`
+/// quotes the next character, a lone `\r` is a line break, and `\x1b`
+/// starts the sequences an editing shell reads as keys. `None` for a line
+/// with none of them.
+fn controlled(text: &str, shell: Shell) -> Option<&'static str> {
+    if text.contains('\0') {
+        return Some("holds a NUL character");
+    }
+    if shell != Shell::Posix {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let control = bytes.iter().enumerate().any(|(at, &b)| match b {
+        b'\t' | b'\n' => false,
+        b'\r' => bytes.get(at + 1) != Some(&b'\n'),
+        b => b < 0x20 || b == 0x7f,
+    });
+    control.then_some("holds a control character a terminal acts on")
+}
+
 /// Whether `text`, a part of the line read again as a script of its own
 /// (cmd's `ver && if …`, see [`crate::cmd`]), may be read: it is counted
 /// against the budget of nested text, so a part that holds another such
@@ -5891,6 +5920,11 @@ pub(crate) fn script(split: &mut Split, text: &str, shell: Shell, depth: usize) 
 pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usize, here: bool) {
     if !within_limits(split, text, depth) {
         return;
+    }
+    if depth == 0 {
+        if let Some(why) = controlled(text, shell) {
+            split.problem(Rule::Unreadable, why, None);
+        }
     }
     if let Some(why) = crate::tangled::too_tangled(text, shell) {
         split.problem(Rule::Unreadable, why, None);

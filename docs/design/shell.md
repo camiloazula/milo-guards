@@ -5322,6 +5322,22 @@ caller already has from `classify`. A caller that runs a line unasked only when
 
 A line is never safe because the guard gave up on it. These come back risky:
 
+- A line that holds a NUL (U+0000), in every shell, `unreadable`, "holds a
+  NUL character": no program can be handed one in an argument, and a shell
+  fed the line by its input drops it, so the line runs as no reading of it
+  says: a NUL inside a word joins what is on either side of it.
+- A POSIX line that holds a control character a terminal acts on,
+  `unreadable`, "holds a control character a terminal acts on": every C0
+  control character (U+0001 to U+001F) but a tab and a line feed, a carriage
+  return unless a line feed follows it, and DEL (U+007F), anywhere in the
+  line, quoted or not, since a terminal reads the line before the shell
+  does. Typed into a terminal, `\x15` drops what came before it on the
+  line, `\x08` and DEL erase, `\x17` erases a
+  word, `\x03` and `\x1a` stop the command, `\x04` ends the input, `\x16`
+  quotes the next character, a lone `\r` ends the line, and `\x1b` starts
+  the keys an editing shell reads. Only the caller's line is read so; a
+  script it hands a shell is not typed. PowerShell and cmd lines are read
+  as they are (a lone `\r` there is already unreadable).
 - A program or script known only when it runs: `$CMD`, `eval "$x"`, `trap "$x" EXIT`, `iex $s`,
   `-EncodedCommand`.
 - Code handed to an interpreter that is not read: Ruby, Perl (beyond

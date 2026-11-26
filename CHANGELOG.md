@@ -634,6 +634,11 @@ are more serious than 0.1.4's.
   `rsync` already was. So are curl's `--output-dir`, aria2c's `-d` and
   `-o`, HTTPie's and xh's `-o`, `bitsadmin /transfer` and
   `Start-BitsTransfer -Destination`.
+- `milo-guards-shell`: a line that holds a NUL is `unreadable`, "holds
+  a NUL character", in every shell. A POSIX line that holds a C0 control
+  character other than a tab and a line break (a carriage return only
+  before a line feed), or DEL, is `unreadable`, "holds a control character
+  a terminal acts on", wherever it stands in the line.
 
 ## 0.1.4 (2026-11-22)
 
