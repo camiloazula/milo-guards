@@ -103,6 +103,18 @@ security fixes: each line below was judged safer than what it does.
   each piece is judged as a line for each name the pieces can have, so a
   sender there sends the file (`send_secret`), and one only known when it
   runs is `unknown`.
+- `milo-guards-shell`: the commands wget runs from its options that send a
+  file are a send (`send_secret`), those that only change how it fetches
+  (proxies, retries, timeouts) are read as such, and any other, or one only
+  known when it runs, is `unknown`. A variable the line sets for `curl` or
+  `wget` that names a file of options, or the folder it looks for one in,
+  is `unknown`, as the option that names such a file is, unless it sets the
+  home directory to itself, written as the line's own `~` or `$HOME` (in
+  PowerShell and cmd, `$HOME` too, in any case, and a literal `~` or cmd's
+  `%HOME%` is a folder of that name); the
+  variables of Windows count for a line for Windows. curl's variable read from a file reads the file, and sends it
+  where the expansion puts it, from the input too; a value with an `@` in
+  its text is no file.
 
 ## 0.2.1 (2026-11-28)
 

@@ -3021,6 +3021,25 @@ fn named(text: &str, word: bool) -> Upload {
 /// `--data-ascii`, `--json`), `--data-urlencode name@f`, `-F name=@f` or
 /// `name=<f`, `-T f` and `-H @f`.
 fn curl_files(args: &[Arg]) -> Vec<Upload> {
+    let mut files = curl_options(args);
+    // A variable read from a file (`--variable k@f`) is sent where an
+    // `--expand-…` option puts it, which the guard does not follow.
+    let expands = args
+        .iter()
+        .filter_map(Arg::known)
+        .any(|text| text.starts_with("--expand-"));
+    if expands {
+        files.extend(
+            super::secrets::curl_variable_files(args)
+                .into_iter()
+                .map(|arg| Upload { arg, word: true }),
+        );
+    }
+    files
+}
+
+/// The files curl's own options send: data, forms, uploads and headers.
+fn curl_options(args: &[Arg]) -> Vec<Upload> {
     // curl expands `{a,b}` in an upload's name itself, unless told not to.
     let globs = !args
         .iter()
@@ -3144,7 +3163,11 @@ fn curl_glob(value: &str) -> Vec<String> {
 
 /// What `wget` posts from a file: `--post-file f`, `--body-file f`.
 fn wget_files(args: &[Arg]) -> Vec<Upload> {
-    let mut files = Vec::new();
+    let mut files: Vec<Upload> = wget_commands(args)
+        .into_iter()
+        .filter(|(name, _)| matches!(name.as_str(), "postfile" | "bodyfile"))
+        .map(|(_, file)| named(&file, true))
+        .collect();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.known() else { continue };
@@ -3164,6 +3187,26 @@ fn wget_files(args: &[Arg]) -> Vec<Upload> {
         files.extend(value.map(|file| named(file, attached.is_none())));
     }
     files
+}
+
+/// The wgetrc commands `wget -e` (`--execute`) runs, as wget reads them: a
+/// name, whose case, `_` and `-` do not count (`post_file`, `postFile`,
+/// `post-file` are `postfile`), and its value after `=`, white space around
+/// either taken off.
+pub(super) fn wget_commands(args: &[Arg]) -> Vec<(String, String)> {
+    option_values(args, "e", &["execute"], WGET_VALUES)
+        .iter()
+        .filter_map(Arg::known)
+        .map(|command| {
+            let (name, value) = command.split_once('=').unwrap_or((command, ""));
+            let name: String = name
+                .chars()
+                .filter(|c| !matches!(c, '_' | '-') && !c.is_whitespace())
+                .flat_map(char::to_lowercase)
+                .collect();
+            (name, value.trim().to_string())
+        })
+        .collect()
 }
 
 /// The file a request item names for `http` and `xh`: `field@f` uploads it,

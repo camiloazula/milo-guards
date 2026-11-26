@@ -1054,12 +1054,28 @@ impl Noted {
 /// values of these are noted where it sets them (see
 /// [`Split::argument_variables`]).
 pub(crate) fn read_as_arguments(name: &str) -> bool {
-    tf_cli_args(name)
+    SETTINGS_VARIABLES.contains(&name)
+        || tf_cli_args(name)
         || npm_call(name)
         || PSQL_PROGRAMS.contains(&name)
         || git_config_variable(name)
         || crate::launch::is_command_variable(name)
 }
+
+/// The variables that name a file of options a download tool reads, or the
+/// folder it looks for one in: wget's `WGETRC` and `SYSTEM_WGETRC`, the
+/// folders of curl's `.curlrc` and `curlrc` (`CURL_HOME`, `XDG_CONFIG_HOME`,
+/// and on Windows `USERPROFILE` and `APPDATA`), and the home directory both
+/// look in (`HOME`).
+pub(crate) const SETTINGS_VARIABLES: [&str; 7] = [
+    "WGETRC",
+    "SYSTEM_WGETRC",
+    "CURL_HOME",
+    "XDG_CONFIG_HOME",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+];
 
 /// The name a program reads, when `name` is one of [`read_as_arguments`]'s
 /// written in any case, as Windows reads the names of variables
@@ -1079,7 +1095,10 @@ pub(crate) fn argument_variable(name: &str) -> Option<String> {
         return Some(program.to_string());
     }
     let upper = name.to_ascii_uppercase();
-    if upper == "TF_CLI_ARGS" || git_config_variable(&upper) {
+    if upper == "TF_CLI_ARGS"
+        || git_config_variable(&upper)
+        || SETTINGS_VARIABLES.contains(&upper.as_str())
+    {
         return Some(upper);
     }
     let command = upper.strip_prefix("TF_CLI_ARGS_")?;

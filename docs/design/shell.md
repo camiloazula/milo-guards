@@ -5278,7 +5278,25 @@ a file is `unknown` too, "takes options from a file the guard does not
 read" (`-K -` reads the input). git shows a file of the repository's history
 by its path: `git show REV:path`, `git show :path` (the index), `git
 cat-file -p REV:path` and `git blame path` read that file, so a secret there
-is read as it is in the work tree. `split` and `csplit`
+is read as it is in the work tree. wget's `-e` (`--execute`) runs a
+wgetrc command: `post_file` and `body_file` (in any case, with `_` or `-`
+or neither, white space around `=`) send their file, a handful that only
+change how it fetches (`robots`, retries, waits, timeouts, the user agent,
+certificate checks, recursion, the proxies it goes through) are read as
+such, and any other is `unknown`, "runs a wgetrc command the guard does not
+read", as is one only known when it runs. A variable in front of the program that names a file of
+options, or the folder it looks for one in (`WGETRC`, `SYSTEM_WGETRC`,
+`CURL_HOME`, `XDG_CONFIG_HOME`, `HOME`, and on a Windows machine
+`USERPROFILE`, and curl's `APPDATA`), makes it `unknown` as `-K` is, unless
+it sets the home directory to itself, which is `~` or `$HOME` as the line
+writes them, bare or in double quotes, and no quoted or single-quoted one
+(in PowerShell and cmd, `$HOME` or the `$env:` of the home folder, in any
+case; a literal `~` there names a folder of that name, and so does cmd's
+`%HOME%`, which stays as written where the machine has no such variable).
+curl's `--variable name@file` reads the file (`-` is the input), and sends it when an `--expand-…`
+option is given, which the guard does not follow into the text; a value
+(`name=text`) is no file. Each short option is read in a cluster of
+flags too (`curl -sK f`, `wget -qi f`, `xargs -0a f`). `split` and `csplit`
 read the file they cut into pieces, with their options read in clusters
 (`split -db 100 f`, `csplit -sf p f`) and a long option by any prefix of its
 name that no other starts with (`--fi`), and write the pieces: the prefix

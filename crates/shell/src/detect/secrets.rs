@@ -531,12 +531,15 @@ fn posix<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
 }
 
 /// The files `curl` and `wget` take their options or addresses from:
-/// curl's `-K` (`--config`), wget's `--config` and `-i` (`--input-file`), as a word of their own,
+/// curl's `-K` (`--config`) and the files of its `--variable name@file`,
+/// wget's `--config` and `-i` (`--input-file`), as a word of their own,
 /// after `=`, attached or at the end of a cluster of flags (`-sK f`,
 /// `-qi f`); `-` is the input.
 pub(super) fn config_files(key: &str, args: &[Arg]) -> Vec<Arg> {
     let mut files = option_files(key, args);
-    if key != "curl" {
+    if key == "curl" {
+        files.extend(curl_variable_files(args));
+    } else {
         files.extend(option_values(
             args,
             "i",
@@ -558,6 +561,21 @@ pub(super) fn option_files(key: &str, args: &[Arg]) -> Vec<Arg> {
     };
     files.retain(|file| file.known() != Some("-"));
     files
+}
+
+/// The files curl's `--variable name@file` reads into a variable, `-` the
+/// input. A value (`name=text`) with an `@` in its text is no file.
+pub(super) fn curl_variable_files(args: &[Arg]) -> Vec<Arg> {
+    option_values(args, "", &["variable"], super::send::CURL_VALUES)
+        .into_iter()
+        .filter_map(|value| {
+            let text = value.known()?;
+            let (name, file) = text.split_once('@')?;
+            // A name of its own before the `@`: `%NAME` imports one, and
+            // `name=text` sets one.
+            (!name.contains('=') && !file.is_empty()).then(|| Arg::Known(file.to_string()))
+        })
+        .collect()
 }
 
 /// The files of the repository's history git shows by their path: `show`,

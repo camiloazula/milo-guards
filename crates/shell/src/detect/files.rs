@@ -693,12 +693,76 @@ impl Checker<'_> {
                     self.write(shell, unit.scope(), &file, "writes to");
                 }
                 // curl's `-K` and wget's `--config` hold options the line
-                // does not show: a file to upload, one to write, a URL.
-                if let Some(file) = super::secrets::option_files(key, args).into_iter().next() {
+                // does not show: a file to upload, one to write, a URL. So
+                // does a file a variable names in front of it (`WGETRC`,
+                // `CURL_HOME`'s `.curlrc`), and a wgetrc command `-e` runs
+                // that the guard does not read.
+                let options = super::secrets::option_files(key, args)
+                    .into_iter()
+                    .next()
+                    .or_else(|| {
+                        let windows = shell != Shell::Posix || self.split.on_windows();
+                        // The home directory itself, written out, or as the
+                        // line's own `~` or `$HOME`, bare or in double quotes
+                        // (a value only known when it runs is read as it was
+                        // written). A quoted `~` or a single-quoted `$HOME`
+                        // is a folder of that name, which is no home.
+                        // (In PowerShell and cmd the home is `$HOME`,
+                        // `$env:USERPROFILE` or `%USERPROFILE%`, in any
+                        // case, and a value only known when it runs is the
+                        // statement that sets it: what follows its last
+                        // `=`. A literal `~` there names a folder of that
+                        // name, and so does `%HOME%`, which cmd leaves as it
+                        // is written where the machine has no variable of
+                        // that name.)
+                        let at_home = |value: &Arg| match value {
+                            Arg::Known(text) => {
+                                !text.starts_with('~')
+                                    && matches!(
+                                        self.resolver.place_name(
+                                            unit.dir.as_ref(),
+                                            value,
+                                            shell,
+                                            unit.hidden,
+                                            Access::Item
+                                        ),
+                                        Place::Home { exact: true }
+                                    )
+                            }
+                            other if shell == Shell::Posix => matches!(
+                                other.text().trim_end_matches('/'),
+                                "~" | "$HOME" | "${HOME}" | "\"$HOME\"" | "\"${HOME}\""
+                            ),
+                            other => {
+                                let text = other.text();
+                                let text = text.rsplit('=').next().unwrap_or(text).trim();
+                                matches!(
+                                    text.trim_matches('"').to_ascii_lowercase().as_str(),
+                                    "$home"
+                                        | "${home}"
+                                        | "$env:home"
+                                        | "${env:home}"
+                                        | "$env:userprofile"
+                                        | "${env:userprofile}"
+                                        | "%userprofile%"
+                                )
+                            }
+                        };
+                        settings_variable(key, unit, windows, &at_home)
+                    });
+                if let Some(file) = options {
                     self.add(
                         Rule::Unknown,
                         "takes options from a file the guard does not read",
                         Some(&file),
+                    );
+                }
+                if let Some(command) = (key == "wget").then(|| unread_wget_command(args)).flatten()
+                {
+                    self.add(
+                        Rule::Unknown,
+                        "runs a wgetrc command the guard does not read",
+                        Some(&command),
                     );
                 }
             }
@@ -1788,6 +1852,91 @@ fn saved_to(key: &str, args: &[Arg]) -> Vec<Arg> {
         }
         _ => Vec::new(),
     }
+}
+
+/// The value of a variable that names the options file `key` reads, or the
+/// folder it looks for one in, when the line sets it for the program:
+/// wget's `WGETRC` and `SYSTEM_WGETRC`, curl's `CURL_HOME` and
+/// `XDG_CONFIG_HOME`, and the `HOME` both look in. On a Windows machine
+/// (`windows`) `USERPROFILE` too, and for curl `APPDATA`. A home or profile
+/// folder set to the home directory itself (`at_home`) moves nothing.
+fn settings_variable(
+    key: &str,
+    unit: &Unit,
+    windows: bool,
+    at_home: &dyn Fn(&Arg) -> bool,
+) -> Option<Arg> {
+    let wanted: &[&str] = if key == "curl" {
+        &[
+            "CURL_HOME",
+            "XDG_CONFIG_HOME",
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+        ]
+    } else {
+        &["WGETRC", "SYSTEM_WGETRC", "HOME", "USERPROFILE"]
+    };
+    unit.argument_variables
+        .iter()
+        .find(|(name, value)| {
+            let name = name.as_str();
+            wanted.contains(&name)
+                && !matches!(value, Arg::Null)
+                && (windows || !matches!(name, "USERPROFILE" | "APPDATA"))
+                && (!matches!(name, "HOME" | "USERPROFILE") || !at_home(value))
+        })
+        .map(|(_, value)| value.clone())
+}
+
+/// A wgetrc command `wget -e` runs that the guard does not read: one but a
+/// send of a file it reads (`post_file`, `body_file`) and the few that only
+/// change how wget fetches (`robots = off`, retries, waits, timeouts, the
+/// user agent, certificate checks, recursion and its depth).
+fn unread_wget_command(args: &[Arg]) -> Option<Arg> {
+    const READ: [&str; 29] = [
+        "postfile",
+        "bodyfile",
+        "robots",
+        "tries",
+        "timeout",
+        "wait",
+        "waitretry",
+        "randomwait",
+        "useragent",
+        "checkcertificate",
+        "recursive",
+        "reclevel",
+        "noparent",
+        "retryconnrefused",
+        "verbose",
+        // Where wget connects through, and how it reports and paces.
+        "useproxy",
+        "httpproxy",
+        "httpsproxy",
+        "ftpproxy",
+        "noproxy",
+        "quiet",
+        "limitrate",
+        "dnstimeout",
+        "connecttimeout",
+        "readtimeout",
+        "inet4only",
+        "inet6only",
+        "continue",
+        "timestamping",
+    ];
+    // A command only known when it runs is one the guard does not read.
+    if let Some(unknown) = option_values(args, "e", &["execute"], super::send::WGET_VALUES)
+        .into_iter()
+        .find(|command| command.known().is_none())
+    {
+        return Some(unknown);
+    }
+    super::send::wget_commands(args)
+        .into_iter()
+        .find(|(name, _)| !READ.contains(&name.as_str()))
+        .map(|(name, value)| Arg::Known(format!("{name}={value}")))
 }
 
 pub(super) fn remote(arg: &Arg) -> bool {
