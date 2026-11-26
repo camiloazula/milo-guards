@@ -6118,7 +6118,8 @@ dist .` packs `dist`.
   `release create` (the assets after the tag, a `#label` off each), the
   file of `gh`'s `-F`, `--notes-file` and `--body-file` (a release, an
   issue, a pull request, a comment or a review), `gh api --input FILE` and
-  `-F key=@FILE`, `az storage blob upload -f`,
+  `-F key=@FILE` (also a workflow's inputs), the `-f` file of `gh secret set`
+  and `gh variable set`, `az storage blob upload -f`,
   and an `sftp` batch: the files its `put`, `reput` and `mput` lines name,
   split into words with sftp's quotes and backslashes (`put ".env"`), read
   from its input (a here-string, an ANSI-C one included, a here-document,

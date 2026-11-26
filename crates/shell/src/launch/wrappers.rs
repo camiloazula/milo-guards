@@ -521,6 +521,10 @@ pub(super) fn xargs(args: &[Arg]) -> Launch {
                 replace = Some(text[2..].to_string());
                 at += 1;
             }
+            "--replace" => {
+                replace = Some("{}".to_string());
+                at += 1;
+            }
             text if text.starts_with("--replace=") => {
                 replace = Some(text["--replace=".len()..].to_string());
                 at += 1;
@@ -532,6 +536,49 @@ pub(super) fn xargs(args: &[Arg]) -> Launch {
                     "{}".to_string()
                 });
                 at += 1;
+            }
+            // A cluster of flags that ends in one that takes a value
+            // (`-0a FILE`, `-tn 1`) takes the next word as that value, and
+            // one with it attached (`-0aFILE`) takes none. `-e`, `-i` and
+            // `-l` take only the rest of their word, so the cluster ends at
+            // the first of them.
+            text if text.starts_with('-') && !text.starts_with("--") && text.len() > 1 => {
+                let bundle = &text[1..];
+                let valued = bundle
+                    .char_indices()
+                    .find(|(_, letter)| "adEILnPsRSJeil".contains(*letter));
+                at += match valued {
+                    Some((place, letter @ ('I' | 'J'))) => {
+                        // The string `-I` and `-J` put each word in place of:
+                        // the rest of the word, or the next one.
+                        let rest = &bundle[place + letter.len_utf8()..];
+                        if rest.is_empty() {
+                            replace = args.get(at + 1).and_then(Arg::known).map(str::to_string);
+                            2
+                        } else {
+                            replace = Some(rest.to_string());
+                            1
+                        }
+                    }
+                    // `-i` takes only the rest of its word as its string, and
+                    // `{}` without one.
+                    Some((place, 'i')) => {
+                        let rest = &bundle[place + 1..];
+                        replace = Some(if rest.is_empty() {
+                            "{}".to_string()
+                        } else {
+                            rest.to_string()
+                        });
+                        1
+                    }
+                    Some((place, letter))
+                        if place + letter.len_utf8() == bundle.len()
+                            && !matches!(letter, 'e' | 'i' | 'l') =>
+                    {
+                        2
+                    }
+                    _ => 1,
+                };
             }
             text if text.starts_with('-') && text.len() > 1 => at += 1,
             _ => break,
@@ -547,20 +594,9 @@ pub(super) fn xargs(args: &[Arg]) -> Launch {
 /// The file `xargs -a FILE` (`--arg-file`) reads the arguments from,
 /// instead of its input.
 pub(super) fn arg_file(args: &[Arg]) -> Option<Arg> {
-    let mut iter = args.iter();
-    let mut file = None;
-    while let Some(arg) = iter.next() {
-        let Some(text) = arg.known() else { continue };
-        if matches!(text, "-a" | "--arg-file") {
-            file = iter.next().cloned();
-        } else if let Some(value) = text
-            .strip_prefix("--arg-file=")
-            .or_else(|| text.strip_prefix("-a").filter(|value| !value.is_empty()))
-        {
-            file = Some(Arg::Known(value.to_string()));
-        }
-    }
-    file
+    // The short options that take a value, attached or as the next word;
+    // `-e`, `-i` and `-l` take one only attached.
+    unit::option_values(args, "a", &["arg-file"], "adEILnPs").pop()
 }
 
 /// `tmux` runs a command through the user's shell in its sessions and

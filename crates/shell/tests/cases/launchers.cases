@@ -230,3 +230,22 @@ posix safe | history -c
 # PowerShell hands `user32.dll,LockWorkStation` to rundll32 as two words.
 powershell safe | rundll32 user32.dll,LockWorkStation
 powershell finds=unknown reason="runs code from a library" | rundll32 evil.dll,Entry
+
+# `-e`, `-i` and `-l` of GNU xargs take only the rest of their word, so the
+# word after the cluster is the program.
+posix finds=delete | xargs -ea rm -rf ~
+posix finds=delete | xargs -ed rm -rf ~
+posix finds=delete | xargs -0ia rm -rf ~
+
+# `-I` and `-J` in a cluster put each word in place of their string.
+posix finds=unknown | ls | xargs -tI % sh -c 'rm -rf %'
+posix finds=unknown | ls | xargs -tJ % sh -c 'rm -rf %'
+posix finds=unknown | ls | xargs -0I{} sh -c 'rm -rf {}'
+posix finds=unknown | ls | xargs -I % sh -c 'rm -rf %'
+
+# `-i` of a cluster, and a bare `--replace`, put each word in place of `{}`
+# or the rest of the word.
+posix finds=unknown | echo ~ | xargs -ti sh -c 'rm -rf {}'
+posix finds=unknown | echo ~ | xargs -0ti sh -c 'rm -rf {}'
+posix finds=unknown | echo ~ | xargs --replace sh -c 'rm -rf {}'
+posix finds=unknown | echo ~ | xargs -tiX sh -c 'rm -rf X'

@@ -16,7 +16,7 @@ use super::{listed, sources_and_destination, Checker, COPY_VALUED};
 use crate::brace::{braces, spelled_out};
 use crate::effect::{operands as table, received};
 use crate::powershell::Params;
-use crate::unit::{has_flag, plain, Arg, Split, Unit};
+use crate::unit::{has_flag, option_values, plain, Arg, Split, Unit};
 use crate::{Rule, Shell};
 
 impl Checker<'_> {
@@ -511,43 +511,46 @@ fn posix<'u>(unit: &'u Unit, key: &str, args: &'u [Arg]) -> Vec<Cow<'u, Arg>> {
             .iter()
             .filter_map(|arg| file_url(arg.known()?))
             .map(|path| Cow::Owned(Arg::Known(path)))
-            .chain(config_files(key, args))
+            .chain(config_files(key, args).into_iter().map(Cow::Owned))
             .collect(),
         // wget reads its options from `--config`, and the addresses it
         // fetches from `-i` (`--input-file`).
-        "wget" => config_files(key, args).collect(),
+        "wget" => config_files(key, args)
+            .into_iter()
+            .map(Cow::Owned)
+            .collect(),
         _ => table::extra_paths(unit, key).unwrap_or_default(),
     }
 }
 
 /// The files `curl` and `wget` take their options or addresses from:
-/// curl's `-K` (`--config`), wget's `--config` and `-i` (`--input-file`),
-/// as a word of their own or after `=`; `-` is the input.
-pub(super) fn config_files<'u>(key: &str, args: &'u [Arg]) -> impl Iterator<Item = Cow<'u, Arg>> {
-    let (short, long): (&[&str], &[&str]) = match key {
-        "curl" => (&["-K"], &["--config"]),
-        _ => (&["-i"], &["--config", "--input-file"]),
-    };
-    let mut files = Vec::new();
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        let Some(text) = arg.known() else { continue };
-        if short.contains(&text) || long.contains(&text) {
-            files.extend(iter.next().map(Cow::Borrowed));
-        } else if let Some(value) = long.iter().find_map(|name| {
-            text.strip_prefix(*name)
-                .and_then(|rest| rest.strip_prefix('='))
-        }) {
-            files.push(Cow::Owned(Arg::Known(value.to_string())));
-        } else if let Some(value) = short
-            .iter()
-            .find_map(|name| text.strip_prefix(*name))
-            .filter(|value| !value.is_empty() && text.len() > 2 && !text.starts_with("--"))
-        {
-            files.push(Cow::Owned(Arg::Known(value.to_string())));
-        }
+/// curl's `-K` (`--config`), wget's `--config` and `-i` (`--input-file`), as a word of their own,
+/// after `=`, attached or at the end of a cluster of flags (`-sK f`,
+/// `-qi f`); `-` is the input.
+pub(super) fn config_files(key: &str, args: &[Arg]) -> Vec<Arg> {
+    let mut files = option_files(key, args);
+    if key != "curl" {
+        files.extend(option_values(
+            args,
+            "i",
+            &["input-file"],
+            super::send::WGET_VALUES,
+        ));
     }
-    files.into_iter().filter(|file| file.known() != Some("-"))
+    files.retain(|file| file.known() != Some("-"));
+    files
+}
+
+/// The files `curl` and `wget` take options from that the line does not
+/// show: curl's `-K` (`--config`), wget's `--config`.
+pub(super) fn option_files(key: &str, args: &[Arg]) -> Vec<Arg> {
+    let mut files = if key == "curl" {
+        option_values(args, "K", &["config"], super::send::CURL_VALUES)
+    } else {
+        option_values(args, "", &["config"], super::send::WGET_VALUES)
+    };
+    files.retain(|file| file.known() != Some("-"));
+    files
 }
 
 /// The files of the repository's history git shows by their path: `show`,

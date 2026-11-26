@@ -21,7 +21,7 @@ use super::Checker;
 use crate::launch::{code_options, is_interpreter, valued_options};
 use crate::located::Owned;
 use crate::path::{Access, Place};
-use crate::unit::{has_flag, operands, referenced, Arg, Nested, Stage, Unit};
+use crate::unit::{has_flag, operands, option_values, referenced, Arg, Nested, Stage, Unit};
 use crate::{Rule, Shell};
 
 const ENVIRONMENT: &str = "your environment variables";
@@ -201,7 +201,10 @@ const LOGIN_OPTIONS: &[&str] = &[
 ];
 
 /// `curl`'s short options that take a value and send none of it from a file.
-const CURL_VALUES: &str = "AbcCDeEKmoPQrtuUwxXyYz";
+pub(super) const CURL_VALUES: &str = "AbcCDeEKmoPQrtuUwxXyYz";
+
+/// wget's short options that take a value.
+pub(super) const WGET_VALUES: &str = "oOaAiBTtwQPUDIlReX";
 
 /// The options that take a value, for each program that copies to another
 /// machine, so a value is not read as a file to send.
@@ -2796,44 +2799,48 @@ fn gh_files(args: &[Arg]) -> Option<Vec<Upload>> {
         arg: arg.clone(),
         word: true,
     };
-    let mut files = Vec::new();
-    // A file named after an option, or after `=` in it.
-    let mut at = 0;
-    while let Some(arg) = args.get(at) {
-        at += 1;
-        let Some(text) = arg.known() else { continue };
-        let (option, value) = match text.split_once('=') {
-            Some((option, value)) if option.starts_with("--") => (option, Some(value)),
-            _ => (text, None),
-        };
-        let given = || {
-            value.map_or_else(
-                || args.get(at).cloned(),
-                |value| Some(Arg::Known(value.to_string())),
-            )
-        };
-        match option {
-            "-F" | "--notes-file" | "--body-file" | "--field" | "--input"
-                if !matches!(word(0), Some("api")) || option != "-F" && option != "--field" =>
-            {
-                if let Some(arg) = given() {
-                    files.push(file(&arg));
-                }
+    // A file named after an option, after `=` in it, attached to it (`-F/path`,
+    // `-F=/path`) or at the end of a cluster of flags (`-Ff=@file`). The
+    // letters are those that take a value in every command of `gh` that has
+    // them: `-a`, `-f` and `-m` are flags in `pr review`, `pr create` and
+    // `pr merge`, so they take no word, and a word that starts with `-`
+    // is never one's value.
+    const SHORT_VALUED: &str = "FRtnbBHlX";
+    // `gh` reads `-F=value` as the value, as its flag parser does.
+    let values = |short: &str, long: &[&str]| -> Vec<Arg> {
+        let mut found = Vec::new();
+        for value in option_values(args, short, long, SHORT_VALUED) {
+            if let Some(rest) = value.known().and_then(|text| text.strip_prefix('=')) {
+                found.push(Arg::Known(rest.to_string()));
             }
-            "-F" | "--field" => {
-                let named = given().and_then(|arg| {
-                    let text = arg
-                        .known()?
-                        .split_once('=')?
-                        .1
-                        .strip_prefix('@')?
-                        .to_string();
-                    Some(Arg::Known(text))
-                });
-                files.extend(named.map(|arg| file(&arg)));
-            }
-            _ => {}
+            found.push(value);
         }
+        found
+    };
+    let mut files = Vec::new();
+    // `api`'s fields and a `workflow run`'s inputs read a file after `@`; a
+    // `secret set` or `variable set` loads its values from a file with `-f`.
+    let fields = matches!(word(0), Some("api"))
+        || matches!((word(0), word(1)), (Some("workflow"), Some("run")));
+    if matches!(
+        (word(0), word(1)),
+        (Some("secret" | "variable"), Some("set"))
+    ) {
+        files.extend(values("f", &["env-file"]).iter().map(file));
+    } else if fields {
+        for field in values("F", &["field"]) {
+            let named = field
+                .known()
+                .and_then(|text| text.split_once('='))
+                .and_then(|(_, value)| value.strip_prefix('@'))
+                .map(|path| Arg::Known(path.to_string()));
+            files.extend(named.map(|arg| file(&arg)));
+        }
+        if matches!(word(0), Some("api")) {
+            files.extend(values("", &["input"]).iter().map(file));
+        }
+    } else {
+        files.extend(values("F", &["body-file", "notes-file"]).iter().map(file));
     }
     match (word(0), word(1)) {
         (Some("release"), Some("upload" | "create")) => {
@@ -2848,6 +2855,7 @@ fn gh_files(args: &[Arg]) -> Option<Vec<Upload>> {
             }));
         }
         (Some("release" | "issue" | "pr" | "api"), _) => {}
+        (Some("secret" | "variable"), Some("set")) | (Some("workflow"), Some("run")) => {}
         _ => return None,
     }
     Some(files)

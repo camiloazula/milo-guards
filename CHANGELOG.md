@@ -6,6 +6,26 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+What the shell guard and the core's paths answer for lines the guards read
+too little of, nothing a caller compiles against: a patch. These are
+security fixes: each line below was judged safer than what it does.
+
+- `milo-guards-shell`: the value of an option is read wherever the option
+  stands: attached to a short option, after `=`, or taken by the last
+  letter of a cluster of flags. A file a program is told to read or to
+  send, and where a download lands (wget's `-P` in a cluster too), are read so. A letter that is a flag in
+  some command of a program takes no word there, a word that starts with `-`
+  is never passed over as another option's value, and a cluster of `xargs`
+  flags ends at the options that take only the rest of their word, and the
+  replace options of one take their string.
+- `milo-guards-shell`: a copy from another machine is judged by every place
+  on this machine it may land. The options of the copy tools and their
+  values are not operands, a flag takes no word, and an option the guard
+  does not know, which may take the next word, makes every operand on this
+  machine a place it may land. An option with an optional value takes the
+  next word only when it is one of the values, and one with several values
+  leaves every operand a place it may land.
+
 ## 0.2.1 (2026-11-28)
 
 A patch release with security fixes. What a guard answers changes and what a

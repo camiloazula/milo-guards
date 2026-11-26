@@ -6315,6 +6315,65 @@ pub(crate) fn has_flag(args: &[Arg], short: Option<char>, long: Option<&str>) ->
     false
 }
 
+/// The values a POSIX-style option is given, in order: `--long value` and
+/// `--long=value` for each of `long`, and each of `short` alone (`-K f`),
+/// with its value attached (`-Kf`) or at the end of a cluster of flags
+/// (`-sK f`, `-sSKf`). `valued` holds the letters of the program that take
+/// a value, so a cluster is read to its first one: a letter after it is
+/// that option's value. Options end at `--`.
+pub(crate) fn option_values(args: &[Arg], short: &str, long: &[&str], valued: &str) -> Vec<Arg> {
+    let mut values = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        if let Some(name) = text.strip_prefix("--") {
+            let (name, attached) = name
+                .split_once('=')
+                .map_or((name, None), |(name, value)| (name, Some(value)));
+            if long.contains(&name) {
+                match attached {
+                    Some(value) => values.push(Arg::Known(value.to_string())),
+                    None => values.extend(iter.next().cloned()),
+                }
+            }
+            continue;
+        }
+        let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) else {
+            continue;
+        };
+        for (at, letter) in bundle.char_indices() {
+            let rest = &bundle[at + letter.len_utf8()..];
+            if short.contains(letter) {
+                if rest.is_empty() {
+                    values.extend(iter.next().cloned());
+                } else {
+                    values.push(Arg::Known(rest.to_string()));
+                }
+                break;
+            }
+            if valued.contains(letter) {
+                // Another option's value: the rest of the word, or the next,
+                // unless that is an option itself: a word that may be one is
+                // looked at, not passed over.
+                if rest.is_empty()
+                    && iter
+                        .as_slice()
+                        .first()
+                        .and_then(Arg::known)
+                        .is_none_or(|next| next.len() < 2 || !next.starts_with('-'))
+                {
+                    iter.next();
+                }
+                break;
+            }
+        }
+    }
+    values
+}
+
 /// Whether `arg`, a value only known when it runs, may be several words when
 /// it does, any of which may be an option or another operand: in a POSIX
 /// shell an expansion outside quotes (`$f`, `x$f`, `$(…)`, a backtick), which

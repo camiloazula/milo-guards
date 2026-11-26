@@ -2984,6 +2984,14 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
                     for (at, letter) in bundle.char_indices() {
                         if letter == remote_flag {
                             remote = true;
+                        } else if letter == 'P' && key == "wget" {
+                            let rest = &bundle[at + 1..];
+                            prefix = if rest.is_empty() {
+                                iter.next().and_then(Arg::known).map(str::to_string)
+                            } else {
+                                Some(rest.to_string())
+                            };
+                            break;
                         } else if letter == output {
                             let rest = &bundle[at + 1..];
                             if rest.is_empty() {
