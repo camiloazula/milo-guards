@@ -696,6 +696,51 @@ cmd finds=delete reason="deletes your SSH keys" | echo a^"b & del /q C:\\Users\\
 cmd finds=read_secret | echo ^" & type C:\\Users\\me\\.ssh\\id_rsa & echo ^"
 cmd finds=overwrite reason="writes to a shell startup file" | echo ^" > C:\\Users\\me\\.bashrc & echo ^"
 cmd finds=delete | echo ^"x^" & rd /s /q C:\\Users\\me
+# A caret before a line break joins the next line and escapes its first
+# character, a quote among them.
+cmd finds=delete | echo ^\n" & rd /s /q C:\\Users\\me & echo ^"
+cmd finds=delete | echo ^\r\n" & rd /s /q C:\\Users\\me & echo ^"
+cmd safe | echo ^\nrd /s /q C:\\Users\\me
+cmd finds=delete | set x=^\n" & rd /s /q C:\\Users\\me
+cmd finds=delete | set x=^\n"&rd /s /q C:\\Users\\me
+cmd finds=delete | set x= ^\n" & rd /s /q C:\\Users\\me
+cmd finds=delete | if 1==1 set x=^\n" & rd /s /q C:\\Users\\me
+cmd finds=delete | set x=^\n" & del /q C:\\Windows\\x
+cmd finds=delete | set x=^\r\n" & rd /s /q C:\\Users\\me
+cmd finds=delete | set x=1^\n" & rd /s /q C:\\Users\\me
+cmd safe | set x=^\ny
+cmd safe | set x=^\nrd /s /q C:\\Users\\me
+# A caret inside double quotes is a character, and the quote after it ends
+# them: the operators after that run.
+cmd finds=delete | set x="a^" & rd /s /q C:\\Users\\me
+cmd finds=delete | set x="^"|rd /s /q C:\\Users\\me
+cmd finds=delete | set x="a^" && del /q C:\\Windows\\x
+cmd finds=delete | if 1==1 set x="a^" & rd /s /q C:\\Users\\me
+cmd finds=delete | cmd /c set x="a^" ^& rd /s /q C:\\Users\\me
+cmd safe | set x="a^& rd /s /q C:\\Users\\me"
+# A redirect after the value of a `set` creates or reads the file it names.
+cmd finds=overwrite | set x=1 > C:\\Users\\me\\.ssh\\authorized_keys
+cmd finds=overwrite | set x=1>C:\\Users\\me\\.ssh\\authorized_keys
+cmd finds=overwrite | set x=1 >> C:\\Users\\me\\.bashrc
+cmd finds=overwrite | set x=^\n">C:\\Users\\me\\.ssh\\authorized_keys
+cmd finds=read_secret | set x=1 < C:\\Users\\me\\.ssh\\id_rsa
+cmd safe | set x="1>C:\\Users\\me\\.ssh\\authorized_keys"
+cmd safe | set x=1 > out.txt
+# cmd puts the value of a `%…%` in before it reads quotes and operators: a
+# quote, a caret or an operator in one may change what follows, and the value
+# of a `set` that holds one is read for its operators wherever they are.
+cmd finds=delete | set x="%CD:^"=%" & rd /s /q C:\\Users\\me
+cmd finds=delete | set x="a%PATH:^"=%" & rd /s /q C:\\Users\\me
+cmd finds=delete | set x="a%^"%" & rd /s /q C:\\Users\\me
+cmd finds=destroy_resources | set TF_CLI_ARGS="%CD:^"=%" -destroy & terraform apply
+cmd finds=delete | set x=%CD:"=% & rd /s /q C:\\Users\\me
+cmd finds=delete | set x=%PATH:"=% && rd /s /q C:\\Users\\me
+cmd finds=delete | set x=%CD:"=% | rd /s /q C:\\Users\\me
+cmd finds=delete | set x=a%CD:"=%b & rd /s /q C:\\Users\\me
+cmd finds=delete | set x="%CD:"=%" & rd /s /q C:\\Users\\me
+cmd finds=overwrite | set x=%CD:"=%>C:\\Users\\me\\.bashrc
+cmd safe | set x=%CD% & echo hi
+cmd safe | set x="%CD:~0,3%"
 # A `^^` is a caret, and the quote after it opens quoted text.
 cmd safe | echo ^^" & rd /s /q C:\\Users\\me & echo "
 cmd safe | echo ^"hello^"

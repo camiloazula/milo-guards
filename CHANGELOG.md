@@ -47,6 +47,15 @@ security fixes: each line below was judged safer than what it does.
   `ADMIN$` is the Windows folder, so a file there is judged by where it is.
   A share of another machine, and of an address that is not the loopback,
   is only a share.
+- `milo-guards-shell`: in cmd, a caret before a line break joins the next
+  line and escapes its first character, so a quote there opens no quoted
+  text, as it opens none after a caret on the same line: the commands cmd
+  runs after such a quote are judged, where the quote hid them, in the value
+  of a `set` too; a `^` inside double quotes is a character there, and a
+  redirect after the value of a `set` makes its file, which is judged. A
+  `%…%` in the value that holds a quote, a caret or an operator makes the
+  line unknown, and what follows the first operator outside it is still
+  read.
 
 ## 0.2.1 (2026-11-28)
 

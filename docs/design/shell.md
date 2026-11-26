@@ -167,7 +167,12 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   handed the line with each such quote written as a letter, the same
   length, and the words are read from the line as written: `echo ^" & echo
   x & echo ^"` is three commands. A `^^` is a caret, so a quote after it is
-  a quote.
+  a quote, and a caret before a line break joins the next line and escapes
+  its first character, a quote among them, where the line is split at its
+  operators too (`set x=^<LF>" & rd /s /q C:\Users\me` is two commands; a `^` in double quotes is a character, and a redirect after
+  the value of a `set` creates or reads its file; a `%…%` in the value that
+  holds a quote, a caret or an operator, which cmd puts its value in for
+  before it reads them, makes the line unknown).
 - The batch grammar reads an `if` or a `for` only at the start of a line:
   after `&&`, `||` or `|` it is a command named `if` with its condition and
   body as arguments. The guard splits that command's text again on its own,

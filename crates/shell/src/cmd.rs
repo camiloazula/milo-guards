@@ -72,21 +72,32 @@ fn read(split: &mut Split, text: &str, depth: usize) {
 /// `text` with each `"` that a `^` escapes outside double quotes written
 /// as `x`: cmd takes that quote for a character and opens no quoted text
 /// with it, so the `&`, `|` and redirects after it still split the line.
-/// A `^^` is a caret, so the quote after it is a quote. Every byte stays
-/// where it was.
+/// A `^^` is a caret, so the quote after it is a quote. A caret before a
+/// line break joins the next line and escapes its first character, so a
+/// quote there is a character too. Every byte stays where it was.
 fn escaped_quotes_as_letters(text: &str) -> String {
     let mut parsed = String::with_capacity(text.len());
     let mut quoted = false;
-    let mut chars = text.chars();
+    let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         parsed.push(c);
         match c {
             '"' => quoted = !quoted,
-            '^' if !quoted => match chars.next() {
-                Some('"') => parsed.push('x'),
-                Some(next) => parsed.push(next),
-                None => {}
-            },
+            '^' if !quoted => {
+                // `^` and a line break, `\r\n` or `\n`: the escaped character
+                // is the one after it.
+                if chars.peek() == Some(&'\r') {
+                    parsed.extend(chars.next());
+                }
+                if chars.peek() == Some(&'\n') {
+                    parsed.extend(chars.next());
+                }
+                match chars.next() {
+                    Some('"') => parsed.push('x'),
+                    Some(next) => parsed.push(next),
+                    None => {}
+                }
+            }
             _ => {}
         }
     }
@@ -1330,11 +1341,37 @@ impl Walker<'_> {
 
     /// The grammar reads `set X=1 && del y` as one assignment whose value
     /// is everything after `=`; cmd ends the value at an unquoted `&` or
-    /// `|`. What follows is split again, so nothing hides in a value.
+    /// `|`, and at a redirect, which it makes: `set x=1 > f` creates `f`.
+    /// What follows is split again, so nothing hides in a value.
     fn assignment(&mut self, node: Node<'_>) {
         self.tf_cli_args(node);
         let text = unit::text(&node, self.source);
-        if let Some(at) = unquoted_operator(text) {
+        let at = match unquoted_any(text, &['&', '|', '<', '>']) {
+            Scan::Found(at) => Some(at),
+            Scan::Missing => None,
+            // The value holds a `%…%` that may change the quotes and the
+            // operators after it: the line is unknown, and what follows the
+            // first operator outside them is read as written.
+            Scan::Opaque(at) => {
+                self.split.problem(
+                    Rule::Unknown,
+                    "sets a value that holds a quote or an operator only known when it runs",
+                    Some(text),
+                );
+                at
+            }
+        };
+        if let Some(at) = at {
+            if text[at..].starts_with(['<', '>']) {
+                // The redirect, judged as `echo` given it is.
+                unit::script(
+                    self.split,
+                    &format!("echo {}", &text[at..]),
+                    Shell::Cmd,
+                    self.depth + 1,
+                );
+                return;
+            }
             let rest = text[at..].trim_start_matches(['&', '|', ' ', '\t']);
             if !rest.is_empty() {
                 unit::script(self.split, rest, Shell::Cmd, self.depth + 1);
@@ -1417,7 +1454,17 @@ impl Walker<'_> {
                     unquoted_operator(text).map_or(text, |at| &text[..at])
                 }
             });
-        let value = if plain && !written.contains('!') {
+        // A `%…%` that holds a quote or an operator is only known when it
+        // runs: what is written around it still is the value, and a flag
+        // there (`-destroy`) is read as written.
+        let value = if let Scan::Opaque(end) = unquoted_any(source, &['&', '|']) {
+            let after = source.split_once('=').map_or("", |(_, value)| value);
+            let end = end
+                .and_then(|at| at.checked_sub(source.len() - after.len()))
+                .unwrap_or(after.len());
+            let written = without_substitutions(after.get(..end).unwrap_or(after));
+            Some(written.replace('"', "").trim().to_string())
+        } else if plain && !written.contains('!') {
             expand(written.trim_matches('"').trim(), self.split)
         } else {
             None
@@ -1509,25 +1556,32 @@ fn parts(node: Node<'_>) -> Option<(Vec<Node<'_>>, Vec<Node<'_>>)> {
     Some((word, after))
 }
 
+/// How many bytes of `rest`, the text after a `^`, the caret escapes: the
+/// character after it, and when that is a line break (`\r\n` or `\n`), which
+/// joins the next line, the first character of that line too.
+fn caret_escapes(rest: &str) -> usize {
+    let line = if rest.starts_with("\r\n") {
+        2
+    } else {
+        usize::from(rest.starts_with('\n'))
+    };
+    line + rest[line..].chars().next().map_or(0, char::len_utf8)
+}
+
 /// Where the first character of `text` that `stop` takes is, outside
 /// double quotes and `%…%` (cmd puts a variable's value in before it reads
 /// the word) and not escaped with `^`.
 fn find_unquoted(text: &str, stop: impl Fn(char) -> bool) -> Option<usize> {
     let mut quoted = false;
-    let mut escaped = false;
     let mut skip = 0;
     for (at, c) in text.char_indices() {
         if at < skip {
             continue;
         }
-        if escaped {
-            escaped = false;
-            continue;
-        }
         match c {
             '"' => quoted = !quoted,
             _ if quoted => {}
-            '^' => escaped = true,
+            '^' => skip = at + 1 + caret_escapes(&text[at + 1..]),
             '%' => {
                 if let Some(close) = text[at + 1..].find('%') {
                     skip = at + close + 2;
@@ -1693,18 +1747,83 @@ fn span(pieces: &[Node<'_>]) -> Option<Range<usize>> {
 /// Where the first `&` or `|` outside double quotes and not escaped with
 /// `^` is.
 fn unquoted_operator(text: &str) -> Option<usize> {
+    match unquoted_any(text, &['&', '|']) {
+        Scan::Found(at) => Some(at),
+        Scan::Missing | Scan::Opaque(_) => None,
+    }
+}
+
+/// `text` with each `%…%` taken out.
+fn without_substitutions(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('%') {
+        kept.push_str(&rest[..at]);
+        let Some(close) = rest[at + 1..].find('%') else {
+            kept.push_str(&rest[at..]);
+            return kept;
+        };
+        rest = &rest[at + close + 2..];
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// What a scan of a command's text for characters finds.
+enum Scan {
+    /// The first of them outside double quotes and not escaped with `^`.
+    Found(usize),
+    Missing,
+    /// A `%…%` in the text holds a quote, a caret or an operator, which cmd
+    /// puts its value in for before it reads the quotes, the carets and the
+    /// operators: where they are is only known when it runs. The first of
+    /// the characters outside every `%…%`, wherever the quotes are.
+    Opaque(Option<usize>),
+}
+
+/// Where the first of `found` outside double quotes (where a `^` is a
+/// character) and not escaped with `^` is, as cmd reads the text: it puts in
+/// the value of each `%…%` first.
+fn unquoted_any(text: &str, found: &[char]) -> Scan {
     let mut quoted = false;
-    let mut escaped = false;
+    let mut skip = 0;
+    let mut pair_end = 0;
+    let mut opaque = false;
+    let mut first = None;
+    let mut first_unquoted = None;
     for (at, c) in text.char_indices() {
+        if at < pair_end {
+            continue;
+        }
+        if c == '%' {
+            if let Some(close) = text[at + 1..].find('%') {
+                let inner = &text[at + 1..at + 1 + close];
+                opaque |= inner.contains(['"', '^', '&', '|', '<', '>']);
+                pair_end = at + close + 2;
+                continue;
+            }
+        }
+        if found.contains(&c) {
+            first.get_or_insert(at);
+        }
+        if at < skip {
+            continue;
+        }
         match c {
-            _ if escaped => escaped = false,
-            '^' => escaped = true,
             '"' => quoted = !quoted,
-            '&' | '|' if !quoted => return Some(at),
+            _ if quoted => {}
+            '^' => skip = at + 1 + caret_escapes(&text[at + 1..]),
+            _ if found.contains(&c) => {
+                first_unquoted.get_or_insert(at);
+            }
             _ => {}
         }
     }
-    None
+    if opaque {
+        Scan::Opaque(first)
+    } else {
+        first_unquoted.map_or(Scan::Missing, Scan::Found)
+    }
 }
 
 /// `text` with cmd's escapes taken off (`^&` is `&`) and the variables that
