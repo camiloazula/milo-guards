@@ -192,12 +192,13 @@ next_bump := ""
 # the last release's to Cargo.toml's (none between releases: a compatible
 # 0.1.x). What breaks no build passes here (an addition, a raise of
 # `rust-version`, a rule's wire name, what a guard answers) and is judged by
-# hand (CONTRIBUTING.md, The gates). `milo-guards-script` is not on
-# crates.io yet, so it has no release to be compared with; the pull request
-# after the release that publishes it removes its `--exclude`.
+# hand (CONTRIBUTING.md, The gates). A crate not yet on crates.io has no
+# release to be compared with: it is left out with `--exclude` until the
+# release that publishes it, and the pull request after that release
+# removes the `--exclude`. Every crate is on crates.io today.
 # The public API against the last release on crates.io: nothing breaks a caller's build unless `next_bump` allows it.
 semver:
-    cargo semver-checks --workspace --exclude milo-guards-script {{ if next_bump == "minor" { "--release-type major" } else { "" } }}
+    cargo semver-checks --workspace {{ if next_bump == "minor" { "--release-type major" } else { "" } }}
 
 # How many mutants `just mutants` builds and tests at once: `just jobs=2
 # mutants <crate>`, or `--jobs N` among its flags, which then wins.

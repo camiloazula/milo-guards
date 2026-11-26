@@ -245,9 +245,9 @@ feature or crate, a field of a `#[non_exhaustive]` struct such as `Paths`),
 which is a minor bump; a raise of `rust-version`, a minor bump too; a
 change of a rule's wire name, which never happens once a caller uses it
 ([GUIDELINES.md](GUIDELINES.md)); and a change of what a guard answers,
-which is a patch. A crate that is not on crates.io yet
-(`milo-guards-script` today) has no release to compare with, so the recipe
-leaves it out (`--exclude`) until the release that publishes it.
+which is a patch. A crate that is not on crates.io yet has no release to
+compare with, so the recipe leaves it out (`--exclude`) until the release
+that publishes it; today every crate is on crates.io and none is left out.
 
 `just mutants <crate>` is not part of `just verify`, nor of CI. The
 coverage floor counts a line that runs, but a line that runs is not a line
@@ -776,10 +776,9 @@ its path. A release is:
    - The changelog's Unreleased section, for what `just semver` does not
      see: an addition, a raise of `rust-version` or another change to what
      a caller compiles against is a minor bump too.
-   - The `--exclude` list of `just semver` in the `justfile`: it names only
-     crates not yet on crates.io. Remove a crate an earlier release
-     published (`milo-guards-script`, once the release that adds it is
-     out), so it is checked against its release.
+   - The `--exclude` list of `just semver` in the `justfile`, if it has
+     one: it names only crates not yet on crates.io. Remove a crate an
+     earlier release published, so it is checked against its release.
 2. Move the changelog's `Unreleased` section under the new version, with the
    date, in `CHANGELOG.md`, and empty `next_bump` in the `justfile`: the
    version now says the bump. What the changelog says about the answers
