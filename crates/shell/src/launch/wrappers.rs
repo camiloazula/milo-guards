@@ -600,6 +600,24 @@ pub(super) fn tmux(args: &[Arg]) -> Launch {
 /// cmd its words as one command line (see [`command_line`]), which cmd reads
 /// by its own rules.
 pub(super) fn cmd(args: &[Arg], shell: Shell) -> Launch {
+    // MSYS2 and Git Bash hand a word that starts with `//` to a Windows
+    // program with one `/` off, so a POSIX line writes cmd's switches so
+    // (`cmd //c "rd /s /q x"`, `cmd //c del //q x`).
+    let unescaped: Vec<Arg>;
+    let args = if shell == Shell::Posix {
+        unescaped = args
+            .iter()
+            .map(
+                |arg| match arg.known().and_then(|text| text.strip_prefix('/')) {
+                    Some(rest) if rest.starts_with('/') => Arg::Known(rest.to_string()),
+                    _ => arg.clone(),
+                },
+            )
+            .collect();
+        unescaped.as_slice()
+    } else {
+        args
+    };
     let line;
     let args = if shell == Shell::Cmd {
         args

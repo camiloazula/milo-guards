@@ -3879,8 +3879,16 @@ directory. On Windows, Git Bash's mount (`/`) is read in a POSIX shell's line
 written from `/` (`cat /c/Users/me/.ssh/id_rsa`) or climbing above the drive
 (`cat ../../../../../c/Users/me/.ssh/id_rsa`); PowerShell and cmd spell a
 drive as Windows does, so a mount changes none of theirs. Without a mount or
-a Windows home, every line is judged as it was. The cases are in
-`tests/cases/drives.cases`.
+a Windows home, every line is judged as it was. On a Windows machine (the
+working directory on a drive), a POSIX word that starts with a drive and a
+separator is the Windows path, mount or none, as Git Bash, MSYS2 and Cygwin
+open it and hand it on, for every rule that places a path, and so is a path
+in the inline code of such a line. On a POSIX
+machine it is a relative name, as it was. Git Bash hands a word that starts
+with `//` to a Windows program with one `/` off, so `cmd //c` is `cmd /c`.
+What is left: with the directories spelled as Git Bash spells them (`/c/…`),
+a word `C:/…` is still read as a relative name, and `scp C:/x host:` reads
+`C:` as scp's host. The cases are in `tests/cases/drives.cases`.
 
 The links the caller has resolved are its to pass too, and core's to read
 ([Core](core.md#links)); a line is judged on each of

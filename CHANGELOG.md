@@ -605,6 +605,12 @@ are more serious than 0.1.4's.
   `read_secret`, or `send_secret` for a sender.
 - `milo-guards-script`: a read of a file on a network share is `unknown`,
   "opens a file on a network share".
+- `milo-guards-shell`: on a Windows machine, a POSIX word that starts
+  with a drive and a separator (`C:/Users/me`, `'C:\Users\me'`) is read as
+  the Windows path, as Git Bash and MSYS2 read it, for every rule that
+  places a path and in the inline code of such a line, so a delete, a read,
+  a write or a send by that spelling is judged by where it lands. `cmd //c` and
+  `cmd //k` in a POSIX line are `cmd /c` and `cmd /k`.
 
 ## 0.1.4 (2026-11-22)
 
