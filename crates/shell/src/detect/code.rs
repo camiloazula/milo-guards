@@ -34,6 +34,40 @@ impl Checker<'_> {
                 );
             }
             "awk" | "gawk" | "mawk" | "nawk" => self.awk(unit),
+            // Programs that install a git hook, which runs code at every
+            // later commit, or rewrite the config of one.
+            "pre-commit" | "prek" => self.pre_commit(unit, &unit.args),
+            // `python3 -m pre_commit install` is `pre-commit install`.
+            key if crate::launch::is_python(key) => {
+                let args = unit.args.as_slice();
+                let module = args.iter().position(|arg| arg.known() == Some("-m"));
+                if let Some(at) =
+                    module.filter(|at| args.get(at + 1).and_then(Arg::known) == Some("pre_commit"))
+                {
+                    self.pre_commit(unit, &args[at + 2..]);
+                }
+            }
+            "husky" => self.husky(unit),
+            "lefthook" => {
+                let installs = unit
+                    .args
+                    .iter()
+                    .find_map(|arg| arg.known().filter(|text| !text.starts_with('-')))
+                    .is_some_and(|sub| matches!(sub, "install" | "add"));
+                if installs {
+                    self.installs_hooks(unit, ".git/hooks");
+                }
+            }
+            "simple-git-hooks" => {
+                let help = unit
+                    .args
+                    .iter()
+                    .filter_map(Arg::known)
+                    .any(|text| matches!(text, "-h" | "--help" | "-v" | "--version"));
+                if !help {
+                    self.installs_hooks(unit, ".git/hooks");
+                }
+            }
             "osascript" => self.add(
                 Rule::Unknown,
                 "runs AppleScript the guard does not read",
@@ -41,6 +75,155 @@ impl Checker<'_> {
             ),
             _ => {}
         }
+    }
+
+    /// `pre-commit` (and `prek`, which reads the same commands): `install`
+    /// writes the git hook of each `-t` (`--hook-type`), `pre-commit` when
+    /// none is given, as a write of `.git/hooks/<type>` is judged, since the
+    /// hook runs code at every later commit; `init-templatedir DIR` writes
+    /// the hooks of the repositories git makes from `DIR`; `autoupdate` and
+    /// `migrate-config` rewrite the config (`-c`, `--config`, or
+    /// `.pre-commit-config.yaml`), the first from the network, as a write of
+    /// it is judged. `run` and the others write neither.
+    /// `try-repo REPO` clones a repository of hooks and runs them: a script
+    /// it downloads when the repository is remote, code the guard does not
+    /// read when it is a folder.
+    fn pre_commit(&mut self, unit: &Unit, args: &[Arg]) {
+        let values = |names: &[&str]| -> Vec<Arg> {
+            let mut found = Vec::new();
+            let mut iter = args.iter();
+            while let Some(arg) = iter.next() {
+                let Some(text) = arg.known() else { continue };
+                if text == "--" {
+                    break;
+                }
+                for name in names {
+                    if text == *name {
+                        found.extend(iter.clone().next().cloned());
+                    } else if let Some(value) = text
+                        .strip_prefix(name)
+                        .filter(|_| name.starts_with("--"))
+                        .and_then(|rest| rest.strip_prefix('='))
+                    {
+                        found.push(Arg::Known(value.to_string()));
+                    }
+                }
+            }
+            found
+        };
+        const VALUED: [&str; 4] = ["-c", "--config", "-t", "--hook-type"];
+        let mut operands = Vec::new();
+        let mut at = 0;
+        while let Some(arg) = args.get(at) {
+            at += 1;
+            match arg.known() {
+                Some(text) if VALUED.contains(&text) => at += 1,
+                Some(text) if text.starts_with('-') => {}
+                _ => operands.push(arg),
+            }
+        }
+        let Some(sub) = operands.first().and_then(|arg| arg.known()) else {
+            return;
+        };
+        match sub {
+            "install" => {
+                let types = values(&["-t", "--hook-type"]);
+                if types.is_empty() {
+                    self.installs_hooks(unit, ".git/hooks/pre-commit");
+                }
+                for kind in types {
+                    match kind.known() {
+                        Some(name) => self.installs_hooks(unit, &format!(".git/hooks/{name}")),
+                        None => self.write(unit.shell, unit.scope(), &kind, "writes to"),
+                    }
+                }
+            }
+            "init-templatedir" | "init-template-dir" => {
+                if let Some(dir) = operands.get(1) {
+                    let hook = match dir.known() {
+                        Some(dir) => Arg::Known(format!("{dir}/hooks/pre-commit")),
+                        None => (*dir).clone(),
+                    };
+                    self.write(unit.shell, unit.scope(), &hook, "writes to");
+                }
+            }
+            "try-repo" => match operands.get(1).map(|repo| repo.known()) {
+                Some(Some(repo)) if !remote_repository(repo) => {
+                    self.add(Rule::Unknown, "runs code the guard does not read", None);
+                }
+                Some(_) => self.add(Rule::RunDownloaded, Said::downloaded_script(), None),
+                None => {}
+            },
+            "autoupdate" | "migrate-config" => {
+                let configs = values(&["-c", "--config"]);
+                if configs.is_empty() {
+                    let config = Arg::Known(".pre-commit-config.yaml".to_string());
+                    self.write(unit.shell, unit.scope(), &config, "writes to");
+                }
+                for config in configs {
+                    self.write(unit.shell, unit.scope(), &config, "writes to");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `husky` (alone, `install`, or `init`) sets `core.hooksPath` to the
+    /// folder of hooks it makes, as `git config core.hooksPath` does: git
+    /// runs what is there at every later commit.
+    fn husky(&mut self, unit: &Unit) {
+        let sub = unit
+            .args
+            .iter()
+            .find(|arg| arg.known().is_none_or(|text| !text.starts_with('-')));
+        let sets = match sub.map(Arg::known) {
+            None => !unit
+                .args
+                .iter()
+                .filter_map(Arg::known)
+                .any(|text| matches!(text, "-h" | "--help" | "-v" | "--version")),
+            Some(Some(sub)) => matches!(sub, "install" | "init"),
+            // A subcommand only known when it runs may be one that does.
+            Some(None) => true,
+        };
+        if sets {
+            self.add(
+                Rule::SystemSettings,
+                "sets git config that runs a program",
+                None,
+            );
+        }
+    }
+
+    /// A program that writes the git hooks under `hooks` (a hook or the
+    /// folder of them, from where it runs), as a write there is judged.
+    ///
+    /// The program finds the repository's `.git` by going up from where it
+    /// runs, so from inside a workspace folder the hooks are the
+    /// workspace's own, at its top (`cd src && pre-commit install`);
+    /// anywhere else they are read from where it runs.
+    fn installs_hooks(&mut self, unit: &Unit, hooks: &str) {
+        let here = Arg::Known(".".to_string());
+        let hooks = match self
+            .resolver
+            .workspace_of(unit.dir.as_ref(), &here, unit.shell)
+        {
+            Some(top) => {
+                let separator = if unit.shell == Shell::Posix && top.text().starts_with('/') {
+                    "/"
+                } else {
+                    "\\"
+                };
+                let rest = if separator == "/" {
+                    hooks.to_string()
+                } else {
+                    hooks.replace('/', "\\")
+                };
+                Arg::Known(format!("{}{separator}{rest}", top.text()))
+            }
+            None => Arg::Known(hooks.to_string()),
+        };
+        self.write(unit.shell, unit.scope(), &hooks, "writes to");
     }
 
     /// awk code that runs commands (`system(…)`, a pipe) or writes files
@@ -1089,6 +1272,15 @@ fn skip_blanks(mut code: &str) -> &str {
             None => return trimmed,
         }
     }
+}
+
+/// Whether `repo`, a repository a tool clones, is on another machine: a URL
+/// (`https://…`, `ssh://…`, `git://…`) or git's `user@host:path` form.
+fn remote_repository(repo: &str) -> bool {
+    repo.contains("://")
+        || repo
+            .split_once(':')
+            .is_some_and(|(host, _)| host.contains('@') && !host.contains(['/', '\\']))
 }
 
 /// Whether an awk operand is an assignment (`x=1`, `ns::x=1`), which awk

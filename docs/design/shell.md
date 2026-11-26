@@ -4382,6 +4382,27 @@ folder itself, or into a folder that is not named like the first names of a
 place on the list, can replace one below it;
 `mv dir .github` renames a folder onto a name that holds one.
 
+A program that installs a git hook, which runs code at every later commit,
+or rewrites a hook manager's config, is judged as the write it makes is,
+in the same rule and words, also through a package runner (`npx`, `pnpm
+exec`, `yarn dlx`, `bunx`, `uvx`, `pipx run`) and `python3 -m pre_commit`.
+It finds the repository's `.git` by going up from where it runs, so from
+anywhere inside a workspace folder (`cd src && pre-commit install`) the
+hooks are the workspace's own, at its top; anywhere else they are read
+from where it runs:
+`pre-commit install` (and `prek install`) writes `.git/hooks/pre-commit`,
+or the hook of each `-t`/`--hook-type` (`overwrite`, "writes to the
+repository's history"), `pre-commit init-templatedir DIR` the hooks below
+`DIR`, `pre-commit try-repo REPO` runs the hooks of the repository it
+clones (`run_downloaded` for a remote one, `unknown` for a folder), and
+`pre-commit autoupdate` and `migrate-config` its config
+(`.pre-commit-config.yaml`, or the one `-c` names), the first from the
+network; `husky` alone, `husky install` and `husky init` set
+`core.hooksPath`, as `git config core.hooksPath` does (`system_settings`,
+"sets git config that runs a program"); `lefthook install`, `lefthook
+add` and `simple-git-hooks` write the hooks in `.git/hooks`. `pre-commit
+run`, `lefthook run` and the like run the hooks and write none.
+
 ### Protected paths
 
 A caller names what it gates with (its settings, its rules, the folder it keeps

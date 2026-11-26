@@ -558,6 +558,15 @@ are more serious than 0.1.4's.
   from 0.1.4's on every host (a path sorts by its parts as written, a `..`
   among them). The file `uv run` hands to Python and the file `bun run`
   runs are told by the guard's own reading of the word.
+- `milo-guards-shell`: a program that installs a git hook, or sets
+  `core.hooksPath`, is judged as that write is, from any folder of the
+  workspace and through a package runner: `pre-commit install`, `lefthook
+  install` and `simple-git-hooks` are `overwrite`, "writes to the
+  repository's history"; `husky` and `husky install` are
+  `system_settings`, "sets git config that runs a program", as `git config
+  core.hooksPath` is; `pre-commit autoupdate` is `overwrite`, "writes to a
+  file a tool runs on its own"; `pre-commit try-repo` of a remote
+  repository is `run_downloaded`. `pre-commit run` is safe.
 
 ## 0.1.4 (2026-11-22)
 
