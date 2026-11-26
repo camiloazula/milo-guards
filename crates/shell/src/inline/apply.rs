@@ -488,14 +488,15 @@ fn run(split: &mut Split, program: &str, args: Vec<Arg>, depth: usize) {
 mod tests {
     use super::*;
 
-    /// The reader holds code to the limits the shell holds a line to, and
-    /// shows the start of code the way the shell does (two copies, one in
-    /// each crate, because the shell shows it with or without the reader).
+    /// The reader holds code to the limits the shell holds a line to, its
+    /// length to a shorter one, and shows the start of code the way the
+    /// shell does (two copies, one in each crate, because the shell shows it
+    /// with or without the reader).
     #[test]
     fn the_reader_and_the_shell_agree_on_the_limits_and_on_the_start_of_code() {
         assert_eq!(reader::MAX_DEPTH, unit::MAX_DEPTH);
         assert_eq!(reader::MAX_TREE_DEPTH, unit::MAX_TREE_DEPTH);
-        assert_eq!(reader::MAX_LEN, unit::MAX_LEN);
+        const { assert!(reader::MAX_LEN < unit::MAX_LEN) };
         for code in [
             "if (",
             "  if ( second line\nthird",

@@ -4706,7 +4706,9 @@ code sets is `unknown` with the reason `starts a program with an environment
 set in the code`, because the variable may be one the shell side judges. A name
 bound by nested code, and a name written with an escape or not in ASCII, is a
 name the reader does not follow. Code too long or nested too deeply to read is
-`unreadable`. A string worked out from names is cut at 4 KB, and the strings
+`unreadable`; inline code longer than the reader's `MAX_LEN` (3 KiB, shorter
+than a line's limit; see [Code: The length limit](code.md#the-length-limit))
+is not read: `unknown`, `runs code the guard does not read`. A string worked out from names is cut at 4 KB, and the strings
 noted for all names together and the paths read out of them are bounded, so a
 few hundred bytes cannot take seconds: a name that went over a limit is dropped,
 not read as any string, and a read of it is `unknown`, so no limit makes a line

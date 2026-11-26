@@ -311,7 +311,9 @@ fn deep_then_write(language: Language, depth: usize) -> Vec<String> {
 #[test]
 fn code_the_reader_does_not_walk_whole_is_not_understood() {
     for language in [Python, JavaScript] {
-        for depth in [10, 100, 199, 200, 201, 300, 399, 400, 401, 450, 800, 2_000] {
+        for depth in [
+            10, 100, 199, 200, 201, 300, 399, 400, 401, 420, 450, 800, 1_000,
+        ] {
             for code in deep_then_write(language, depth) {
                 if read(language, &code).deep {
                     assert_eq!(
@@ -323,9 +325,10 @@ fn code_the_reader_does_not_walk_whole_is_not_understood() {
                 }
             }
         }
-        // Some of the deepest shapes are past the reader's walk, so the check
-        // is not empty; one it walks whole still finds the write after it.
-        let deepest = deep_then_write(language, 2_000);
+        // Some of the deepest shapes within the length limit are past the
+        // reader's walk, so the check is not empty; one it walks whole still
+        // finds the write after it.
+        let deepest = deep_then_write(language, 420);
         assert!(
             deepest.iter().any(|code| read(language, code).deep),
             "{language:?}"

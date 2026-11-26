@@ -659,7 +659,7 @@ pub(crate) const MAX_STRING: usize = 4 * 1024;
 /// The most bytes of strings noted for all names together: past it the name
 /// that went over is dropped, not read as any string. A few times the
 /// longest line, so the strings a line writes out are all noted.
-const MAX_NOTED: usize = 4 * MAX_LEN;
+const MAX_NOTED: usize = 4 * unit::MEASURED_LEN;
 
 /// The most paths one piece of code reads out of names: past it the read is
 /// of code the reader does not follow. A name read with every string it holds

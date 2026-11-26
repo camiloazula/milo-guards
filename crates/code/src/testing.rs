@@ -2,9 +2,23 @@
 //! tests turn it on (the crate's dev-dependency on itself). It is not part
 //! of the API and not for callers: it is hidden from the docs, and may
 //! change or go without notice. Nothing here changes what the reader does
-//! or answers; it reads counts the reader keeps anyway.
+//! or answers but [`lift_length_limit`], which only the reader's tests of
+//! its budget call; the rest reads counts the reader keeps anyway.
 
 use crate::{Language, Reading, Understanding};
+
+/// The longest code the budget's counts were measured to (64 KiB), past
+/// the reader's `MAX_LEN`.
+pub const MEASURED_LEN: usize = crate::unit::MEASURED_LEN;
+
+/// Lift the reader's `MAX_LEN` to [`MEASURED_LEN`] for the rest of this
+/// process: the reader then reads code to the length its budget was
+/// measured to, so its tests hold the budget at every length it was
+/// measured at. Only the reader's tests of its budget call it; a caller
+/// never does.
+pub fn lift_length_limit() {
+    crate::unit::LIFTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// One report of progress the parses of a budget may make for each this
 /// many bytes it is made for, before they are stopped and the code is not

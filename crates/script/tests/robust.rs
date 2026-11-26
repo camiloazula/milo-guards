@@ -247,7 +247,7 @@ fn deep(language: Language, depth: usize) -> Vec<String> {
 fn code_nested_too_deeply_is_unreadable_and_never_safe() {
     for language in [Python, JavaScript] {
         let mut unreadable = 0;
-        for depth in [2_000, 20_000] {
+        for depth in [420, 1_000] {
             for code in deep(language, depth) {
                 let assessment = judge(language, &code, &posix());
                 assert!(!assessment.is_safe(), "{language:?} {depth}");
@@ -294,11 +294,14 @@ fn code_that_runs_code_too_deeply_is_unreadable_and_never_safe() {
             rules(&assessment).contains(&Rule::Delete),
             "{language:?}: {assessment:?}"
         );
-        // Past it, the code is unreadable, for running code too deeply (the
-        // reader stops at the same depth and says the code is too deep), or
-        // for the work its readings at each depth took, and the delete at
-        // the bottom is not read.
-        let assessment = judge(language, &running(language, 12), &posix());
+        // Past it (ten deep, the deepest within the length limit), the code
+        // is unreadable, for running code too deeply (the reader stops at the
+        // same depth and says the code is too deep), or for the work its
+        // readings at each depth took, and the delete at the bottom is not
+        // read.
+        let code = running(language, 10);
+        assert!(code.len() <= MAX_LEN, "{language:?}: {}", code.len());
+        let assessment = judge(language, &code, &posix());
         let reasons: Vec<&str> = assessment
             .findings()
             .iter()

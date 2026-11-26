@@ -34,5 +34,5 @@ fn an_argument_is_its_value_or_the_source_of_what_is_not_known() {
 fn the_limits_are_the_ones_a_caller_holds_code_to() {
     assert_eq!(MAX_DEPTH, 8);
     assert_eq!(MAX_TREE_DEPTH, 400);
-    assert_eq!(MAX_LEN, 64 * 1024);
+    assert_eq!(MAX_LEN, 3 * 1024);
 }

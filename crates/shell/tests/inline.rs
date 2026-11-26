@@ -110,19 +110,20 @@ fn long_inline_code_is_read_unless_it_nests_too_deep() {
 fn code_whose_parse_the_reader_stops_is_unknown() {
     // Code the reader does not read (it meets an error, or its reading is
     // stopped, as the reader's `tests/parse_budget.rs` holds), up to the
-    // length of a line, given with `-c` or `-e`, on its input or in a
+    // reader's length limit, given with `-c` or `-e`, on its input or in a
     // here-document: a finding that the guard does not read it, never safe,
     // and an effect that is unknown, never reads only. tree-sitter-javascript's
     // recovery goes round the last few tokens of the first with no end, and
     // wraps the error the second starts with again at each of its tokens;
-    // both are stopped where the recovery starts. tree-sitter-python's
-    // scanner reads the run of comment lines in the third again at each of
-    // its lines, and it is stopped by the bytes handed.
+    // the third, Python, starts with an error and goes over comments after
+    // it; each is stopped where the recovery starts.
     let paths = posix();
     let round = "c(.c(''.(X%'''\"';c(=";
-    let javascript = format!("{}{round}", "x;\n".repeat(16_000));
-    let python = format!("if 1:\n    x\n{}y\n", "# c\n".repeat(12_000));
-    let wrapped = format!("in {}", "%c=>; ".repeat(10_000));
+    // Each within the reader's length limit, 3 KiB; longer code is not read
+    // for its length, and gets the same answer.
+    let javascript = format!("{}{round}", "x;\n".repeat(1_000));
+    let python = format!("!=]0x ]{}", "\n#".repeat(1_400));
+    let wrapped = format!("in {}", "%c=>; ".repeat(500));
     for (interpreter, code) in [
         ("node", &javascript),
         ("node", &wrapped),
@@ -175,20 +176,16 @@ fn every_reading_of_a_line_s_code_draws_from_one_budget() {
         (
             "node",
             "eval",
-            format!("/*xfrom  @catch{}", "@/*== ".repeat(9_000)),
+            format!("/*xfrom  @catch{}", "@/*== ".repeat(250)),
         ),
-        (
-            "python3",
-            "exec",
-            format!("!=]0x ]{}", "\n#".repeat(25_000)),
-        ),
-        ("node", "eval", format!("x{}", "()".repeat(25_000))),
+        ("python3", "exec", format!("!=]0x ]{}", "\n#".repeat(700))),
+        ("node", "eval", format!("x{}", "()".repeat(700))),
         (
             "node",
             "eval",
-            format!("x;\n{}c(.c(''.(X%'''\"';c(=", "x;\n".repeat(15_000)),
+            format!("x;\n{}c(.c(''.(X%'''\"';c(=", "x;\n".repeat(450)),
         ),
-        ("python3", "exec", "print(1); x = [1, 2, 3]\n".repeat(2_000)),
+        ("python3", "exec", "print(1); x = [1, 2, 3]\n".repeat(60)),
     ];
     for (interpreter, runs, code) in rows {
         let mut code = code;

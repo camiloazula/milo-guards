@@ -24,6 +24,13 @@ The reader judges nothing. Whether a delete of a path is risky is the
 caller's: the shell guard of milo-guards turns an act into what it already
 judges (a delete is `rm -rf PATH`, a command line a script a shell reads).
 
+**Code longer than 3 KiB is not read.** In this release the reader reads at
+most 3 KiB of code (`MAX_LEN`), a deliberate limit that bounds the work any
+reading takes: longer code is an `Act::Unread` and not understood. The
+script guard calls it `unreadable`, and the shell guard calls such inline
+code (`python3 -c`, `node -e`, a here-document) `unknown`. Later releases
+will raise the limit.
+
 ## Install
 
 Through the front door, where it is the `code` feature (on by default) and

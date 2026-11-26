@@ -48,7 +48,7 @@ fn many_chdirs_build_no_more_places_than_the_limit() {
         count = if count < 16 { count + 1 } else { count * 2 };
     }
     // The longest code was read, and the count stayed within the limit.
-    assert!(count > 1_000, "{count}");
+    assert!(count > 100, "{count}");
     assert!(largest <= MAX_PLACES * MAX_PLACES, "{largest}");
 }
 
@@ -69,13 +69,18 @@ fn many_acts_are_each_judged_a_bounded_number_of_times() {
     }
 }
 
-/// Six moves to long folders, then `count` deletes.
+/// The name of a long folder.
+const LONG: &str = "d";
+
+/// Nine moves to a long folder, named once, then `count` deletes: the code
+/// is within the length limit, and the folder it moves to is not.
 fn long_moves(count: usize) -> String {
-    let moves: String = (0..6)
-        .map(|at| format!("os.chdir('{}')\n", format!("d{at}").repeat(700)))
-        .collect::<Vec<_>>()
-        .concat();
-    format!("import os\n{moves}{}", "os.remove(\"x\")\n".repeat(count))
+    let folder = LONG.repeat(500);
+    format!(
+        "import os\nd = '{folder}'\n{}{}",
+        "os.chdir(d)\n".repeat(9),
+        "os.remove(\"x\")\n".repeat(count)
+    )
 }
 
 #[test]
@@ -84,7 +89,7 @@ fn the_bytes_of_paths_joined_for_an_act_are_bounded() {
     // of bytes, so the work grows with the number of acts, not with the
     // length of the folders times it.
     let mut last = None;
-    for count in [40, 400] {
+    for count in [10, 100] {
         let code = long_moves(count);
         assert!(code.len() <= MAX_LEN, "{count}");
         let cost = work(Language::Python, &code, &posix());
@@ -94,7 +99,7 @@ fn the_bytes_of_paths_joined_for_an_act_are_bounded() {
             cost.joined_bytes
         );
         if let Some((before, joined)) = last {
-            // Ten or three times the acts join no more than that times the
+            // Ten times the acts join no more than that times the
             // bytes, and a little: linear, not quadratic.
             let times = count / before;
             assert!(
@@ -108,7 +113,7 @@ fn the_bytes_of_paths_joined_for_an_act_are_bounded() {
         let rules: Vec<Rule> = cost.answer.findings().iter().map(|f| f.rule).collect();
         assert!(!cost.answer.is_safe(), "{count}: {rules:?}");
     }
-    const { assert!(6 * 1_400 > MAX_JOINED) };
+    const { assert!(9 * 501 > MAX_JOINED) };
 }
 
 /// The rules of the code's answer.
@@ -140,8 +145,8 @@ fn a_path_joined_past_the_bound_is_only_known_when_it_runs() {
     // workspace; it is a path only known when it runs.
     let folder = "d".repeat(MAX_JOINED / 2 - 8);
     let name = "x".repeat(64);
-    let code =
-        format!("import os\nos.chdir('{folder}')\nos.chdir('{folder}')\nos.remove('{name}')");
+    let code = format!("import os\nf = '{folder}'\nos.chdir(f)\nos.chdir(f)\nos.remove('{name}')");
+    assert!(code.len() <= MAX_LEN, "{}", code.len());
     assert!(
         2 * folder.len() < MAX_JOINED,
         "the folder is under the bound"
@@ -164,9 +169,9 @@ fn a_folder_moved_to_past_the_bound_is_only_known_when_it_runs() {
     // Three moves whose folder, together, is past the bound: from there a
     // short name is a path only known when it runs, not a known one.
     let folder = "d".repeat(MAX_JOINED / 3 + 8);
-    let code = format!(
-        "import os\nos.chdir('{folder}')\nos.chdir('{folder}')\nos.chdir('{folder}')\nos.remove('x')"
-    );
+    let code =
+        format!("import os\nf = '{folder}'\nos.chdir(f)\nos.chdir(f)\nos.chdir(f)\nos.remove('x')");
+    assert!(code.len() <= MAX_LEN, "{}", code.len());
     assert!(
         deletes(&code)
             .iter()
@@ -177,7 +182,7 @@ fn a_folder_moved_to_past_the_bound_is_only_known_when_it_runs() {
     // A program run from there moves to a folder only known when it runs,
     // never to the long folder spelled out.
     let code = format!(
-        "import os\nos.chdir('{folder}')\nos.chdir('{folder}')\nos.chdir('{folder}')\nos.system('ls')"
+        "import os\nf = '{folder}'\nos.chdir(f)\nos.chdir(f)\nos.chdir(f)\nos.system('ls')"
     );
     let answer = work(Language::Python, &code, &posix()).answer;
     let targets: Vec<&str> = answer
@@ -309,8 +314,10 @@ fn within_budget(len: usize, work: milo_guards_code::testing::Work, at: &str) {
 fn code_the_reader_stops_on_is_unreadable_after_bounded_work() {
     use milo_guards_core::testing::windows;
     for (what, language, head, unit, tail, from) in STOPPED {
-        for kb in [1, 2, 4, 8, 16, 32, 64] {
-            let code = fit(head, unit, tail, kb * 1024);
+        // Each size to the length limit, 3 KiB; a shape the reader stops on
+        // only past it is not read for its length.
+        for kb in [1, 2, 3] {
+            let code = fit(head, unit, tail, (kb * 1024).min(MAX_LEN));
             let at = format!("{what} ({language:?}), {kb} KB");
             for paths in [posix(), windows()] {
                 let cost = work(language, &code, &paths);
@@ -359,13 +366,17 @@ fn code_inside_code_is_read_within_the_budget_of_the_code() {
         (
             Language::JavaScript,
             "eval",
-            fit("/*xfrom  @catch", "@/*== ", "", 50_000),
+            fit("/*xfrom  @catch", "@/*== ", "", MAX_LEN / 4),
         ),
-        (Language::Python, "exec", fit("!=]0x ]", "\n#", "", 50_000)),
         (
             Language::Python,
             "exec",
-            "print(1); x = [1, 2, 3]\n".repeat(2_000),
+            fit("!=]0x ]", "\n#", "", MAX_LEN / 4),
+        ),
+        (
+            Language::Python,
+            "exec",
+            "print(1); x = [1, 2, 3]\n".repeat(MAX_LEN / 4 / 24),
         ),
     ];
     for (language, runs, code) in rows {
@@ -398,7 +409,7 @@ fn pieces_of_code_each_read_whole_are_held_together() {
     // is not read before any piece is parsed. Both are held to the reports
     // of the code.
     use milo_guards_core::testing::windows;
-    for (unit, count, pieces) in [("+*a", 256, 80), ("if/*a", 512, 24)] {
+    for (unit, count, pieces) in [("+*a", 200, 4), ("if/*a", 100, 5)] {
         let code = (0..pieces)
             .map(|piece| format!("exec('{}#{piece}')", unit.repeat(count)))
             .collect::<Vec<_>>()

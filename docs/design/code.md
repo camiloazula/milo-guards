@@ -97,8 +97,9 @@ Six more functions are for what a caller meets next to the code:
   newline are dropped and the scheme has no case. A relative `./x.js` and an
   installed package (`fs`, `node:fs`) are not foreign.
 
-The limits a caller holds code to are constants: `MAX_LEN` (64 KiB, the
-longest code it hands the reader), `MAX_DEPTH` (8, how deep code may run
+The limits a caller holds code to are constants: `MAX_LEN` (3 KiB, the
+longest code the reader reads, a deliberate limit of 0.2.0: see
+[The length limit](#the-length-limit)), `MAX_DEPTH` (8, how deep code may run
 code, `exec("…")` inside `exec("…")`) and `MAX_TREE_DEPTH` (400, how deep a
 parse tree is walked). `read` and `understand` refuse longer code
 themselves, and a caller may refuse it first.
@@ -266,6 +267,63 @@ arguments to a program is built in work that grows with the list: each word
 is put at the end of each list as it is. A chain of assignments is followed
 to its end once for the chain.
 
+### The length limit
+
+The reader reads code of at most `MAX_LEN` bytes, 3 KiB, and no longer: a
+deliberate limit of 0.2.0. Longer code is not read, before it is scanned or
+parsed: `read` gives an `Unread` act, `understand` says `NotUnderstood`,
+`parses` says no, and `gives_input` and `gives_shell_a_list` say it may; the
+script guard calls it `unreadable`, `is too long to read`, and the shell
+guard calls the inline code of a line (`python3 -c`, `node -e`, an
+interpreter's input, a here-document) that long `unknown`, `runs code the
+guard does not read`, as it calls any code the reader does not read; its
+own limit on a line stays 64 KiB.
+
+The reader's own tests of its budget (`tests/parse_budget.rs`) lift the
+limit, through its `testing` feature, to the 64 KiB the budget was measured
+to, so the budget stays held to every shape it stops at every length it was
+measured at: within the limit it is what bounds a line of many pieces of
+code, and past it should the limit rise.
+
+The scan and the budget below hold every shape of costly code found, as the
+grammars' lexers read the text. What they would not hold costs what the
+grammar's own reading of it costs, and some readings grow faster than the
+code: in time and memory with its square, or in stack with its depth. The
+length limit bounds that cost whatever the scan makes of the code. It was
+set by measurement: every costly shape measured (1,233 files of Python, of
+JavaScript and of shell lines that hand them to an interpreter), brought to
+each size with its repeated units (the runs of a short unit scaled, the
+blocks of a long one scaled, and its first bytes alone) and with its head
+kept, was read by `read` and `understand`, judged by the script guard, and
+given to `python3 -c` or `node -e` and in a here-document to the shell
+guard, each call on a thread of 1 MiB in a release build (the least time of
+three runs, and the most memory allocated, by Rust and by tree-sitter):
+
+| Length | Slowest call | Most memory | Aborted on a thread of 1 MiB |
+| --- | --- | --- | --- |
+| 1 KiB | 34 ms | 31 MB | none |
+| 2 KiB | 67 ms | 108 MB | none |
+| 3 KiB | 151 ms | 221 MB | none |
+| 3,200 B | 163 ms | 235 MB | none |
+| 3,328 B | 176 ms | 266 MB | none |
+| 4 KiB | 257 ms | 469 MB | none |
+
+The costliest at every length from 2 KiB on is Python the grammar reads two
+ways at once; its memory grows with the square of the code. 3 KiB is the
+longest length, in whole KiB, at which every costly shape measured stays
+within a quarter of a second and 256 MB and fits a thread of 1 MiB.
+JavaScript whose stack grows with its depth fits it far past the limit.
+
+The price is code that is not read: of the 28,299 files of Python and
+JavaScript below (up to 64 KB), 2,164 of the 3,590 of Python (60 %) and
+6,761 of the 24,709 of JavaScript (27 %) are longer than 3 KiB; of the
+72,817 files of both corpora, 24,224 of 38,039 of Python (64 %) and 11,788
+of 34,778 of JavaScript (34 %). The script guard calls each of them
+`unreadable`, where it found the acts in them; inline code that long on a
+shell line is as rare as such lines are (none of the everyday answers, the
+longest of which is 174 bytes, nor any case line holds one). A later release
+may raise the limit once the cost of a reading is bounded some other way.
+
 ### Errors
 
 Code the grammars read with an error is not read through the error. Python
@@ -338,7 +396,7 @@ then not parsed:
 
 | What the scan counts | Bound | What it stops |
 | --- | --- | --- |
-| the code's length | 64 KiB (`MAX_LEN`): past it, not read | code longer than any caller should hand the reader |
+| the code's length | 3 KiB (`MAX_LEN`): past it, not read | code longer than the reader reads (see [The length limit](#the-length-limit)) |
 | the openers left open at once: brackets; in Python each string in a format string's field, and each field; in JavaScript each template and `${…}` field, and each JSX element and `{…}` in one | 400 (`MAX_TREE_DEPTH`): past it, not read | the parser's recursion back through its stack, as deep as what is left open, as it merges the ways it reads the code |
 | on the bytes alone, the brackets (`(`, `[`, `{`) left open at once, strings and comments too, each closer closing one opener and the count never below none | 400 (`MAX_TREE_DEPTH`): past it, not read | the same, where the reading of the text was misled |
 | in JavaScript, on the bytes alone, the word `await` (wherever it stands, after a `.` or `...` too) followed, past anything that is not part of a name, by a `/`, in strings and comments too | 4 (`MAX_AWAITED_SLASHES`): past it, not read | an `await` read both as a name and as the keyword, which the grammar merges at a cost that grows with what is left open |

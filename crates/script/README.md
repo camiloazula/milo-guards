@@ -20,6 +20,12 @@ tells you which program to ask the shell guard about, and what that answer
 finds adds to this one, but a safe answer for the program never makes the
 code safe.
 
+**Code longer than 3 KiB is not read.** In this release the code reader
+reads at most 3 KiB of code (`MAX_LEN`), a deliberate limit that bounds the
+work any reading takes. Longer code is `unreadable`, `is too long to read`,
+whatever it does, so most real scripts and notebooks come back unreadable,
+not judged act by act. Later releases will raise the limit.
+
 ## Install
 
 Through the front door, where it is the `script` feature (on by default):

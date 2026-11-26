@@ -9,7 +9,8 @@
 //! never to the clock. The counts depend on the code only, so they are the
 //! same on every machine, and this runs in every build.
 //!
-//! Each shape is read at each size, from a kilobyte to the length limit,
+//! Each shape is read at each size, from a kilobyte to 64 KiB (past the
+//! reader's `MAX_LEN`, which these tests lift: see `MAX_LEN` below),
 //! and held to the count that stops it, written out here rather than read
 //! from the budget, so that a bound made ten times larger, or taken away,
 //! fails here: the count is past its bound (it stopped the reading), and
@@ -26,7 +27,14 @@ mod common;
 use common::shown;
 use milo_guards_code::testing::{self, Work};
 use milo_guards_code::Language::{self, JavaScript, Python};
-use milo_guards_code::{Budget, Understanding, MAX_LEN, MAX_TREE_DEPTH};
+use milo_guards_code::{Budget, Understanding, MAX_TREE_DEPTH};
+
+/// The longest code read here: the reader reads no code longer than its
+/// `MAX_LEN` (3 KiB), and these tests lift that limit to the length the
+/// budget was measured to, so the budget stays held to every shape it
+/// stops at every length it was measured at, as it is within the limit and
+/// would be past it should the limit rise.
+const MAX_LEN: usize = testing::MEASURED_LEN;
 
 /// The sizes, in KB, each row is read at.
 const SIZES: [usize; 7] = [1, 2, 4, 8, 16, 32, 64];
@@ -143,6 +151,7 @@ fn not_read_for_an_error(language: Language, code: &str, at: &str) -> Work {
 
 #[test]
 fn the_log_is_read_as_tree_sitter_writes_it() {
+    testing::lift_length_limit();
     // Each count reads tree-sitter's log by its words. Were they to change,
     // the counts would see nothing: these hold that each still counts what
     // it counts, past the reports a parse makes without the log.
@@ -177,6 +186,7 @@ fn the_log_is_read_as_tree_sitter_writes_it() {
 
 #[test]
 fn code_with_an_error_is_not_read_through_it() {
+    testing::lift_length_limit();
     // Every shape the grammars' recovery from an error made costly, or
     // endless, is stopped by the one rule, where the parser starts to
     // recover: tree-sitter-javascript's recovery that goes round the same
@@ -255,6 +265,7 @@ fn refused(code: &str, at: &str) {
 
 #[test]
 fn python_with_stars_where_python_allows_none_is_not_parsed() {
+    testing::lift_length_limit();
     // Python read two ways at once that never part: tree-sitter merges the
     // two at each token, and at an error, or the end of the code, builds
     // each way through them as a tree of its own, in one step no report
@@ -319,6 +330,7 @@ fn python_with_stars_where_python_allows_none_is_not_parsed() {
 
 #[test]
 fn stars_are_counted_only_where_python_allows_none() {
+    testing::lift_length_limit();
     // A starred expression stands after an opening bracket, a comma, a
     // colon, an assignment, plain or augmented, `in`, `for`, `return`,
     // `yield`, `lambda`, `import` or `except`, or in a string or a comment:
@@ -378,6 +390,7 @@ fn stars_are_counted_only_where_python_allows_none() {
 
 #[test]
 fn a_few_stars_where_python_allows_none_refuse_the_code() {
+    testing::lift_length_limit();
     // Past the bound only, after an operator, after a keyword and in a
     // format string's field alike: four such stars are parsed, and five
     // are not.
@@ -390,6 +403,7 @@ fn a_few_stars_where_python_allows_none_refuse_the_code() {
 
 #[test]
 fn real_python_with_stars_in_its_strings_is_read() {
+    testing::lift_length_limit();
     // Real code whose strings hold what looks like a star after an
     // operator: raw strings that end in an escaped quote (as pygments'
     // lexers write their patterns), a format string's field that holds a
@@ -445,6 +459,7 @@ fn not_parsed(language: Language, code: &str, at: &str) -> Work {
 
 #[test]
 fn javascript_with_await_before_a_slash_is_not_read() {
+    testing::lift_length_limit();
     // tree-sitter-javascript reads an `await` before a `/` both as a name
     // divided and as the keyword before a regular expression; inside a
     // bracket, a template's field or a conditional left open, the two ways
@@ -489,6 +504,7 @@ fn javascript_with_await_before_a_slash_is_not_read() {
 
 #[test]
 fn code_nested_past_the_walk_s_depth_is_not_read() {
+    testing::lift_length_limit();
     // The parser goes back through its stack, as deep as the openers left
     // unclosed, by recursion: past the depth the reader walks, code is not
     // read, before it is parsed, by bracket, a format string's field and a
@@ -529,6 +545,7 @@ fn code_nested_past_the_walk_s_depth_is_not_read() {
 
 #[test]
 fn code_past_the_length_limit_is_not_read() {
+    testing::lift_length_limit();
     // The longest code the reader reads: past it, code is not read, before
     // it is parsed, whatever it is.
     for (language, unit) in [
@@ -551,6 +568,7 @@ const ODD_SPACES: [&str; 12] = [
 
 #[test]
 fn code_with_spaces_only_its_grammar_passes_over_is_not_read() {
+    testing::lift_length_limit();
     // A space the grammar passes over where the scan once read a name
     // (`+\u{200b}*a` scanned as `+`, a name and `*`, no star counted, and
     // parsed with its stars; an `await` and a `/` with one between them read
@@ -596,6 +614,7 @@ fn code_with_spaces_only_its_grammar_passes_over_is_not_read() {
 
 #[test]
 fn python_strings_start_where_its_grammar_starts_them() {
+    testing::lift_length_limit();
     // tree-sitter-python takes any run of `f`, `t`, `r`, `b` and `u`
     // before a quote for a string's prefix, and a backtick for a quote
     // (a backtick before a triple quote is the start of a string to the
@@ -612,6 +631,7 @@ fn python_strings_start_where_its_grammar_starts_them() {
 
 #[test]
 fn what_hides_from_the_scan_of_the_text_is_counted_on_its_bytes() {
+    testing::lift_length_limit();
     // A head that the scan of the text reads otherwise than the grammar
     // does hides what comes after it from that scan: a named escape whose
     // braces hold quotes (`f"\N{"""}"`), a format spec that holds a quote
@@ -673,6 +693,7 @@ fn what_hides_from_the_scan_of_the_text_is_counted_on_its_bytes() {
 
 #[test]
 fn javascript_conditionals_on_lines_of_their_own_are_read() {
+    testing::lift_length_limit();
     // A conditional opens no level the scan counts: 405 lines of them
     // without semicolons, which once counted a level for each, are read.
     let lines: String = (0..405)
@@ -706,6 +727,7 @@ fn literal(
 
 #[test]
 fn ways_merged_around_a_list_s_elements_are_stopped() {
+    testing::lift_length_limit();
     // JavaScript's `await` read as a name between operators, with a list's
     // element every few units (`- await ` sixteen times, then `[a,a]`: 3.8 s
     // for 64 KB, each step costing more than the last as merged ways
@@ -744,6 +766,7 @@ fn ways_merged_around_a_list_s_elements_are_stopped() {
 
 #[test]
 fn modules_and_enums_compiled_to_javascript_are_read_whole() {
+    testing::lift_length_limit();
     // What compilers write: TypeScript's enums and esbuild's namespaces, one
     // function after another at the top level, each read two ways for a
     // while (as a call or a parenthesized expression).
@@ -768,6 +791,7 @@ fn modules_and_enums_compiled_to_javascript_are_read_whole() {
 
 #[test]
 fn literals_read_two_ways_are_read_whole() {
+    testing::lift_length_limit();
     // Valid literals the grammar reads two ways at once (an object or array
     // that may be a pattern, starred names that may be a target, a `with`
     // whose items may be a tuple): each element is built as it goes, so the
@@ -856,6 +880,7 @@ fn literals_read_two_ways_are_read_whole() {
 
 #[test]
 fn pieces_each_within_the_bounds_of_a_parse_are_held_together() {
+    testing::lift_length_limit();
     // Code a parse reads to its end within its own bounds, at a cost the
     // bounds of one parse let through, read in piece after piece of one
     // line: the budget carries the drops and merges left over from each
@@ -891,6 +916,7 @@ fn pieces_each_within_the_bounds_of_a_parse_are_held_together() {
 
 #[test]
 fn pieces_that_each_meet_an_error_are_held_to_the_reports() {
+    testing::lift_length_limit();
     // Code that meets an error spends nothing past the reports that led to
     // it, and does not spend the budget: a line of many such pieces is held
     // to the reports of the line.
@@ -927,6 +953,7 @@ fn comments_in_a_block(before: usize, width: usize, lines: usize) -> String {
 
 #[test]
 fn a_run_of_comment_lines_in_a_block_is_read_up_to_the_bytes_handed() {
+    testing::lift_length_limit();
     // tree-sitter-python's scanner reads the rest of a run of comment lines
     // in a block again at each line of it: a run of `n` lines is handed some
     // `4·n²` bytes. At the start of the code, read without the log, a run of
@@ -965,6 +992,7 @@ fn a_run_of_comment_lines_in_a_block_is_read_up_to_the_bytes_handed() {
 
 #[test]
 fn the_reader_s_own_work_is_held_to_its_units() {
+    testing::lift_length_limit();
     // A chain of calls or of members that names the same thing again from
     // each link, past the depth the walk reads: each link costs the walk the
     // depth again. Past the units the reading stops where it is.
@@ -996,6 +1024,7 @@ fn the_reader_s_own_work_is_held_to_its_units() {
 
 #[test]
 fn every_reading_within_one_budget_draws_from_it() {
+    testing::lift_length_limit();
     // A caller that reads several pieces of one line through one budget:
     // once a reading is stopped, every one after it is too, before it
     // starts, so reading again, or the code inside code, adds no work.
@@ -1059,6 +1088,7 @@ fn spent_inside(
 
 #[test]
 fn a_question_whose_walk_runs_out_answers_the_cautious_way() {
+    testing::lift_length_limit();
     // Within a budget left short by an earlier reading, a question whose own
     // walk runs out of units part of the way gives the answer of code not
     // read: not understood, may give input, may hand a shell a list; though
@@ -1117,6 +1147,7 @@ fn a_question_whose_walk_runs_out_answers_the_cautious_way() {
 
 #[test]
 fn literal_code_whose_parse_is_stopped_is_not_read() {
+    testing::lift_length_limit();
     // The code `exec` and `eval` run is parsed within the same budget: a
     // stopped parse there is code not read, never code that does not parse
     // (which raises before it runs a thing), and the walk of the code
@@ -1139,6 +1170,7 @@ fn literal_code_whose_parse_is_stopped_is_not_read() {
 
 #[test]
 fn short_code_is_read_whole() {
+    testing::lift_length_limit();
     // Code of a few lines is read with the few reports it allows, and with
     // the log on only when it needs more than the reports without it.
     for (language, code) in [
@@ -1154,6 +1186,7 @@ fn short_code_is_read_whole() {
 
 #[test]
 fn dense_code_at_the_length_limit_is_read_whole() {
+    testing::lift_length_limit();
     // Valid code written to be dense, at the length limit: within every
     // count, and read whole.
     let rows: [(Language, &str, &str, &str); 4] = [
@@ -1175,6 +1208,7 @@ fn dense_code_at_the_length_limit_is_read_whole() {
 
 #[test]
 fn code_nested_as_deep_as_the_walk_reads_is_not_stopped() {
+    testing::lift_length_limit();
     // Brackets nested as deep as the walk reads: read whole (the walk then
     // says it is too deep), not stopped by any count.
     for (language, open, close) in [(Python, "(", ")"), (JavaScript, "[", "]")] {
@@ -1186,6 +1220,7 @@ fn code_nested_as_deep_as_the_walk_reads_is_not_stopped() {
 
 #[test]
 fn a_chain_of_assignments_is_read_in_work_that_grows_with_it() {
+    testing::lift_length_limit();
     // `x = a = a = …`: the chain is followed to its end once for the chain,
     // not again from each assignment; past some hundred links the walk's
     // units stop it.
@@ -1200,6 +1235,7 @@ fn a_chain_of_assignments_is_read_in_work_that_grows_with_it() {
 
 #[test]
 fn the_other_questions_of_stopped_code_are_held_to_the_budget() {
+    testing::lift_length_limit();
     // `parses`, `gives_input` and `gives_shell_a_list` make the same parse:
     // the code is not said to parse, may give input and hand a shell a
     // list, and each is held to the budget.
@@ -1219,6 +1255,7 @@ fn the_other_questions_of_stopped_code_are_held_to_the_budget() {
 
 #[test]
 fn the_same_code_asked_again_is_parsed_once() {
+    testing::lift_length_limit();
     // Each question asked of the same code within one budget is answered
     // from what its first parse gave: the reports, and the bytes handed,
     // are those of one parse, for the last four pieces asked about, in
@@ -1272,6 +1309,7 @@ fn the_same_code_asked_again_is_parsed_once() {
 
 #[test]
 fn a_budget_shows_what_it_spent_and_never_the_code() {
+    testing::lift_length_limit();
     let budget = Budget::new(usize::MAX);
     let code = "require('fs').rmSync('/home/secret-name')";
     let _ = budget.read(JavaScript, code);

@@ -75,7 +75,7 @@ beside it.
 | `run_downloaded` | Code that runs code it downloads (`import('https://…')`): `runs code it downloads`, with what to do instead. | the same |
 | `run_program` | Code that starts a program (`runs a program`: `subprocess.run([…])`, `child_process.spawn`, `os.kill`) or runs a command in a shell (`runs a command in a shell`: `os.system`, `child_process.exec`). | none: see below |
 | `unknown` | Code the guard does not read: what the reader does not follow (`eval` of a name, code loaded from outside the workspace, a path handed to a call it has no row for), a path, a program or a directory only known when the code runs, a read of a path that cannot be placed, code that declares another encoding, and code not read whole. | the same |
-| `unreadable` | Code longer than `MAX_LEN` (64 KiB), nested deeper than the reader walks, running code inside code deeper than `MAX_DEPTH` (8) or more than the nested budget, that does not parse, or that the reader stops on, past the work its grammar may do for it. | the same |
+| `unreadable` | Code longer than `MAX_LEN` (3 KiB, the reader's limit), nested deeper than the reader walks, running code inside code deeper than `MAX_DEPTH` (8) or more than the nested budget, that does not parse, or that the reader stops on, past the work its grammar may do for it. | the same |
 
 The `Rule` enum is exhaustive, with `Rule::ALL`, an inherent `name` and core's
 `RuleName`, as every guard's.
@@ -270,9 +270,11 @@ themselves. The cases are in `tests/cases/resolved_links.cases`.
 
 ## What cannot be read is risky
 
-- **Too long.** Code longer than `MAX_LEN` (the reader's limit and the shell
-  guard's for a line) is not read: `unreadable`, `is too long to read`, with
-  no target.
+- **Too long.** Code longer than `MAX_LEN` (3 KiB, the reader's limit, a
+  deliberate limit of 0.2.0: see
+  [Code: The length limit](code.md#the-length-limit)) is not read:
+  `unreadable`, `is too long to read`, with no target. A script longer than
+  that, as many real ones are, is not judged act by act.
 - **Too deep.** Code the reader does not walk in full (`Reading::deep`) is
   `unreadable`, `nests too deeply to read`, beside what the reader found.
   Code that runs code (`exec("…")`, `eval("…")`) is read in its own language
@@ -332,9 +334,8 @@ of it); it counts the places before it builds them, so a thousand `chdir`s
 cost what two do; and it reads nested code to the budget above. So the work
 of its own grows with the number of acts the reader gives. The reader's own
 time is the reader's: it bounds what it works out from names, but its time on
-some shapes is not linear in the code's length (a long list of one name,
-`subprocess.run([x, x, …])`, takes seconds at 64 KiB), and that is not this
-guard's to bound. `tests/work.rs` holds the work to those counts, through the crate's
+some shapes is not linear in the code's length, and that is the reader's
+to bound (see [Code: Limits](code.md#limits)), not this guard's. `tests/work.rs` holds the work to those counts, through the crate's
 `testing` feature, not to the clock: the acts judged, the places built, and
 the bytes joined for each act.
 

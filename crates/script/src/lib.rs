@@ -233,8 +233,9 @@ pub fn target_shell(paths: &Paths) -> TargetShell {
     }
 }
 
-/// The longest code judged, in bytes: the code reader's limit, and the
-/// shell guard's for a line. Longer code is [`Rule::Unreadable`].
+/// The longest code judged, in bytes: the code reader's limit, 3 KiB, a
+/// deliberate limit (see [`milo_guards_code::MAX_LEN`]). Longer code is
+/// [`Rule::Unreadable`], `is too long to read`.
 pub const MAX_LEN: usize = milo_guards_code::MAX_LEN;
 
 /// Judge `code`, written in `language`, run from the working directory of

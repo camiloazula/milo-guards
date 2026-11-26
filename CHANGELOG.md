@@ -480,6 +480,27 @@ bounded amount of work.
   valid code longer than a kilobyte or two is read with tree-sitter's log,
   since only the log sees two ways of reading the code that never part.
 
+The reader of Python and JavaScript reads code of at most 3 KiB, a
+deliberate limit of this release: `milo_guards_code::MAX_LEN` (and the
+script guard's `MAX_LEN`, the same) is 3 KiB, where it was 64 KiB.
+
+- Longer code is not read, before it is scanned or parsed: `read` gives an
+  `Unread` act, `understand` says `NotUnderstood` and `parses` no. The
+  script guard calls it `unreadable`, `is too long to read`; the shell
+  guard calls the inline code of a line that long (`python3 -c`, `node -e`,
+  an interpreter's input, a here-document) `unknown`, `runs code the guard
+  does not read`, as it calls any code the reader does not read. A shell
+  line's own limit stays 64 KiB.
+- The limit bounds the cost of a reading whatever the scan before a parse
+  makes of the code: within it, every costly shape measured costs at most
+  0.16 s and 221 MB for a call, a judged piece of code or a shell line in a
+  release build, and fits a thread of 1 MiB (the measurements are in
+  `docs/design/code.md`, The length limit).
+- Many real scripts are longer: of the corpora the limits were measured on,
+  some three in five files of Python and one in three of JavaScript (up to
+  64 KB) are, and the script guard no longer judges them act by act. No case
+  line and no everyday answer changed: none holds code that long.
+
 ## 0.1.4 (2026-11-22)
 
 What the URL guard answers for a few `file:` URLs and odd spellings, nothing

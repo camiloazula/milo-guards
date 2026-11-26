@@ -53,11 +53,36 @@ pub const MAX_DEPTH: usize = 8;
 /// mebibyte of stack. Real code nests 36 deep at most.
 pub const MAX_TREE_DEPTH: usize = 400;
 
-/// The longest code the reader reads: it reads in time that grows with the
-/// code, and the strings it works out from names are held to a few times
-/// this. Longer code is not read, before it is parsed (the shell guard's
-/// limit on a line is the same number).
-pub const MAX_LEN: usize = 64 * 1024;
+/// The longest code the reader reads, 3 KiB: longer code is not read, before
+/// it is scanned or parsed, and the strings it works out from names are held
+/// to a few times this. It is a deliberate limit, set by measurement: the
+/// grammars read some code in time and memory that grow faster than the
+/// code, and within this length every such shape measured costs at most a
+/// quarter of a second and a quarter of a gibibyte, and fits a thread of
+/// 1 MiB, whatever the scan before a parse makes of it. The shell guard's
+/// limit on a line is longer (64 KiB): the inline code of a longer line is
+/// not read.
+pub const MAX_LEN: usize = 3 * 1024;
+
+/// The longest code the budget's counts were measured to, 64 KiB, the
+/// reader's limit before [`MAX_LEN`] was lowered: the reader's own tests of
+/// the budget read code to it (`testing::lift_length_limit`), so the budget
+/// stays held at every length it was measured at.
+pub(crate) const MEASURED_LEN: usize = 64 * 1024;
+
+/// Whether the reader's own tests lifted [`MAX_LEN`] to [`MEASURED_LEN`].
+#[cfg(feature = "testing")]
+pub(crate) static LIFTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The longest code a reading takes: [`MAX_LEN`], or [`MEASURED_LEN`] in
+/// the reader's tests that lift it.
+pub(crate) fn longest() -> usize {
+    #[cfg(feature = "testing")]
+    if LIFTED.load(std::sync::atomic::Ordering::Relaxed) {
+        return MEASURED_LEN;
+    }
+    MAX_LEN
+}
 
 /// The reports of its progress tree-sitter makes (one each 100 steps of its
 /// parser) that the parses of a [`Budget`] may make in all: one for each
@@ -261,7 +286,7 @@ impl Budget {
     /// budget allows).
     #[must_use]
     pub fn new(len: usize) -> Self {
-        let len = len.min(MAX_LEN);
+        let len = len.min(longest());
         Self {
             reports: len / REPORT_BYTES + REPORT_BASE,
             handed: len * HANDED_BYTES + HANDED_BASE,
@@ -373,7 +398,7 @@ pub(crate) fn parse(
     if let Some(tree) = kept {
         return tree.map_or(Parsed::Error, Parsed::Tree);
     }
-    if code.len() > MAX_LEN {
+    if code.len() > longest() {
         budget.stop();
         return Parsed::Stopped;
     }
