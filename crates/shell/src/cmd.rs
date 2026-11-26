@@ -41,7 +41,14 @@ fn ended_at(text: &str, ended: &str) -> Vec<crate::located::Edit> {
 /// Read `text`, a cmd line that ends with a line break, into `split`.
 fn read(split: &mut Split, text: &str, depth: usize) {
     let language = tree_sitter_batch::LANGUAGE.into();
-    let Some(tree) = unit::parse(split, text, &language, unit::Recovery::Cheap) else {
+    // cmd reads `^"` outside quotes as a quote character that opens no
+    // quoted text, and the grammar as a quote that does: `echo ^" & echo
+    // x & echo ^"` is three commands to cmd and one `echo` to the grammar.
+    // So the grammar is handed the text with each such quote written as a
+    // letter, the same length, and the words are read from the text as
+    // written, where the program gets its `"`.
+    let parsed = escaped_quotes_as_letters(text);
+    let Some(tree) = unit::parse(split, &parsed, &language, unit::Recovery::Cheap) else {
         return;
     };
     split.note_grammar(depth, &tree);
@@ -60,6 +67,30 @@ fn read(split: &mut Split, text: &str, depth: usize) {
     };
     walker.walk(tree.root_node(), None, 0);
     walker.close_loops();
+}
+
+/// `text` with each `"` that a `^` escapes outside double quotes written
+/// as `x`: cmd takes that quote for a character and opens no quoted text
+/// with it, so the `&`, `|` and redirects after it still split the line.
+/// A `^^` is a caret, so the quote after it is a quote. Every byte stays
+/// where it was.
+fn escaped_quotes_as_letters(text: &str) -> String {
+    let mut parsed = String::with_capacity(text.len());
+    let mut quoted = false;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        parsed.push(c);
+        match c {
+            '"' => quoted = !quoted,
+            '^' if !quoted => match chars.next() {
+                Some('"') => parsed.push('x'),
+                Some(next) => parsed.push(next),
+                None => {}
+            },
+            _ => {}
+        }
+    }
+    parsed
 }
 
 /// `set TEMP=…`: a variable the line sets no longer names its usual place.

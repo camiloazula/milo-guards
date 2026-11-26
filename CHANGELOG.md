@@ -580,6 +580,9 @@ are more serious than 0.1.4's.
   -e /etc/hosts` is `Changes`. nircmd's own commands that change the
   registry, delete a file or shut the computer down are those findings,
   and `history -w FILE` writes the file.
+- `milo-guards-shell`: in cmd, a `^"` outside quotes opens no quoted text,
+  as cmd reads it, so the `&`, `&&`, `|` and redirects after it split the
+  line into the commands cmd runs, each judged.
 
 ## 0.1.4 (2026-11-22)
 

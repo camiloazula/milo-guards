@@ -162,6 +162,12 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   folder in a name with no quotes (`C:\Windows/System32/shutdown.exe`)
   may end it or not, so both are read. One inside the quotes is part of
   the path.
+- cmd reads a `^"` outside double quotes as a quote character that opens no
+  quoted text, and the grammar as a quote that does, so the grammar is
+  handed the line with each such quote written as a letter, the same
+  length, and the words are read from the line as written: `echo ^" & echo
+  x & echo ^"` is three commands. A `^^` is a caret, so a quote after it is
+  a quote.
 - The batch grammar reads an `if` or a `for` only at the start of a line:
   after `&&`, `||` or `|` it is a command named `if` with its condition and
   body as arguments. The guard splits that command's text again on its own,
