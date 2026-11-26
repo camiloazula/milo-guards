@@ -496,6 +496,7 @@ pub(crate) fn canonical(name: &str) -> &str {
         "nmo" => "new-module",
         "icim" => "invoke-cimmethod",
         "iwmi" => "invoke-wmimethod",
+        "r" | "ihy" => "invoke-history",
         "%" | "foreach" => "foreach-object",
         "tee" => "tee-object",
         "cd" | "sl" | "chdir" => "set-location",

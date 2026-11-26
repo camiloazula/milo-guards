@@ -374,7 +374,8 @@ pub(super) fn nircmd(unit: &Unit, key: &str) -> Launch {
 /// `pcalua -a PROGRAM [-c ARGS] [-d FOLDER]`, the Program Compatibility
 /// Assistant: it starts the program with the command line `-c` gives, in
 /// the folder `-d` names. The program and its arguments are one command
-/// line, read as cmd reads one.
+/// line, read as cmd reads one. A library it is given (`-a x.dll`) is
+/// native code, `unknown` (`detect`).
 pub(super) fn pcalua(args: &[Arg]) -> Launch {
     let value = |name: &str| {
         args.iter()
@@ -450,6 +451,45 @@ pub(super) fn rundll32(args: &[Arg]) -> Launch {
     );
     if launches {
         runs(args, Some(at))
+    } else {
+        Launch::Itself
+    }
+}
+
+/// `mshta`, the HTML application host: given a file (`app.hta`, a path on
+/// this machine's disk) it runs the workspace's own application, as a
+/// script file is. Any other target is code the line does not show: one on
+/// another machine (`http:`, `https:`, `ftp:`, a share, `\\server\x.hta`) a
+/// script it downloads, and any other scheme (`vbscript:`, `javascript:`,
+/// `about:` with a script in it, `file:`, `res:`, `mhtml:`) code the guard
+/// does not read.
+pub(super) fn mshta(args: &[Arg]) -> Launch {
+    let Some(first) = args.first() else {
+        return Launch::Itself;
+    };
+    let Some(text) = first.known() else {
+        return Launch::Unread(first.clone());
+    };
+    let target = text.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace());
+    let lower = target.to_ascii_lowercase();
+    let remote = ["http:", "https:", "ftp:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+        || lower.starts_with("\\\\")
+        || lower.starts_with("//")
+        || lower.starts_with("file://")
+            && !lower.starts_with("file:///")
+            && !lower["file://".len()..].starts_with("localhost/");
+    let scheme = lower.split_once(':').is_some_and(|(name, _)| {
+        name.len() > 1
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    });
+    if remote {
+        Launch::Downloaded
+    } else if scheme || target.is_empty() {
+        Launch::Reads(crate::unit::Reads::Interpreter)
     } else {
         Launch::Itself
     }

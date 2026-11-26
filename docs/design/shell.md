@@ -624,9 +624,20 @@ each with the options it reads and those of them that take a value, as
   SHOW FOLDER PROGRAM…`, `elevate` and `runassystem` run a program, `execmd
   …` a line of cmd, `elevatecmd …` and `cmdwait MS …` a command of its own),
   `pcalua -a PROGRAM -c ARGS -d FOLDER` (the program and its arguments read
-  as a line of cmd) and `rundll32`'s functions that start the program after
+  as a line of cmd, `-c` running to pcalua's next option; a library it is
+  given, `-a x.dll`, is `unknown`, "runs code from a library") and `rundll32`'s functions that start the program after
   them (shell32's `ShellExec_RunDLL`, url's `FileProtocolHandler`, zipfldr's
-  `RouteTheCall`). Windows' own `sudo` reads as `sudo` does. PowerShell's
+  `RouteTheCall`); any other function of `rundll32` is native code the guard
+  does not read, `unknown`, "runs code from a library" (but
+  `user32.dll,LockWorkStation`, which PowerShell hands on as two words).
+  `mshta` given a file on this machine's disk runs the workspace's own
+  application, as a script file is; given one on another machine (`http:`,
+  `https:`, `ftp:`, a share) a script it downloads, `run_downloaded`; and
+  given any other scheme (`vbscript:`, `javascript:`, `about:`, `file:`,
+  `res:`, `mhtml:`) code the guard does not read, `unknown`. nircmd's own
+  commands that change the registry (`regdelkey`, `regdelval`,
+  `regsetval`), delete a file (`filldelete`) or shut the computer down
+  (`exitwin`) are those findings. Windows' own `sudo` reads as `sudo` does. PowerShell's
   `Invoke-WmiMethod` and `Invoke-CimMethod` of `Create` on `Win32_Process`
   start the command line they are given, as `wmic process call create`
   does: `unknown`, "starts a program through WMI".
@@ -656,6 +667,19 @@ each with the options it reads and those of them that take a value, as
   `--execute-command` the words or the one word as a line, since terminals
   differ there (xterm and alacritty take the words, gnome-terminal and
   xfce4-terminal a line), both judged.
+- What runs code the line does not show: `fc` without `-l` runs again, or
+  edits and runs, commands of the shell's history, and so do zsh's and
+  ksh's `r` and PowerShell's `Invoke-History` (`r`, `ihy`); `fc.exe`,
+  Windows' file compare, is no builtin: `unknown`, "runs commands from the shell's
+  history". A library `LD_PRELOAD`, `LD_AUDIT` or macOS's
+  `DYLD_INSERT_LIBRARIES` names (set in front of the program, with `env`
+  or exported) is loaded into every program the line starts, but a builtin
+  that starts none: `unknown`, "loads a library into the program"; an empty
+  value loads none, and a search path (`LD_LIBRARY_PATH`) is not one.
+  `history -w FILE` and `history -a FILE` write the file.
+  `sudo -e` (`--edit`) and `sudoedit` edit their operands as root, each a
+  write ("edits"), and run the editor their variables name, not a program
+  the operands name.
 
 An option one of `nix run`, `nix shell`, `nix develop`, `nix-shell`,
 `limactl shell`, `doppler run`, `sem` or a launcher above that reads a

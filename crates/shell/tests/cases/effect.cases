@@ -515,7 +515,8 @@ posix effect=unknown | nohup cat a.txt
 posix effect=unknown | tmux new cat
 posix effect=unknown | screen -dm cat a.txt
 posix effect=unknown | sudo -i
-posix effect=unknown | sudo -e /etc/hosts
+# `sudo -e` edits its operands, which is a write.
+posix effect=changes | sudo -e /etc/hosts
 posix effect=unknown | command -v ls
 posix effect=unknown | exec
 # What changes which program runs or what it does.

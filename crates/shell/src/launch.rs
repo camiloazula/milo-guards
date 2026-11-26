@@ -317,6 +317,17 @@ fn add_launched(
         // reads (`npm_config_call='…' npx`).
         unit.argument_variables = split.argument_variables.clone();
         let input = fed(&unit) || split.inherits_input > 0;
+        // `LD_PRELOAD=x.so cmd`: the program loads a library the line does
+        // not show, once for the unit however many ways it reads.
+        if given.is_none() && !STARTS_NOTHING.contains(&key.as_str()) {
+            if let Some(library) = named::loaded_library(&unit) {
+                split.problem(
+                    Rule::Unknown,
+                    "loads a library into the program",
+                    Some(&library),
+                );
+            }
+        }
         // What a tracer, `script` or `time` writes its own output to, once
         // for the unit however many ways it reads.
         if given.is_none() && unit.shell != Shell::Cmd {
@@ -1874,6 +1885,7 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
         "nircmd" | "nircmdc" => launchers::nircmd(unit, key),
         "pcalua" => launchers::pcalua(args),
         "rundll32" => launchers::rundll32(args),
+        "mshta" => launchers::mshta(args),
         // Queues, session and display runners, and the programs that run a
         // command as another user, with other limits or in a toolbox.
         "tsp" if posix => launchers::tsp(args),
@@ -1907,6 +1919,11 @@ fn launch(key: &str, unit: &Unit, input: bool) -> Launch {
 /// `--chd DIR`), then the command, which `-D DIR` (`--chdir`) starts in
 /// `DIR`.
 fn sudo(args: &[Arg]) -> Launch {
+    // `sudo -e FILE…` (`--edit`) edits its operands as `sudoedit` does: it
+    // runs no command of them.
+    if sudo_edits(args).is_some() {
+        return Launch::Itself;
+    }
     let Some(start) = after_options_by(args, |text, next| getopt(text, next, &SUDO_OPTIONS).0)
         .filter(|start| *start < args.len())
     else {
@@ -1934,6 +1951,42 @@ fn sudo(args: &[Arg]) -> Launch {
     // The `NAME=value` words after its options set the program's
     // environment.
     in_folder(folder, runs(args, Some(after_assignments(args, start))))
+}
+
+/// The files `sudo -e` (`--edit`, a bundle holding `e` too) edits, as
+/// `sudoedit` edits its operands: every word after its options. `None` when
+/// it is not told to edit. Its options are read as `getopt_long` reads them,
+/// up to the first operand.
+pub(crate) fn sudo_edits(args: &[Arg]) -> Option<&[Arg]> {
+    let start = after_options_by(args, |text, next| getopt(text, next, &SUDO_OPTIONS).0)
+        .unwrap_or(args.len());
+    let own = &args[..start];
+    let mut edits = false;
+    let mut at = 0;
+    while let Some(arg) = own.get(at) {
+        at += match arg.known() {
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                let (word, _) = getopt(text, own.get(at + 1), &SUDO_OPTIONS);
+                edits |= git_long(text, "edit")
+                    || text.strip_prefix('-').is_some_and(|bundle| {
+                        !bundle.starts_with('-')
+                            && bundle
+                                .chars()
+                                .take_while(|letter| {
+                                    !SUDO_OPTIONS.short.iter().any(|(s, _)| s == letter)
+                                })
+                                .any(|letter| letter == 'e')
+                    });
+                if matches!(word, Word::Value) {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => 1,
+        };
+    }
+    edits.then(|| &args[start..])
 }
 
 /// `sudo`'s options (sudo.ws, `sudo --help`).

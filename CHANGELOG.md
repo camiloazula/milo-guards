@@ -567,6 +567,19 @@ are more serious than 0.1.4's.
   core.hooksPath` is; `pre-commit autoupdate` is `overwrite`, "writes to a
   file a tool runs on its own"; `pre-commit try-repo` of a remote
   repository is `run_downloaded`. `pre-commit run` is safe.
+- `milo-guards-shell`: code a line runs without showing it is `unknown`:
+  a function of a library `rundll32` runs (but those that start a program
+  and `LockWorkStation`) and `pcalua -a x.dll`, "runs code from a library";
+  `mshta` given anything but a file on this machine's disk, "runs code the
+  guard does not read", or `run_downloaded` for one on another machine;
+  `fc` (but `fc -l`), zsh's and ksh's `r` and PowerShell's
+  `Invoke-History`, "runs commands from the shell's history"; and a program
+  started with `LD_PRELOAD`, `LD_AUDIT` or `DYLD_INSERT_LIBRARIES`, "loads
+  a library into the program". `sudo -e FILE` and `sudoedit FILE` edit the
+  file as root, a write judged by where it lands, and the `effect` of `sudo
+  -e /etc/hosts` is `Changes`. nircmd's own commands that change the
+  registry, delete a file or shut the computer down are those findings,
+  and `history -w FILE` writes the file.
 
 ## 0.1.4 (2026-11-22)
 

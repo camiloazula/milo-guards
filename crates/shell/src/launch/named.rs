@@ -204,6 +204,24 @@ const VARIABLES: &[Programs] = &[
     ),
 ];
 
+/// The variables that make every program the line starts load a library
+/// first: the dynamic linker's `LD_PRELOAD` and `LD_AUDIT`, and macOS's
+/// `DYLD_INSERT_LIBRARIES`. A search path (`LD_LIBRARY_PATH`) is not one.
+const LIBRARIES: [&str; 3] = ["LD_PRELOAD", "LD_AUDIT", "DYLD_INSERT_LIBRARIES"];
+
+/// The library the line tells the program of `unit` to load first, in one of
+/// [`LIBRARIES`]: the value as written, or as the line spells it when only
+/// known when it runs. An empty value loads none.
+pub(super) fn loaded_library(unit: &Unit) -> Option<String> {
+    unit.argument_variables
+        .newest_first()
+        .filter(|(name, _)| LIBRARIES.contains(&name.as_str()))
+        .find(|(_, value)| {
+            !matches!(value, Arg::Null) && value.known().is_none_or(|text| !text.trim().is_empty())
+        })
+        .map(|(_, value)| value.text().to_string())
+}
+
 /// The name of a variable of [`VARIABLES`] that `name` is, written in any
 /// case, as Windows reads the names of variables: the one a program reads.
 pub(crate) fn command_variable(name: &str) -> Option<&'static str> {
@@ -211,6 +229,7 @@ pub(crate) fn command_variable(name: &str) -> Option<&'static str> {
         .iter()
         .flat_map(|(_, variables, _)| variables.iter())
         .map(|(variable, _)| *variable)
+        .chain(LIBRARIES)
         .find(|variable| variable.eq_ignore_ascii_case(name))
 }
 
@@ -334,6 +353,12 @@ const TOO_MANY: &str = "runs the command a variable sets too many times to read"
 /// The commands the program `key` of `unit` runs that the line names, each
 /// with whether a variable named it, and the shell it hands them to.
 fn commands(key: &str, unit: &Unit) -> Named {
+    // `sudo -e` runs the editor `sudoedit` runs.
+    let key = if key == "sudo" && super::sudo_edits(&unit.args).is_some() {
+        "sudoedit"
+    } else {
+        key
+    };
     let mut found = Vec::new();
     let mut through = Through::System;
     let mut libraries = Vec::new();

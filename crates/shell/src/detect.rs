@@ -42,8 +42,9 @@ mod settings;
 mod system;
 
 /// Programs that run what they wrap as root or administrator.
-const ELEVATORS: [&str; 11] = [
+const ELEVATORS: [&str; 12] = [
     "sudo",
+    "sudoedit",
     "doas",
     "su",
     "pkexec",

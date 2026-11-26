@@ -68,9 +68,124 @@ impl Checker<'_> {
                     self.installs_hooks(unit, ".git/hooks");
                 }
             }
+            // A function of a library rundll32 runs is native code; the ones
+            // that start a program are read as launchers (`launch`), and a
+            // function known to do nothing else is let through.
+            "rundll32" if !rundll32_harmless(&unit.args) => {
+                self.add(Rule::Unknown, "runs code from a library", unit.args.first());
+            }
+            // `pcalua -a x.dll` loads a library and runs its code.
+            "pcalua" => {
+                let args = unit.args.as_slice();
+                let program = args
+                    .iter()
+                    .position(|arg| {
+                        arg.known()
+                            .is_some_and(|text| text.eq_ignore_ascii_case("-a"))
+                    })
+                    .and_then(|at| args.get(at + 1));
+                if program
+                    .and_then(Arg::known)
+                    .is_some_and(|text| text.to_ascii_lowercase().ends_with(".dll"))
+                {
+                    self.add(Rule::Unknown, "runs code from a library", program);
+                }
+            }
+            // NirSoft's nircmd does what its own commands say: some change the
+            // registry, delete a file, or shut the computer down.
+            "nircmd" | "nircmdc" => self.nircmd(unit),
+            // `fc` runs again, or edits and runs, commands of the shell's
+            // history, which the line does not show; `fc -l` lists them.
+            // PowerShell's `Invoke-History` (`r`, `ihy`) runs one again.
+            // zsh's and ksh's `r` is `fc -e -`. A program named by a path or
+            // with an extension (`fc.exe`, Windows' file compare) is no
+            // builtin.
+            "fc" | "r"
+                if shell == Shell::Posix
+                    && unit.program.known() == Some(key)
+                    && (key == "r" || !fc_lists(&unit.args)) =>
+            {
+                self.add(
+                    Rule::Unknown,
+                    "runs commands from the shell's history",
+                    None,
+                );
+            }
+            // `history -w FILE` and `-a FILE` write the history to the file.
+            "history" if shell == Shell::Posix => {
+                let args = unit.args.as_slice();
+                let writes = args.iter().filter_map(Arg::known).any(|text| {
+                    text.strip_prefix('-').is_some_and(|bundle| {
+                        !bundle.starts_with('-') && bundle.contains(['w', 'a'])
+                    })
+                });
+                if writes {
+                    for file in args
+                        .iter()
+                        .filter(|arg| arg.known().is_none_or(|text| !text.starts_with('-')))
+                    {
+                        self.write(shell, unit.scope(), file, "writes to");
+                    }
+                }
+            }
+            "invoke-history" if shell == Shell::PowerShell => {
+                self.add(
+                    Rule::Unknown,
+                    "runs commands from the shell's history",
+                    None,
+                );
+            }
+            // `sudoedit FILE…` and `sudo -e FILE…` edit each file as root.
+            "sudoedit" => {
+                for file in unit
+                    .args
+                    .iter()
+                    .filter(|arg| arg.known().is_none_or(|text| !text.starts_with('-')))
+                {
+                    self.write(shell, unit.scope(), file, "edits");
+                }
+            }
+            "sudo" => {
+                if let Some(files) = crate::launch::sudo_edits(&unit.args) {
+                    for file in files {
+                        self.write(shell, unit.scope(), file, "edits");
+                    }
+                }
+            }
             "osascript" => self.add(
                 Rule::Unknown,
                 "runs AppleScript the guard does not read",
+                None,
+            ),
+            _ => {}
+        }
+    }
+
+    /// The commands of nircmd that change the machine themselves: the
+    /// registry (`regdelkey`, `regdelval`, `regsetval`), a file it fills and
+    /// deletes (`filldelete`), and `exitwin`, which shuts the computer down,
+    /// restarts it or logs off. Its commands that run a program are read as
+    /// launchers.
+    fn nircmd(&mut self, unit: &Unit) {
+        let args = unit.args.as_slice();
+        let Some(command) = args
+            .first()
+            .and_then(Arg::known)
+            .map(str::to_ascii_lowercase)
+        else {
+            return;
+        };
+        match command.as_str() {
+            "regdelkey" | "regdelval" | "regsetval" => {
+                self.add(Rule::SystemSettings, "changes the registry", args.get(1));
+            }
+            "filldelete" => {
+                let files: Vec<&Arg> = args.iter().skip(1).collect();
+                self.delete(unit, &files, "deletes");
+            }
+            "exitwin" => self.add(
+                Rule::StopSystem,
+                "shuts the computer down or restarts it",
                 None,
             ),
             _ => {}
@@ -1281,6 +1396,43 @@ fn remote_repository(repo: &str) -> bool {
         || repo
             .split_once(':')
             .is_some_and(|(host, _)| host.contains('@') && !host.contains(['/', '\\']))
+}
+
+/// The functions of rundll32 known to run nothing but themselves: locking
+/// the workstation. Any other is native code the guard does not read.
+fn rundll32_harmless(args: &[Arg]) -> bool {
+    // PowerShell hands `user32.dll,LockWorkStation` on as two words.
+    let joined = match args {
+        [library, function, ..] if library.known().is_some_and(|text| !text.contains(',')) => {
+            library
+                .known()
+                .zip(function.known())
+                .map(|(library, function)| format!("{library},{function}"))
+        }
+        _ => args.first().and_then(Arg::known).map(str::to_string),
+    };
+    joined
+        .map(|text| text.to_ascii_lowercase().replace(' ', ""))
+        .is_some_and(|text| {
+            let text = text.rsplit(['\\', '/']).next().unwrap_or(&text);
+            matches!(
+                text,
+                "user32.dll,lockworkstation" | "user32,lockworkstation"
+            )
+        })
+}
+
+/// Whether `fc` is given `-l`, which lists the history and runs nothing (in
+/// a bundle too, `-ln`), before any operand.
+fn fc_lists(args: &[Arg]) -> bool {
+    args.iter()
+        .map_while(Arg::known)
+        .take_while(|text| text.starts_with('-') && *text != "--")
+        .any(|text| {
+            text.strip_prefix('-').is_some_and(|bundle| {
+                !bundle.starts_with(|c: char| c.is_ascii_digit()) && bundle.contains('l')
+            })
+        })
 }
 
 /// Whether an awk operand is an assignment (`x=1`, `ns::x=1`), which awk
