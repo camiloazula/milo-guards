@@ -6,6 +6,48 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+- `milo-guards-shell`: a brace list or a sequence among a program's
+  arguments is read as the words it makes, as bash, zsh and ksh spell it out
+  before the program runs, besides as the line writes it. An option and its
+  value in one list are two words, for every shell, interpreter, launcher and
+  wrapper, so what the program is handed is judged as the line written out
+  would be; the line as written is read too, as it was, since dash and ash
+  spell nothing out and `sh` may be either, and the answer is every finding
+  of either, so no line is judged less than it was. A list in quotes, one
+  escaped, a brace with no comma or sequence in it and any line in PowerShell
+  or cmd are read as written only. Each word is read as a plain word is (a
+  quoted empty word is an argument, `~+` is the working folder, a part only
+  known when the line runs makes a template), and the words after the file of
+  a redirect are spelt out too. A program that changes how the shell reads the
+  rest of the line (an option it sets, a variable, a name, the folder, or
+  `eval`) is read as written only, and a list among its arguments is
+  `unknown`, `holds a brace list the guard does not spell out`; so is a list
+  the guard cannot read at all. A command spells out as many words as one of
+  its length can hold; past that, or for a word zsh reads another way, a list
+  is read as each of its elements alone, with the other lists any and
+  nothing, so that an option among them is still found, and the command is
+  `unknown` as well, since those words lose their order. A word the grammar cuts in two where the pieces touch (an escape
+  after its `{`, a substitution in backticks), also after the file of a
+  redirect, is read as the one word it is; one it cuts apart at an escaped
+  blank after a quote is not joined, and two nodes of a command with an escaped
+  blank between them, with or without a brace, make it `unknown` (`has a word
+  the guard reads as two`), and so does a backslash right after the end of a
+  node, in a command, its redirects, a `for`, a `case` or a declaration; a
+  comment that starts right after an escaped blank, anywhere in the line, makes it
+  `unknown`, as the shell has no comment there; a backslash, a carriage return and
+  a line feed make the line `unreadable`. The words keep the place of the word
+  they come from, so a finding about one is `Covers::Part`, not
+  `Covers::Target`, in `locate`.
+- `milo-guards-shell`: `rsync` with many operands and a remote destination, and
+  a line of many commands that run inline code (`node -e`, `python3 -c`), are
+  read in linear time, as the other programs are (a line of 32,000 operands
+  took seconds).
+- Answers that changed with it, each in a line that was judged less: `kill
+  {1,2}` also stops the system's first process; `cp ~/work/notes.txt{,.bak}`
+  also writes outside the workspace; `command {rm,-rf,~}` and `sudo r{m,x} -rf
+  ~` are also the deletes they spell; a list that makes an option of a
+  program, a command or a wrapper is found where it was not.
+
 ## 0.2.0 (2026-11-26)
 
 A minor release, with security fixes. What a caller compiles against grows:

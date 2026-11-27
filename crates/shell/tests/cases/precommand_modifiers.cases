@@ -198,15 +198,16 @@ posix safe | ! grep -q x file
 posix safe | time { make; }
 posix safe | ! { grep -q x file; }
 # A brace list or a sequence expression where the program stands is spelt
-# out into words, the first of which is the program.
-posix finds=unreadable | command {rm,-rf,~}
-posix finds=unreadable | env {rm,-rf,~}
+# out into words, the first of which is the program. After a wrapper it is
+# also one of the wrapper's own arguments, read as the words it makes.
+posix finds=unreadable,delete | command {rm,-rf,~}
+posix finds=unreadable,delete | env {rm,-rf,~}
 posix finds=unreadable | coproc { {rm,-rf,~}; }
 posix finds=unreadable | {rm,-rf,~}
 posix finds=unreadable | r{m,x} -rf ~
-posix finds=unreadable | sudo r{m,x} -rf ~
+posix finds=unreadable,delete,elevated | sudo r{m,x} -rf ~
 posix finds=unreadable | r{m..m} -rf ~
-posix finds=unreadable | command r{m..m} -rf ~
+posix finds=unreadable,delete | command r{m..m} -rf ~
 posix finds=unknown | {1..3}
 posix finds=unreadable | env x{1..9..2}
 # zsh's `repeat N` runs the command or group after the count, or the list

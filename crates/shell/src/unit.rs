@@ -218,6 +218,10 @@ pub(crate) struct Unit {
     /// is read for its ranges (see [`crate::located::Words`]); it takes no
     /// part in what the unit is.
     pub(crate) words: Worded,
+    /// Whether it is a reading of a command with the words the shell makes
+    /// of its brace lists, besides the one as the line writes it: what it
+    /// finds that the other found too is said once. Set as it is added.
+    pub(crate) spelled: bool,
 }
 
 /// A `Get-Process` written inside an argument: its own arguments, and what
@@ -309,6 +313,7 @@ impl Unit {
             names: None,
             place: Placed::default(),
             words: Worded::default(),
+            spelled: false,
         }
     }
 
@@ -1395,6 +1400,18 @@ pub(crate) struct Split {
     /// variable is already exported, which `PATH` and `HOME` always are, the
     /// assignment changes what the interpreter is given.
     pub(crate) assigned_earlier: bool,
+    /// Whether the units being added are the reading of a command with the
+    /// words the shell makes of its brace lists, besides the one as the line
+    /// writes it.
+    pub(crate) spelled_reading: bool,
+    /// Whether the line has said it holds a brace list it does not spell out.
+    unspelled_said: bool,
+    /// Whether the line has said it has a word the guard reads as two.
+    two_said: bool,
+    /// Whether a unit pushed so far sets the environment (see
+    /// [`sets_environment`]): asked once for every unit that reads inline
+    /// code, so noted as each is pushed, not found by a scan of them all.
+    pub(crate) sets_environment: bool,
     /// What inline code the guard found nothing in comes to when it is not
     /// read whole (see [`crate::inline`]): `unknown`, said once, and only
     /// when the line has no finding of its own, which already asks.
@@ -1576,6 +1593,15 @@ pub(crate) struct Split {
     /// How many times the line has forked into two readings, each judged
     /// (see [`crate::launch::Launch::Either`]).
     forks: usize,
+    /// The bytes of words the brace lists and sequences in the line's
+    /// commands have been spelled out into so far (see [`crate::brace`]).
+    pub(crate) spelled: usize,
+    /// How many words they were: a line may spell out about as many as
+    /// words of its own length would be.
+    pub(crate) spelled_words: usize,
+    /// How many words and how many bytes of them the lists read as each
+    /// element alone have made in the line.
+    pub(crate) alone_words: usize,
     /// How deep the line is inside `find … -exec find … -exec …`: each
     /// level is read once for every place the one outside it searches.
     pub(crate) find_depth: usize,
@@ -2148,7 +2174,15 @@ impl Split {
         {
             self.turn_autocd_on();
         }
-        unit.autocd = self.autocd_on() && self.runs_as_cd(&unit);
+        // A reading with the words a brace list makes moves nothing: `ls {,}`
+        // is `ls` with no words, which is not an autocd of `ls`.
+        let autocd = self.autocd_on() && self.runs_as_cd(&unit);
+        unit.autocd = autocd && !self.spelled_reading;
+        // Where it would be one and the line as written is not, the line is
+        // somewhere only known when it runs.
+        if autocd && self.spelled_reading {
+            self.move_unknown("the folder an autocd moves it to");
+        }
         let mut moved = moves_to(&unit);
         // Whether this `cd` may not have run, so the line may still be where
         // it was.
@@ -2217,6 +2251,8 @@ impl Split {
         } else if let Some(target) = moved {
             self.move_line(&target, unit.shell, unsure);
         }
+        unit.spelled = self.spelled_reading;
+        self.sets_environment |= sets_environment(&unit);
         self.units.push(unit);
     }
 
@@ -4802,40 +4838,7 @@ impl Split {
         allow(dead_code, reason = "only the reader of inline code asks")
     )]
     pub(crate) fn environment_set(&self) -> bool {
-        self.environment > 0
-            || self.assigned_earlier
-            || self.units.iter().any(|unit| {
-                unit.key().is_some_and(|key| {
-                    matches!(
-                        key.as_str(),
-                        "export"
-                            | "declare"
-                            | "typeset"
-                            | "readonly"
-                            | "local"
-                            | "set"
-                            | "source"
-                            | "."
-                            | "read"
-                            | "let"
-                            | "mapfile"
-                            | "readarray"
-                            | "getopts"
-                            // They change what a program's name stands for:
-                            // an alias, a path `hash` remembers, a builtin
-                            // `enable` loads or turns off.
-                            | "alias"
-                            | "unalias"
-                            | "hash"
-                            | "enable"
-                    ) || (key == "printf"
-                        && unit
-                            .args
-                            .iter()
-                            .filter_map(Arg::known)
-                            .any(|arg| arg.strip_prefix("-v").is_some()))
-                })
-            })
+        self.environment > 0 || self.assigned_earlier || self.sets_environment
     }
 
     /// Note that code is given to an interpreter that the guard does not read
@@ -4877,6 +4880,26 @@ impl Split {
     /// `popd`.
     pub(crate) fn ever_moves(&self) -> bool {
         self.moved > 0
+    }
+
+    /// Note a word the guard reads as two: one the grammar cut apart at an
+    /// escaped blank. Said once for the line.
+    pub(crate) fn read_as_two(&mut self, target: Option<&str>) {
+        if !std::mem::replace(&mut self.two_said, true) {
+            self.problem(Rule::Unknown, "has a word the guard reads as two", target);
+        }
+    }
+
+    /// Note a word the guard does not spell out: a brace list it cannot read,
+    /// or one in a command it reads as written only. Said once for the line.
+    pub(crate) fn unspelled(&mut self, target: Option<&str>) {
+        if !std::mem::replace(&mut self.unspelled_said, true) {
+            self.problem(
+                Rule::Unknown,
+                "holds a brace list the guard does not spell out",
+                target,
+            );
+        }
     }
 
     /// Note a finding of `rule` about `target`, as [`Said`] says it.
@@ -5773,6 +5796,40 @@ impl Split {
     }
 }
 
+/// Whether `unit` may change the environment of the programs after it: it
+/// exports a variable, turns them all on (`set -a`), reads a file that may
+/// set them, or changes what a program's name stands for (an alias, a path
+/// `hash` remembers, a builtin `enable` loads or turns off).
+fn sets_environment(unit: &Unit) -> bool {
+    unit.key().is_some_and(|key| {
+        matches!(
+            key.as_str(),
+            "export"
+                | "declare"
+                | "typeset"
+                | "readonly"
+                | "local"
+                | "set"
+                | "source"
+                | "."
+                | "read"
+                | "let"
+                | "mapfile"
+                | "readarray"
+                | "getopts"
+                | "alias"
+                | "unalias"
+                | "hash"
+                | "enable"
+        ) || (key == "printf"
+            && unit
+                .args
+                .iter()
+                .filter_map(Arg::known)
+                .any(|arg| arg.strip_prefix("-v").is_some()))
+    })
+}
+
 /// Start `split` afresh for a read of the line from the drive `drive` with
 /// home on `home_drive`; `psdrive` says the read knows the drives the line
 /// makes. A function of its own, as [`start_again_extended`] is, so that the
@@ -5859,6 +5916,12 @@ fn controlled(text: &str, shell: Shell) -> Option<&'static str> {
         return None;
     }
     let bytes = text.as_bytes();
+    // `\` and a carriage return and a line feed: the grammar reads a line
+    // continuation, a shell the escaped carriage return and a line feed that
+    // ends the command.
+    if text.contains("\\\r\n") {
+        return Some("holds a control character a terminal acts on");
+    }
     let control = bytes.iter().enumerate().any(|(at, &b)| match b {
         b'\t' | b'\n' => false,
         b'\r' => bytes.get(at + 1) != Some(&b'\n'),

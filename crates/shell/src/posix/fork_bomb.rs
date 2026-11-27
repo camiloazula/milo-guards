@@ -257,6 +257,7 @@ impl Walker<'_> {
             contexts: Vec::new(),
             awaiting: false,
             files: HashMap::new(),
+            statement_redirects: None,
         };
         walker.calls_in(root, scope, from, index, &varies, calls);
     }

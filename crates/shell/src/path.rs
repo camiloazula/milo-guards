@@ -1529,7 +1529,7 @@ pub(crate) fn brace_expansion(text: &str) -> bool {
 
 /// Whether `inner`, the text between a `{` and its `}`, is a sequence
 /// expression: two integers or two single characters, and an integer step.
-fn sequence(inner: &str) -> bool {
+pub(crate) fn sequence(inner: &str) -> bool {
     let number = |part: &str| {
         let digits = part.strip_prefix(['-', '+']).unwrap_or(part);
         !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())

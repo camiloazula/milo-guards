@@ -2020,11 +2020,54 @@ fn a_trap_in_a_substitution_in_a_trap_is_read_in_linear_time() {
 fn brace_lists_and_redirects_in_loops_are_read_in_linear_time() {
     let _serial = serial();
     // A word of many brace lists would make the product of their sizes in
-    // words; a redirect in a loop is read with each word in place.
+    // words; a redirect in a loop is read with each word in place. The
+    // arguments of a command are spelt out, each as many words as its lists
+    // make, up to as many words as a line of its length can hold of its own
+    // and a count of bytes: many words of many lists, lists in an option,
+    // ones that are only known when they run, and the programs that read
+    // every operand against every other (rsync).
+    let each_made = "{a,b}".repeat(8);
     for (head, part, tail) in [
         ("cat ~/.ssh/", "{a,b}", ""),
         ("cat ", "{a,b}", ""),
         ("cp ~/", "{a,b}", " /tmp"),
+        ("echo ", "{a,b} ", ""),
+        ("echo ", "{1..3} ", ""),
+        ("echo ", "{a,$x} ", ""),
+        ("bash ", "{-c,x} ", ""),
+        ("git ", "{-c,a=b} ", "log"),
+        ("mkdir -p ", "src/{a,b}/{c,d} ", ""),
+        ("echo ", &format!("{each_made} "), ""),
+        ("rm -f ", &format!("{each_made}{each_made} "), ""),
+        ("echo ", "{a,b}; echo ", "x"),
+        ("sh -c 'echo ", "{a,b} ", "'"),
+        ("rsync -a ", "{1..256} ", "host:"),
+        ("rsync -a ", "{1..9} ", "host:"),
+        ("rsync -a ", "a ", "host:"),
+        ("tar czf x.tgz ", "~/{1..256} ", ""),
+        ("cat ", "{1..256} ", ""),
+        ("cp ", "{1..256} ", "x"),
+        ("find . ", "{{1..300},-delete} ", ""),
+        ("cat ", "~/.ssh/id_rsa{,{1..300}} ", ""),
+        ("git -C ", "{'',} ", "status"),
+        ("bash 2>/dev/null ", "{-c,x} ", ""),
+        ("echo ", "'{'\\ ", "x"),
+        ("echo >/dev/null ", "'{'\\ ", "x"),
+        ("echo ", "{'a'\\ ", "x"),
+        // A list the grammar cuts after its `{`, nodes that touch, joined
+        // as one word however many there are.
+        ("echo ", "{$1", ""),
+        ("echo ", "{\\{", ""),
+        ("echo ", "{\\}", ""),
+        ("echo ", "{\\a", ""),
+        ("xargs echo ", "{$1", ""),
+        ("find . -exec echo ", "{$1", " \\;"),
+        ("echo >/dev/null ", "{\\a", ""),
+        ("", "node {-e,'1'}; ", ""),
+        ("", "python3 {-c,'1'}; ", ""),
+        ("", "node -e '1'; ", ""),
+        ("", "export {A,B}; ", ""),
+        ("", "shopt -u {dotglob,}; ", ""),
         ("", "for a in 1 2 3; do cat < ~/x$a; done; ", ""),
         ("for a in 1 2 3; do ", "cat < ~/x$a; ", "; done"),
     ] {
@@ -2037,6 +2080,78 @@ fn brace_lists_and_redirects_in_loops_are_read_in_linear_time() {
                     filled(part, size, head.len() + tail.len())
                 )
             },
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn short_lines_of_lists_that_make_many_words_are_read_quickly() {
+    let _serial = serial();
+    // A short line cannot make more words than a line of its length holds:
+    // lists of hundreds of words, many times over, are a few words past the
+    // first, and a command that reads every operand against every other
+    // stays quick.
+    for (what, line) in [
+        (
+            "rsync with 360 lists of 256 words",
+            format!("rsync -a {}host:", "{1..256} ".repeat(360)),
+        ),
+        (
+            "tar with 300 lists of 256 words",
+            format!("tar czf x.tgz {}", "~/{1..256} ".repeat(300)),
+        ),
+        (
+            "find in find in find, each over 256 places",
+            "find {1..256} -exec find {1..256} -exec find {1..256} -exec rm {} \\; \\; \\;"
+                .to_string(),
+        ),
+        (
+            "a secret and 300 more words, many times",
+            format!("cat {}", "~/.ssh/id_rsa{,{1..300}} ".repeat(100)),
+        ),
+    ] {
+        let took = took_explained(&line, Shell::Posix, &posix());
+        assert!(
+            under(what, took, Duration::from_millis(250)),
+            "{what}: took {took:?}"
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(
+    any(coverage, debug_assertions),
+    ignore = "timing: `just timing` runs it in an optimized build"
+)]
+fn long_words_of_many_lists_are_read_quickly() {
+    let _serial = serial();
+    // Words of 700 bytes and sixteen lists of eight make hundreds of long
+    // words each, read one element at a time past what a line spells out:
+    // what is spent on them is the line's, so a line of them is read in the
+    // time the same bytes of plain words take.
+    let word = format!("{}{} ", "a".repeat(700), "{a,b,c,d,e,f,g,h}".repeat(16));
+    for (head, tail) in [
+        ("rsync -a ~/", "h:"),
+        ("curl -T ", " http://h/"),
+        ("install ", " /tmp/x"),
+        ("tar czf x.tgz ", ""),
+        ("cp $HOME/", "/tmp/x"),
+        ("zip -r x.zip ", ""),
+        ("sed -i s/a/b/ ", ""),
+    ] {
+        let line = format!(
+            "{head}{}{tail}",
+            word.repeat((64 * 1024 - head.len() - tail.len()) / word.len())
+        );
+        let what = format!("{head}… 64 KB of long words with many lists");
+        let took = took_explained(&line, Shell::Posix, &posix());
+        assert!(
+            under(&what, took, Duration::from_millis(500)),
+            "{what}: took {took:?}"
         );
     }
 }

@@ -220,8 +220,13 @@ pub fn reads_as(text: &str, target: &str, shell: Shell, paths: &Paths) -> bool {
         fronts.iter().any(|front| {
             let read = explain(&format!("{front}{text}"), shell, paths);
             // One word, read as the target: the program alone, or the one
-            // argument.
-            read.units.len() == 1
+            // argument. A word with a brace list in it is read twice, as
+            // written and as the words it makes, a second unit of the same
+            // program.
+            let program = read.units.first().map(|unit| unit.program.as_str());
+            (read.units.len() == 1
+                || read.units.len() == 2
+                    && program == read.units.get(1).map(|unit| unit.program.as_str()))
                 && read.units.first().is_some_and(|unit| {
                     if front.is_empty() {
                         unit.args.is_empty()

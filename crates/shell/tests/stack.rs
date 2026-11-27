@@ -110,3 +110,70 @@ fn here_documents_at_the_bounds_fit_a_small_stack() {
         .join()
         .unwrap();
 }
+
+/// Lines with brace lists at the bounds of their expansion: lists nested in
+/// one word to the most it spells out and past it, a word of as many lists as
+/// the length limit allows, and a list in a shell inside shells, each
+/// within the length limit.
+fn brace_lists_at_the_bounds() -> Vec<String> {
+    let mut lines = Vec::new();
+    for depth in [1, 12, 13, 200, MAX_TREE_DEPTH, MAX_LEN / 6] {
+        lines.push(format!(
+            "echo {}x{}",
+            "{a,".repeat(depth),
+            "}".repeat(depth)
+        ));
+        lines.push(format!(
+            "bash {}x{}",
+            "{-c,".repeat(depth),
+            "}".repeat(depth)
+        ));
+    }
+    // An escaped blank after a quote, where the grammar cuts a list in two,
+    // many times, with the `{` quoted and bare.
+    lines.push(format!("echo {}x", "'{'\\ ".repeat(MAX_LEN / 5 - 2)));
+    lines.push(format!(
+        "echo >/dev/null {}x",
+        "'{'\\ ".repeat(MAX_LEN / 5 - 4)
+    ));
+    lines.push(format!("echo {}x", "{'a'\\ ".repeat(MAX_LEN / 6 - 2)));
+    for part in ["{$1", "{\\{", "{\\}", "{\\a"] {
+        lines.push(format!("echo {}", part.repeat(MAX_LEN / 4 - 2)));
+    }
+    lines.push(format!("echo {}", "{a,b}".repeat(MAX_LEN / 5 - 2)));
+    lines.push(format!("echo {}", "{1..3}".repeat(MAX_LEN / 6 - 2)));
+    lines.push(format!("echo {}", "{a,b} ".repeat(MAX_LEN / 6 - 2)));
+    // Each shell reads the next as a string, one level in.
+    let mut line = "echo {a,'b c'}".to_string();
+    for _ in 0..12 {
+        line = format!(
+            "sh -c \"{}\"",
+            line.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+        lines.push(line.clone());
+    }
+    lines
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    reason = "the readings run on a thread with a small stack"
+)]
+fn brace_lists_at_the_bounds_fit_a_small_stack() {
+    let lines = brace_lists_at_the_bounds();
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(move || {
+            for line in &lines {
+                assert!(line.len() <= MAX_LEN, "{}", line.len());
+                let paths = posix();
+                let _ = classify(line, Shell::Posix, &paths);
+                let _ = effect(line, Shell::Posix, &paths);
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
