@@ -3207,6 +3207,7 @@ impl Walker<'_> {
             }
         }
         self.declared(program.known(), &args);
+        self.foreign_export(program.known(), &args);
         // `GLOBIGNORE=x bash -c '…'`: the shell it starts has the option.
         let mut cursor = node.walk();
         let prefixed = node
@@ -3715,6 +3716,12 @@ impl Walker<'_> {
     fn exported_options(&mut self, node: Node<'_>) {
         let word = self.arg(node);
         let source = unit::text(&node, self.source).trim_matches(['"', '\'']);
+        self.exported_word(&word, source);
+    }
+
+    /// The word `word`, written as `source`, that an `export` or the like
+    /// is given: see [`Self::exported_options`].
+    fn exported_word(&mut self, word: &Arg, source: &str) {
         // The grammar reads a bare name as a variable, not a word.
         if let Some(name) = Some(word.known().unwrap_or(source))
             .filter(|name| !name.contains('=') && unit::read_as_arguments(name))
@@ -3745,6 +3752,12 @@ impl Walker<'_> {
             }),
         };
         if let Some((name, value)) = assigned {
+            // `NAME+=x`, quoted or escaped, appends as it does bare: the
+            // name is the part before the `+`.
+            let (name, appends) = match name.strip_suffix('+') {
+                Some(name) => (name.to_string(), true),
+                None => (name, false),
+            };
             if name.contains(['$', '`']) {
                 self.split.problem(
                     Rule::Unknown,
@@ -3757,8 +3770,41 @@ impl Walker<'_> {
                 // A value of a variable Ruby reads, written with the folder
                 // the line is in, is judged against every move of the line.
                 self.split.note_ruby_pwd(&name, source);
+                // An append to the one path a variable holds, which the line
+                // did not set, is only known when it runs.
+                let value = if appends && unit::names_one_path(&name) {
+                    Arg::Unknown(source.to_string())
+                } else {
+                    value
+                };
                 self.split.note_argument_variable(name, value);
                 return;
+            }
+            if name == "NODE_OPTIONS" {
+                // An append adds to the value the line gave it, which may
+                // make an option of the two.
+                let value = if appends {
+                    match (self.split.node_options.values().last(), &value) {
+                        (Some(Arg::Known(before)), Arg::Known(after)) => {
+                            Arg::Known(format!("{before}{after}"))
+                        }
+                        (None, _) => value,
+                        _ => Arg::Unknown(source.to_string()),
+                    }
+                } else {
+                    value
+                };
+                self.split.node_options.push(value);
+                return;
+            }
+            if name == "PYTHONPATH" {
+                self.split.python_path.push(value);
+                return;
+            }
+            if appends {
+                self.split.zip_env.append(&name, &value);
+            } else {
+                self.split.zip_env.set(&name, &value, false);
             }
         }
         match word.known() {
@@ -3800,6 +3846,109 @@ impl Walker<'_> {
                 }
             },
         }
+    }
+
+    /// `setenv NAME VALUE` in csh and tcsh, and fish's `set`, in the commands
+    /// those shells are given: the variable is exported as `export NAME=VALUE`
+    /// exports it, with the same rules and notes. A fish `set` that gives a
+    /// variable a value is one whether or not it says `--export` (`-x`): it
+    /// keeps the export status of a variable the shell inherited, which the
+    /// guard cannot see, as `NAME=value; cmd` does in bash. Only `-u`
+    /// (`--unexport`) and the forms that erase, query, name, show or list
+    /// set nothing. An append or a prepend (`-a`, `-p`) is the append of
+    /// `NAME+=VALUE`. A name only known when it runs may be any variable, and
+    /// a value of more than one word is only known when it runs.
+    fn foreign_export(&mut self, program: Option<&str>, args: &[Arg]) {
+        let Some(dialect) = self.split.dialect else {
+            return;
+        };
+        let mut appends = false;
+        let at = match (dialect, program) {
+            ("csh" | "tcsh", Some("setenv")) => 0,
+            ("fish", Some("set")) => {
+                let mut at = 0;
+                let (mut exports, mut unexports, mut reads) = (false, false, false);
+                while let Some(arg) = args.get(at) {
+                    let Some(text) = arg.known() else {
+                        // An option only known when it runs may export.
+                        self.split.problem(
+                            Rule::Unknown,
+                            "exports a variable only known when it runs",
+                            Some(arg.text()),
+                        );
+                        return;
+                    };
+                    if text == "--" {
+                        at += 1;
+                        break;
+                    }
+                    let Some(flags) = text.strip_prefix('-').filter(|flags| !flags.is_empty())
+                    else {
+                        break;
+                    };
+                    if let Some(long) = flags.strip_prefix('-') {
+                        let is = |name: &str, least: usize| {
+                            long.len() >= least && name.starts_with(long)
+                        };
+                        exports |= is("export", 2);
+                        unexports |= is("unexport", 4);
+                        appends |= is("append", 1) || is("prepend", 2);
+                        reads |= is("erase", 2)
+                            || is("query", 1)
+                            || is("names", 1)
+                            || is("show", 1)
+                            || is("help", 1);
+                    } else {
+                        exports |= flags.contains('x');
+                        unexports |= flags.contains('u');
+                        appends |= flags.contains(['a', 'p']);
+                        reads |= flags.contains(['e', 'q', 'n', 'S', 'h']);
+                    }
+                    at += 1;
+                }
+                // Erasing, querying, naming, showing and listing set
+                // nothing, and `-u` takes the variable out of the
+                // environment.
+                if reads || (unexports && !exports) {
+                    return;
+                }
+                at
+            }
+            _ => return,
+        };
+        let Some(name) = args.get(at) else {
+            return;
+        };
+        let Some(name_text) = name.known() else {
+            self.split.problem(
+                Rule::Unknown,
+                "exports a variable only known when it runs",
+                Some(name.text()),
+            );
+            return;
+        };
+        let values = &args[at + 1..];
+        let operator = if appends { "+=" } else { "=" };
+        let source = std::iter::once(name_text)
+            .chain(std::iter::once(operator))
+            .chain(values.iter().map(Arg::text))
+            .collect::<String>();
+        let word = match values {
+            [] => Arg::Known(name_text.to_string()),
+            [Arg::Known(value)] => Arg::Known(format!("{name_text}{operator}{value}")),
+            _ => Arg::Unknown(source.clone()),
+        };
+        let source = if values.is_empty() {
+            name_text.to_string()
+        } else {
+            source
+        };
+        self.exported_word(&word, &source);
+        let written = startup::Written {
+            expanded: source.contains(['$', '`']),
+            pwd: source.contains("PWD"),
+        };
+        self.startup_words(&[word], written);
     }
 
     /// Whether `node`, an argument of `export` or `declare`, is a quoted
@@ -3861,6 +4010,16 @@ impl Walker<'_> {
             self.split.note_ruby_pwd(name, written);
         }
         if terraform {
+            // An append to the one path a variable holds, which the line did
+            // not set, is only known when it runs.
+            let appends = unit::text(&assignment, self.source)
+                .get(name.len()..)
+                .is_some_and(|rest| rest.starts_with("+="));
+            let value = if appends && unit::names_one_path(name) {
+                Arg::Unknown(unit::text(&assignment, self.source).to_string())
+            } else {
+                value
+            };
             self.split.note_argument_variable(name.to_string(), value);
         } else if name == "PYTHONPATH" {
             self.split.python_path.push(value);
@@ -3938,7 +4097,10 @@ impl Walker<'_> {
     /// variable the shell runs later.
     fn startup_words(&mut self, words: &[Arg], written: startup::Written) {
         for word in words {
-            if let Some((name, value)) = startup::word(word) {
+            if let Some((name, mut value)) = startup::word(word) {
+                if startup::appends(word) && unit::names_one_path(&name) {
+                    value = Arg::Unknown(word.text().to_string());
+                }
                 if let Some(file) = startup::read(self.split, &name, &value, self.depth, written) {
                     self.split.add_startup(file);
                 }
@@ -3960,7 +4122,14 @@ impl Walker<'_> {
             expanded: text.contains(['$', '`']),
             pwd: text.contains("PWD"),
         };
-        let value = self.arg(written);
+        let mut value = self.arg(written);
+        // `BASH_ENV+=x` joins what the variable already names.
+        let appends = unit::text(&node, source)
+            .get(unit::text(&node.child_by_field_name("name")?, source).len()..)
+            .is_some_and(|rest| rest.starts_with("+="));
+        if appends && unit::names_one_path(name) {
+            value = Arg::Unknown(text.to_string());
+        }
         startup::read(self.split, name, &value, self.depth, how)
     }
 

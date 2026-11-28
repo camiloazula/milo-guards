@@ -553,7 +553,13 @@ fn add_launched(
                     .then(|| split_input(&key, &unit.args))
                     .flatten();
                 let start = split.units.len() + 1;
+                // fish's `-c` commands are fish's own.
+                let outer = split.dialect;
+                if is_shell(&key) {
+                    split.dialect = foreign_dialect(&key);
+                }
                 run_commands(split, unit, shell, commands, moves, depth);
+                split.dialect = outer;
                 if let Some(file) = input {
                     let end = split.units.len();
                     if start < end {
@@ -755,6 +761,13 @@ fn runs_from_input(
     unit
 }
 
+/// The shell `key` is, when it is csh, tcsh or fish: the shells whose
+/// commands the guard reads with the POSIX grammar though they are not POSIX
+/// ones.
+fn foreign_dialect(key: &str) -> Option<&'static str> {
+    shell_family(key).filter(|family| matches!(*family, "csh" | "tcsh" | "fish"))
+}
+
 /// Add `unit`, a program that runs `script` in `shell` (`bash -c '…'`,
 /// `eval '…'`, `trap '…' EXIT`, `alias x='…'`), and what the script runs.
 /// `elsewhere` says it runs it in a folder the line does not name (`git
@@ -866,6 +879,12 @@ fn add_script(
             if elsewhere {
                 split.move_unknown("the folder it runs in");
             }
+            // What csh, tcsh and fish are given is read with the POSIX
+            // grammar, and is theirs: `setenv` and `set -x` export.
+            let outer_dialect = split.dialect;
+            if is_shell(key) {
+                split.dialect = foreign_dialect(key);
+            }
             if key == "alias" {
                 define_aliases(split, shell_at, shell, depth);
             } else {
@@ -873,6 +892,7 @@ fn add_script(
                 unit::script_in(split, &text, shell, depth + 1, here);
                 split.launch_done();
             }
+            split.dialect = outer_dialect;
             if let Some(place) = outer_dir {
                 split.restore_dir(place);
             }

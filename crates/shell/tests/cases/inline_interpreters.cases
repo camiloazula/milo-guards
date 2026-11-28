@@ -1776,6 +1776,88 @@ posix finds=unknown | cd /tmp/evil; make -C ~/work/repo RUBYOPT=-r$PWD/x.rb test
 posix finds=unknown | cd /tmp/evil; timeout 5 env RUBYOPT=-r$PWD/x.rb ruby ~/work/repo/x.rb
 posix finds=unknown | cd /tmp/evil; echo a=$PWD b=$PWD c=$PWD d=$PWD e=$PWD f=$PWD g=$PWD h=$PWD i=$PWD j=$PWD k=$PWD l=$PWD m=$PWD n=$PWD o=$PWD p=$PWD q=$PWD r=$PWD s=$PWD t=$PWD u=$PWD v=$PWD w=$PWD x=$PWD y=$PWD z=$PWD A=$PWD B=$PWD C=$PWD D=$PWD E=$PWD F=$PWD G=$PWD H=$PWD I=$PWD; timeout 5 env RUBYOPT=-r$PWD/x.rb ruby ~/work/repo/x.rb
 
+# A quoted or escaped name with `+=` is the name before the `+`, as it is bare.
+posix finds=unknown | export "BUNDLE_GEMFILE+=/etc/Gemfile"; ruby -rbundler/setup x.rb
+posix finds=unknown | declare -x "BUNDLE_GEMFILE+=/etc/Gemfile"; ruby -rbundler/setup x.rb
+posix finds=unknown | export B\\UNDLE_GEMFILE+=/etc/Gemfile; ruby -rbundler/setup x.rb
+posix finds=unknown | export BUNDLE_GEMFILE+=/etc/Gemfile; ruby -rbundler/setup x.rb
+posix finds=unknown | export "RUBYOPT+=-r/etc/x"; ruby x.rb
+posix finds=unknown | export R\\UBYOPT+=-r/etc/x; ruby x.rb
+posix finds=unknown | typeset -x "RUBYOPT+=-r/etc/x"; ruby x.rb
+posix finds=unknown | local "RUBYOPT+=-r/etc/x"; ruby x.rb
+posix finds=unknown | readonly "RUBYOPT+=-r/etc/x"; ruby x.rb
+posix finds=unknown | export "RUBYLIB+=/etc"; ruby -rx x.rb
+posix finds=unknown | export "RUBYGEMS_GEMDEPS+=/etc/Gemfile"; ruby x.rb
+posix safe | export "RUBYOPT+=-w"; ruby x.rb
+posix safe | export RUBYOPT+=-w; ruby x.rb
+
+# csh, tcsh and fish export a variable Ruby reads as `export` does.
+posix finds=unknown | csh -c 'setenv RUBYOPT -r/etc/x; ruby -e "p 1"'
+posix finds=unknown | csh -c 'setenv RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | tcsh -c 'setenv RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | fish -c 'set -x RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | fish -c 'set -gx RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | csh -c 'setenv BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -x BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | csh -c 'setenv RUBYLIB /etc; ruby -rx x.rb'
+posix finds=unknown | csh -c 'setenv RUBYGEMS_GEMDEPS /etc/Gemfile; ruby x.rb'
+posix finds=unknown | fish -c 'set -x RUBYOPT -r/etc/x; ruby -e "p 1"'
+posix safe | csh -c 'setenv RUBYOPT -w; ruby x.rb'
+posix safe | fish -c 'set -x RUBYOPT -w; ruby x.rb'
+posix safe | fish -c 'set -x FOO bar; ruby x.rb'
+posix safe | csh -c 'setenv BUNDLE_GEMFILE Gemfile; ruby -rbundler/setup x.rb'
+
+# An append to the one path a variable holds, to a value the line did not set,
+# joins what the variable already names, which is only known when it runs.
+posix finds=unknown | export BUNDLE_GEMFILE+=Gemfile; ruby -rbundler/setup x.rb
+posix finds=unknown | BUNDLE_GEMFILE+=Gemfile ruby -rbundler/setup x.rb
+posix finds=unknown | export "BUNDLE_GEMFILE+=Gemfile"; ruby -rbundler/setup x.rb
+posix finds=unknown | export B\\UNDLE_GEMFILE+=Gemfile; ruby -rbundler/setup x.rb
+posix finds=unknown | declare -x "BUNDLE_GEMFILE+=Gemfile"; ruby -rbundler/setup x.rb
+posix finds=unknown | export BUNDLE_GEMFILE=; export BUNDLE_GEMFILE+=Gemfile; ruby -rbundler/setup x.rb
+posix finds=unknown | export RUBYGEMS_GEMDEPS+=Gemfile; ruby x.rb
+posix finds=unknown | export GEMRC+=x.rc; gem list
+posix finds=unknown | export BUNDLE_PATH+=vendor; bundle exec rake
+posix finds=unknown | export RUBYLIB+=lib; ruby -rx x.rb
+posix safe | export BUNDLE_GEMFILE=Gemfile; ruby -rbundler/setup x.rb
+posix finds=unknown | fish -c 'set -gxa BUNDLE_GEMFILE Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -a BUNDLE_GEMFILE Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set --append BUNDLE_GEMFILE Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set --app BUNDLE_GEMFILE Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -p BUNDLE_GEMFILE Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set --prepend BUNDLE_GEMFILE Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -x BUNDLE_GEMFILE Gemfile; set -a BUNDLE_GEMFILE x; ruby -rbundler/setup x.rb'
+posix safe | fish -c 'set -x BUNDLE_GEMFILE Gemfile; ruby -rbundler/setup x.rb'
+posix safe | fish -c 'set -x RUBYOPT -w; set -a RUBYOPT -W0; ruby x.rb'
+
+# fish's `set` that gives a variable a value keeps the export status of one
+# the shell inherited: it sets the variable for what follows whether or not it
+# says `-x`, as `NAME=value; cmd` does in bash. `-u` does not, nor do the forms
+# that erase, query, name, show or list.
+posix finds=unknown | fish -c 'set BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -g BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -l BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -f BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -U BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set --path BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -g --path BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -- BUNDLE_GEMFILE /etc/Gemfile; ruby -rbundler/setup x.rb'
+posix finds=unknown | fish -c 'set -g RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | fish -c 'set RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | fish -c 'set -xL RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | fish -c 'set -x -L RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | fish -c 'set -x --long RUBYOPT -r/etc/x; ruby x.rb'
+posix finds=unknown | fish -c 'set RUBYGEMS_GEMDEPS /etc/Gemfile; ruby x.rb'
+posix finds=unknown | fish -c 'set RUBYOPT; ruby x.rb'
+posix safe | fish -c 'set RUBYOPT -w; ruby x.rb'
+posix safe | fish -c 'set -u RUBYOPT -r/etc/x; ruby x.rb'
+posix safe | fish -c 'set --unexport RUBYOPT -r/etc/x; ruby x.rb'
+posix safe | fish -c 'set -e RUBYOPT; ruby x.rb'
+posix safe | fish -c 'set -q RUBYOPT; ruby x.rb'
+posix safe | fish -c 'set -S RUBYOPT; ruby x.rb'
+posix safe | fish -c 'set -n; ruby x.rb'
+posix safe | fish -c 'set FOO bar; ruby x.rb'
+
 # `-X` is `JRuby`'s own option, which takes the rest of its word, and a folder
 # to move to only for `CRuby`.
 posix finds=unknown | ruby -C.. -rbundler/setup repo/x.rb

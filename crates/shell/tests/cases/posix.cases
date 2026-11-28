@@ -2078,6 +2078,84 @@ posix finds=delete | export "GIT_SSH_COMMAND"="rm -rf ~"; git fetch
 posix finds=delete | export "PAGER"="rm -rf ~"; git log
 posix finds=unknown | export "NODE_OPTIONS"="--require /tmp/x.js"; node a.js
 posix finds=unknown | export "BASH_ENV"=~/x.sh; bash -c ls
+
+# A quoted or escaped name with `+=` appends as it does bare: the name is the
+# part before the `+`, and every rule about the variable reads it so.
+posix finds=delete | export "GIT_SSH_COMMAND+=rm -rf ~"; git fetch
+posix finds=delete | declare -x "GIT_SSH_COMMAND+=rm -rf ~"; git fetch
+posix finds=delete | export G\\IT_SSH_COMMAND+="rm -rf ~"; git fetch
+posix finds=delete | export "npm_config_call+=rm -rf ~"; npx foo
+posix finds=destroy_resources | export "TF_CLI_ARGS+=-destroy"; terraform apply
+posix finds=destroy_resources | export T\\F_CLI_ARGS+=-destroy; terraform apply
+posix finds=destroy_resources | declare -x "TF_CLI_ARGS+=-destroy"; terraform apply
+posix finds=unknown | export "NODE_OPTIONS+=--require=/etc/x"; node x.js
+posix finds=unknown | export NODE_OPTIONS+=--require=/etc/x; node x.js
+posix finds=unknown | export "NODE_OPTIONS=--req"; export "NODE_OPTIONS+=uire=/etc/x"; node x.js
+posix finds=unknown | export "PYTHONPATH+=/etc"; python3 -c 'print(1)'
+posix finds=unknown | export "BASH_ENV+=~/x.sh"; bash -c ls
+posix safe | export "NAME+=rm -rf ~"; ls
+posix safe | export "TF_CLI_ARGS+=-no-color"; terraform apply
+
+# csh and tcsh `setenv`, and fish `set -x`, in the commands those shells are
+# given, set the variable as `export` does.
+posix finds=delete | tcsh -c "setenv GIT_SSH_COMMAND 'rm -rf ~'; git fetch"
+posix finds=delete | csh -c "setenv GIT_SSH_COMMAND 'rm -rf ~'; git fetch"
+posix finds=delete | fish -c 'set -x GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -gx GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -xg GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -Ux GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set --export GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set --global --export GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -x -g GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -x -- GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -x PAGER "rm -rf ~"; git log'
+posix finds=delete | csh -c 'setenv PAGER "rm -rf ~"; git log'
+posix finds=delete | fish -c 'set -x npm_config_call "rm -rf ~"; npx foo'
+posix finds=destroy_resources | csh -c 'setenv TF_CLI_ARGS -destroy; terraform apply'
+posix finds=destroy_resources | fish -c 'set -x TF_CLI_ARGS -destroy; terraform apply'
+posix finds=unknown | csh -c 'setenv NODE_OPTIONS --require=/etc/x; node -e "1"'
+posix finds=unknown | fish -c 'set -x NODE_OPTIONS --require=/etc/x; node -e "1"'
+posix finds=unknown | csh -c 'setenv BASH_ENV /etc/x; bash x.sh'
+posix finds=unknown | fish -c 'set -x BASH_ENV /etc/x; bash -c "echo 1"'
+posix finds=unknown | csh -c 'setenv $N "rm -rf ~"; npx foo'
+posix finds=unknown | fish -c 'set -x $N "rm -rf ~"; npx foo'
+posix finds=unknown | csh -c 'setenv GIT_SSH_COMMAND $X; git fetch'
+posix finds=unknown | fish -c 'set -x GIT_SSH_COMMAND a b; git fetch'
+posix finds=unknown | fish -c 'set -x NODE_OPTIONS; node -e "1"'
+posix finds=delete | env csh -c 'setenv GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | bash -c "csh -c 'setenv GIT_SSH_COMMAND \\"rm -rf ~\\"; git fetch'"
+posix finds=delete | fish -c 'echo 1' -c 'set -x GIT_SSH_COMMAND "rm -rf ~"' -c 'git fetch'
+posix finds=delete | fish -c 'set GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -g GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -l GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -U GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set -xL GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=delete | fish -c 'set PAGER "rm -rf ~"; git log'
+posix finds=unknown | fish -c 'set NODE_OPTIONS --require=/etc/x; node a.js'
+posix finds=unknown | fish -c 'set -g NODE_OPTIONS --require=/etc/x; node a.js'
+posix finds=destroy_resources | fish -c 'set TF_CLI_ARGS -destroy; terraform apply'
+posix finds=destroy_resources | fish -c 'set -g TF_CLI_ARGS -destroy; terraform apply'
+posix finds=unknown | fish -c 'set BASH_ENV /etc/x; bash -c "echo 1"'
+posix finds=unknown | fish -c 'set -g BASH_ENV /etc/x; bash -c "echo 1"'
+posix finds=unknown | fish -c 'set -a BASH_ENV x.sh; bash -c "echo 1"'
+posix finds=delete | fish -c 'set -a GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix finds=unknown | export BASH_ENV+=x.sh; bash -c ls
+posix finds=unknown | BASH_ENV+=x.sh bash -c ls
+posix finds=unknown | export "BASH_ENV+=x.sh"; bash -c ls
+posix finds=unknown | export WGETRC+=x.rc; wget https://example.com/x
+posix safe | fish -c 'set FOO bar; ls'
+posix safe | fish -c 'set -g FOO bar; ls'
+posix safe | fish -c 'set -u GIT_SSH_COMMAND "rm -rf ~"; git fetch'
+posix safe | fish -c 'set -e GIT_SSH_COMMAND; git fetch'
+posix safe | fish -c 'set -q GIT_SSH_COMMAND; git fetch'
+posix safe | fish -c 'set GIT_SSH_COMMAND ssh; git fetch'
+posix safe | fish -c 'set -x FOO bar; ls'
+posix safe | fish -c 'set -gx FOO bar; ls'
+posix safe | fish -c 'set -g GIT_SSH_COMMAND ssh; git fetch'
+posix safe | fish -c 'set -x GIT_SSH_COMMAND ssh; git fetch'
+posix safe | csh -c 'setenv FOO bar; ls'
+posix safe | tcsh -c 'setenv GIT_SSH_COMMAND ssh; git fetch'
+posix safe | csh -c 'setenv TF_CLI_ARGS -no-color; terraform apply'
 posix finds=unknown | export "$N"="rm -rf ~"; npx foo
 posix finds=unknown | export $N="rm -rf ~"; npx foo
 posix finds=unknown | declare -x "$N"=x; npx foo

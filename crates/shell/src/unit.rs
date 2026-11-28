@@ -1143,6 +1143,26 @@ pub(crate) fn read_as_arguments(name: &str) -> bool {
         || crate::launch::is_command_variable(name)
 }
 
+/// Whether the variable `name` holds one path (a file, or a folder) that a
+/// program reads, and not a list of options or a command: a value appended
+/// to it (`NAME+=x`) that the line did not set before joins what the
+/// variable already holds, which the guard cannot see, so what the path is
+/// is only known when it runs. The variables Ruby's tools read for a path,
+/// `BUNDLE_GEMFILE` and `LOCATION` among them, those that name a file a
+/// download tool reads, and the files a shell runs first (`BASH_ENV`, `ENV`).
+pub(crate) fn names_one_path(name: &str) -> bool {
+    SETTINGS_VARIABLES.contains(&name)
+        || matches!(name, "BASH_ENV" | "ENV")
+        || name.eq_ignore_ascii_case("BUNDLE_GEMFILE")
+        || name.eq_ignore_ascii_case("LOCATION")
+        || ruby_loader(name, true).is_some_and(|loader| {
+            !matches!(
+                loader,
+                "RUBYOPT" | "JRUBY_OPTS" | "TRUFFLERUBYOPT" | "RAKEOPT"
+            )
+        })
+}
+
 /// The variables that name a file of options a download tool reads, or the
 /// folder it looks for one in: wget's `WGETRC` and `SYSTEM_WGETRC`, the
 /// folders of curl's `.curlrc` and `curlrc` (`CURL_HOME`, `XDG_CONFIG_HOME`,
@@ -1594,6 +1614,11 @@ pub(crate) struct Split {
     /// words the shell makes of its brace lists, besides the one as the line
     /// writes it.
     pub(crate) spelled_reading: bool,
+    /// The shell whose commands are being read, when the grammar reads them
+    /// as POSIX ones and they are csh's, tcsh's or fish's (`"csh"`,
+    /// `"tcsh"`, `"fish"`): its `setenv` and `set -x` export a variable as
+    /// `export` does.
+    pub(crate) dialect: Option<&'static str>,
     /// Whether the line has said it holds a brace list it does not spell out.
     unspelled_said: bool,
     /// Whether the line has said it has a word the guard reads as two.
@@ -2568,7 +2593,8 @@ impl Split {
             self.move_line(&target, unit.shell, unsure);
         }
         unit.spelled = self.spelled_reading;
-        self.sets_environment |= sets_environment(&unit);
+        self.sets_environment |= sets_environment(&unit)
+            || (self.dialect.is_some() && unit.key().is_some_and(|key| key == "setenv"));
         self.units.push(unit);
     }
 
