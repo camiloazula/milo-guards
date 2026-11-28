@@ -178,7 +178,7 @@ advisories:
 # when the Unreleased section is. That check is one-sided, and accepted so:
 # `minor` set beside entries that break nothing passes it, and keeps the
 # semver job green for the rest of the cycle.
-next_bump := "minor"
+next_bump := ""
 
 # Needs the network (crates.io), so `just verify` does not run it; CI runs
 # it as its own job, advisory, and a release runs it by hand after its

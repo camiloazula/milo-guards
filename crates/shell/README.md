@@ -38,14 +38,14 @@ Through the front door, where it is the `shell` feature (on by default):
 
 ```toml
 [dependencies]
-milo-guards = "0.2"
+milo-guards = "0.3"
 ```
 
 Or on its own:
 
 ```toml
 [dependencies]
-milo-guards-shell = "0.2"
+milo-guards-shell = "0.3"
 ```
 
 The `inline` feature (on by default) reads the Python and JavaScript a line

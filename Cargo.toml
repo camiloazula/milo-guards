@@ -79,7 +79,7 @@ members = [
 exclude = ["tools/fuzz", "tools/grammar-check"]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 authors = ["Camilo Azula"]
 license = "MIT OR Apache-2.0"
@@ -108,15 +108,15 @@ rust-version = "1.90"
 # Each internal crate names its version beside its path: Cargo uses the path
 # in this workspace and the version on crates.io, where every crate is
 # published (`just publish`).
-milo-guards-core  = { path = "crates/core", version = "0.2.2" }
+milo-guards-core  = { path = "crates/core", version = "0.3.0" }
 # The code reader without its default features (its `ruby`): each crate that
 # builds on it turns on what it reads, through a feature of its own.
-milo-guards-code  = { path = "crates/code", version = "0.2.2", default-features = false }
-milo-guards-shell = { path = "crates/shell", version = "0.2.2" }
-milo-guards-file  = { path = "crates/file", version = "0.2.2" }
-milo-guards-url   = { path = "crates/url", version = "0.2.2" }
-milo-guards-secrets = { path = "crates/secrets", version = "0.2.2" }
-milo-guards-script = { path = "crates/script", version = "0.2.2" }
+milo-guards-code  = { path = "crates/code", version = "0.3.0", default-features = false }
+milo-guards-shell = { path = "crates/shell", version = "0.3.0" }
+milo-guards-file  = { path = "crates/file", version = "0.3.0" }
+milo-guards-url   = { path = "crates/url", version = "0.3.0" }
+milo-guards-secrets = { path = "crates/secrets", version = "0.3.0" }
+milo-guards-script = { path = "crates/script", version = "0.3.0" }
 
 # tree-sitter's `links` key allows one version of the runtime in a whole
 # lockfile, ours and every caller's. Callers that also parse with

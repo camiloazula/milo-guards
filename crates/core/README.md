@@ -34,7 +34,7 @@ write a guard of your own.
 
 ```toml
 [dependencies]
-milo-guards-core = "0.2"
+milo-guards-core = "0.3"
 ```
 
 ## Example

@@ -6,11 +6,46 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
-Ruby is read (#305): the code reader reads it, the shell guard reads `ruby
--e` and Ruby handed to `ruby` or `irb` on its input, and the script guard
-judges it. `Language` has a new variant, `Ruby`, which breaks a caller's
-exhaustive `match`: a minor bump, so this ships as 0.3.0.
+## 0.3.0 (2026-11-28)
 
+A minor release: Ruby is read (#305). The code reader reads it, the shell
+guard reads `ruby -e` and Ruby handed to `ruby` or `irb` on its input, and
+the script guard judges it; Ruby given inline was `unknown` until now. What a
+caller compiles against grows: `Language` has a new variant, `Ruby`, which
+breaks a caller's exhaustive `match` on it, and the code reader has a new
+function, `refusal`. A new dependency comes with it, tree-sitter-ruby 0.23,
+behind a `ruby` feature that is on by default. Some answers are more serious
+than 0.2.2's: a line that runs Ruby, one of the tools around it (`ruby`,
+`irb`, `rake`, `rails`, `bundle`, `gem` and the version managers) or a
+variable they read, inline Python and JavaScript in a loop, a function or a
+trap, a variable exported under a quoted or escaped name with an append
+(`+=`), and a variable csh, tcsh or fish exports, is judged by what it does,
+and one that was `safe` may now be `unknown` or a finding of its own. Of the
+2,934 everyday answers, 2,908 are `safe`, as in 0.2.2: a false-alarm share of
+0.9 % (0.3 % in a POSIX shell, none in PowerShell, 4.6 % in cmd), and no
+everyday answer moved.
+
+- `milo-guards-shell`: the name an `export`, a `declare` or the like is given
+  with an append (`NAME+=value`), quoted or escaped, is the name before the
+  `+`, as it is when written bare, so every rule that reads the variable (a
+  program's options, its proxy, its pager, the command it runs to reach a
+  remote, the options of node, python and zip, the file a shell runs first)
+  finds it; an append to `NODE_OPTIONS` adds to the value the line gave it.
+  An append to a variable that holds one path (a Gemfile, a settings file, a
+  folder Ruby's tools read, the file a shell runs first), to a value the line
+  did not set, joins what the variable already holds, so what the path is
+  is only known when it runs: `unknown`, written bare, quoted or escaped.
+- `milo-guards-shell`: csh's and tcsh's `setenv`, and fish's `set`, in the
+  commands those shells are given, export the variable as `export` does, with
+  the same rules and notes: the programs after it get the variable, a name
+  only known when it runs is `unknown`, and so is a value of more than one
+  word. A fish `set` that gives a variable a value does so whether or not it
+  says `--export` or `-x` (also among other flags in a cluster), as it keeps
+  the export status of a variable the shell inherited; `-a` and `-p`
+  (`--append`, `--prepend`) are appends. The forms that export nothing are
+  `-u` (`--unexport`), and those that erase (`-e`), query (`-q`), name (`-n`),
+  show (`-S`) or give help (`-h`) on a variable; `-L` (`--long`) only changes
+  how one is listed.
 - `milo_guards_code::Language::Ruby`, read with tree-sitter-ruby behind the
   reader's `ruby` feature, on by default; the shell guard's and the script
   guard's `ruby` features, on by default, turn it on. Without it the variant
@@ -44,12 +79,11 @@ exhaustive `match`: a minor bump, so this ships as 0.3.0.
   and `ruby` may be JRuby), `mruby` and `mirb` are interpreters whose code
   is `unknown`, and a project a runner sets up from where the line runs is
   judged like one from a file outside (every `bundle` subcommand but
-  `version`, `help`, `config` and `init`, and `uv run`): `cd /tmp && bundle
-  exec rake`, `cd /tmp && uv run pytest`, `bundle install --gemfile
-  /tmp/Gemfile` are `unknown`.
-- rake's options are read as OptionParser reads them: `rake -qe CODE`,
-  `--execute-p CODE` and any other start of a long option are read as
-  `-e` and `--execute-print`, an option the guard cannot place is `unknown`,
+  `version`, `help`, `config` and `init`, and `uv run`): one run from a
+  folder outside the workspace, or given a Gemfile outside it, is `unknown`.
+- rake's options are read as OptionParser reads them: a short option in a
+  cluster, and any start of a long option's name that only it has, are read
+  as the option they are, an option the guard cannot place is `unknown`,
   and so are `rake -r` and `RAKEOPT`. `rubyw`, `ruby-3.3` and `jirb` are
   read as `ruby` and `irb`; `rvm VERSION do`, `chruby-exec VERSION --` and
   `asdf exec` are runners as `rbenv exec` is; `rails runner`, `rails
@@ -58,8 +92,8 @@ exhaustive `match`: a minor bump, so this ships as 0.3.0.
   `BUNDLE_SETTINGS` set on a line in front of a Ruby tool are `unknown`, as
   is `ruby -r PATH` outside the workspace, `bundle config --global`,
   `bundle plugin install` and `bundle init --gemspec` outside it.
-- `bundle exec 'rm -rf ~'` (a word of white space or shell characters) is
-  judged as the shell line it is, `ruby -S NAME` as `NAME`, and `rails` hands
+- A word `bundle exec` is given that holds white space or shell characters
+  is judged as the shell line it is, `ruby -S NAME` as `NAME`, and `rails` hands
   what is not its own command to rake, whose options (`-e`, `-f`, `-C`, `-R`,
   `-I`, `-r`) are judged where they stand; the Ruby loader variables are
   judged for any program, by the paths they name; `bundle config` written
@@ -79,15 +113,18 @@ exhaustive `match`: a minor bump, so this ships as 0.3.0.
   known when it runs is `unknown` where a library or a file of rake is
   loaded, `RUBYOPT` is read as the switches it holds, `bundle console` reads
   its input, and the commands of `bundle` and `gem` are read by the start of
-  their name that only they have (`bundle conf set`, `gem inst -g`).
+  their name that only they have.
 - `ruby -S PATH`, `ruby -C DIR` and `-X`/`-x` are judged by where the file or
-  folder is, `gem install -g` and `gem build -C` are read as their parsers
-  read them, and `-I` lists split at `;` on a Windows machine.
-- `ruby -e 'puts 1+1'` is safe; `ruby -e 'FileUtils.rm_rf(Dir.home)'` is
-  `delete`; `ruby -r lib`, `-I`, `-x`, `-S`, an encoding option, `RUBYOPT`
-  and any Ruby not read whole stay `unknown`. `irb` and `erb` reading their
-  input are interpreters that read it (`erb x.erb` is a file of the
-  workspace's own), and `bundle exec CMD` (`bundler`, `bundle _2.4.0_
+  folder is. `-X` is a folder to move to for `ruby`; for `jruby` it is an
+  option of its own that takes the rest of its word, and one with no name is
+  not placed (`unknown`); for `truffleruby` no `-X` is placed, and the folder
+  it runs in is `unknown`. `gem install -g` and `gem build -C` are read as
+  their parsers read them, and `-I` lists split at `;` on a Windows machine.
+- `ruby -e` code that only computes or prints is `safe`, and code that
+  deletes the home directory is `delete`; `-r`, `-I`, `-x`, `-S`, an encoding
+  option, `RUBYOPT` and any Ruby not read whole stay `unknown`. `irb` and
+  `erb` reading their input are interpreters that read it (`erb x.erb` is a
+  file of the workspace's own), and `bundle exec CMD` (`bundler`, `bundle _2.4.0_
   exec`), `rbenv exec CMD` and `gem exec PROGRAM` are runners that judge
   what they run. `rake -e CODE` is read as Ruby; `ruby3.3`, `jruby` and
   `truffleruby` are read as `ruby` is. A project a runner sets up from a
@@ -156,6 +193,10 @@ exhaustive `match`: a minor bump, so this ships as 0.3.0.
   zsh modifiers before the function, `coproc` and a `repeat` list too, and
   an assignment in front of `eval` when the line defines a function, are
   read as the call it is.
+- The words a brace list makes among those after the code of `ruby -e` are
+  read as 0.2.2 reads them for every program: a list that makes the code of
+  a second `-e` is read as that code, and what it does is found (`delete`,
+  where it deletes), and one that makes any other option stays `unknown`.
 - Perl, PHP and Lua given inline are still `unknown`.
 
 ## 0.2.2 (2026-11-28)
