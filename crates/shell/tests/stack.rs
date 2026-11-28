@@ -177,3 +177,35 @@ fn brace_lists_at_the_bounds_fit_a_small_stack() {
         .join()
         .unwrap();
 }
+
+#[test]
+#[allow(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    reason = "the readings run on a thread with a small stack"
+)]
+fn a_shell_line_with_many_letters_it_does_not_know_nested_deep_fits_a_small_stack() {
+    // A cluster of letters a shell's table does not have, and many distinct
+    // words after it, nested in substitutions.
+    let mut words = String::new();
+    for at in 0..12_000 {
+        words.push_str(" w");
+        words.push_str(&at.to_string());
+    }
+    let line = format!(
+        "{}sh -c -{}{words}{}",
+        "echo $(".repeat(100),
+        "Z".repeat(12_940),
+        ")".repeat(100)
+    );
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(move || {
+            let paths = posix();
+            let _ = classify(&line, Shell::Posix, &paths);
+            let _ = effect(&line, Shell::Posix, &paths);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

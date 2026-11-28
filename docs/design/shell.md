@@ -167,7 +167,12 @@ parsers are tree-sitter's bash, PowerShell and batch grammars.
   handed the line with each such quote written as a letter, the same
   length, and the words are read from the line as written: `echo ^" & echo
   x & echo ^"` is three commands. A `^^` is a caret, so a quote after it is
-  a quote.
+  a quote, and a caret before a line break joins the next line and escapes
+  its first character, a quote among them, where the line is split at its
+  operators too (`set x=^<LF>" & rd /s /q C:\Users\me` is two commands; a `^` in double quotes is a character, and a redirect after
+  the value of a `set` creates or reads its file; a `%…%` in the value that
+  holds a quote, a caret or an operator, which cmd puts its value in for
+  before it reads them, makes the line unknown).
 - The batch grammar reads an `if` or a `for` only at the start of a line:
   after `&&`, `||` or `|` it is a command named `if` with its condition and
   body as arguments. The guard splits that command's text again on its own,
@@ -1413,7 +1418,10 @@ and its findings are the line's, since the shell runs it as the same user.
   `PS4[0]`), after `export`,
   `declare`, `typeset` and the like (also quoted, `export "PS4=…"`, and
   behind `builtin` and `command`: `builtin export PS4=…`; `command -v
-  export PS4=…` only says what `export` is and sets nothing), in front of a
+  export PS4=…` only says what `export` is and sets nothing; the name of the
+  variable is the word the shell makes of it, so `export "npm_config_call"=x`
+  and `export npm\_config_call=x` set `npm_config_call`, and a name only known
+  when it runs, `export "$N"=x`, may be any variable and is `unknown`), in front of a
   command (`PS4=… bash -x s.sh`) and as a word of `env` (`env PS4=… cmd`, also through `sudo` and the
   other wrappers). A value with code in it, `$(` or a backtick, is read as the
   script it is, as an action that runs later (see below), so `PS4='$(rm -rf
@@ -3948,10 +3956,20 @@ drive as Windows does, so a mount changes none of theirs. Without a mount or
 a Windows home, every line is judged as it was. On a Windows machine (the
 working directory on a drive), a POSIX word that starts with a drive and a
 separator is the Windows path, mount or none, as Git Bash, MSYS2 and Cygwin
-open it and hand it on, for every rule that places a path, and so is a path
-in the inline code of such a line. On a POSIX
-machine it is a relative name, as it was. Git Bash hands a word that starts
-with `//` to a Windows program with one `/` off, so `cmd //c` is `cmd /c`.
+open it and hand it on: `rm -rf C:/Users/me` deletes the home directory and
+`cat 'C:\Users\me\.ssh\id_rsa'` reads a key, and so does the inline code of
+such a line (`python3 -c "open(r'C:\Users\me\.ssh\id_rsa')"`). On a POSIX
+machine it is a relative name, as it was. Git Bash hands a word that is
+`//` and a name to a Windows program with one `/` off, so `cmd //c` is
+`cmd /c`, and so is every other program's `//X` switch its `/X`, for every
+program whose switches the guard reads; a share (`//server/share`) stays a
+share. A word `//C:/x` is the drive's `C:/x`, and a device or long path
+(`//./C:/x`, `//?/C:/x`) is handed on unchanged and opened by Windows as the
+drive's, so each is read as `cmd` reads it; `//./C:/x` is the drive's `C:/x`
+in every rule. An administrative share (`//localhost/C$/x`,
+`\\localhost\ADMIN$\x`, and as a long path `\\?\UNC\localhost\C$\x`) is
+read as cmd reads it, as it is one on Windows; `\\.\C:\x` is the drive's
+`C:\x` too.
 What is left: with the directories spelled as Git Bash spells them (`/c/…`),
 a word `C:/…` is still read as a relative name, and `scp C:/x host:` reads
 `C:` as scp's host. The cases are in `tests/cases/drives.cases`.
@@ -4886,8 +4904,57 @@ and temporary folder, as written from the working directory (`bash
 ~/.ssh/x`, `python3 /opt/x.py`, `bash ../other/x.sh`, `powershell -File
 C:\Users\me\x.ps1`), is not: it is `unknown`, "runs a script outside the
 workspace". An init script (`sh /etc/init.d/ufw stop`) is judged as the
-program it is, and `source` and `.` (`source ~/.nvm/nvm.sh`) read the
-shell's own settings, judged as reads.
+program it is, `source` and `.` (`source ~/.nvm/nvm.sh`) read the
+shell's own settings, judged as reads, and a script read from the input
+(`/dev/stdin`, `/dev/fd/0`) is the input's, which its own rules judge. A
+shell given `-c` (in a cluster too, `-ec`) or `-s` runs no file: the word
+after its options is the command or an argument, and a command whose
+program is a path (`bash -c /opt/x.sh`) is that script. Each shell has a
+table of the letters it knows, flags and those that take a value: each `o` of
+a cluster takes the next word as an option's name, wherever it stands
+(`-euo NAME`, `-oe NAME`, `-oc NAME 'cmd'`), in bash, dash and ash, and so
+does bash's `O`, `shopt`'s; zsh, mksh (`-T` and `-o`) and fish (`-d`, `-D`,
+`-f`, `-o`, `-p` and `-C`) take the rest of the word instead when it has any.
+`sh`, `ksh` and `yash` may be either, so a valued letter with letters after
+it there (`-oerrexit`) makes the line unknown, and so does `-T`, which takes
+a value in mksh, in `sh` and `ksh`. A letter the table does not have, or one
+that means one thing in one shell of the name and another in another (`O` in
+`sh`: a name in bash, a flag in zsh), and a long option it does not have,
+are not guessed at: the line is unknown. A shell by another name has the
+table of the shell it is: a version (`bash5`, `bash-5.2`, `zsh-5.9`,
+`ksh93`) or a build (`bash-static`, `bash-5.2-release`, `ksh93u+m`),
+`rbash` (bash), `lksh` (mksh), `oksh` and `pdksh` (ksh), `posh` (dash), and
+not a program that only starts with a shell's name (`bashtop`, `zshdb`,
+`fishnet`); `hush`, whose `-o` is not read, has a table of its own. bash
+reads a long option with one dash too (`-rcfile FILE`, `-init-file FILE`),
+so a word of that spelling is the option and takes its value, but only in
+the run of long options that starts its arguments: after any other word it
+is a cluster of flags (`-e -help` is `-e` and the flags `h`, `e`, `l` and
+`p`); in `sh`, which may be bash or a cluster of flags, the line is
+unknown. csh and tcsh take the word after `-c` as the command whatever it
+is (one that starts like an option is unknown), and each later `-c` has one
+more, and a word only known when it runs after it is one of its arguments,
+unless a word follows it, which it may have made an option, or it may split
+into several words (`$X`, `"$@"`, `$(…)`, what `xargs` hands it), and the commands read before it are judged still.
+With no
+command, the first word that is no option is the script, or the input when
+it names it (`/dev/stdin`), and the options end there, at `--` and after
+`-b`; `-s`, `-t` and `-i` read the commands from the input, and the words
+after them are only arguments. fish reads everything it is given to run as one script, as
+its one parser does (`-C`'s commands, then `-c`'s and `--command`'s,
+attached or the next word, each a line of it, so a `cd` carries on), and
+each alone besides, as fish parses each on its own and the grammar reads a
+heredoc, a quote or a backtick across the joins of them, whatever the codes
+are; a line that gives fish more than 16 commands in all, nested ones too
+(each unit that gives it more than one), is unknown, since each is read
+twice. What follows the options is `$argv`, and with no `-c` fish goes on to
+run the script it is handed or to read its input, from where the `-C`
+commands leave it: a script named by a relative path is unknown, one from
+`/` or `~` is as it is. Its long
+options are read by any prefix of their name that no other starts with
+(`--co`), and a word only known when it runs among its options makes the
+line unknown. The program a `-c` string starts is its first word with the
+quotes off, after any assignments and `exec`, `command` and the like.
 
 **Where the script is.** Each interpreter's options are read with its own
 table of the options that take a value, so the word after one is its value
@@ -5214,7 +5281,50 @@ a file is `unknown` too, "takes options from a file the guard does not
 read" (`-K -` reads the input). git shows a file of the repository's history
 by its path: `git show REV:path`, `git show :path` (the index), `git
 cat-file -p REV:path` and `git blame path` read that file, so a secret there
-is read as it is in the work tree.
+is read as it is in the work tree. wget's `-e` (`--execute`) runs a
+wgetrc command: `post_file` and `body_file` (in any case, with `_` or `-`
+or neither, white space around `=`) send their file, a handful that only
+change how it fetches (`robots`, retries, waits, timeouts, the user agent,
+certificate checks, recursion, the proxies it goes through) are read as
+such, and any other is `unknown`, "runs a wgetrc command the guard does not
+read", as is one only known when it runs. A variable in front of the program that names a file of
+options, or the folder it looks for one in (`WGETRC`, `SYSTEM_WGETRC`,
+`CURL_HOME`, `XDG_CONFIG_HOME`, `HOME`, and on a Windows machine
+`USERPROFILE`, and curl's `APPDATA`), makes it `unknown` as `-K` is, unless
+it sets the home directory to itself, which is `~` or `$HOME` as the line
+writes them, bare or in double quotes, and no quoted or single-quoted one
+(in PowerShell and cmd, `$HOME` or the `$env:` of the home folder, in any
+case; a literal `~` there names a folder of that name, and so does cmd's
+`%HOME%`, which stays as written where the machine has no such variable).
+curl's `--variable name@file` reads the file (`-` is the input), and sends it when an `--expand-…`
+option is given, which the guard does not follow into the text; a value
+(`name=text`) is no file. Each short option is read in a cluster of
+flags too (`curl -sK f`, `wget -qi f`, `xargs -0a f`). `split` and `csplit`
+read the file they cut into pieces, with their options read in clusters
+(`split -db 100 f`, `csplit -sf p f`) and a long option by any prefix of its
+name that no other starts with (`--fi`), and write the pieces: the prefix
+(`x` and `xx` without one), a suffix of the length `-a` (`-n` of `csplit`)
+says, two without it, in letters, or digits for `-d`, and `split`'s
+`--additional-suffix`. The guard judges each name the pieces can have when
+there are few (a `-n N` makes N, and a suffix of one letter or digit has
+few; at most 32), and otherwise the first and the pattern of the rest (the
+prefix, a `?` for each letter of the suffix, and the additional suffix); a
+name whose prefix is only known when it runs is judged as such, and so is
+one `csplit` is given a suffix format for that is not a `printf` format of
+one integer (`%d`, `%02d`, `%x`, `%o`, with literals), which is expanded
+for the first pieces. `split -n K/N` writes to the output, and no file. The
+`-d`, `-x`, `--numeric-suffixes[=FROM]` and `--hex-suffixes[=FROM]`, in
+order, say whether the names are numbers or hex digits, and one with a FROM
+says where they start, which is the last FROM given (one without leaves it);
+a FROM that is empty, not lower case hex for hex, or past the names, is
+refused when it is given, and no piece is written. A FROM the digits at the
+end do not allow (`--hex-suffixes=c -d`) is written as it is, and the
+pattern stands for the names after it. When the
+pieces `csplit` makes with a format may be more than are judged (`{*}`, a
+large repeat), the pattern of its names stands for the rest (`chap*.md`).
+`split --filter=CMD` runs `CMD` through the shell, as `sh -c` does, with each
+piece on its input and `$FILE` the piece's name, so a sender in `CMD` sends
+the file and a write in it is judged where it lands.
 
 ### The spelling of the file
 
@@ -5408,7 +5518,10 @@ A line is never safe because the guard gave up on it. These come back risky:
 - A line that holds a NUL (U+0000), in every shell, `unreadable`, "holds a
   NUL character": no program can be handed one in an argument, and a shell
   fed the line by its input drops it, so the line runs as no reading of it
-  says: a NUL inside a word joins what is on either side of it.
+  says. A grammar's scanner reads a NUL as the end of its input, so the
+  grammar is handed a space in its place where the NUL stands by a space or
+  an operator, and a `,` inside a word, and what the line does past it is
+  still found, as the shell finds it with the NUL dropped.
 - A POSIX line that holds a control character a terminal acts on,
   `unreadable`, "holds a control character a terminal acts on": every C0
   control character (U+0001 to U+001F) but a tab and a line feed, a carriage
@@ -6118,7 +6231,8 @@ dist .` packs `dist`.
   `release create` (the assets after the tag, a `#label` off each), the
   file of `gh`'s `-F`, `--notes-file` and `--body-file` (a release, an
   issue, a pull request, a comment or a review), `gh api --input FILE` and
-  `-F key=@FILE`, `az storage blob upload -f`,
+  `-F key=@FILE` (also a workflow's inputs), the `-f` file of `gh secret set`
+  and `gh variable set`, `az storage blob upload -f`,
   and an `sftp` batch: the files its `put`, `reput` and `mput` lines name,
   split into words with sftp's quotes and backslashes (`put ".env"`), read
   from its input (a here-string, an ANSI-C one included, a here-document,

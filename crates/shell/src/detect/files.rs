@@ -11,8 +11,8 @@ use crate::powershell::{
     SET_CONTENT, TEE_OBJECT,
 };
 use crate::unit::{
-    could_be, flagged, has_flag, has_switch, may_be_option, operands, operands_split, plain,
-    switch_names, switch_value, unread_option, Arg, Flagged, Scope, Unit,
+    could_be, flagged, has_flag, has_switch, may_be_option, operands, operands_split,
+    option_values, plain, switch_names, switch_value, unread_option, Arg, Flagged, Scope, Unit,
 };
 use crate::{Rule, Shell};
 use milo_guards_core::spelling::{glob, verbatim};
@@ -693,15 +693,90 @@ impl Checker<'_> {
                     self.write(shell, unit.scope(), &file, "writes to");
                 }
                 // curl's `-K` and wget's `--config` hold options the line
-                // does not show: a file to upload, one to write, a URL.
-                if let Some(file) = super::secrets::config_files(key, args)
-                    .find(|file| key == "curl" || is_config(args, file.as_ref()))
-                {
+                // does not show: a file to upload, one to write, a URL. So
+                // does a file a variable names in front of it (`WGETRC`,
+                // `CURL_HOME`'s `.curlrc`), and a wgetrc command `-e` runs
+                // that the guard does not read.
+                let options = super::secrets::option_files(key, args)
+                    .into_iter()
+                    .next()
+                    .or_else(|| {
+                        let windows = shell != Shell::Posix || self.split.on_windows();
+                        // The home directory itself, written out, or as the
+                        // line's own `~` or `$HOME`, bare or in double quotes
+                        // (a value only known when it runs is read as it was
+                        // written). A quoted `~` or a single-quoted `$HOME`
+                        // is a folder of that name, which is no home.
+                        // (In PowerShell and cmd the home is `$HOME`,
+                        // `$env:USERPROFILE` or `%USERPROFILE%`, in any
+                        // case, and a value only known when it runs is the
+                        // statement that sets it: what follows its last
+                        // `=`. A literal `~` there names a folder of that
+                        // name, and so does `%HOME%`, which cmd leaves as it
+                        // is written where the machine has no variable of
+                        // that name.)
+                        let at_home = |value: &Arg| match value {
+                            Arg::Known(text) => {
+                                !text.starts_with('~')
+                                    && matches!(
+                                        self.resolver.place_name(
+                                            unit.dir.as_ref(),
+                                            value,
+                                            shell,
+                                            unit.hidden,
+                                            Access::Item
+                                        ),
+                                        Place::Home { exact: true }
+                                    )
+                            }
+                            other if shell == Shell::Posix => matches!(
+                                other.text().trim_end_matches('/'),
+                                "~" | "$HOME" | "${HOME}" | "\"$HOME\"" | "\"${HOME}\""
+                            ),
+                            other => {
+                                let text = other.text();
+                                let text = text.rsplit('=').next().unwrap_or(text).trim();
+                                matches!(
+                                    text.trim_matches('"').to_ascii_lowercase().as_str(),
+                                    "$home"
+                                        | "${home}"
+                                        | "$env:home"
+                                        | "${env:home}"
+                                        | "$env:userprofile"
+                                        | "${env:userprofile}"
+                                        | "%userprofile%"
+                                )
+                            }
+                        };
+                        settings_variable(key, unit, windows, &at_home)
+                    });
+                if let Some(file) = options {
                     self.add(
                         Rule::Unknown,
                         "takes options from a file the guard does not read",
-                        Some(file.as_ref()),
+                        Some(&file),
                     );
+                }
+                if let Some(command) = (key == "wget").then(|| unread_wget_command(args)).flatten()
+                {
+                    self.add(
+                        Rule::Unknown,
+                        "runs a wgetrc command the guard does not read",
+                        Some(&command),
+                    );
+                }
+            }
+            // The pieces `split` and `csplit` cut a file into are written
+            // by the prefix and a suffix.
+            "split" | "csplit" if shell == Shell::Posix => {
+                for name in crate::launch::pieces_names(key, args) {
+                    // A pattern stands for the names not judged one by one.
+                    let verb = if name.known().is_some_and(|text| text.contains('?')) {
+                        "writes pieces that may be"
+                    } else {
+                        "writes to"
+                    };
+                    self.write(shell, unit.scope(), &name, verb);
                 }
             }
             "certutil" => {
@@ -715,13 +790,9 @@ impl Checker<'_> {
                 if let Some(copy) = fetched(key, args) {
                     let sources: Vec<&Arg> = copy.sources.iter().collect();
                     let leaves = leaves(unit, &sources);
-                    self.copy_to(
-                        shell,
-                        unit.scope(),
-                        &leaves,
-                        &copy.destination,
-                        copy.recursive,
-                    );
+                    for destination in &copy.destinations {
+                        self.copy_to(shell, unit.scope(), &leaves, destination, copy.recursive);
+                    }
                 }
             }
             "aria2c" | "http" | "https" | "xh" | "bitsadmin" | "start-bitstransfer" => {
@@ -1289,31 +1360,336 @@ fn sed_files(args: &[Arg]) -> Vec<&Arg> {
 /// on another machine (a send, the send rule's) or not given.
 struct Fetched {
     sources: Vec<Arg>,
-    destination: Arg,
+    /// Where it lands: the last operand, or, when an option the guard does
+    /// not know may have taken a word as its value, every operand on this
+    /// machine that may be it.
+    destinations: Vec<Arg>,
     recursive: bool,
 }
 
+/// The options of each program that take a value as the next word: long
+/// ones by name, short ones by letter (in a cluster, the last).
+struct Valued {
+    long: &'static [&'static str],
+    short: &'static str,
+    /// Long options known to take none.
+    flags: &'static [&'static str],
+    /// The short letters known to take none, for a program whose short
+    /// options are all known: any other letter may take the next word.
+    letters: Option<&'static str>,
+    /// The short letters that take a value after the program's command word
+    /// (`gsutil cp`), where its own options are not those it takes before
+    /// it; the same as `short` when none.
+    after_command: Option<&'static str>,
+}
+
+const SCP_VALUED: Valued = Valued {
+    long: &[],
+    short: "cDFiJloPSX",
+    flags: &[],
+    letters: None,
+    after_command: None,
+};
+
+const SFTP_VALUED: Valued = Valued {
+    long: &[],
+    short: "BbcDFiJloPRSsX",
+    flags: &[],
+    letters: None,
+    after_command: None,
+};
+
+const RCLONE_VALUED: Valued = Valued {
+    long: &[
+        "config",
+        "transfers",
+        "checkers",
+        "bwlimit",
+        "exclude",
+        "include",
+        "filter",
+        "filter-from",
+        "exclude-from",
+        "include-from",
+        "files-from",
+        "log-file",
+        "log-level",
+        "max-age",
+        "min-age",
+        "max-size",
+        "min-size",
+        "backup-dir",
+        "suffix",
+        "max-depth",
+        "max-transfer",
+        "timeout",
+        "contimeout",
+        "retries",
+        "low-level-retries",
+        "user-agent",
+        "password-command",
+        "order-by",
+        "compare-dest",
+        "copy-dest",
+        "header",
+        "buffer-size",
+        "stats",
+        "stats-log-level",
+        "tpslimit",
+        "cache-dir",
+        "temp-dir",
+    ],
+    short: "",
+    flags: &[
+        "progress",
+        "dry-run",
+        "verbose",
+        "quiet",
+        "interactive",
+        "checksum",
+        "update",
+        "ignore-existing",
+        "no-traverse",
+        "create-empty-src-dirs",
+        "copy-links",
+        "links",
+        "delete-excluded",
+        "size-only",
+        "ignore-times",
+        "immutable",
+        "no-check-dest",
+        "stats-one-line",
+        "fast-list",
+        "recursive",
+    ],
+    letters: None,
+    after_command: None,
+};
+
+const AWS_VALUED: Valued = Valued {
+    long: &[
+        "profile",
+        "region",
+        "endpoint-url",
+        "output",
+        "query",
+        "ca-bundle",
+        "cli-read-timeout",
+        "cli-connect-timeout",
+        "color",
+        "cli-binary-format",
+        "exclude",
+        "include",
+        "acl",
+        "storage-class",
+        "sse",
+        "sse-kms-key-id",
+        "sse-c",
+        "sse-c-key",
+        "sse-c-copy-source",
+        "sse-c-copy-source-key",
+        "content-type",
+        "cache-control",
+        "expires",
+        "metadata",
+        "metadata-directive",
+        "grants",
+        "website-redirect",
+        "content-disposition",
+        "content-encoding",
+        "content-language",
+        "source-region",
+        "page-size",
+        "expected-size",
+        "checksum-algorithm",
+        "request-payer",
+    ],
+    short: "",
+    flags: &[
+        "recursive",
+        "dryrun",
+        "quiet",
+        "no-progress",
+        "follow-symlinks",
+        "no-follow-symlinks",
+        "delete",
+        "exact-timestamps",
+        "size-only",
+        "only-show-errors",
+        "no-guess-mime-type",
+        "force-glacier-transfer",
+        "ignore-glacier-warnings",
+        "debug",
+        "no-verify-ssl",
+        "no-paginate",
+        "no-sign-request",
+    ],
+    letters: None,
+    after_command: None,
+};
+
+const GCLOUD_VALUED: Valued = Valued {
+    long: &[
+        "project",
+        "account",
+        "configuration",
+        "verbosity",
+        "impersonate-service-account",
+        "billing-project",
+        "format",
+        "flags-file",
+        "trace-token",
+        "cache-control",
+        "content-type",
+        "content-encoding",
+        "content-language",
+        "content-disposition",
+        "custom-time",
+        "storage-class",
+        "encryption-key",
+        "decryption-keys",
+        "additional-headers",
+        "exclude",
+        "manifest-path",
+        "predefined-acl",
+    ],
+    short: "asLjz",
+    flags: &[
+        "recursive",
+        "quiet",
+        "no-clobber",
+        "preserve-posix",
+        "log-http",
+        "continue-on-error",
+        "delete-unmatched-destination-objects",
+        "dry-run",
+        "no-user-output-enabled",
+    ],
+    letters: Some("rRnPADUJZeIhvq"),
+    after_command: None,
+};
+
+const GSUTIL_VALUED: Valued = Valued {
+    long: &[],
+    short: "ohui",
+    flags: &[],
+    // `-i` and `-u` are flags of `rsync` and `cp`; the letters that take a
+    // value are `-a`, `-j`, `-L`, `-s`, `-x` and `-z`, and every other
+    // letter the guard does not know may take the next word.
+    letters: Some("cCdDeIJnNpPrRUvmMiuq"),
+    after_command: Some("ajLsxz"),
+};
+
+/// The operands of a copy tool, its options and their values left out, and
+/// whether an option the guard does not know stood where it may have taken
+/// the next word as its value.
+/// The values an option takes when it takes one at all, for the options of
+/// `aws` whose value is optional.
+fn optional_choices(long: &str) -> Option<&'static [&'static str]> {
+    match long {
+        "sse" => Some(&["AES256", "aws:kms", "aws:kms:dsse"]),
+        "sse-c" | "sse-c-copy-source" => Some(&["AES256"]),
+        "request-payer" => Some(&["requester"]),
+        _ => None,
+    }
+}
+
+fn tool_operands(args: &[Arg], valued: &Valued) -> (Vec<Arg>, bool) {
+    let mut operands = Vec::new();
+    let mut unsure = false;
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else {
+            operands.push(arg.clone());
+            continue;
+        };
+        if text == "--" {
+            operands.extend(iter.cloned());
+            break;
+        }
+        if let Some(long) = text.strip_prefix("--") {
+            if long.contains('=') {
+                continue;
+            }
+            if valued.long.contains(&long) && optional_choices(long).is_some() {
+                // The value is optional, from a fixed set: the next word is
+                // an operand unless it is one of them.
+                let choices = optional_choices(long).unwrap_or_default();
+                if iter
+                    .peek()
+                    .and_then(|next| next.known())
+                    .is_some_and(|next| choices.contains(&next))
+                {
+                    iter.next();
+                }
+            } else if long == "grants" && valued.long.contains(&long) {
+                // One or more values: each word after the first may be one.
+                iter.next();
+                unsure = true;
+            } else if valued.long.contains(&long) {
+                iter.next();
+            } else if !valued.flags.contains(&long)
+                && iter
+                    .peek()
+                    .and_then(|next| next.known())
+                    .is_none_or(|next| !next.starts_with('-'))
+            {
+                unsure = true;
+            }
+            continue;
+        }
+        if let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) {
+            let short = match valued.after_command {
+                Some(after) if !operands.is_empty() => after,
+                _ => valued.short,
+            };
+            let takes = bundle
+                .char_indices()
+                .find(|(_, letter)| short.contains(*letter));
+            if let Some((at, letter)) = takes {
+                if at + letter.len_utf8() == bundle.len() {
+                    iter.next();
+                }
+            }
+            // A letter the guard does not know of a program whose short
+            // options it knows all of may take the next word.
+            if let Some(known) = valued.letters {
+                let before = takes.map_or(bundle.len(), |(at, _)| at);
+                if bundle[..before]
+                    .chars()
+                    .any(|letter| !known.contains(letter) && !short.contains(letter))
+                    && iter
+                        .peek()
+                        .and_then(|next| next.known())
+                        .is_none_or(|next| !next.starts_with('-'))
+                {
+                    unsure = true;
+                }
+            }
+            continue;
+        }
+        operands.push(arg.clone());
+    }
+    (operands, unsure)
+}
+
 fn fetched(key: &str, args: &[Arg]) -> Option<Fetched> {
-    const SCP: [&str; 10] = ["-c", "-D", "-F", "-i", "-J", "-l", "-o", "-P", "-S", "-X"];
-    const SFTP: [&str; 15] = [
-        "-B", "-b", "-c", "-D", "-F", "-i", "-J", "-l", "-o", "-P", "-R", "-S", "-s", "-X", "-a",
-    ];
-    let words = |args: &[Arg], valued: &[&str]| -> Vec<Arg> {
-        operands(args, valued).into_iter().cloned().collect()
-    };
-    let (mut operands, url, recursive) = match key {
-        "scp" => (words(args, &SCP), false, has_flag(args, Some('r'), None)),
+    let (mut operands, unsure, url, recursive) = match key {
+        "scp" => {
+            let (operands, unsure) = tool_operands(args, &SCP_VALUED);
+            (operands, unsure, false, has_flag(args, Some('r'), None))
+        }
         "sftp" => {
-            let operands = words(args, &SFTP);
+            let (operands, unsure) = tool_operands(args, &SFTP_VALUED);
             // `sftp host:file [local]`: with no local name the file lands in
             // the working directory under its own.
             if operands.len() < 2 {
                 return None;
             }
-            (operands, false, has_flag(args, Some('r'), None))
+            (operands, unsure, false, has_flag(args, Some('r'), None))
         }
         "rclone" => {
-            let all = words(args, &[]);
+            let (all, unsure) = tool_operands(args, &RCLONE_VALUED);
             let verb = all.first()?.known()?;
             if !matches!(
                 verb,
@@ -1321,10 +1697,16 @@ fn fetched(key: &str, args: &[Arg]) -> Option<Fetched> {
             ) {
                 return None;
             }
-            (all[1..].to_vec(), false, !verb.ends_with("to"))
+            let recursive = !verb.ends_with("to");
+            (all[1..].to_vec(), unsure, false, recursive)
         }
         "aws" | "gsutil" | "gcloud" => {
-            let all = words(args, &[]);
+            let valued = match key {
+                "aws" => &AWS_VALUED,
+                "gcloud" => &GCLOUD_VALUED,
+                _ => &GSUTIL_VALUED,
+            };
+            let (all, unsure) = tool_operands(args, valued);
             let rest = match (key, all.first()?.known()?) {
                 ("aws", "s3") | ("gcloud", "storage") => &all[1..],
                 ("gsutil", _) => &all[..],
@@ -1337,14 +1719,13 @@ fn fetched(key: &str, args: &[Arg]) -> Option<Fetched> {
             let recursive = matches!(verb, "sync" | "rsync")
                 || has_flag(args, Some('r'), Some("recursive"))
                 || has_flag(args, Some('R'), None);
-            (rest[1..].to_vec(), true, recursive)
+            (rest[1..].to_vec(), unsure, true, recursive)
         }
         _ => return None,
     };
     if operands.len() < 2 {
         return None;
     }
-    let destination = operands.pop()?;
     let elsewhere = |arg: &Arg| {
         if url {
             arg.known()
@@ -1353,7 +1734,21 @@ fn fetched(key: &str, args: &[Arg]) -> Option<Fetched> {
             remote(arg)
         }
     };
-    if elsewhere(&destination) {
+    let destinations: Vec<Arg> = if unsure {
+        // Any operand on this machine may be where it lands.
+        operands
+            .iter()
+            .filter(|arg| !elsewhere(arg))
+            .cloned()
+            .collect()
+    } else {
+        let last = operands.pop()?;
+        if elsewhere(&last) {
+            return None;
+        }
+        vec![last]
+    };
+    if destinations.is_empty() {
         return None;
     }
     let sources = operands
@@ -1375,7 +1770,7 @@ fn fetched(key: &str, args: &[Arg]) -> Option<Fetched> {
         .collect();
     Some(Fetched {
         sources,
-        destination,
+        destinations,
         recursive,
     })
 }
@@ -1386,36 +1781,33 @@ fn fetched(key: &str, args: &[Arg]) -> Option<Fetched> {
 /// name (the word after each URL), and the `-Destination` of a
 /// `Start-BitsTransfer` that downloads (its `-Source` an address).
 fn saved_to(key: &str, args: &[Arg]) -> Vec<Arg> {
-    let value = |names: &[&str]| -> Option<Arg> {
-        let mut iter = args.iter();
-        while let Some(arg) = iter.next() {
-            let Some(text) = arg.known() else { continue };
-            if names.contains(&text) {
-                return iter.next().cloned();
-            }
-            for name in names.iter().filter(|name| name.starts_with("--")) {
-                if let Some(value) = text
-                    .strip_prefix(*name)
-                    .and_then(|rest| rest.strip_prefix('='))
-                {
-                    return Some(Arg::Known(value.to_string()));
-                }
-            }
-        }
-        None
-    };
     match key {
+        // Its `-d` folder, and in it its `-o` name or the last part of the
+        // address it fetches; past what the guard can name, the folder.
         "aria2c" => {
-            let Some(name) = value(&["-o", "--out"]) else {
-                return Vec::new();
-            };
-            match (value(&["-d", "--dir"]), name.known()) {
-                (Some(Arg::Known(dir)), Some(name)) => vec![Arg::Known(format!("{dir}/{name}"))],
-                (Some(dir), _) => vec![Arg::Unknown(format!("{}/{}", dir.text(), name.text()))],
-                (None, _) => vec![name],
+            const SHORT_VALUED: &str = "dioslxjkTMU";
+            let dir = option_values(args, "d", &["dir"], SHORT_VALUED).pop();
+            let out = option_values(args, "o", &["out"], SHORT_VALUED).pop();
+            let name = out.or_else(|| {
+                args.iter()
+                    .filter_map(Arg::known)
+                    .find(|text| text.contains("://"))
+                    .and_then(super::remote_name)
+                    .map(|name| Arg::Known(name.to_string()))
+            });
+            match (dir, name) {
+                (Some(Arg::Known(dir)), Some(Arg::Known(name))) => {
+                    vec![Arg::Known(format!("{dir}/{name}"))]
+                }
+                (Some(dir), None) => vec![Arg::Known(format!("{}/", dir.text()))],
+                (Some(dir), Some(name)) => {
+                    vec![Arg::Unknown(format!("{}/{}", dir.text(), name.text()))]
+                }
+                (None, name) => name.into_iter().collect(),
             }
         }
-        "http" | "https" | "xh" => value(&["-o", "--output"]).into_iter().collect(),
+        // `-o` (`--output`), alone or in a cluster after `-d` (`-do f`).
+        "http" | "https" | "xh" => option_values(args, "o", &["output"], "oaAps"),
         "bitsadmin" => {
             let transfer = args.iter().any(|arg| {
                 arg.known()
@@ -1462,16 +1854,89 @@ fn saved_to(key: &str, args: &[Arg]) -> Vec<Arg> {
     }
 }
 
-/// Whether `file`, a file wget reads, is the one its `--config` names, not
-/// a list of addresses (`-i`).
-fn is_config(args: &[Arg], file: &Arg) -> bool {
-    args.iter().enumerate().any(|(at, arg)| match arg.known() {
-        Some("--config") => args.get(at + 1) == Some(file),
-        Some(text) => text
-            .strip_prefix("--config=")
-            .is_some_and(|value| file.known() == Some(value)),
-        None => false,
-    })
+/// The value of a variable that names the options file `key` reads, or the
+/// folder it looks for one in, when the line sets it for the program:
+/// wget's `WGETRC` and `SYSTEM_WGETRC`, curl's `CURL_HOME` and
+/// `XDG_CONFIG_HOME`, and the `HOME` both look in. On a Windows machine
+/// (`windows`) `USERPROFILE` too, and for curl `APPDATA`. A home or profile
+/// folder set to the home directory itself (`at_home`) moves nothing.
+fn settings_variable(
+    key: &str,
+    unit: &Unit,
+    windows: bool,
+    at_home: &dyn Fn(&Arg) -> bool,
+) -> Option<Arg> {
+    let wanted: &[&str] = if key == "curl" {
+        &[
+            "CURL_HOME",
+            "XDG_CONFIG_HOME",
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+        ]
+    } else {
+        &["WGETRC", "SYSTEM_WGETRC", "HOME", "USERPROFILE"]
+    };
+    unit.argument_variables
+        .iter()
+        .find(|(name, value)| {
+            let name = name.as_str();
+            wanted.contains(&name)
+                && !matches!(value, Arg::Null)
+                && (windows || !matches!(name, "USERPROFILE" | "APPDATA"))
+                && (!matches!(name, "HOME" | "USERPROFILE") || !at_home(value))
+        })
+        .map(|(_, value)| value.clone())
+}
+
+/// A wgetrc command `wget -e` runs that the guard does not read: one but a
+/// send of a file it reads (`post_file`, `body_file`) and the few that only
+/// change how wget fetches (`robots = off`, retries, waits, timeouts, the
+/// user agent, certificate checks, recursion and its depth).
+fn unread_wget_command(args: &[Arg]) -> Option<Arg> {
+    const READ: [&str; 29] = [
+        "postfile",
+        "bodyfile",
+        "robots",
+        "tries",
+        "timeout",
+        "wait",
+        "waitretry",
+        "randomwait",
+        "useragent",
+        "checkcertificate",
+        "recursive",
+        "reclevel",
+        "noparent",
+        "retryconnrefused",
+        "verbose",
+        // Where wget connects through, and how it reports and paces.
+        "useproxy",
+        "httpproxy",
+        "httpsproxy",
+        "ftpproxy",
+        "noproxy",
+        "quiet",
+        "limitrate",
+        "dnstimeout",
+        "connecttimeout",
+        "readtimeout",
+        "inet4only",
+        "inet6only",
+        "continue",
+        "timestamping",
+    ];
+    // A command only known when it runs is one the guard does not read.
+    if let Some(unknown) = option_values(args, "e", &["execute"], super::send::WGET_VALUES)
+        .into_iter()
+        .find(|command| command.known().is_none())
+    {
+        return Some(unknown);
+    }
+    super::send::wget_commands(args)
+        .into_iter()
+        .find(|(name, _)| !READ.contains(&name.as_str()))
+        .map(|(name, value)| Arg::Known(format!("{name}={value}")))
 }
 
 pub(super) fn remote(arg: &Arg) -> bool {

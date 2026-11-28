@@ -498,41 +498,178 @@ fn local_drive(share: &str) -> Option<char> {
         .then(|| letter.to_ascii_uppercase())
 }
 
-/// Whether `text` is spelled from an administrative share of this machine
-/// (see [`local_drive`]): `\\localhost\C$\x`, `\\?\UNC\127.0.0.1\C$\x`.
-fn local_share(text: &str) -> bool {
-    let share = match verbatim(text) {
+/// The share (`server/share`, lower case) `text` is spelled from, directly
+/// or as a long path (`\\?\UNC\…`), and the path after it.
+fn share_of(text: &str) -> Option<(String, &str)> {
+    match verbatim(text) {
         Some(rest) => {
             let (kind, tail) = rest.split_once(['/', '\\']).unwrap_or((rest, ""));
             if !kind.eq_ignore_ascii_case("unc") {
-                return false;
+                return None;
             }
-            unc_parts(tail).map(|(share, _)| share)
+            unc_parts(tail)
         }
-        None => unc(text).map(|(share, _)| share),
-    };
-    share.is_some_and(|share| local_drive(&share).is_some())
+        None => unc(text),
+    }
+}
+
+/// Whether `text` is spelled from an administrative share of this machine
+/// (see [`local_drive`]): `\\localhost\C$\x`, `\\?\UNC\127.0.0.1\C$\x`, and
+/// `ADMIN$` (see [`admin_share`]).
+fn local_share(text: &str) -> bool {
+    share_of(text).is_some_and(|(share, _)| {
+        local_drive(&share).is_some()
+            || share
+                .split_once('/')
+                .is_some_and(|(server, name)| name == "admin$" && this_machine(server))
+    })
+}
+
+/// The path in the Windows folder that `text`, spelled from this machine's
+/// `ADMIN$` share, names, the path after the share in the Windows folder;
+/// `None` for any other path. The folder is on `C:`, where Windows keeps it
+/// unless it was put elsewhere when it was set up.
+fn admin_share(text: &str) -> Option<String> {
+    let (share, rest) = share_of(text)?;
+    let (server, name) = share.split_once('/')?;
+    (name == "admin$" && this_machine(server)).then(|| format!("C:\\Windows\\{rest}"))
 }
 
 /// Whether a share's server is this machine by a name every Windows machine
-/// answers to: `localhost`, `127.x.x.x`, `::1`, `0--1.ipv6-literal.net`.
+/// answers to: `localhost`, or the loopback address in every spelling an
+/// address takes: IPv4 in one to four parts, each decimal, hex or octal,
+/// and IPv6 in every spelling, written out, mapped from IPv4 or as a UNC
+/// name (Windows takes no brackets in a UNC path).
 fn this_machine(server: &str) -> bool {
     let server = server.to_ascii_lowercase();
-    if matches!(
-        server.as_str(),
-        "localhost" | "::1" | "0--1.ipv6-literal.net"
-    ) {
+    let server = server.trim_end_matches('.');
+    if server == "localhost" {
         return true;
     }
-    let parts: Vec<&str> = server.split('.').collect();
-    parts.len() == 4
-        && parts[0] == "127"
-        && parts.iter().all(|part| {
-            !part.is_empty()
-                && part.len() <= 3
-                && part.bytes().all(|b| b.is_ascii_digit())
-                && part.parse::<u16>().is_ok_and(|n| n <= 255)
-        })
+    if let Some(octets) = ipv4(server) {
+        return octets[0] == 127;
+    }
+    let literal = server.strip_suffix(".ipv6-literal.net").map(|name| {
+        // `s` starts a scope in this spelling, which names no other
+        // machine.
+        let name = name.split('s').next().unwrap_or(name);
+        name.replace('-', ":")
+    });
+    let written = literal.as_deref().unwrap_or(server);
+    matches!(
+        ipv6(written),
+        Some([0, 0, 0, 0, 0, 0, 0, 1] | [0, 0, 0, 0, 0, 0xffff, 0x7f00..=0x7fff, _])
+    )
+}
+
+/// An IPv6 address as its eight groups, in the spellings an address parser
+/// takes: groups of one to four hex digits, one `::` for a run of zero
+/// groups, and an IPv4 address in four decimal parts for the last two
+/// (`::ffff:127.0.0.1`).
+fn ipv6(text: &str) -> Option<[u16; 8]> {
+    let (head, tail) = match text.split_once("::") {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (text, None),
+    };
+    let head = ipv6_groups(head, tail.is_none())?;
+    let mut address = [0_u16; 8];
+    match tail {
+        None if head.len() == 8 => address.copy_from_slice(&head),
+        None => return None,
+        Some(tail) => {
+            let tail = ipv6_groups(tail, true)?;
+            if head.len() + tail.len() > 7 {
+                return None;
+            }
+            address.get_mut(..head.len())?.copy_from_slice(&head);
+            address.get_mut(8 - tail.len()..)?.copy_from_slice(&tail);
+        }
+    }
+    Some(address)
+}
+
+/// The groups of `part`, a side of an IPv6 address's `::` or the whole of
+/// one; `last` says it ends the address, where an IPv4 address may stand.
+fn ipv6_groups(part: &str, last: bool) -> Option<Vec<u16>> {
+    if part.is_empty() {
+        return Some(Vec::new());
+    }
+    let pieces: Vec<&str> = part.split(':').collect();
+    let mut groups = Vec::new();
+    for (at, piece) in pieces.iter().enumerate() {
+        if last && at + 1 == pieces.len() && piece.contains('.') {
+            let octets = piece
+                .split('.')
+                .map(|octet| {
+                    (!octet.is_empty()
+                        && octet.len() <= 3
+                        && octet.bytes().all(|b| b.is_ascii_digit()))
+                    .then(|| octet.parse::<u8>().ok())
+                    .flatten()
+                })
+                .collect::<Option<Vec<u8>>>()?;
+            let [a, b, c, d] = octets.as_slice() else {
+                return None;
+            };
+            groups.push(u16::from_be_bytes([*a, *b]));
+            groups.push(u16::from_be_bytes([*c, *d]));
+        } else if !piece.is_empty()
+            && piece.len() <= 4
+            && piece.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            groups.push(u16::from_str_radix(piece, 16).ok()?);
+        } else {
+            return None;
+        }
+    }
+    Some(groups)
+}
+
+/// An IPv4 address in the spellings an address parser takes (one to four
+/// parts, each decimal, `0x` hex or `0` octal, the last one filling the
+/// bytes left), as Windows and a URL parser read it.
+fn ipv4(text: &str) -> Option<[u8; 4]> {
+    let parts: Vec<&str> = text.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    let number = |part: &str| -> Option<u64> {
+        if part.is_empty() {
+            return None;
+        }
+        let (digits, radix) = if let Some(hex) = part.strip_prefix("0x") {
+            (hex, 16)
+        } else if part.len() > 1 && part.starts_with('0') {
+            (&part[1..], 8)
+        } else {
+            (part, 10)
+        };
+        if digits.is_empty() && radix == 16 {
+            return Some(0);
+        }
+        u64::from_str_radix(digits, radix).ok()
+    };
+    let values: Vec<u64> = parts
+        .iter()
+        .map(|part| number(part))
+        .collect::<Option<_>>()?;
+    let (last, first) = values.split_last()?;
+    if first.iter().any(|value| *value > 255) {
+        return None;
+    }
+    let room = 4 - first.len();
+    if *last >= 1u64 << (8 * room) {
+        return None;
+    }
+    let mut octets = [0u8; 4];
+    for (at, value) in first.iter().enumerate() {
+        octets[at] = u8::try_from(*value).ok()?;
+    }
+    for at in 0..room {
+        let shift = 8 * (room - 1 - at);
+        octets[first.len() + at] = u8::try_from((last >> shift) & 0xFF).ok()?;
+    }
+    Some(octets)
 }
 
 /// What follows `\\?\` (with either kind of separator) when `text` starts
@@ -2107,6 +2244,20 @@ impl Resolver {
         if flavour == Flavour::Windows && matches!(path, Spelling::Plain(text) if local_share(text))
         {
             places.push((Place::Outside, None));
+        }
+        // This machine's `ADMIN$` is its Windows folder.
+        let admin = match path {
+            Spelling::Plain(text) if flavour == Flavour::Windows => admin_share(text),
+            _ => None,
+        };
+        if let Some(windows) = admin {
+            self.place_one(
+                Spelling::Plain(&windows),
+                flavour,
+                hidden,
+                (holding, writes, follow),
+                &mut places,
+            );
         }
         places
     }
@@ -4264,6 +4415,40 @@ mod tests {
 
     fn below_home(paths: &Paths, path: &str, flavour: Flavour) -> Place {
         Resolver::new(paths).place(Spelling::Home(path), flavour)
+    }
+
+    #[test]
+    fn an_ipv6_address_is_read_in_every_spelling() {
+        assert_eq!(ipv6("::1"), Some([0, 0, 0, 0, 0, 0, 0, 1]));
+        assert_eq!(ipv6("0:0:0:0:0:0:0:1"), Some([0, 0, 0, 0, 0, 0, 0, 1]));
+        assert_eq!(ipv6("0000::0001"), Some([0, 0, 0, 0, 0, 0, 0, 1]));
+        assert_eq!(ipv6("::"), Some([0; 8]));
+        assert_eq!(
+            ipv6("::ffff:127.0.0.1"),
+            Some([0, 0, 0, 0, 0, 0xffff, 0x7f00, 1])
+        );
+        assert_eq!(ipv6("fe80::1:2"), Some([0xfe80, 0, 0, 0, 0, 0, 1, 2]));
+        for bad in [
+            "",
+            ":1",
+            "1::2::3",
+            "1:2:3:4:5:6:7",
+            "1:2:3:4:5:6:7:8:9",
+            "1:2:3:4::5:6:7:8",
+            "12345::",
+            "g::",
+            "::1.2.3",
+            "::256.0.0.1",
+            "1.2.3.4::",
+            "::1.2.3.4:5",
+        ] {
+            assert_eq!(ipv6(bad), None, "{bad}");
+        }
+        assert!(!this_machine("[::1]"));
+        assert!(this_machine("0--1.ipv6-literal.net"));
+        assert!(this_machine("::ffff:127.1.2.3"));
+        assert!(!this_machine("::ffff:128.0.0.1"));
+        assert!(!this_machine("::2"));
     }
 
     #[test]

@@ -1722,3 +1722,19 @@ posix finds=system_settings reason="changes SELinux settings" | cp config /etc/s
 posix finds=system_settings | ufw $c
 posix finds=system_settings | csrutil $x
 posix finds=system_settings reason="may change the firewall with an option only known when it runs" | iptables "-$F"
+
+# A shell's flags the table knows (`-E`, `-T`, `-B`, `-P`, `-x`) are flags,
+# so the script the shell runs is read as ever.
+posix finds=system_settings | sh -E /etc/init.d/ufw stop
+posix finds=system_settings | sh -T /etc/init.d/ufw stop
+posix finds=system_settings | sh -B /etc/init.d/ufw stop
+posix finds=system_settings | sh -xE /etc/init.d/ufw stop
+posix finds=system_settings | sh -Ex /etc/init.d/ufw stop
+posix finds=system_settings | ksh -E /etc/init.d/ufw stop
+posix finds=system_settings | sh -P /etc/init.d/auditd stop
+posix finds=system_settings | sh -E /etc/rc.d/pf stop
+posix finds=system_settings | sh -E -o emacs /etc/init.d/ufw stop
+posix finds=system_settings | cd /etc/init.d && sh -E ufw stop
+posix finds=system_settings | dash -T /etc/init.d/ufw stop
+posix finds=stop_system | sh -E /etc/init.d/ssh stop
+posix finds=system_settings | sudo sh -E /etc/init.d/ufw stop

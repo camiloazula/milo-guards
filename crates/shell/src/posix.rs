@@ -2974,6 +2974,13 @@ impl Walker<'_> {
                     .source
                     .get(arg.start_byte()..string.end_byte())
                     .unwrap_or_default();
+                // Its text is a locale's translation, the text itself where
+                // there is none: a `~` in it is a plain character there.
+                if let Arg::Known(inner) = self.arg(string) {
+                    if inner.starts_with('~') {
+                        readings.push((args.len(), vec![Arg::Known(format!("./{inner}"))]));
+                    }
+                }
                 let word = Arg::Unknown(word.to_string());
                 let at = self.spot(arg.start_byte()..string.end_byte(), &word, true);
                 if keep {
@@ -3230,10 +3237,31 @@ impl Walker<'_> {
             self.node_options(assignment);
         }
         let before = self.split.qualify(qualified);
+        // On Windows, Git Bash and MSYS2 hand a word that is `//` and a
+        // name to a Windows program with one `/` off (`cmd //c` is `cmd /c`),
+        // read as the switch it is for every program, in the words a brace
+        // list makes as in the line as written.
+        let on_windows = self.split.on_windows();
+        let msys = |args: &mut [Arg]| {
+            if on_windows {
+                for arg in args {
+                    if let Some(switch) = arg.known().and_then(msys_switch) {
+                        *arg = Arg::Known(switch);
+                    } else if let Some(path) = arg.known().and_then(msys_drive) {
+                        *arg = Arg::Known(path);
+                    }
+                }
+            }
+        };
+        msys(&mut args);
         // The command read with the words the shell makes of its brace lists
         // in place of them, kept apart from the command as written.
         let spelled_args = (!alts.is_empty() || lost_alts.iter().any(Option::is_some))
-            .then(|| spelled_arguments(&args, &words, before_lost, &alts, &lost_alts));
+            .then(|| spelled_arguments(&args, &words, before_lost, &alts, &lost_alts))
+            .map(|(mut spelled, spots)| {
+                msys(&mut spelled);
+                (spelled, spots)
+            });
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         if self.split.placing.is_some() {
             // The arguments the grammar left out of the tree (a `-`) have
@@ -3685,20 +3713,33 @@ impl Walker<'_> {
             }
             return;
         }
-        if let Some((name, _)) = source
-            .split_once('=')
-            .filter(|(name, _)| unit::read_as_arguments(name))
-        {
-            let value = match word.known() {
-                Some(text) => Arg::Known(
-                    text.split_once('=')
-                        .map_or("", |(_, value)| value)
-                        .to_string(),
-                ),
-                None => Arg::Unknown(source.to_string()),
-            };
-            self.split.note_argument_variable(name.to_string(), value);
-            return;
+        // The name is the word the shell makes of it, quotes and escapes
+        // off (`"npm_config_call"=x`); one only known when it runs may be
+        // any variable.
+        let assigned = match word.known() {
+            Some(text) => text
+                .split_once('=')
+                .map(|(name, value)| (name.to_string(), Arg::Known(value.to_string()))),
+            None => source.split_once('=').map(|(name, _)| {
+                (
+                    name.replace(['"', '\'', '\\'], ""),
+                    Arg::Unknown(source.to_string()),
+                )
+            }),
+        };
+        if let Some((name, value)) = assigned {
+            if name.contains(['$', '`']) {
+                self.split.problem(
+                    Rule::Unknown,
+                    "exports a variable only known when it runs",
+                    Some(source),
+                );
+                return;
+            }
+            if unit::read_as_arguments(&name) {
+                self.split.note_argument_variable(name, value);
+                return;
+            }
         }
         match word.known() {
             Some(text) => {
@@ -4812,22 +4853,66 @@ fn unescape(word: &str) -> String {
     value
 }
 
+/// The switch a word `//name` (no other separator) is to a Windows program
+/// that Git Bash or MSYS2 starts: `/name`. `None` for any other word, a
+/// share (`//server/share`) among them.
+fn msys_switch(text: &str) -> Option<String> {
+    let name = text.strip_prefix("//")?;
+    if name.contains(['/', '\\']) {
+        return None;
+    }
+    let switch = name.split(':').next().unwrap_or(name);
+    (!switch.is_empty()
+        && switch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '?' | '-' | '+')))
+    .then(|| format!("/{name}"))
+}
+
+/// The path a word `//C:/x` or `//./C:/x` is, on a Windows machine: Git Bash
+/// and MSYS2 open and hand it on as the drive's `C:/x`. `None` for any other
+/// word.
+fn msys_drive(text: &str) -> Option<String> {
+    let path = text
+        .strip_prefix("//")
+        .or_else(|| text.strip_prefix("\\\\"))?;
+    let path = path
+        .strip_prefix("./")
+        .or_else(|| path.strip_prefix(".\\"))
+        .unwrap_or(path);
+    let mut chars = path.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    (chars.next() == Some(':') && path[2..].starts_with(['/', '\\']))
+        .then(|| format!("{letter}:{}", &path[2..]))
+}
+
 /// `value`, the word at `node`, as the path it names when the `~` it starts
 /// with is quoted or escaped (`"~/x"`, `'~'/x`, `\~/x`): the shell leaves
 /// it, so the program is handed a name in the working directory (`./~/x`).
 /// A program that expands `~` itself reads the home directory, as the word
 /// is read too, so each is judged. `None` for any other word.
 fn literal_tilde(value: &Arg, node: Node<'_>, source: &str) -> Option<Arg> {
-    let text = value.known().filter(|text| text.starts_with('~'))?;
+    // A part of the prefix only known when it runs (`~"$x"/y`) is a name of
+    // one part, the folder the word is read through.
+    let text = match value {
+        Arg::Template { text, .. } => text.replace(OPAQUE, "_"),
+        other => other.known()?.to_string(),
+    };
+    if !text.starts_with('~') {
+        return None;
+    }
     quotes_tilde(node, source).then(|| Arg::Known(format!("./{text}")))
 }
 
 /// Whether the `~` the word at `node` starts with is one the shell does not
-/// expand: escaped (`\~`), in quotes (`"~"`, `'~'`), or after quotes that
-/// hold nothing (`""~`). Asked only of a word whose value starts with `~`:
-/// one from `$HOME` (`"$HOME"/x`) is the home directory.
+/// expand: escaped (`\~`), in quotes (`"~"`, `'~'`), after quotes that hold
+/// nothing (`""~`), or one whose tilde-prefix (the text up to the first
+/// slash the shell reads as one) holds a quoted or escaped character:
+/// `~"/x"`, `~'/x'`, `~\/x`, `~a"b"/x`. Asked only of a word whose value
+/// starts with `~`: one from `$HOME` (`"$HOME"/x`) is the home directory.
 fn quotes_tilde(node: Node<'_>, source: &str) -> bool {
-    let first = if node.kind() == "concatenation" {
+    let concatenated = node.kind() == "concatenation";
+    let first = if concatenated {
         node.named_child(0)
     } else {
         Some(node)
@@ -4837,8 +4922,15 @@ fn quotes_tilde(node: Node<'_>, source: &str) -> bool {
     };
     let text = unit::text(&first, source);
     match first.kind() {
-        "word" | "number" => text.starts_with("\\~"),
-        "raw_string" => true,
+        "word" | "number" => {
+            let prefix = text.split('/').next().unwrap_or(text);
+            text.starts_with("\\~")
+                || prefix.contains('\\')
+                // `~` and a quoted part before any slash: the prefix holds
+                // the quoted text.
+                || (concatenated && !text.contains('/') && node.named_child_count() > 1)
+        }
+        "raw_string" | "ansi_c_string" => true,
         "string" => text.starts_with("\"~") || text == "\"\"",
         _ => false,
     }
@@ -4863,4 +4955,42 @@ fn unescape_quoted(text: &str) -> String {
         }
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::msys_switch;
+
+    #[test]
+    fn a_word_is_a_switch_only_when_a_name_follows_the_slashes() {
+        assert_eq!(msys_switch("//F").as_deref(), Some("/F"));
+        assert_eq!(msys_switch("//out:name").as_deref(), Some("/out:name"));
+        // A share, and a drive path, are paths.
+        assert_eq!(msys_switch("//server/share"), None);
+        assert_eq!(msys_switch("//C:/Users/me"), None);
+        assert_eq!(msys_switch("//C:\\Users\\me"), None);
+        assert_eq!(msys_switch("/F"), None);
+        assert_eq!(msys_switch("//"), None);
+    }
+
+    #[test]
+    fn a_word_with_a_drive_after_the_slashes_is_the_drive_path() {
+        use super::msys_drive;
+        assert_eq!(msys_drive("//C:/Users/me").as_deref(), Some("C:/Users/me"));
+        assert_eq!(
+            msys_drive("//./C:/Users/me").as_deref(),
+            Some("C:/Users/me")
+        );
+        assert_eq!(msys_drive("//./C:"), None);
+        assert_eq!(
+            msys_drive("\\\\.\\C:\\Users\\me").as_deref(),
+            Some("C:\\Users\\me")
+        );
+        assert_eq!(msys_drive("//?/C:/x"), None);
+        assert_eq!(msys_drive("//d:\\x").as_deref(), Some("d:\\x"));
+        assert_eq!(msys_drive("//C:"), None);
+        assert_eq!(msys_drive("//server/share"), None);
+        assert_eq!(msys_drive("//1:/x"), None);
+        assert_eq!(msys_drive("/C:/x"), None);
+    }
 }

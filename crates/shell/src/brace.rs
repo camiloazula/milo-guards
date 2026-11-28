@@ -257,6 +257,9 @@ struct Scanned {
     /// It holds an expansion the line gives no value for (`$x`, `${x:-y}`,
     /// `$(…)`, a backtick).
     opaque: bool,
+    /// A quote opened before the first slash that is bare, in the prefix of
+    /// a `~` the word starts with (`~''/x` and `''~` are no tilde).
+    quoted_prefix: bool,
 }
 
 /// The variables a word may name that are a place the guard knows, and the
@@ -284,12 +287,14 @@ fn scan(source: &str, split: &Split, spelling: bool) -> Option<Scanned> {
     let mut quote: Option<char> = None;
     let mut opened = 0;
     let (mut ansi, mut opaque) = (false, false);
+    let mut quoted_prefix = false;
     let mut iter = source.chars().peekable();
     while let Some(c) = iter.next() {
         match (quote, c) {
             (None, '$') if iter.peek() == Some(&'\'') => {
                 iter.next();
                 ansi = true;
+                quoted_prefix |= !chars.iter().any(|(c, bare)| *c == '/' && *bare);
                 let decoded = ansi_c(&mut iter)?;
                 if chars.is_empty() && decoded.first() == Some(&'~') {
                     chars.extend([('.', false), ('/', false)]);
@@ -315,6 +320,7 @@ fn scan(source: &str, split: &Split, spelling: bool) -> Option<Scanned> {
                 }
             }
             (None, '\'' | '"') => {
+                quoted_prefix |= !chars.iter().any(|(c, bare)| *c == '/' && *bare);
                 quote = Some(c);
                 opened = chars.len();
             }
@@ -359,6 +365,7 @@ fn scan(source: &str, split: &Split, spelling: bool) -> Option<Scanned> {
         chars,
         ansi,
         opaque,
+        quoted_prefix,
     })
 }
 
@@ -444,9 +451,23 @@ fn skip_balanced(
 /// An ANSI-C string is a value known when the line is read, so it is read; a
 /// `~` it makes is a plain character, not the home directory.
 pub(crate) fn braces(source: &str, split: &Split) -> Option<Vec<Arg>> {
-    let scanned = scan(source, split, false)?;
+    let mut scanned = scan(source, split, false)?;
     if scanned.opaque {
         return None;
+    }
+    // The shell expands a `~` only when it starts the word and nothing of
+    // its prefix, the text up to the first slash it reads as one, is quoted
+    // or escaped: otherwise it is a plain character, a name in the folder
+    // the line is in.
+    let chars = &mut scanned.chars;
+    if chars.first() == Some(&('~', true)) {
+        let prefix = chars
+            .iter()
+            .position(|(c, bare)| *c == '/' && *bare)
+            .unwrap_or(chars.len());
+        if scanned.quoted_prefix || chars[..prefix].iter().any(|(_, bare)| !bare) {
+            chars.splice(0..0, [('.', false), ('/', false)]);
+        }
     }
     let spelled = spelled_out(&scanned.chars).or_else(|| {
         scanned

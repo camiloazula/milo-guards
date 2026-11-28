@@ -6,6 +6,133 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+## 0.2.2 (2026-11-28)
+
+A patch release with security fixes. What the shell guard and the core's
+paths answer changes, and what a caller compiles against does not: the shell
+guard reads more of what a line does, a line that was judged less serious
+than what it does is judged as what it does, and more lines are `unknown` or
+`unreadable` for it. Of the 2,934 everyday answers, 2,908 are `safe`, as in
+0.2.1: a false-alarm share of 0.9 % (0.3 % in a POSIX shell, none in
+PowerShell, 4.6 % in cmd), and no everyday answer moved.
+
+- `milo-guards-shell`: the value of an option is read wherever the option
+  stands: attached to a short option, after `=`, or taken by the last
+  letter of a cluster of flags. A file a program is told to read or to
+  send, and where a download lands (wget's `-P` in a cluster too), are read
+  so. A letter that is a flag in some command of a program takes no word
+  there, a word that starts with `-` is never passed over as another
+  option's value, and a cluster of `xargs` flags ends at the options that
+  take only the rest of their word, and the replace options of one take
+  their string.
+- `milo-guards-shell`: a copy from another machine is judged by every place
+  on this machine it may land. The options of the copy tools and their
+  values are not operands, a flag takes no word, and an option the guard
+  does not know, which may take the next word, makes every operand on this
+  machine a place it may land. An option with an optional value takes the
+  next word only when it is one of the values, and one with several values
+  leaves every operand a place it may land.
+- `milo-guards-shell`: a `~` followed by quoting is judged as the home
+  directory and as a name in the working directory: a quoted, escaped or
+  empty-quoted character, a variable, or a locale string in the prefix up
+  to the first slash stops the shell's tilde expansion. A `..` after a
+  folder only known when it runs may leave it for any other, so what stays
+  a name is the file the word ends in, read as it is after any such folder
+  (`name/..` pairs of the word go first).
+- `milo-guards-shell`: on a Windows machine, a word of a POSIX line that is
+  two slashes and a name is handed to a Windows program as a switch, as Git
+  Bash and MSYS2 hand it, for every program whose switches the guard reads.
+  Two slashes and a drive are the drive's path, and a device or long path
+  is handed on unchanged and read as Windows reads it. A share stays a
+  share, but an administrative one, also as a long path, is read as cmd
+  reads it.
+- `milo-guards-core`: an administrative share of this machine is placed on
+  its disk when the server is the loopback address in every spelling an
+  address takes (IPv4 in one to four parts, in decimal, hex or octal, and
+  IPv6 in every spelling, mapped from IPv4 or as a UNC name,
+  with or without a trailing dot), where only a few spellings were. Its
+  `ADMIN$` is the Windows folder, so a file there is judged by where it is.
+  A share of another machine, and of an address that is not the loopback,
+  is only a share.
+- `milo-guards-shell`: in cmd, a caret before a line break joins the next
+  line and escapes its first character, so a quote there opens no quoted
+  text, as it opens none after a caret on the same line: the commands cmd
+  runs after such a quote are judged, where the quote hid them, in the value
+  of a `set` too; a `^` inside double quotes is a character there, and a
+  redirect after the value of a `set` makes its file, which is judged. A
+  `%…%` in the value that holds a quote, a caret or an operator makes the
+  line unknown, and what follows the first operator outside it is still
+  read.
+- `milo-guards-shell`: "runs a script outside the workspace" is said only
+  of a script a shell or an interpreter runs from a file, and of a program
+  a shell's command string starts by a path. A shell given a command or its
+  input runs no file, a script read from the input is the input's, which
+  its own rules judge, and each flag of a shell that takes an option's name
+  takes the next word, wherever it stands in a cluster, as the shell reads
+  its options (a flag in one shell takes a name in another, and fish's
+  options that take a value, long ones included, are its own). A letter or a
+  long option the shell's table does not have, or that means one thing in one
+  shell of the name and another in another (an option's name attached to
+  `-o` in `sh`, `ksh` and `yash`, `-T` in `sh` and `ksh`), is not guessed at:
+  the line is unknown. A shell under another name (`bash5`, `zsh-5.9`,
+  `ksh93`, `rbash`, `lksh`, `oksh`, `pdksh`, `posh`, `hush`) has the table of
+  the shell it is (a build too, `bash-static`, `ksh93u+m`, and no program
+  that only starts with its name), bash takes the value of `-rcfile` and
+  `-init-file` with one dash, in the run of long options that starts its
+  arguments and nowhere else, and csh and tcsh take the word after `-c` and
+  each later `-c` as commands, and the script they are given, or the input
+  when it names it (`-s`, `-t` and `-i` read it, and the words after them
+  are arguments, but for one that may split into several words, which may
+  hold a `-c`; the commands read before such a word are judged still). fish
+  reads everything it is given to run as one script, so
+  a change of folder carries on, and each command alone besides, so that a
+  heredoc, a quote or a backtick does not take the next with it; a line that
+  gives fish more than 16 commands in all, nested ones too, is unknown. Given
+  only `-C`, it goes on to run the script it is handed, unknown when it is
+  named by a relative path, or to read its input. A word only known when it
+  runs among its options makes the line unknown.
+- `milo-guards-shell`: a line that holds a NUL is `unreadable`, as it was,
+  and what the guard reads past the NUL is kept: a grammar's scanner reads
+  a NUL as the end of its input, so what came after it was not read and
+  could hide a command; the grammar is now handed another character in its
+  place, as the shell reads the line with the NUL dropped, and the words
+  are read from the line as written.
+- `milo-guards-shell`: `split` and `csplit` read the file they cut into
+  pieces (`read_secret` for a key; their options are read in clusters and
+  a long one by any prefix of its name) and write the pieces, a prefix and
+  a suffix (with `split`'s additional suffix, or the format `csplit` is
+  given, expanded when it is a simple integer one; the numbering options are
+  read in order, and the last start given is the one that counts, a bare one
+  leaving it), judged where they land, and the pattern of the names not
+  judged one by one, also for the pieces `csplit` may make past those. A
+  piece `split` sends to its output is written nowhere. The command `split`
+  is told to run on each piece is judged as a line for each name the pieces
+  can have, so a sender there sends the file (`send_secret`), and one only
+  known when it runs is `unknown`.
+- `milo-guards-shell`: the commands wget runs from its options that send a
+  file are a send (`send_secret`), those that only change how it fetches
+  (proxies, retries, timeouts) are read as such, and any other, or one only
+  known when it runs, is `unknown`. A variable the line sets for `curl` or
+  `wget` that names a file of options, or the folder it looks for one in,
+  is `unknown`, as the option that names such a file is, unless it sets the
+  home directory to itself, written as the line's own `~` or `$HOME` (in
+  PowerShell and cmd, `$HOME` too, in any case, and a literal `~` or cmd's
+  `%HOME%` is a folder of that name); the variables of Windows count for a
+  line for Windows. curl's variable read from a file reads the file, and
+  sends it where the expansion puts it, from the input too; a value with an
+  `@` in its text is no file.
+- `milo-guards-shell`: the name an `export` or a `declare` is given is the
+  word the shell makes of it, with its quotes and escapes taken off, so the
+  variables the commands after it read (a program's options, its proxy, its
+  pager, the command it runs to reach a remote) are found however the name is
+  written; a name only known when it runs is `unknown`.
+- Answers that changed with it: a line that hands a shell a letter its table
+  does not have, or an option's name attached to a letter that a shell of the
+  same name reads in two ways, was judged as the command it hands the shell
+  and is `unknown`, as the guard does not guess at what the shell runs; and
+  the pieces `split` writes are judged by where they land, as any write is,
+  where a line that writes a protected place with them was `safe`.
+
 ## 0.2.1 (2026-11-28)
 
 A patch release with security fixes. What a guard answers changes and what a

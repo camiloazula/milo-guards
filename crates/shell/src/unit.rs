@@ -1054,12 +1054,28 @@ impl Noted {
 /// values of these are noted where it sets them (see
 /// [`Split::argument_variables`]).
 pub(crate) fn read_as_arguments(name: &str) -> bool {
-    tf_cli_args(name)
+    SETTINGS_VARIABLES.contains(&name)
+        || tf_cli_args(name)
         || npm_call(name)
         || PSQL_PROGRAMS.contains(&name)
         || git_config_variable(name)
         || crate::launch::is_command_variable(name)
 }
+
+/// The variables that name a file of options a download tool reads, or the
+/// folder it looks for one in: wget's `WGETRC` and `SYSTEM_WGETRC`, the
+/// folders of curl's `.curlrc` and `curlrc` (`CURL_HOME`, `XDG_CONFIG_HOME`,
+/// and on Windows `USERPROFILE` and `APPDATA`), and the home directory both
+/// look in (`HOME`).
+pub(crate) const SETTINGS_VARIABLES: [&str; 7] = [
+    "WGETRC",
+    "SYSTEM_WGETRC",
+    "CURL_HOME",
+    "XDG_CONFIG_HOME",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+];
 
 /// The name a program reads, when `name` is one of [`read_as_arguments`]'s
 /// written in any case, as Windows reads the names of variables
@@ -1079,7 +1095,10 @@ pub(crate) fn argument_variable(name: &str) -> Option<String> {
         return Some(program.to_string());
     }
     let upper = name.to_ascii_uppercase();
-    if upper == "TF_CLI_ARGS" || git_config_variable(&upper) {
+    if upper == "TF_CLI_ARGS"
+        || git_config_variable(&upper)
+        || SETTINGS_VARIABLES.contains(&upper.as_str())
+    {
         return Some(upper);
     }
     let command = upper.strip_prefix("TF_CLI_ARGS_")?;
@@ -1602,6 +1621,10 @@ pub(crate) struct Split {
     /// How many words and how many bytes of them the lists read as each
     /// element alone have made in the line.
     pub(crate) alone_words: usize,
+    /// How many commands fish has been given in all, by the units of the
+    /// line that give it more than one, nested ones too: each is read alone
+    /// and with the rest.
+    fish_codes: usize,
     /// How deep the line is inside `find … -exec find … -exec …`: each
     /// level is read once for every place the one outside it searches.
     pub(crate) find_depth: usize,
@@ -2003,6 +2026,13 @@ impl Split {
         self.forks <= most
     }
 
+    /// Count `count` more commands given to a fish; `false` once `most` have
+    /// been, when the line is not read any further.
+    pub(crate) fn count_fish_codes(&mut self, count: usize, most: usize) -> bool {
+        self.fish_codes = self.fish_codes.saturating_add(count);
+        self.fish_codes <= most
+    }
+
     /// The folder the `cd`s read so far moved the line to.
     pub(crate) fn directory(&self) -> Option<Arg> {
         self.dir.clone()
@@ -2012,6 +2042,11 @@ impl Split {
     /// `set -P`), which follows a link before it applies a `..`.
     pub(crate) fn physical(&self) -> bool {
         self.pwd.physical
+    }
+
+    /// Whether the line runs on Windows: the home directory is on a drive.
+    pub(crate) fn on_windows(&self) -> bool {
+        self.home_drive.is_some()
     }
 
     /// Whether `$PWD` is plain text here: the line has not moved, or moved to
@@ -6048,6 +6083,29 @@ pub(crate) fn script_in(split: &mut Split, text: &str, shell: Shell, depth: usiz
     }
 }
 
+/// `text` with each NUL written as another character of the same length (see
+/// [`parse`]): a space where it is at a word's edge, a `,` inside one.
+fn without_nul(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let edge =
+        |c: Option<&char>| c.is_none_or(|c| c.is_whitespace() || ";|&(){}<>`\0".contains(*c));
+    chars
+        .iter()
+        .enumerate()
+        .map(|(at, &c)| {
+            if c != '\0' {
+                c
+            } else if edge(at.checked_sub(1).and_then(|before| chars.get(before)))
+                || edge(chars.get(at + 1))
+            {
+                ' '
+            } else {
+                ','
+            }
+        })
+        .collect()
+}
+
 /// Parse `text` with `language`; `None` (and a finding) when the parser
 /// gives nothing back or reads past its budget (see [`MAX_LEXED`], and for a
 /// grammar whose recoveries are counted, [`MAX_RECOVERIES`] and
@@ -6067,6 +6125,20 @@ pub(crate) fn parse(
     language: &tree_sitter::Language,
     recovery: Recovery,
 ) -> Option<tree_sitter::Tree> {
+    // A grammar's scanner reads a NUL as the end of its input, and stops
+    // there inside quotes: a line with one is unreadable already
+    // (`controlled`), and the grammar is handed another character in its
+    // place, so what follows it is still read. A shell fed the line drops a
+    // NUL, so one that starts or ends a word, or stands by a space, is a
+    // space; one inside a word is a `,`, which keeps the word whole. The walk
+    // reads the text as written.
+    let stood;
+    let text = if text.contains('\0') {
+        stood = without_nul(text);
+        stood.as_str()
+    } else {
+        text
+    };
     let bytes = text.as_bytes();
     // The budgets are the line's, shared by every script and piece of code
     // in it, so a line that starts many cannot spend them many times over.
@@ -6313,6 +6385,122 @@ pub(crate) fn has_flag(args: &[Arg], short: Option<char>, long: Option<&str>) ->
         }
     }
     false
+}
+
+/// The values a POSIX-style option is given, in order: `--long value` and
+/// `--long=value` for each of `long`, and each of `short` alone (`-K f`),
+/// with its value attached (`-Kf`) or at the end of a cluster of flags
+/// (`-sK f`, `-sSKf`). `valued` holds the letters of the program that take
+/// a value, so a cluster is read to its first one: a letter after it is
+/// that option's value. Options end at `--`.
+pub(crate) fn option_values(args: &[Arg], short: &str, long: &[&str], valued: &str) -> Vec<Arg> {
+    let mut values = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.known() else { continue };
+        if text == "--" {
+            break;
+        }
+        if let Some(name) = text.strip_prefix("--") {
+            let (name, attached) = name
+                .split_once('=')
+                .map_or((name, None), |(name, value)| (name, Some(value)));
+            if long.contains(&name) {
+                match attached {
+                    Some(value) => values.push(Arg::Known(value.to_string())),
+                    None => values.extend(iter.next().cloned()),
+                }
+            }
+            continue;
+        }
+        let Some(bundle) = text.strip_prefix('-').filter(|bundle| !bundle.is_empty()) else {
+            continue;
+        };
+        for (at, letter) in bundle.char_indices() {
+            let rest = &bundle[at + letter.len_utf8()..];
+            if short.contains(letter) {
+                if rest.is_empty() {
+                    values.extend(iter.next().cloned());
+                } else {
+                    values.push(Arg::Known(rest.to_string()));
+                }
+                break;
+            }
+            if valued.contains(letter) {
+                // Another option's value: the rest of the word, or the next,
+                // unless that is an option itself: a word that may be one is
+                // looked at, not passed over.
+                if rest.is_empty()
+                    && iter
+                        .as_slice()
+                        .first()
+                        .and_then(Arg::known)
+                        .is_none_or(|next| next.len() < 2 || !next.starts_with('-'))
+                {
+                    iter.next();
+                }
+                break;
+            }
+        }
+    }
+    values
+}
+
+/// The operands of a POSIX-style program as [`operands`] reads them, but
+/// with its options as `getopt` does: `short` holds the letters that take a
+/// value, which is the rest of the word or the next one when the letter ends
+/// it (`-db 100 f`, `-sf p f`), `valued` the names of the long options that
+/// do, as their own word or after `=`; a long option is read by any prefix of
+/// its name that no other of `all` starts with, as GNU programs read it.
+pub(crate) fn operands_clustered<'a>(
+    args: &'a [Arg],
+    short: &str,
+    valued: &[&str],
+    all: &[&str],
+) -> Vec<&'a Arg> {
+    let mut operands = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.known() {
+            Some("--") => {
+                operands.extend(iter);
+                break;
+            }
+            Some(text) if text.starts_with("--") => {
+                if !text.contains('=')
+                    && long_named(&text[2..], all).is_some_and(|name| valued.contains(&name))
+                {
+                    iter.next();
+                }
+            }
+            Some(text) if text.len() > 1 && text.starts_with('-') => {
+                let bundle = &text[1..];
+                if let Some((at, letter)) = bundle
+                    .char_indices()
+                    .find(|(_, letter)| short.contains(*letter))
+                {
+                    if at + letter.len_utf8() == bundle.len() {
+                        iter.next();
+                    }
+                }
+            }
+            _ => operands.push(arg),
+        }
+    }
+    operands
+}
+
+/// The long option of `all` that `name`, written without its `--` and with
+/// no `=`, names: exactly, or by the one option it is a prefix of.
+pub(crate) fn long_named<'a>(name: &str, all: &[&'a str]) -> Option<&'a str> {
+    if let Some(exact) = all.iter().find(|full| **full == name) {
+        return Some(exact);
+    }
+    let mut starts = all
+        .iter()
+        .filter(|full| !name.is_empty() && full.starts_with(name));
+    let first = starts.next()?;
+    starts.next().is_none().then_some(*first)
 }
 
 /// Whether `arg`, a value only known when it runs, may be several words when

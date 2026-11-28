@@ -11,7 +11,7 @@ use super::processes::{
     is_system_label, is_system_unit, unit_pattern_matches, unit_pattern_stops_system,
 };
 use super::{hedged, script_operand, Checker, CONTENTS};
-use crate::launch::SHELLS;
+use crate::launch::{dashed_options, is_shell};
 use crate::path::{Access, Place};
 use crate::unit::{has_flag, operands, unread_option, Arg, Unit};
 use crate::{Rule, Shell};
@@ -1540,18 +1540,24 @@ impl Checker<'_> {
     fn shell_runs_init_script(&mut self, unit: &Unit, key: &str) {
         let args = unit.args.as_slice();
         let sourced = unit.shell == Shell::Posix && matches!(key, "source" | ".");
-        if !sourced && !SHELLS.contains(&key) {
+        if !sourced && !is_shell(key) {
             return;
         }
-        let Some(script) = script_operand(key, args, unit.shell) else {
+        // (A program a `-c` string starts is no word of the line.)
+        let Some(std::borrow::Cow::Borrowed(script)) = script_operand(key, args, unit.shell) else {
             return;
         };
         let Some(at) = args.iter().position(|arg| std::ptr::eq(arg, script)) else {
             return;
         };
         // `-c` runs its operand as a line of its own, which is read as one,
-        // and no script.
-        if !has_flag(&args[..at], Some('c'), None) {
+        // and no script. (`-rcfile` of bash is an option of its own, not a
+        // cluster of flags.)
+        let dashed = dashed_options(key, &args[..at]);
+        let command = args[..at].iter().enumerate().any(|(at, arg)| {
+            !dashed.contains(&at) && has_flag(std::slice::from_ref(arg), Some('c'), None)
+        });
+        if !command {
             // A shell reads a script named without a folder from the
             // working folder; `.` and `source` look it up on `PATH` first.
             self.init_script(unit, script, &args[at + 1..], !sourced);

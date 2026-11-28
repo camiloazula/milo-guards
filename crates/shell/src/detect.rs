@@ -2,8 +2,9 @@
 //! and judges every path by where it resolves.
 
 use crate::launch::{
-    after_run, find_targets, is_interpreter, is_node, is_stdin, options, own_args, powershell_file,
-    uv_script, Options, BUN_VALUES, DENO_VALUES, SHELLS,
+    after_run, cluster, find_targets, fish_codes, is_interpreter, is_node, is_shell, is_stdin,
+    long_option, options, own_args, powershell_file, shell_family, single_dash, uv_script, Dashed,
+    FishCodes, Options, BUN_VALUES, DENO_VALUES,
 };
 use crate::located::{Ident, Origin, Owned};
 use crate::path::{self, Access, Place, Resolver};
@@ -1899,7 +1900,7 @@ impl Checker<'_> {
             }
             return;
         }
-        let runner = SHELLS.contains(&key)
+        let runner = is_shell(key)
             || is_interpreter(key)
             || key == "uv"
             || (unit.shell == Shell::Posix && matches!(key, "source" | "."));
@@ -1911,16 +1912,15 @@ impl Checker<'_> {
         for module in preloaded(key, &unit.args, unit.shell) {
             self.runs_written(unit, &module, unit.dir.as_ref());
         }
-        let Some(script) = script_operand(key, &unit.args, unit.shell) else {
-            return;
-        };
-        let before = self.found.len();
-        self.runs_written(unit, script, unit.dir.as_ref());
-        // `source` and `.` read the shell's own settings (`source
-        // ~/.nvm/nvm.sh`) as often as anything; what they read is judged
-        // as a read.
-        if self.found.len() == before && !matches!(key, "source" | ".") {
-            self.runs_outside(unit, script);
+        for script in script_operands(key, &unit.args, unit.shell) {
+            let before = self.found.len();
+            self.runs_written(unit, &script, unit.dir.as_ref());
+            // `source` and `.` read the shell's own settings (`source
+            // ~/.nvm/nvm.sh`) as often as anything; what they read is judged
+            // as a read.
+            if self.found.len() == before && !matches!(key, "source" | ".") {
+                self.runs_outside(unit, &script);
+            }
         }
     }
 
@@ -1954,7 +1954,14 @@ impl Checker<'_> {
                 | Place::Unknown
                 | Place::Sensitive(_, milo_guards_core::Sensitivity::History)
         );
-        if !ours {
+        // A script read from the line's input is what the rules of the
+        // input judge (`runs commands read from its input`, a download piped
+        // in).
+        let input = matches!(
+            script.known(),
+            Some("/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
+        );
+        if !ours && !input {
             self.add(
                 Rule::Unknown,
                 "runs a script outside the workspace",
@@ -2183,7 +2190,30 @@ fn named_in_unknown_folder(arg: &Arg) -> Option<Arg> {
         return None;
     }
     let name = text.replace(&folder, "");
-    (!name.contains(crate::posix::OPAQUE)).then_some(Arg::Known(name))
+    if name.contains(crate::posix::OPAQUE) {
+        return None;
+    }
+    // A `..` after a folder only known when it runs may leave it for any
+    // other: what stays a name is the file the word ends in (`"$x/../.env"`
+    // is `.env`), a name of one part.
+    // A `name/..` pair of the word goes first.
+    let mut parts: Vec<&str> = Vec::new();
+    for part in name
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+    {
+        if part == ".." && parts.last().is_some_and(|last| *last != "..") {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    if let Some((last, folders)) = parts.split_last() {
+        if !folders.is_empty() && *last != ".." && folders.iter().all(|part| *part == "..") {
+            return Some(Arg::Known((*last).to_string()));
+        }
+    }
+    Some(Arg::Known(name))
 }
 
 /// `unit` with its words read by the name they end in, for the rules that
@@ -2984,6 +3014,14 @@ fn downloads_to(key: &str, args: &[Arg]) -> Vec<Arg> {
                     for (at, letter) in bundle.char_indices() {
                         if letter == remote_flag {
                             remote = true;
+                        } else if letter == 'P' && key == "wget" {
+                            let rest = &bundle[at + 1..];
+                            prefix = if rest.is_empty() {
+                                iter.next().and_then(Arg::known).map(str::to_string)
+                            } else {
+                                Some(rest.to_string())
+                            };
+                            break;
                         } else if letter == output {
                             let rest = &bundle[at + 1..];
                             if rest.is_empty() {
@@ -3173,41 +3211,165 @@ fn libraries(key: &str, read: &Options, shell: Shell) -> Vec<Arg> {
 
 /// The script a shell or interpreter runs from a file: its first operand
 /// after its options and their values; `None` for a module (`python -m`).
-fn script_operand<'a>(key: &str, args: &'a [Arg], shell: Shell) -> Option<&'a Arg> {
+fn script_operands<'a>(key: &str, args: &'a [Arg], shell: Shell) -> Vec<Cow<'a, Arg>> {
+    if is_shell(key) {
+        return shell_scripts(key, args);
+    }
+    script_operand(key, args, shell).into_iter().collect()
+}
+
+/// The script an interpreter runs, or a shell's, by the reading that takes no
+/// word for a letter it does not know (see [`shell_scripts`]).
+fn script_operand<'a>(key: &str, args: &'a [Arg], shell: Shell) -> Option<Cow<'a, Arg>> {
     if matches!(key, "source" | ".") {
-        return args.first();
+        return args.first().map(Cow::Borrowed);
     }
     // `uv run file.py` runs Python on the file.
     if key == "uv" {
-        return uv_script(args, shell);
+        return uv_script(args, shell).map(Cow::Borrowed);
+    }
+    if is_shell(key) {
+        return shell_scripts(key, args).into_iter().next();
     }
     // `bun run file` and `deno run file` run the file after the subcommand,
     // which may stand after options (`bun --hot run file`).
     let values: &[&str] = match key {
         "bun" => &BUN_VALUES,
         "deno" => &DENO_VALUES,
-        _ if SHELLS.contains(&key) => &["-o", "+o", "-O", "+O", "--rcfile", "--init-file"],
         // An interpreter's script is read with its own table of options.
         _ => {
             let args = own_args(key, args);
-            return options(key, args).script.map(|at| &args[at]);
+            return options(key, args).script.map(|at| Cow::Borrowed(&args[at]));
         }
     };
-    let args = match key {
-        "bun" | "deno" => after_run(key, args),
-        _ => args,
-    };
+    let args = after_run(key, args);
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.known() {
-            Some("-m") if !SHELLS.contains(&key) => return None,
-            Some("--") => return iter.next(),
+            Some("-m") => return None,
+            Some("--") => return iter.next().map(Cow::Borrowed),
             Some(text) if values.contains(&text) => {
                 iter.next();
             }
             Some(text) if text.len() > 1 && (text.starts_with('-') || text.starts_with('+')) => {}
-            _ => return Some(arg),
+            _ => return Some(Cow::Borrowed(arg)),
         }
     }
     None
+}
+
+/// The script a POSIX shell runs from a file, or the program a `-c` string
+/// runs when that is a path (`bash -c /opt/x.sh`): its first operand after
+/// its options. A shell given `-c` runs the string, and one given `-s` reads
+/// what to run from its input: neither runs a file. The words a cluster of
+/// flags takes are the shell's (see [`cluster`]). fish runs each command it
+/// is given.
+fn shell_scripts<'a>(key: &str, args: &'a [Arg]) -> Vec<Cow<'a, Arg>> {
+    if shell_family(key) == Some("fish") {
+        let FishCodes {
+            codes, commands, ..
+        } = fish_codes(args);
+        if !codes.is_empty() {
+            let mut scripts: Vec<Cow<'a, Arg>> = codes
+                .iter()
+                .filter_map(|(code, _)| code.known().and_then(command_program))
+                .map(|program| Cow::Owned(Arg::Known(program)))
+                .collect();
+            // With no `-c`, fish runs what it is handed besides.
+            if commands == 0 {
+                scripts.extend(shell_script(key, args));
+            }
+            return scripts;
+        }
+    }
+    shell_script(key, args).into_iter().collect()
+}
+
+fn shell_script<'a>(key: &str, args: &'a [Arg]) -> Option<Cow<'a, Arg>> {
+    let (mut command, mut input) = (false, false);
+    // Whether every word so far is a long option (see `dashed_options`).
+    let mut leading = true;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let spelled;
+        let dashed = match arg.known() {
+            Some(text) if leading => single_dash(key, text),
+            _ => Dashed::No,
+        };
+        let text = match (arg.known(), dashed) {
+            (_, Dashed::Long(long)) => {
+                spelled = long;
+                Some(spelled.as_str())
+            }
+            // The word may be a flag or an option: no script is named.
+            (_, Dashed::Either) => return None,
+            (text, Dashed::No) => text,
+        };
+        leading &= text.is_some_and(|text| text.starts_with("--"));
+        let operand = match text {
+            Some("--") => iter.next(),
+            Some(text) if text.starts_with("--") => {
+                if long_option(key, text).skip {
+                    iter.next();
+                }
+                continue;
+            }
+            Some(text) if text.len() > 1 && (text.starts_with('-') || text.starts_with('+')) => {
+                let flags = cluster(key, text);
+                command |= text[1..].contains('c');
+                input |= text[1..].contains('s');
+                for _ in 0..flags.taken {
+                    iter.next();
+                }
+                continue;
+            }
+            _ => Some(arg),
+        };
+        let operand = operand?;
+        return if input {
+            None
+        } else if command {
+            // The string runs as a command line: a program it starts by a
+            // path is a script outside the workspace as one it is given is.
+            operand
+                .known()
+                .and_then(command_program)
+                .map(|program| Cow::Owned(Arg::Known(program)))
+        } else {
+            Some(Cow::Borrowed(operand))
+        };
+    }
+    None
+}
+
+/// The program the command line `text` starts, with its quotes off, when it
+/// is a path: the first word after any assignments of variables and the
+/// words that start another command (`exec`, `command`, `nohup`).
+fn command_program(text: &str) -> Option<String> {
+    let mut rest = text;
+    loop {
+        rest = rest.trim_start();
+        let first = rest.chars().next()?;
+        let (word, after) = if matches!(first, '"' | '\'') {
+            let inner = &rest[1..];
+            let end = inner.find(first)?;
+            (inner[..end].to_string(), &inner[end + 1..])
+        } else {
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            (rest[..end].to_string(), &rest[end..])
+        };
+        let assignment = word.split_once('=').is_some_and(|(name, _)| {
+            !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        });
+        if assignment
+            || matches!(
+                word.as_str(),
+                "exec" | "command" | "builtin" | "nohup" | "time"
+            )
+        {
+            rest = after;
+            continue;
+        }
+        return word.contains('/').then_some(word);
+    }
 }

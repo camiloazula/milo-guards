@@ -168,9 +168,47 @@ enum Linked {
     Wild,
 }
 
-/// Whether `text` starts with a drive and a separator (`C:/x`, `C:\x`).
+/// Whether `text` starts with a drive and a separator (`C:/x`, `C:\x`), or
+/// with one behind the prefix of a device or long path (`//./C:/x`,
+/// `//?/C:/x`), which Windows opens as the drive's own.
 fn starts_with_drive(text: &str) -> bool {
-    drive_of(text).is_some() && text[2..].starts_with(['/', '\\'])
+    let plain = |text: &str| drive_of(text).is_some() && text[2..].starts_with(['/', '\\']);
+    let rest = ["//./", "//?/", "\\\\.\\", "\\\\?\\"]
+        .iter()
+        .find_map(|prefix| text.strip_prefix(prefix));
+    plain(text) || rest.is_some_and(plain)
+}
+
+/// Whether `text` is spelled from an administrative share of a server (`C$`,
+/// `ADMIN$`: `//host/C$/x`, `\\host\ADMIN$\x`), which a Windows program is
+/// handed as it is and opens as the share, so it is read as cmd reads it.
+fn starts_with_admin_share(text: &str) -> bool {
+    let Some(rest) = text
+        .strip_prefix("//")
+        .or_else(|| text.strip_prefix("\\\\"))
+    else {
+        return false;
+    };
+    // A long or device path to a share (`\\?\UNC\host\C$\x`) names the
+    // host after its prefix.
+    let rest = ["?/", "./", "?\\", ".\\"]
+        .iter()
+        .find_map(|prefix| rest.strip_prefix(prefix))
+        .and_then(|rest| {
+            rest.get(..4)
+                .filter(|unc| unc.eq_ignore_ascii_case("unc/") || unc.eq_ignore_ascii_case("unc\\"))
+                .map(|_| &rest[4..])
+        })
+        .unwrap_or(rest);
+    let mut parts = rest.split(['/', '\\']);
+    let (Some(host), Some(share)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    !host.is_empty()
+        && (share.eq_ignore_ascii_case("admin$")
+            || (share.len() == 2
+                && share.ends_with('$')
+                && share.starts_with(|c: char| c.is_ascii_alphabetic())))
 }
 
 /// The drive letter one of the caller's directories is on, read through a
@@ -438,7 +476,10 @@ impl Resolver {
     /// program. It is read as cmd reads a path, since it is one of Windows'.
     /// Any other text is read as `shell` reads it.
     fn reading(&self, text: &str, shell: Shell) -> Shell {
-        if shell == Shell::Posix && self.cwd_drive.is_some() && starts_with_drive(text) {
+        if shell == Shell::Posix
+            && self.cwd_drive.is_some()
+            && (starts_with_drive(text) || starts_with_admin_share(text))
+        {
             Shell::Cmd
         } else {
             shell
