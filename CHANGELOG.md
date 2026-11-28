@@ -6,6 +6,15 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
+## 0.2.1 (2026-11-28)
+
+A patch release with security fixes. What a guard answers changes and what a
+caller compiles against does not: the shell guard reads a brace list among a
+program's arguments, and a word its grammar cuts apart, as the shell does, and
+more lines are `unknown` or `unreadable` for it. Of the 2,934 everyday answers,
+2,908 are `safe`, as in 0.2.0: a false-alarm share of 0.9 % (0.3 % in a POSIX
+shell, none in PowerShell, 4.6 % in cmd), and no everyday answer moved.
+
 - `milo-guards-shell`: a brace list or a sequence among a program's
   arguments is read as the words it makes, as bash, zsh and ksh spell it out
   before the program runs, besides as the line writes it. An option and its
@@ -42,11 +51,11 @@ a caller is here, what it changes inside a guard is in the commits.
   a line of many commands that run inline code (`node -e`, `python3 -c`), are
   read in linear time, as the other programs are (a line of 32,000 operands
   took seconds).
-- Answers that changed with it, each in a line that was judged less: `kill
-  {1,2}` also stops the system's first process; `cp ~/work/notes.txt{,.bak}`
-  also writes outside the workspace; `command {rm,-rf,~}` and `sudo r{m,x} -rf
-  ~` are also the deletes they spell; a list that makes an option of a
-  program, a command or a wrapper is found where it was not.
+- Answers that changed with it, each in a line that was judged less: a few
+  commands that stop or write a system place, and the deletes a wrapper hands
+  to the program it runs, are found through the words a list makes; and a list
+  that makes an option of a program, a command or a wrapper is found where it
+  was not.
 
 ## 0.2.0 (2026-11-26)
 

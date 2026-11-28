@@ -69,10 +69,10 @@ milo-guards = { version = "0.2", default-features = false, features = ["shell"] 
 ```
 
 To depend on a commit instead, the git form works too, pinned to a release
-tag (`v0.2.0` is the latest):
+tag (`v0.2.1` is the latest):
 
 ```toml
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.2.0" }
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.2.1" }
 ```
 
 The crates declare Rust 1.90, and are built and tested with it against the
