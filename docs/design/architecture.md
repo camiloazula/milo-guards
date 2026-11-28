@@ -11,12 +11,12 @@ on, and the front door.
 | Folder | Package | What it is |
 | --- | --- | --- |
 | `crates/core` | `milo-guards-core` | What every guard shares: `Paths`, the verdict types, the path model, the test kit. [Core](core.md). |
-| `crates/code` | `milo-guards-code` | A reader, not a guard: Python and JavaScript code in, the acts it is certain to do out, or that it is not understood. [Code](code.md). |
+| `crates/code` | `milo-guards-code` | A reader, not a guard: Python, JavaScript and Ruby code in, the acts it is certain to do out, or that it is not understood. [Code](code.md). |
 | `crates/shell` | `milo-guards-shell` | The shell guard. [Shell](shell.md). |
 | `crates/file` | `milo-guards-file` | The file guard: one read or write of a path. [File](file.md). |
 | `crates/url` | `milo-guards-url` | The URL guard. [URL](url.md). |
 | `crates/secrets` | `milo-guards-secrets` | The secrets guard: a text in, what it holds out, masked. [Secrets](secrets.md). |
-| `crates/script` | `milo-guards-script` | The script guard: Python or JavaScript code an agent runs directly, with no shell line around it. [Script](script.md). |
+| `crates/script` | `milo-guards-script` | The script guard: Python, JavaScript or Ruby code an agent runs directly, with no shell line around it. [Script](script.md). |
 | `crates/guards` | `milo-guards` | The front door. The one crate a caller depends on. |
 
 Package names start with `milo-guards-`. Folder names drop the prefix.
@@ -59,7 +59,7 @@ is `milo_guards::url`, `code` is `milo_guards::code`, `script` is
 `milo_guards::script` and `secrets` is `milo_guards::secrets`; the first five
 are on by default and `secrets` is not, because most callers want the others and not a table of patterns in their
 binary. A caller who wants one guard switches the rest off. The shell guard
-reads inline Python and JavaScript with the code reader whether or not the
+reads inline Python, JavaScript and Ruby with the code reader whether or not the
 front door shows it as `code`; the shell crate's own `inline` feature (on by
 default) is what links it, and off, every inline line is `unknown`. The
 script guard reads the code it judges with the same reader, as a dependency

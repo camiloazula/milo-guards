@@ -48,6 +48,10 @@ pub(super) fn reads_whole(language: Language, code: &str, budget: &Budget) -> Op
     match language {
         Language::Python => python(code, false, budget),
         Language::JavaScript => javascript(code, budget).then_some(false),
+        #[cfg(feature = "ruby")]
+        Language::Ruby => ruby(code, budget).then_some(false),
+        #[cfg(not(feature = "ruby"))]
+        Language::Ruby => None,
     }
 }
 
@@ -371,6 +375,442 @@ fn python_node(
         "call" => node
             .child_by_field_name("function")
             .is_some_and(|function| matches!(function.kind(), "identifier" | "attribute")),
+        _ => false,
+    }
+}
+
+/// The calls of a name alone that only compute and print, in Ruby.
+#[cfg(feature = "ruby")]
+const RUBY_CALLS: [&str; 8] = [
+    "puts", "print", "p", "format", "sprintf", "Integer", "Float", "String",
+];
+
+/// The methods of a value Ruby code made (a string, a number, an array, a
+/// hash) the code may call.
+#[cfg(feature = "ruby")]
+const RUBY_METHODS: [&str; 71] = [
+    "to_s",
+    "to_i",
+    "to_f",
+    "to_a",
+    "inspect",
+    "length",
+    "size",
+    "upcase",
+    "downcase",
+    "capitalize",
+    "swapcase",
+    "strip",
+    "lstrip",
+    "rstrip",
+    "chomp",
+    "chop",
+    "chars",
+    "bytes",
+    "lines",
+    "split",
+    "join",
+    "reverse",
+    "include?",
+    "start_with?",
+    "end_with?",
+    "index",
+    "rindex",
+    "count",
+    "sub",
+    "gsub",
+    "tr",
+    "center",
+    "ljust",
+    "rjust",
+    "first",
+    "last",
+    "min",
+    "max",
+    "sum",
+    "sort",
+    "uniq",
+    "zero?",
+    "even?",
+    "odd?",
+    "abs",
+    "round",
+    "floor",
+    "ceil",
+    "push",
+    "pop",
+    "shift",
+    "unshift",
+    "empty?",
+    "nil?",
+    "succ",
+    "pred",
+    "ord",
+    "chr",
+    "keys",
+    "values",
+    "key?",
+    "freeze",
+    "frozen?",
+    "between?",
+    "divmod",
+    "pow",
+    "concat",
+    "squeeze",
+    "flatten",
+    "compact",
+    "hex",
+];
+
+/// The methods of `File` the code may call: the ones that read or write the
+/// one file they are given.
+#[cfg(feature = "ruby")]
+const RUBY_FILE_METHODS: [&str; 5] = ["read", "readlines", "write", "exist?", "file?"];
+
+/// Whether a call of `File`'s methods names the one file it opens by a string
+/// written whole (no `#{`, no escape: `"\x7c"` is `|`) that does not start
+/// with `|`, and gives it options that only read: `read` and `readlines` take
+/// a hash of `chomp`, `encoding`, `external_encoding` and `binmode` only (any
+/// other key may be a `mode` or `flags` that writes, and a hash splat or a
+/// hash only known when it runs may hold them).
+#[cfg(feature = "ruby")]
+fn ruby_file_call(call: Node<'_>, code: &str) -> bool {
+    let Some(arguments) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = arguments.walk();
+    let mut args = arguments.named_children(&mut cursor);
+    let Some(path) = args.next() else {
+        return false;
+    };
+    let path_text = text(path, code);
+    if path.kind() != "string"
+        || path_text.contains(['\\', '#'])
+        || path_text
+            .get(1..)
+            .is_some_and(|inner| inner.starts_with('|'))
+    {
+        return false;
+    }
+    let reads = call
+        .child_by_field_name("method")
+        .is_some_and(|method| matches!(text(method, code), "read" | "readlines"));
+    let reading_key = |pair: Node<'_>| {
+        pair.child_by_field_name("key").is_some_and(|key| {
+            matches!(
+                text(key, code)
+                    .trim_start_matches(':')
+                    .trim_end_matches(':')
+                    .trim_matches(['"', '\'']),
+                "chomp" | "encoding" | "external_encoding" | "binmode"
+            )
+        })
+    };
+    args.all(|arg| match arg.kind() {
+        "pair" => !reads || reading_key(arg),
+        "hash" => {
+            let mut inner = arg.walk();
+            let all = arg
+                .named_children(&mut inner)
+                .all(|pair| pair.kind() == "pair" && (!reads || reading_key(pair)));
+            all
+        }
+        "hash_splat_argument" | "block_argument" => false,
+        // A read is given its length, its offset, a separator and its options
+        // only as literals: any other value (a local, a call, a conditional)
+        // may be the hash of a mode that writes, which Ruby 2 takes for
+        // keywords.
+        "string" | "integer" | "nil" => true,
+        _ => !reads,
+    })
+}
+
+/// Whether `Math.name`, or `Math::name` (`constant`), is a member Ruby code
+/// may use.
+#[cfg(feature = "ruby")]
+fn ruby_math(name: &str, constant: bool) -> bool {
+    if constant {
+        return matches!(name, "PI" | "E");
+    }
+    matches!(
+        name,
+        "sqrt"
+            | "cbrt"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "atan"
+            | "atan2"
+            | "exp"
+            | "log"
+            | "log2"
+            | "log10"
+            | "hypot"
+    )
+}
+
+/// Ruby code that is read whole: the same subset as Python and JavaScript,
+/// written for Ruby. Its text is ASCII, so no encoding reads it otherwise;
+/// a name is a local only past an assignment to it, as Ruby reads one (any
+/// other is a call of a method of that name); no constant but `Math`, no
+/// global or instance variable, no block, no `%` literal, heredoc, regular
+/// expression, command string or symbol with `#{…}`.
+#[cfg(feature = "ruby")]
+fn ruby(code: &str, budget: &Budget) -> bool {
+    if !code.is_ascii() || crate::ruby::shebang_runs_more(code) {
+        return false;
+    }
+    let Parsed::Tree(tree) = crate::ruby::parse(budget, code) else {
+        return false;
+    };
+    let root = tree.root_node();
+    if !has_statement(root) {
+        return false;
+    }
+    // Where each name the code sets is first set: past it, the name is a
+    // local.
+    let mut assigned: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut clean = true;
+    walk(budget, root, |node, field, above| {
+        let target = matches!(
+            (above.last().map(|a| a.node.kind()), field),
+            (Some("assignment" | "operator_assignment"), Some("left"))
+                | (Some("left_assignment_list"), _)
+        );
+        if target && node.kind() == "identifier" {
+            let name = text(node, code);
+            clean &= plain_name(name)
+                && !name.starts_with('_')
+                && !name.contains('$')
+                && !RUBY_CALLS.contains(&name);
+            assigned
+                .entry(name.to_string())
+                .or_insert(node.start_byte());
+        }
+        clean
+    });
+    if !clean {
+        return false;
+    }
+    let mut whole = true;
+    walk(budget, root, |node, field, above| {
+        whole = shallow(above) && ruby_node(node, field, above, code, &assigned);
+        whole
+    });
+    whole
+}
+
+/// Whether an escape of a double-quoted string is one the grammar and Ruby
+/// read as long as each other: a backslash and a letter of the short list
+/// (`\n`, `\s`, `\\`, `\"`, `\#`, …), an escaped line end, one to three octal
+/// digits, `\x` and one or two hex digits, and `\u` and four. The grammar
+/// reads a backslash and one character, but for the codes, so `\c`, `\C` and
+/// `\M` end where the next character does; Ruby reads each with the character
+/// after it (`\c"`, `\C-"`, `\M-"`: a quote too), so a string the grammar
+/// closes at the next quote runs on in Ruby, and the code in between is part
+/// of it to the grammar and is run by Ruby. Any other escape (`\z`, `\8`,
+/// `\u{…}`) is left to Ruby.
+#[cfg(feature = "ruby")]
+fn ruby_escape(escape: &str) -> bool {
+    let Some(rest) = escape.strip_prefix('\\') else {
+        return false;
+    };
+    let digits = |digits: &str, most: usize, radix: u32, exactly: bool| {
+        !digits.is_empty()
+            && digits.len() <= most
+            && (!exactly || digits.len() == most)
+            && digits.chars().all(|c| c.is_digit(radix))
+    };
+    match rest {
+        "n" | "t" | "s" | "r" | "e" | "a" | "b" | "f" | "v" | "\\" | "\"" | "'" | "#" | "\n"
+        | "\r" => true,
+        _ => {
+            if let Some(hex) = rest.strip_prefix('x') {
+                digits(hex, 2, 16, false)
+            } else if let Some(hex) = rest.strip_prefix('u') {
+                digits(hex, 4, 16, true)
+            } else {
+                digits(rest, 3, 8, false)
+            }
+        }
+    }
+}
+
+/// Whether a comment is one Ruby reads as the grammar does: a `#` comment,
+/// or an embedded document that starts at `=begin` and white space and ends
+/// at its last line, which starts with `=end` and white space, with no
+/// other `=end` in it (the grammar ends a document at the first, in a line
+/// or at its start, which Ruby does not, and code Ruby runs is then a string
+/// to the grammar).
+#[cfg(feature = "ruby")]
+fn ruby_comment(comment: &str) -> bool {
+    if !comment.starts_with('=') {
+        return true;
+    }
+    let space = |rest: &str| {
+        rest.chars()
+            .next()
+            .is_none_or(|c| c.is_ascii_whitespace() || c == '\u{b}')
+    };
+    let (Some(first), Some(last)) = (comment.find('\n'), comment.rfind('\n')) else {
+        return false;
+    };
+    comment.strip_prefix("=begin").is_some_and(space)
+        && comment[last + 1..].strip_prefix("=end").is_some_and(space)
+        && !comment[first + 1..=last].contains("=end")
+}
+
+#[cfg(feature = "ruby")]
+fn ruby_node(
+    node: Node<'_>,
+    field: Option<&str>,
+    above: &[Ancestor<'_>],
+    code: &str,
+    assigned: &std::collections::HashMap<String, usize>,
+) -> bool {
+    // A token (`(`, `,`, an operator) is the business of the node it is in.
+    if !node.is_named() {
+        return true;
+    }
+    let parent = above.last().map(|ancestor| ancestor.node.kind());
+    match node.kind() {
+        "comment" => ruby_comment(text(node, code)),
+        "escape_sequence" => ruby_escape(text(node, code)),
+        "program"
+        | "integer"
+        | "float"
+        | "true"
+        | "false"
+        | "nil"
+        | "string_content"
+        | "interpolation"
+        | "argument_list"
+        | "array"
+        | "hash"
+        | "hash_key_symbol"
+        | "simple_symbol"
+        | "parenthesized_statements"
+        | "conditional"
+        | "if"
+        | "unless"
+        | "then"
+        | "else"
+        | "elsif"
+        | "if_modifier"
+        | "unless_modifier"
+        | "left_assignment_list"
+        | "right_assignment_list"
+        | "element_reference"
+        | "empty_statement" => true,
+        // A key with its value: `{exit:}`, a key alone, calls the method of
+        // its name when no local holds it.
+        "pair" => node.child_by_field_name("value").is_some(),
+        // A string between quotes: `%q(…)` and the like are not read whole.
+        "string" => node
+            .child(0)
+            .is_some_and(|open| matches!(text(open, code), "\"" | "'")),
+        "binary" => node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| {
+                matches!(
+                    text(operator, code),
+                    "+" | "-"
+                        | "*"
+                        | "/"
+                        | "%"
+                        | "**"
+                        | "=="
+                        | "!="
+                        | "<"
+                        | ">"
+                        | "<="
+                        | ">="
+                        | "<=>"
+                        | "&&"
+                        | "||"
+                        | "and"
+                        | "or"
+                        | "&"
+                        | "|"
+                        | "^"
+                        | "<<"
+                        | ">>"
+                )
+            }),
+        "unary" => node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| matches!(text(operator, code), "!" | "-" | "+" | "~" | "not")),
+        "assignment" => {
+            node.child_by_field_name("right").is_some()
+                && node.child_by_field_name("left").is_some_and(|left| {
+                    matches!(left.kind(), "identifier" | "left_assignment_list")
+                })
+        }
+        "operator_assignment" => node
+            .child_by_field_name("left")
+            .is_some_and(|left| left.kind() == "identifier"),
+        "identifier" => {
+            let name = text(node, code);
+            // A method's name may end in `?` (`zero?`); the call holds it to
+            // the list.
+            if (parent, field) == (Some("call"), Some("method")) {
+                return plain_name(name.strip_suffix('?').unwrap_or(name));
+            }
+            plain_name(name)
+                && match (parent, field) {
+                    (Some("assignment" | "operator_assignment"), Some("left"))
+                    | (Some("left_assignment_list"), _) => true,
+                    // A local, past where the code first sets it.
+                    _ => assigned
+                        .get(name)
+                        .is_some_and(|first| *first < node.start_byte()),
+                }
+        }
+        "constant" => {
+            let name = text(node, code);
+            match (parent, field) {
+                (Some("call"), Some("method")) => true,
+                (Some("call"), Some("receiver")) => matches!(name, "Math" | "File"),
+                (Some("scope_resolution"), Some("scope")) => name == "Math",
+                (Some("scope_resolution"), Some("name")) => true,
+                _ => false,
+            }
+        }
+        "scope_resolution" => {
+            node.child_by_field_name("scope")
+                .is_some_and(|scope| text(scope, code) == "Math")
+                && node
+                    .child_by_field_name("name")
+                    .is_some_and(|name| ruby_math(text(name, code), true))
+        }
+        "call" => {
+            if node.child_by_field_name("block").is_some() {
+                return false;
+            }
+            let Some(method) = node.child_by_field_name("method") else {
+                return false;
+            };
+            let name = text(method, code);
+            if node
+                .child_by_field_name("operator")
+                .is_some_and(|operator| text(operator, code) == "::")
+            {
+                return false;
+            }
+            match node.child_by_field_name("receiver") {
+                None => RUBY_CALLS.contains(&name) && !assigned.contains_key(name),
+                Some(receiver) if receiver.kind() == "constant" => match text(receiver, code) {
+                    "Math" => ruby_math(name, false),
+                    // The files it opens are the reader's acts, by a path
+                    // written whole that is no command (Ruby 2.5 and before,
+                    // and JRuby, run `File.read('|cmd')`), and by a mode that
+                    // only reads.
+                    "File" => RUBY_FILE_METHODS.contains(&name) && ruby_file_call(node, code),
+                    _ => false,
+                },
+                Some(_) => RUBY_METHODS.contains(&name),
+            }
+        }
         _ => false,
     }
 }

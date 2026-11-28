@@ -375,6 +375,23 @@ fn assignment(text: &str) -> Option<(&str, &str)> {
     None
 }
 
+/// Whether the word `arg` is an assignment that appends (`NAME+=value`).
+pub(crate) fn appends(arg: &Arg) -> bool {
+    let (Arg::Known(text) | Arg::Template { text, .. }) = arg else {
+        return false;
+    };
+    let mut depth = 0_usize;
+    for (at, c) in text.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            '=' if depth == 0 => return text[..at].ends_with('+'),
+            _ => {}
+        }
+    }
+    false
+}
+
 /// A word that is a `NAME=value` assignment (`env 'PS4=…'`, `export
 /// "PS4=…"`): the name and the value.
 pub(crate) fn word(arg: &Arg) -> Option<(String, Arg)> {

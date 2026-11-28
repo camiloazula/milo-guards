@@ -52,3 +52,13 @@ python@outside rules=unknown first=unknown reason="runs code the guard does not 
 python@outside rules=unknown | import sys\nprint(sys.version)
 # JavaScript read whole imports nothing.
 javascript@outside safe | console.log(1)
+# Ruby not read whole, and nothing found: a name before the code sets it,
+# a block, a library loaded, a constant.
+ruby rules=unknown first=unknown reason="runs code the guard does not read fully" target="puts x" | puts x
+ruby rules=unknown | [1, 2].each { |x| puts x }
+ruby finds=unknown | require 'json'\nputs JSON.dump(1)
+ruby rules=unknown | puts ENV['HOME']
+ruby finds=unknown | send(:system, 'ls')
+# A shebang's switches are applied by Ruby when it runs a file.
+ruby finds=unknown | #!ruby -r/tmp/evil\nputs 1
+ruby finds=unknown | #!/usr/bin/env ruby -I/tmp -rjson\nputs 1

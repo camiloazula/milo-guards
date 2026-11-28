@@ -41,3 +41,16 @@ javascript parses=no stops=no | if (
 python parses=no stops=no | print(
 javascript parses=yes stops=no | console.log(1); console.log(2)
 python parses=yes stops=no | print(1)
+
+# Ruby that parses, and that does not: an error, a literal left open, a
+# heredoc whose word the grammar's scanner cannot hold, or one it would
+# abort on (a word longer than it holds).
+ruby parses=yes | puts 1
+ruby parses=yes | FileUtils.rm_rf('/home/me')
+ruby parses=yes |
+ruby parses=yes | x = <<~A\n  #{y}\nA\nputs x
+ruby parses=no | def f(
+ruby parses=no | puts "x
+ruby parses=no stops=yes | x = <<"É"\nfoo\nÉ
+ruby parses=no stops=yes | x = <<AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+ruby parses=yes stops=no | x = <<AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

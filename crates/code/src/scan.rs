@@ -522,9 +522,10 @@ fn opening(close: u8) -> u8 {
 
 /// What may come next in JavaScript, by what came last: a value (a `/` is
 /// a division), an operand (a `/` starts a regular expression), or either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Next {
     Operator,
+    #[default]
     Operand,
     Either,
 }
@@ -933,6 +934,13 @@ pub(crate) fn javascript(code: &str) -> Scanned {
         raw_marks: marks,
     }
 }
+
+#[cfg(feature = "ruby")]
+mod ruby;
+#[cfg(feature = "ruby")]
+pub(crate) use ruby::{ruby, ruby_refusal};
+#[cfg(all(feature = "ruby", feature = "testing"))]
+pub(crate) use ruby::{ruby_raw, Raw};
 
 #[cfg(test)]
 mod tests {

@@ -36,14 +36,14 @@ their binary):
 
 ```toml
 [dependencies]
-milo-guards = { version = "0.2", features = ["secrets"] }
+milo-guards = { version = "0.3", features = ["secrets"] }
 ```
 
 Or on its own:
 
 ```toml
 [dependencies]
-milo-guards-secrets = "0.2"
+milo-guards-secrets = "0.3"
 ```
 
 ## Example

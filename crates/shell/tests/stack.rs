@@ -13,9 +13,15 @@ use common::posix;
 use milo_guards_shell::{classify, effect, Shell};
 
 /// The code reader's own bounds (`milo_guards_code::MAX_TREE_DEPTH` and
-/// `MAX_LEN`), written out so that this builds without the reader too.
+/// `MAX_LEN`, 3 KiB: the line's own limit is longer, and code longer than the
+/// reader's is not read at all), written out so that this builds without the
+/// reader too.
 const MAX_TREE_DEPTH: usize = 400;
-const MAX_LEN: usize = 64 * 1024;
+const MAX_LEN: usize = 3 * 1024;
+
+/// The longest line the shell guard reads (64 KiB): the
+/// brace lists below are held to it, and not to the shorter code of the reader.
+const MAX_LINE: usize = 64 * 1024;
 
 /// The most stack a reading may take: a thread of 1 MiB in an optimized
 /// build, as a caller runs it; 2 MiB in a debug build, whose frames are
@@ -84,6 +90,74 @@ fn at_the_bounds() -> Vec<(bool, String)> {
     ]
 }
 
+/// Ruby at the bounds of the reader's scan before a parse, each within the
+/// length limit: nested just within the depth the scan lets through, by
+/// each opener it counts (brackets, the blocks of `begin`, `do` and `->`,
+/// literals and their `#{…}` fields as deep as the grammar's scanner holds
+/// them), heredocs as many as it holds, a path worked out of a chain the
+/// reader follows, chains no scan counts, and shapes it refuses.
+fn ruby_at_the_bounds() -> Vec<String> {
+    let deep = MAX_TREE_DEPTH - 1;
+    let fill = |head: &str, unit: &str, tail: &str| {
+        let count = (MAX_LEN - 64 - head.len() - tail.len()) / unit.len();
+        format!("{head}{}{tail}\n", unit.repeat(count))
+    };
+    // As many levels as fit the length limit, at most `count`: a block of
+    // `begin` and `end` takes ten bytes, so the limit holds fewer than the
+    // depth the scan allows.
+    let nested = |open: &str, middle: &str, close: &str, count: usize| {
+        let fits = (MAX_LEN - 64 - middle.len()) / (open.len() + close.len());
+        let count = count.min(fits);
+        format!(
+            "x = {}{middle}{}\n",
+            open.repeat(count),
+            close.repeat(count)
+        )
+    };
+    let strings = 64;
+    // The brackets of each of eight heredocs' fields: eight of them fit the
+    // length limit together.
+    let each = deep.min(((MAX_LEN - 256) / 8 - 16) / 2);
+    vec![
+        nested("(", "a", ")", deep),
+        nested("[", "a", "]", deep),
+        nested("{a=>", "a", "}", deep),
+        nested("begin ", "a", " end", deep),
+        nested("a do ", "a", " end", deep),
+        nested("-> { ", "a", " }", deep),
+        format!(
+            "x = {}{}a{}{}\n",
+            "\"#{".repeat(strings),
+            "(".repeat(deep - 2 * strings),
+            ")".repeat(deep - 2 * strings),
+            "}\"".repeat(strings)
+        ),
+        format!(
+            "x = [{}]\n{}",
+            ["<<A"; 8].join(", "),
+            format!("#{{{}a{}}}\nA\n", "(".repeat(each), ")".repeat(each)).repeat(8)
+        ),
+        format!(
+            "File.read({}'a'{})\n",
+            "(".repeat(deep - 1),
+            ")".repeat(deep - 1)
+        ),
+        fill("File.read(", "'a' + ", "'a')"),
+        fill("File.read(Pathname.new('/a')", " / 'b'", ")"),
+        fill("File.read(File.join(", "'a', ", "'a'))"),
+        fill("", "p /a/;", "a"),
+        fill("x = ", "a ? b : ", "a"),
+        fill("", "p ", "a"),
+        fill("x = ", "- ", "a"),
+        fill("x = ", "not ", "a"),
+        fill("x = ", "a.", "a"),
+        fill("x = ", "a = ", "a"),
+        fill("", "(", "a"),
+        fill("", "begin ", "a"),
+        "(".repeat(MAX_LEN - 64),
+    ]
+}
+
 #[test]
 #[allow(
     clippy::disallowed_types,
@@ -93,17 +167,30 @@ fn at_the_bounds() -> Vec<(bool, String)> {
 fn here_documents_at_the_bounds_fit_a_small_stack() {
     // Each shape is read on a thread of [`STACK`] bytes: a reading that
     // overflows it aborts the test.
-    let shapes = at_the_bounds();
+    let shapes: Vec<(&str, String)> = at_the_bounds()
+        .into_iter()
+        .map(|(python, code)| (if python { "python3" } else { "node" }, code))
+        .chain(ruby_at_the_bounds().into_iter().map(|code| ("ruby", code)))
+        .chain(ruby_crashes().into_iter().map(|code| ("ruby", code)))
+        .collect();
+    // And each crash on the line itself, as `ruby -e`.
+    let lines: Vec<String> = ruby_crashes()
+        .into_iter()
+        .map(|code| format!("ruby -e '{}'", code.replace('\'', "'\\''")))
+        .collect();
     std::thread::Builder::new()
         .stack_size(STACK)
         .spawn(move || {
-            for (python, code) in &shapes {
-                let python = *python;
-                let program = if python { "python3" } else { "node" };
+            for (program, code) in &shapes {
                 let line = format!("{program} <<'EOF'\n{code}\nEOF\n");
                 let paths = posix();
                 let _ = classify(&line, Shell::Posix, &paths);
                 let _ = effect(&line, Shell::Posix, &paths);
+            }
+            for line in &lines {
+                let paths = posix();
+                let _ = classify(line, Shell::Posix, &paths);
+                let _ = effect(line, Shell::Posix, &paths);
             }
         })
         .unwrap()
@@ -117,7 +204,7 @@ fn here_documents_at_the_bounds_fit_a_small_stack() {
 /// within the length limit.
 fn brace_lists_at_the_bounds() -> Vec<String> {
     let mut lines = Vec::new();
-    for depth in [1, 12, 13, 200, MAX_TREE_DEPTH, MAX_LEN / 6] {
+    for depth in [1, 12, 13, 200, MAX_TREE_DEPTH, MAX_LINE / 6] {
         lines.push(format!(
             "echo {}x{}",
             "{a,".repeat(depth),
@@ -131,18 +218,18 @@ fn brace_lists_at_the_bounds() -> Vec<String> {
     }
     // An escaped blank after a quote, where the grammar cuts a list in two,
     // many times, with the `{` quoted and bare.
-    lines.push(format!("echo {}x", "'{'\\ ".repeat(MAX_LEN / 5 - 2)));
+    lines.push(format!("echo {}x", "'{'\\ ".repeat(MAX_LINE / 5 - 2)));
     lines.push(format!(
         "echo >/dev/null {}x",
-        "'{'\\ ".repeat(MAX_LEN / 5 - 4)
+        "'{'\\ ".repeat(MAX_LINE / 5 - 4)
     ));
-    lines.push(format!("echo {}x", "{'a'\\ ".repeat(MAX_LEN / 6 - 2)));
+    lines.push(format!("echo {}x", "{'a'\\ ".repeat(MAX_LINE / 6 - 2)));
     for part in ["{$1", "{\\{", "{\\}", "{\\a"] {
-        lines.push(format!("echo {}", part.repeat(MAX_LEN / 4 - 2)));
+        lines.push(format!("echo {}", part.repeat(MAX_LINE / 4 - 2)));
     }
-    lines.push(format!("echo {}", "{a,b}".repeat(MAX_LEN / 5 - 2)));
-    lines.push(format!("echo {}", "{1..3}".repeat(MAX_LEN / 6 - 2)));
-    lines.push(format!("echo {}", "{a,b} ".repeat(MAX_LEN / 6 - 2)));
+    lines.push(format!("echo {}", "{a,b}".repeat(MAX_LINE / 5 - 2)));
+    lines.push(format!("echo {}", "{1..3}".repeat(MAX_LINE / 6 - 2)));
+    lines.push(format!("echo {}", "{a,b} ".repeat(MAX_LINE / 6 - 2)));
     // Each shell reads the next as a string, one level in.
     let mut line = "echo {a,'b c'}".to_string();
     for _ in 0..12 {
@@ -167,7 +254,7 @@ fn brace_lists_at_the_bounds_fit_a_small_stack() {
         .stack_size(STACK)
         .spawn(move || {
             for line in &lines {
-                assert!(line.len() <= MAX_LEN, "{}", line.len());
+                assert!(line.len() <= MAX_LINE, "{}", line.len());
                 let paths = posix();
                 let _ = classify(line, Shell::Posix, &paths);
                 let _ = effect(line, Shell::Posix, &paths);
@@ -208,4 +295,56 @@ fn a_shell_line_with_many_letters_it_does_not_know_nested_deep_fits_a_small_stac
         .unwrap()
         .join()
         .unwrap();
+}
+
+/// Ruby that took tree-sitter-ruby's scanner to the assertion that aborts the
+/// process (a heredoc's word longer than it holds), each past a context the scan
+/// before a parse once misread: a `%` literal, `__dir__`, `__END__`,
+/// `=begin`, a `/` after a value, a quoted word, and white space or a
+/// character Ruby or the grammar reads otherwise (a no-break space, U+3000,
+/// a zero-width space, U+FEFF, U+2028, an em space, `\v`, `\f`, `\r`). The
+/// raw text alone refuses each.
+fn ruby_crashes() -> Vec<String> {
+    let word = "A".repeat(300);
+    let plain = [
+        "y = <<W\nW\n",
+        "x%(\")\ny = <<W\nW\n\"\n",
+        "%\u{1}\ny = <<W\nW\n\u{1}\n",
+        "x = 1 %q\u{1}\ny = <<W\nW\n\u{1}\n",
+        "__dir__ <<W\nW\n",
+        "x = (\n__END__\n<<W\nW\n)\n",
+        "=begin\n=end\u{b}\ny = <<W\nW\n=end\n",
+        "@x /2; y = <<W\nW\n#/\n",
+        "x = {} /2; y = <<W\nW\n#/\n",
+        "y = <<\"W\"\nW\n",
+        // Right after a quote or a method's `.`, where Ruby starts no
+        // heredoc but the grammar, at an error, may.
+        "x = ''<<`W`\n",
+        "x = a.<<\"W\"\n",
+        "x = \"<<`W`\"\n",
+    ];
+    let around = [
+        "x = 1S<<W\nW\n",
+        "y = 1\nS=begin\n=end\n<<W\nW\n",
+        "=begin\n=endS\nx = <<W\nW\n=end\n",
+        "x = 1 #S\ny = <<W\nW\n",
+        "x = yS/2; z = <<W\nW\n#/\n",
+        "x = 'S'; z = <<W\nW\n",
+        "p :aS?b; z = <<W\nW\n",
+        "x = 1\nS__END__\ny = <<W\nW\n",
+    ];
+    let spaces = [
+        "\u{a0}", "\u{3000}", "\u{200b}", "\u{feff}", "\u{2028}", "\u{2003}", "\u{b}", "\u{c}",
+        "\r",
+    ];
+    let mut shapes: Vec<String> = plain
+        .iter()
+        .map(|shape| shape.replace('W', &word))
+        .collect();
+    for shape in around {
+        for space in spaces {
+            shapes.push(shape.replace('S', space).replace('W', &word));
+        }
+    }
+    shapes
 }

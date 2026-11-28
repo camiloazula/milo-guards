@@ -20,3 +20,9 @@ javascript shell_list=yes | const o = {shell: true}; require('child_process').sp
 javascript shell_list=yes | require('child_process').spawn('del', ...args)
 javascript shell_list=no | require('child_process').spawn('del', ['x'], {cwd: 'sub'})
 javascript shell_list=no | require('child_process').execFile('git', ['status'], (e, out) => {})
+ruby shell_list=yes | system('del', 'x')
+ruby shell_list=yes | IO.popen(['del', 'x'])
+ruby shell_list=yes | system(*cmd)
+ruby shell_list=yes | system('del',
+ruby shell_list=no | system('del x')
+ruby shell_list=no | system('ls', chdir: 'sub')

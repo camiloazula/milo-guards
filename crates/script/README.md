@@ -1,8 +1,8 @@
 # milo-guards-script
 
-Judges Python or JavaScript code an agent runs directly (a Python tool, a
-notebook, a JavaScript sandbox), with no shell line around it, and says
-whether it is safe to run without asking, or risky and why. The script guard
+Judges Python, JavaScript or Ruby code an agent runs directly (a Python
+tool, a notebook, a JavaScript sandbox), with no shell line around it, and
+says whether it is safe to run without asking, or risky and why. The script guard
 of [milo-guards](https://github.com/camiloazula/milo-guards).
 
 The code is read by the code reader (`milo-guards-code`), and each act it is
@@ -32,14 +32,14 @@ Through the front door, where it is the `script` feature (on by default):
 
 ```toml
 [dependencies]
-milo-guards = "0.2"
+milo-guards = "0.3"
 ```
 
 Or on its own:
 
 ```toml
 [dependencies]
-milo-guards-script = "0.2"
+milo-guards-script = "0.3"
 ```
 
 ## Example

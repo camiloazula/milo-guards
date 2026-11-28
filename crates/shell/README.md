@@ -11,9 +11,9 @@ It works in three steps:
    and blocks are walked, every branch whether or not it would run; wrappers
    (`sudo`, `env`, `xargs`, `find -exec`) are taken off, and a shell started
    with a script (`bash -c`, `eval`, `cmd /c`, `powershell -Command`) has
-   that script split in its own grammar. Python and JavaScript given inline
-   (`python3 -c`, `node -e`, a here-document) are read with their own
-   grammars, through `milo-guards-code`.
+   that script split in its own grammar. Python, JavaScript and Ruby given
+   inline (`python3 -c`, `node -e`, `ruby -e`, a here-document) are read
+   with their own grammars, through `milo-guards-code`.
 2. **Detect** with rules that read a unit's program, flags, operands and
    redirects, never the raw text, and judge each path by where it resolves
    against the `Paths` the caller passes.
@@ -38,19 +38,20 @@ Through the front door, where it is the `shell` feature (on by default):
 
 ```toml
 [dependencies]
-milo-guards = "0.2"
+milo-guards = "0.3"
 ```
 
 Or on its own:
 
 ```toml
 [dependencies]
-milo-guards-shell = "0.2"
+milo-guards-shell = "0.3"
 ```
 
 The `inline` feature (on by default) reads the Python and JavaScript a line
-gives an interpreter; off, such a line is still found but none of its code is
-read, every inline line is `unknown`, and neither grammar is built. If your
+gives an interpreter, and `ruby` (on by default) its Ruby; off, such a line
+is still found but none of its code is read, every inline line is
+`unknown`, and no grammar of the reader is built. If your
 program also links tree-sitter, it has to be on the 0.26 runtime.
 
 ## Example

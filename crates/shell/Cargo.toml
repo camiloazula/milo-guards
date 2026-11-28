@@ -19,12 +19,16 @@ exclude = ["tests/cases/"]
 workspace = true
 
 [features]
-default = ["inline"]
+default = ["inline", "ruby"]
 # Reads the Python and JavaScript a line gives an interpreter inline
 # (`python3 -c`, `node -e`, a here-document), with `milo-guards-code`. Off,
 # the guard still finds such a line but reads none of the code: every inline
-# line is `unknown`, and neither grammar is built.
+# line is `unknown`, and no grammar of the reader is built.
 inline = ["dep:milo-guards-code"]
+# Reads the Ruby a line gives `ruby` inline (`ruby -e`, a here-document) as
+# well, with the reader's `ruby` feature. Off, with `inline` on, every Ruby
+# line is `unknown` and the Ruby grammar is not built.
+ruby = ["inline", "milo-guards-code/ruby"]
 # What only the guard's own tests read: the count of bytes its grammars'
 # lexers are handed for a line (`MAX_LEXED` in `src/unit.rs`), how the
 # grammar read a line itself (`testing::grammar`, which the repository's

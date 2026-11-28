@@ -1,12 +1,13 @@
 //! Reads code of another language and says what it is certain to do:
 //! [`read`] and [`understand`].
 //!
-//! A shell line can hand an interpreter code (`python3 -c`, `node -e`), and
-//! an agent can write a script or run a snippet directly. The code does what
-//! the shell commands that do the same would do, so what matters to a guard
-//! is which files it deletes, writes, reads and moves, and what it runs. This
-//! crate reads Python and JavaScript (Node, Bun and Deno) with their own
-//! tree-sitter grammars and answers two questions of a piece of code:
+//! A shell line can hand an interpreter code (`python3 -c`, `node -e`, `ruby
+//! -e`), and an agent can write a script or run a snippet directly. The code
+//! does what the shell commands that do the same would do, so what matters
+//! to a guard is which files it deletes, writes, reads and moves, and what it
+//! runs. This crate reads Python, JavaScript (Node, Bun and Deno) and Ruby
+//! (behind its `ruby` feature, on by default) with their own tree-sitter
+//! grammars and answers two questions of a piece of code:
 //!
 //! - **What is it certain to do?** [`read`] gives the [`Act`]s the code
 //!   makes, in the order it makes them: a delete, a write, a read, a move, a
@@ -58,6 +59,8 @@ use tree_sitter::Node;
 
 mod javascript;
 mod python;
+#[cfg(feature = "ruby")]
+mod ruby;
 mod scan;
 mod strict;
 #[cfg(feature = "testing")]
@@ -74,6 +77,11 @@ pub enum Language {
     Python,
     /// JavaScript, as Node, Bun and Deno read it.
     JavaScript,
+    /// Ruby, as the reference interpreter (`CRuby`) reads it. Read only with
+    /// the crate's `ruby` feature (on by default): without it, Ruby code is
+    /// not read (an [`Act::Unread`] alone, not understood, not taken to
+    /// parse).
+    Ruby,
 }
 
 /// What reading code found, in the order the code gives it.
@@ -251,6 +259,14 @@ impl Budget {
         let mut reading = match language {
             Language::Python => python::read(code, self),
             Language::JavaScript => javascript::read(code, self),
+            #[cfg(feature = "ruby")]
+            Language::Ruby => ruby::read(code, self),
+            #[cfg(not(feature = "ruby"))]
+            Language::Ruby => {
+                let mut reading = Reading::default();
+                reading.unread(code);
+                reading
+            }
         };
         reading.acts = mark_environment(std::mem::take(&mut reading.acts));
         reading
@@ -282,6 +298,10 @@ impl Budget {
         match language {
             Language::Python => python::parses(code, self),
             Language::JavaScript => javascript::parses(code, self),
+            #[cfg(feature = "ruby")]
+            Language::Ruby => ruby::parses(code, self),
+            #[cfg(not(feature = "ruby"))]
+            Language::Ruby => false,
         }
     }
 
@@ -291,6 +311,10 @@ impl Budget {
         match language {
             Language::Python => python::gives_input(code, self),
             Language::JavaScript => javascript::gives_input(code, self),
+            #[cfg(feature = "ruby")]
+            Language::Ruby => ruby::gives_input(code, self),
+            #[cfg(not(feature = "ruby"))]
+            Language::Ruby => true,
         }
     }
 
@@ -300,6 +324,10 @@ impl Budget {
         match language {
             Language::Python => python::gives_shell_a_list(code, self),
             Language::JavaScript => javascript::gives_shell_a_list(code, self),
+            #[cfg(feature = "ruby")]
+            Language::Ruby => ruby::gives_shell_a_list(code, self),
+            #[cfg(not(feature = "ruby"))]
+            Language::Ruby => true,
         }
     }
 }
@@ -314,6 +342,25 @@ impl Budget {
 /// design page), is not said to parse either: it is code not read.
 pub fn parses(language: Language, code: &str) -> bool {
     parses_counted(language, code).0
+}
+
+/// Why the reader does not parse `code` in `language` at all, in words, when
+/// it is code the grammar reads otherwise than the language does, or past
+/// what the grammar's scanner keeps: a heredoc's word it cannot hold, an
+/// embedded document it ends elsewhere, an escape the language reads longer,
+/// more literals and heredocs than it holds. Only Ruby has such a reason;
+/// code that is stopped for the work its parse would take, or that nests
+/// too deeply, has none, and is told by [`Budget`] being spent.
+#[must_use]
+pub fn refusal(language: Language, code: &str) -> Option<&'static str> {
+    match language {
+        #[cfg(feature = "ruby")]
+        Language::Ruby => scan::ruby_refusal(code),
+        _ => {
+            let _ = code;
+            None
+        }
+    }
 }
 
 /// [`parses`], and what its parse did.
@@ -396,7 +443,8 @@ pub enum Understanding {
 
 /// Whether `code` is read whole: nothing in it is outside the allow-list.
 ///
-/// The code is held to a strict subset, for Python and JavaScript alike:
+/// The code is held to a strict subset, for Python, JavaScript and Ruby alike
+/// (Ruby is held to more: see the crate's design page):
 ///
 /// - it parses, and holds at least one statement;
 /// - its statements are expression statements, assignments to a plain name

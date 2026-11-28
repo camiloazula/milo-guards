@@ -1,9 +1,10 @@
 # Code
 
 `milo-guards-code` reads code of another language and says what it is
-certain to do. It holds the readers of Python and JavaScript (Node, Bun and
-Deno) that the shell guard uses for `python3 -c`, `node -e` and a
-here-document fed to an interpreter, as a crate of its own: the script guard
+certain to do. It holds the readers of Python, JavaScript (Node, Bun and
+Deno) and Ruby that the shell guard uses for `python3 -c`, `node -e`, `ruby
+-e` and a here-document fed to an interpreter, as a crate of its own: the
+script guard
 ([Script](script.md)) judges with it the code a tool runs directly, with no
 shell line around it, and a guard of the files an agent writes could judge a
 `.py` or `.js` file the same way.
@@ -18,8 +19,16 @@ understood*.
 
 ## The API
 
-Two functions take a `Language` (`Python` or `JavaScript`) and the text of the
-code.
+Two functions take a `Language` (`Python`, `JavaScript` or `Ruby`) and the
+text of the code. Ruby is read behind the crate's `ruby` feature, on by
+default, and its grammar is built only with it: without it, `Language::Ruby`
+is still there (a caller's `match` does not change with a feature) and no
+Ruby code is read: `read` gives an `Unread` alone, `understand` says
+`NotUnderstood`, `parses` says no, and `gives_input` and
+`gives_shell_a_list` say it may. Perl, PHP and Lua are later work, a
+language at a time, each with what `read` finds, the strict subset
+`understand` accepts, a scan of its own before the parse and a feature of
+its own.
 
 - `read(language, code)` gives a `Reading`: the `acts` the code makes, in the
   order it makes them, and `deep`, whether the code nests too deeply to read
@@ -49,7 +58,11 @@ understands Python code only where that folder is its own. An `import` is
 understood only for a module built into the interpreter binary, which no file
 in that folder can stand in for: `import json` is not understood, since it
 runs `./json.py` when there is one. Understood JavaScript has no import at
-all.
+all, and nor has understood Ruby: Ruby looks in no folder of the code's own
+for what it loads by itself (its `$LOAD_PATH` holds no `.`, and RubyGems
+and the gems it starts with load from where they are installed), so a
+caller that keeps the options and the variables that add one (`-I`, `-r`,
+`RUBYOPT`, `RUBYLIB`) apart reads it from anywhere.
 
 Six more functions are for what a caller meets next to the code:
 
@@ -165,6 +178,72 @@ it, an absolute path, a `file:` URL, `../x.js` or a `data:` URL (`Loads`), a
 `sys.path` entry outside it. A name bound by nested code, and a name written
 with an escape or not in ASCII, is a name the reader does not follow.
 
+**Ruby.** A call is found by its receiver, a constant as written
+(`FileUtils::Verbose` is `FileUtils`; `Kernel.` and `self.` are none), and
+its name; with `include FileUtils`, `FileUtils`'s calls by their names alone.
+
+| Does | Ruby |
+| --- | --- |
+| Deletes (`Remove`) | `File.delete`, `File.unlink` (each path), `FileUtils.rm`, `rm_f`, `rm_r`, `rm_rf`, `rmtree`, `remove`, `remove_dir`, `remove_entry`, `remove_entry_secure`, `remove_file`, `rmdir`, `safe_unlink` (a path or a list), `Dir.rmdir`, `delete`, `unlink`, a `Pathname`'s `delete`, `unlink`, `rmtree`, `rmdir` |
+| Writes (`Write`) | `File.write`, `binwrite`, `IO.write`, `binwrite`, `File.open` and `File.new` and `Kernel#open` with a mode that writes (`w`, `a`, `+`, `mode:`, or one only known when it runs, `File::WRONLY`), `File.truncate`, `mkfifo`, `FileUtils.touch`, `mkdir`, `mkdir_p`, `makedirs`, `mkpath`, `Dir.mkdir`, the destination of `FileUtils.cp`, `copy`, `cp_r`, `copy_file`, `copy_entry`, `install`, `cp_lr` and `IO.copy_stream`, a `Pathname`'s `write`, `mkdir`, `mkpath`; a file a program's output is redirected to (`system(…, out: 'f')`) |
+| Moves, links, permissions | `File.rename`, `FileUtils.mv`, `move`; `File.symlink`, `link`, `FileUtils.ln`, `ln_s`, `ln_sf`, `ln_sr`, `symlink`, `link`; `File.chmod`, `lchmod`, `FileUtils.chmod`, `chmod_R`; `File.chown`, `lchown`, `FileUtils.chown`, `chown_R`; a `Pathname`'s `rename`, `make_symlink`, `chmod`, `chown` |
+| Runs (`Script`, `Program`) | `system`, `exec`, `spawn` (also of `Kernel` and `Process`), `` `…` `` and `%x(…)`, `IO.popen`, `Open3.capture2`, `capture2e`, `capture3`, `popen2`, `popen2e`, `popen3` and each command of `Open3.pipeline`, `pipeline_r`, `pipeline_w`, `pipeline_rw`, `pipeline_start`, `PTY.spawn`; `Kernel#open`, `URI.open` and `IO.read`, `readlines`, `foreach`, `write` of a path that starts with `\|` |
+| Kills | `Process.kill(SIGNAL, PID…)`, each process id |
+| Reads (`Read`, `ReadTree`) | `File.read`, `binread`, `readlines`, `foreach`, `IO.read` and the same, `File.open` and `File.new` and `Kernel#open` with a mode that reads, the source of the copies (`cp_r`, `copy_entry` and `cp_lr` a `ReadTree`), a `Pathname`'s `read`, `binread`, `readlines`, `each_line`; a file a program's input is redirected from (`in: 'f'`) |
+
+One string to `system`, `exec`, `spawn`, `IO.popen` and `Open3` is a
+`Script`, a line a shell reads; more, or an array, are a `Program` and its
+arguments (the first of them `[program, argv0]`), and an environment hash
+first makes it a program `Started` with one; `chdir:` wraps it in an `In`,
+and a redirect (`out:`, `err:`, `in:`, `2 =>`, `[:out, :err] =>`) is a
+write or a read of its file. `IO.popen('-')` forks the interpreter itself,
+and runs nothing else. A write to `ENV` (`ENV['X'] =`, `ENV.store`,
+`update`, `delete`, `clear` and the rest of its writing methods) is an
+`Environment`. `eval`, `instance_eval`, `class_eval` and `module_eval` of a
+literal string are a `Code` of Ruby, read again as Python's `exec` is; of
+anything the code fetches from the network (`Net::HTTP`, `URI`, `OpenURI`,
+the HTTP clients, a URL of `http:`, `https:` or `ftp:`, or a name set to
+one) a `Downloaded`, the guards' `run_downloaded`; of anything else an
+`Unread`. `require`, `require_relative`, `load` and `autoload` of anything
+are an `Unread`, as are the calls that call or define a method by a name or
+reach into an object (`send`, `__send__`, `public_send`, `method`,
+`instance_method`, `define_method`, `const_get`, `instance_variable_get`,
+`alias_method`, `remove_method`, …), any call of `ObjectSpace`, `Fiddle`,
+`TracePoint`, `RubyVM` or anything under it
+(`RubyVM::InstructionSequence.compile`), `YAML.unsafe_load`,
+`Psych.unsafe_load_file`, `Marshal.load`, `alias` and `undef`, a write to
+`$LOAD_PATH` (`$:`, `$-I`: an assignment, `<<`, and any call of it,
+`unshift`, `push`, `concat`), `trap` with a string that is not one of its words (`IGNORE`, `DEFAULT`,
+`EXIT`, …), and a call of a value (`x.()`). A path given to a call it has no
+row for is an `Opaque` (`YAML.load_file('/home/me/.ssh/id_rsa')`), but for
+the calls that only print and stop (`puts`, `p`, `warn`, `raise`, …) and
+those of `File`, `Dir` and `Pathname` that only work a path out or ask what
+is there (`join`, `basename`, `exist?`, `directory?`, `size`, …). A
+`flags:` that is not only `RDONLY` (`File.open(p, flags: File::TRUNC)`)
+makes an open a write. tree-sitter-ruby ends the code at any `__END__` that
+starts a line's words; Ruby only at one alone on its line, at its start:
+past any other (`__END__ x`, `  __END__`, `__END__\r`) the code after it is a
+`Code` of Ruby, read again.
+
+A Ruby path is a literal string (`'…'`, `"…"`, `%q(…)`, with the escapes
+Ruby reads; a code escape, `\x41`, `\u{…}`, is the end of what is known),
+`Dir.home`, `Dir.pwd`, `Dir.tmpdir`, `ENV['HOME']`, `ENV.fetch('HOME')`,
+`File.join`, `File.expand_path` and `absolute_path` (with a folder),
+`Pathname.new`, `Pathname()` and a `Pathname` joined (`/`, `+`, `join`, to
+16 links), `+`, `#{…}` and `.to_s` made only of those, the elements of an
+array or a `%w[…]`; anything else, a name the code sets among them, is a
+path only known when it runs, and a read of one that starts as the code
+says a `Below` of its folder.
+
+**A known limit of the grammar: Ruby's locals.** tree-sitter-ruby does not
+know which names are locals, and reads a `/`, a `%` or a `<<WORD` after a
+name as a call's argument where Ruby, for a local, reads an operator: `x =
+1; x /2; system("…") #/` is a regular expression to the grammar, and
+`arr<<A`, followed by lines and then `A`, a heredoc. What the grammar reads
+as a literal there Ruby runs, and the reader does not find it: such code is
+not understood either (a regular expression and a heredoc are outside the
+strict subset), so a caller says `unknown`, never safe.
+
 ## The strict subset
 
 `understand` holds the code to an allow-list of what the grammar may hold, never
@@ -204,6 +283,24 @@ understood only when all of these hold:
      `replaceAll`, `repeat`, `padStart`, `padEnd`, `concat`, `charAt`,
      `charCodeAt`, `push`, `pop`, `shift`, `unshift`, `reverse`, `sort`, `at`,
      `toFixed`, `test` and `match`; the only other member is `length`.
+   - Ruby: `puts`, `print`, `p`, `format`, `sprintf`, `Integer`, `Float`,
+     `String`; `Math.sqrt`, `cbrt`, `sin`, `cos`, `tan`, `atan`, `atan2`,
+     `exp`, `log`, `log2`, `log10`, `hypot`, and `Math::PI` and `Math::E`;
+     and a method of a value the code made (a string, a number, an array, a
+     hash) of the list `to_s`, `to_i`, `to_f`, `to_a`, `inspect`, `length`,
+     `size`, `upcase`, `downcase`, `capitalize`, `swapcase`, `strip`,
+     `lstrip`, `rstrip`, `chomp`, `chop`, `chars`, `bytes`, `lines`, `split`,
+     `join`, `reverse`, `include?`, `start_with?`, `end_with?`, `index`,
+     `rindex`, `count`, `sub`, `gsub`, `tr`, `center`, `ljust`, `rjust`,
+     `first`, `last`, `min`, `max`, `sum`, `sort`, `uniq`, `zero?`, `even?`,
+     `odd?`, `abs`, `round`, `floor`, `ceil`, `push`, `pop`, `shift`,
+     `unshift`, `empty?`, `nil?`, `succ`, `pred`, `ord`, `chr`, `keys`,
+     `values`, `key?`, `freeze`, `frozen?`, `between?`, `divmod`, `pow`,
+     `concat`, `squeeze`, `flatten`, `compact`, `hex`. Its statements are
+     those above with Ruby's `if`, `unless`, `elsif`, `else` and their
+     modifiers (`x if y`), and the conditional (`a ? b : c`); no block (`{
+     … }`, `do … end`), lambda, `def`, `class`, `module`, loop, `begin`,
+     `case`, `return`, `BEGIN`, `alias`, splat, `defined?` or `::` call.
    - Anything else is not: `os.getcwd`, `os.listdir`, `sys.exit`,
      `sys.stdout.write`, `time.sleep`, `input`, `dir`, `id`, `hash`, `exit`,
      `getattr`, `glob.*`, `platform.*`, `base64.*`; `process.*`, `setTimeout`,
@@ -244,11 +341,40 @@ understood only when all of these hold:
    and a module on the list is a name only once the code imports it:
    `print(time.time())` with no import is not understood (it only fails, but
    the reader does not say so).
+5. **Ruby is held to more.** No `require`, `load` or `eval`, and no
+   constant but `Math` and `File` (no `ENV`, `ARGV`, `Kernel`, `Object`),
+   and `File` only to `read`, `readlines`, `write`, `exist?` and `file?` the
+   one file it is given, named by a string written whole that does not start
+   with `|` (Ruby 2.5 and before, and JRuby, run `File.read('|cmd')`), and for
+   a read with no option but `chomp`, `encoding`, `external_encoding` and
+   `binmode` (`mode: 'w'`, `flags:` and `open_args:` open the file for
+   writing, which the reader reports as a write; the reader's acts say which
+   file), no
+   global, instance or class variable, no `self` or `__FILE__`. A name is a
+   local only past where the code first sets it, as Ruby's own parser reads
+   one: before it, and anywhere the code never sets it, a name alone is a
+   call of a method of that name (`exit`, `fork`, `gets`), and not
+   understood. No name on the list is set (`puts = 1`). The code is ASCII,
+   so no encoding Ruby may read it in (a magic comment, the locale `ruby
+   -e` reads code in) reads it otherwise, and it holds no literal the
+   grammar may read otherwise than Ruby does or that runs: a heredoc, a `%`
+   literal (`%q(…)`, `%w[…]`), a regular expression, a command string
+   (`` `…` ``, `%x(…)`), a character (`?a`), a symbol with `#{…}`, and no
+   `__END__`. An escape in a string is one of `\n \t \s \r \e \a \b \f \v \\
+   \" \' \#`, an escaped line end, one to three octal digits, `\x` and one or
+   two hex digits, and `\u` and four: any other (`\c`, `\C-`, `\M-`, `\u{…}`,
+   `\z`) is not understood. A first line `#!` is read by Ruby when it runs the code as a
+   file, its switches too (`-r`, `-I`, `-C`, `-x`), and a line without
+   `ruby` in it is run as the program it names: code that has one with a word
+   that starts with `-`, or none with `ruby`, is not understood, and `read`
+   gives an `Unread` act for it. Strings between quotes (with `#{…}` of what
+   is understood), numbers, symbols, arrays and hashes of them are.
 
-`print(1+1)`, `console.log(1)`, `import sys; print(sys.version)` and
-`open('out.txt','w')` are understood. `import json; print(json.dumps(1))`,
-`import re`, `import os; print(os.getcwd())`,
-`process.env` and `def f(): return 1` are not, and `read` still finds a
+`print(1+1)`, `console.log(1)`, `puts 'a-b'.split('-').join`, `import
+sys; print(sys.version)` and `open('out.txt','w')` are understood. `import
+json; print(json.dumps(1))`, `import re`, `import os; print(os.getcwd())`,
+`process.env`, `require 'json'`, `puts ENV['HOME']` and `def f(): return 1`
+are not, and `read` still finds a
 delete, an overwrite or a key in such code (`shutil.rmtree('/home/me')` in a
 function body is still a `Remove`).
 
@@ -313,6 +439,20 @@ ways at once; its memory grows with the square of the code. 3 KiB is the
 longest length, in whole KiB, at which every costly shape measured stays
 within a quarter of a second and 256 MB and fits a thread of 1 MiB.
 JavaScript whose stack grows with its depth fits it far past the limit.
+
+Ruby is held to the same length, and was measured at it the same way (an
+optimized build, a thread of 1 MiB, each call's least of five): the 19,757
+windows of 3 KiB of 11,181 real files, each unit of one or two tokens of a
+vocabulary of 60 repeated to 3 KiB (7,260 of them), 60,000 units of three
+tokens, 30,000 repeated units after a prefix of four tokens, 80,000 strings
+of random tokens and of valid code with random tokens before or after it,
+and the 188 shapes at the scan's bounds with an error before, after or in
+them. The slowest call took 0.1 s (`+:s-%q(\}\}\}…`, a `%q` literal never
+closed, in `understand`: 0.096 s) and no process held more than 19 MB:
+Ruby's grammar has no shape found whose memory grows with the square of the
+code as Python's does, and the budget holds the work of the code a limit
+that rose would let through, as `tests/parse_budget.rs` holds it at every
+size to 64 KB.
 
 The price is code that is not read: of the 28,299 files of Python and
 JavaScript below (up to 64 KB), 2,164 of the 3,590 of Python (60 %) and
@@ -404,6 +544,11 @@ then not parsed:
 | in Python, on the bytes alone, a star or `**` after an operator (`==`, `!=`, `<=`, `>=` and `:=` among them, but not an assignment) or one of those keywords, past anything between them that is not part of a name, an operator or a bracket, in strings and comments too | 256 (`MAX_RAW_STARS`): past it, not read | the same, where the reading of the text was misled |
 | a space a grammar passes over that is not an ASCII space, tab, line end or form feed (Unicode's white space, the vertical tab, U+200B, U+2060 and U+FEFF but a byte-order mark at the start), outside the strings and comments | 4 (`MAX_ODD_SPACES`): past it, not read | a scan that reads such a space otherwise than the grammar does |
 | in Python, a backtick outside the strings and comments | any: code that does not parse (Python 3 reads none) | tree-sitter-python takes one for a string's quote |
+| in Ruby, the openers left open at once: brackets, the blocks a keyword opens to its `end` (`begin`, `do`, `def`, `class`, `module`, `case`, and `if`, `unless`, `while`, `until`, `for` where they start an expression, not where they end a statement: `x if y`, `return if y`; a loop's `do` is its own), each literal (a string, a symbol, a regular expression, a command string, a `%` literal), each `#{…}` field and the body of a heredoc, one at a time | 400 (`MAX_TREE_DEPTH`): past it, not read | the parser's recursion back through its stack, the reader's walk and the strings it works out |
+| in Ruby, the literals open at once, one inside the other's `#{…}` | 64 (`MAX_RUBY_LITERALS`): past it, not read | tree-sitter-ruby's scanner keeps them in a state of 1 KB, five bytes each, and past some 200 keeps none and reads what follows as code |
+| in Ruby, how deep a `%` literal nests its own delimiter (`%q(((…)))`) | 200 (`MAX_RUBY_NESTING`): past it, not read | the scanner keeps the count in a byte, which comes back to nothing past 255 |
+| in Ruby, a heredoc's word (`<<~WORD`, `<<"WORD"`): its length, and whether it is ASCII; a quoted word a line's end cuts, an empty one | 64 bytes of ASCII (`MAX_HEREDOC_WORD`): past it, not read | the scanner keeps the length in a byte: a word longer than it holds fails an assertion that aborts the process, and a long one fills its state; it reads a word not in ASCII by its bytes and compares it by its characters, so it never finds the end (`x = <<"É"`), and the rest of the code is the heredoc's text, where Ruby runs it |
+| in Ruby, the heredocs a line starts, open at once | 8 (`MAX_HEREDOCS`): past it, not read | their words share the scanner's state with the literals |
 
 Where the scan cannot tell what the text is (a `/` after a `}`, or after
 `await`, `yield`, `of` or `let`, which may divide or start a regular
@@ -422,6 +567,114 @@ most stars after an operator on the bytes alone 66 (CPython's
 a space of those outside its strings and comments; and three copies of one
 Python file hold a backtick (`lib2to3`'s `py2_test_grammar.py`, Python 2,
 which does not parse either way). No real file is refused by the scan.
+
+The Ruby scan reads literals, comments (`#`, `=begin` to `=end`), `__END__`,
+character literals (`?(`) and globals (`$"`, `$'`) as tree-sitter-ruby
+reads them, and a heredoc's body to its word as the grammar's scanner ends
+it: at a line of the word and spaces, past spaces for `<<-` and `<<~`, and
+also right after a `#{…}` field or an escape of its text, where that scanner
+looks for the word again. After a name, spaced or not, `<<WORD` is a
+heredoc, and after a name and a space a `/` or a `%` with no space after it
+is a literal's start, and a `:` before an operator a symbol (`wont_be :<,
+1`, as after another symbol: `alias :a :<<`), as the grammar reads them
+(see the known limit of Ruby's locals above); a name's `?` before a `:` is
+a key's (`success?: true`), and an escape is as long as the grammar's
+`escape_sequence` reads it. Where the scan cannot tell what the text is (a
+`?` after a name and a space with no space after it, a character literal
+with a code escape, a `%` with a space for its delimiter, a heredoc started
+in another's body, a body line that starts with its word and goes on, a
+line's end inside a literal before the heredocs it started), it only counts
+more: to the end of the line every opener (and every keyword that opens a
+block) counts and no closer closes, and to the end of the code if the rest
+of that line may start a literal or a heredoc's body is to come; there,
+each `#{` counts as a literal, each bracket and `<` as a nesting of a `%`
+literal's delimiter (past 200 the code is not read), and each `<<WORD` of a
+line as a heredoc, its word held to the bounds above.
+
+**Before the scan, the raw text.** The scan reads the context the grammar's
+scanner is in, and a context it misreads (a `%` literal it does not see, a
+character Ruby or the grammar reads as a space and the scan does not, an
+`__END__` inside brackets, an `=end` followed by something) once let a
+heredoc's word longer than the scanner holds reach it, which aborts the process. So
+the limits of the scanner's state that the raw text alone can bound are
+held to it first, with no context at all, and the code is not read past
+them, whatever the scan would say:
+
+- every `<<`, `<<-` or `<<~` anywhere in the text (a comment, a string,
+  past `__END__`) followed by an unquoted word longer than 64 bytes or not
+  in ASCII, or by a quoted word longer, not in ASCII, or that a line's end
+  or the code's end cuts. Wherever it stands, after a quote, a `#` or a
+  method's `.` too (`"#<<"`, `x.<<"a"`), where Ruby starts no heredoc: the
+  grammar, once it has met an error, takes any token for valid and the
+  scanner reads one (a quote, `<<`, a backslash and a word the next backtick
+  ends, a long way on, took the scanner to the abort in a random noise of
+  3 KiB, which an exception for the place after a quote let through). This
+  alone keeps the abort unreachable: a word longer than the scanner holds is
+  the only way to it.
+- more than 150 `#{` in all (`MAX_RUBY_INTERPOLATIONS`): a literal opens
+  inside another only in a `#{…}` of it, so the scanner never keeps more
+  than one more literal than that, five bytes each of the 1,024 its state
+  is written in.
+- more than 256 bytes (`MAX_RUBY_HEREDOC_BYTES`) of heredocs: each `<<`
+  with a word or a quoted word after it, anywhere, counts four bytes and
+  its word, as the scanner writes it; and, where the text has one, more
+  than 1,021 bytes (`MAX_RUBY_STATE`) of those and five for each byte that
+  may start a literal (`"`, `'`, a backtick, `/`, `%`, anywhere). The
+  scanner writes its state in 1,024 bytes (a count, five bytes for each
+  literal, a count, four and the word for each heredoc); past what its
+  check allows it writes nothing, or a byte past its buffer
+  (`size + 2 + word >= 1024`, written `4 + word`). At an error the parser
+  takes every token for valid and the scanner never reads a literal's
+  content, so every such byte may start a literal, none closed, and the
+  nesting of `#{…}` bounds nothing. With heredocs `2 + 5L + H <= 1,021`, `L`
+  at most the bytes that start a literal and `H` the heredocs' bytes, the
+  state is written whole and within 1,021 bytes whatever the order; with
+  none, 205 literals or more are not written at all and fewer fit.
+- a `\c`, `\C-` or `\M-` followed by anything but a letter or a digit,
+  where no backslash escapes the backslash. Ruby reads these escapes with
+  the character after them, a quote too (`"\c"; y = "; …; z = "`), where the
+  grammar reads two characters and ends the string at the next quote: what
+  Ruby runs between the two quotes is a string to the grammar. After `#$`
+  a backslash is the global `$\` interpolated, to Ruby and to the scanner,
+  so the backslashes of a run after it may pair up from the first or from
+  the second: both readings are followed. The script guard says why it
+  refused such code (`refusal`), not that it takes too long.
+- an embedded document (`=begin` at a line's start) the grammar ends
+  elsewhere than Ruby. The grammar's comment is `=begin`, the rest of the
+  line, and everything up to the first `=end` anywhere (`=endx`, `=end=`,
+  `  =end`, `*=end`, `x=end`), the rest of that line; Ruby's document
+  ends at a line that starts with `=end` and then white space or the end, so
+  the code between the two is a string or a comment to the grammar and
+  what Ruby runs (`=begin` `=endx` `y = "` `=end` `system('rm -rf ~') #"`
+  reads as a string holding the call). The raw text is refused where the
+  two ends differ, or `=begin` is followed by anything but white space; and
+  `understand` takes no document whose last line is not Ruby's `=end` or
+  that holds another.
+- a `%` literal with a paired delimiter whose openers, counted from it to
+  where the delimiters close it (a backslash and the byte after it passed
+  over, as the scanner reads no delimiter in an escape), are more than 200;
+  and for one that reads `#{…}`, whose code may hold a closer the scanner
+  does not count, every opener of its kind to the end of the code.
+
+Of 7,820 distinct real Ruby files (CRuby's standard library, Homebrew and
+the gems it vendors, up to 64 KB each), 2,876 (37 %) are longer than 3 KiB,
+which the reader does not read (63 of them the raw text refuses besides);
+of the 4,944 within it, the raw text refuses 6, each for a heredoc's word:
+a `<<` and a quote the raw text cannot tell from a heredoc's start (`" +-<<"`
+in a string of minitest's, `'<<'` in rubocop's, and `describe "#<<"` in four
+of Homebrew's own specs). The scan before a parse
+refuses none of the others and stops none: 6 do not parse as the grammar
+reads them (newer syntax). The slowest took 3 ms.
+
+tree-sitter-ruby's parser itself needs little stack: valid Ruby nested 4,000
+deep by any opener, and 64 KB of each shape it reads two ways (`p /a/`, `a
+*b`, `a [b]`, `a ?b :c`, `a <<b`, command calls in command calls) inside 399
+levels of every opener, each parse in a few tens of milliseconds, fit a
+thread of 64 KB; what the scan bounds is the grammar's scanner and the
+reader's own walk. tree-sitter-ruby 0.23.1's scanner (`src/scanner.c`) was
+read for its loops: each reads on through the text or returns, and ends at
+the end of the code; the state it keeps (`serialize`) is what the bounds
+above hold.
 
 For a budget made for `len` bytes:
 
@@ -494,7 +747,8 @@ read (2 files of `undici`, 3 of `zod`, npm's `base-cmd.js`, `@exodus/bytes`'s
 not parse either: it is not read.
 
 The counts hold for the tree-sitter runtime and the grammars of `Cargo.lock`
-(0.26.13, tree-sitter-python 0.25.0, tree-sitter-javascript 0.25.0): another
+(0.26.13, tree-sitter-python 0.25.0, tree-sitter-javascript 0.25.0,
+tree-sitter-ruby 0.23.1): another
 release may stop the same code elsewhere, and the rule and the counts read
 the log by its words, which a test holds so that a change of words fails it
 rather than counting nothing. What no count sees is the work inside one step
@@ -511,6 +765,16 @@ the script guard and the shell guard hold, on a thread of 1 MiB in the
 optimized build of `just timing` and of 2 MiB in a debug build, whose frames
 take up to 1.26 MiB.
 
+Ruby's scanner is the one thing here that aborts: tree-sitter-ruby's keeps
+its state in a buffer of 1,024 bytes and a heredoc's word in 255, and fails
+an assertion, which ends the process, past them. A random noise of 3 KiB
+(`''<<` and a backtick, and the word the next backtick ends) reached it once
+the scan trusted where a heredoc starts; the bounds on the raw text, which
+trust nothing, are held by `tests/stack.rs` and `tests/parse_budget.rs` of
+each crate to every shape of the abort found, and over a million more
+noisy inputs, of the vocabulary above and of openers (`<<`, quotes, `#{`,
+`%w(`), ran without one.
+
 ## Tests
 
 `crates/code/tests/` holds the crate's own cases, in case files
@@ -518,8 +782,8 @@ take up to 1.26 MiB.
 [CONTRIBUTING.md](../../CONTRIBUTING.md#case-files)), each checked by the test
 file of its name. `acts.cases` has code and the acts it must give, for each
 language. `understand.cases` has a case for every way out of the strict
-subset, and the code that stays inside it, for Python, JavaScript and
-Python 2. `parses.cases` holds the code that parses and the code that
+subset, and the code that stays inside it, for Python, JavaScript,
+Ruby and Python 2. `parses.cases` holds the code that parses and the code that
 does not, `input.cases` the code that may give a program input, and
 `shell_list.cases` the code that hands a shell a list. `modules.cases` holds the module specifiers and coding
 declarations; `modules.rs` keeps the shape of an argument and the limits.
@@ -528,7 +792,7 @@ bounds of the scan before a parse on a thread of a small stack (1 MiB in an
 optimized build), so a reading that would overflow it aborts the test and
 not a caller, and holds valid code that one bound of the scan alone stops to
 not being read, so that a bound taken away fails it. `robust.rs` runs seeded noise
-through both grammars (no panic, the same answer twice, understood code only
+through each grammar (no panic, the same answer twice, understood code only
 ever opens a file), the code of every case changed at random and punctuation
 joined at random, each held to the budget above, and checks that very deep,
 very long and growing code ends. `parse_budget.rs` holds the shapes of
@@ -536,7 +800,9 @@ error to the rule that stops them, and the shapes the budget stops to it, at
 each size up to the length limit, with their answers pinned (not read, not
 understood); the valid literals the grammar reads two ways, dense and nested
 real code, and comment runs up to the measured limit to being read whole;
-and each question asked once its walk runs out to the cautious answer. It
+and each question asked once its walk runs out to the cautious answer; and
+Ruby past what tree-sitter-ruby's scanner holds to not being read, and at it
+to being read whole. It
 reads the counts through the crate's `testing` feature, which only its own
 tests turn on and which is not for callers. The shell guard's own cases
 (`crates/shell/tests/cases/inline.cases`, the `inline_*.cases` files beside

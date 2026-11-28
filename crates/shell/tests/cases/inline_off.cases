@@ -182,3 +182,7 @@ posix rules=unknown | node --import data:text/javascript,x script.js
 posix rules=unknown | node --import ./setup.js script.js
 posix rules=unknown | node -r ./setup.js script.js
 posix rules=unknown | PYTHONPATH=/tmp/x python3 <<< 'print(1)'
+# Ruby, from `-e` and from its input, is not read either.
+posix rules=unknown effect=unknown | ruby -e 'puts 1'
+posix rules=unknown effect=unknown | ruby -e 'File.delete("/home/me/x")'
+posix rules=unknown effect=unknown | ruby <<'RB'\nputs 1\nRB

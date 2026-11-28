@@ -231,7 +231,7 @@ fn fit(head: &str, unit: &str, tail: &str, size: usize) -> String {
 /// past the work it may do for it (Python read two ways at once that never
 /// part; a chain of calls named again from each link). Each took seconds,
 /// or did not end.
-const STOPPED: [(&str, Language, &str, &str, &str, usize); 10] = [
+const STOPPED: [(&str, Language, &str, &str, &str, usize); 13] = [
     (
         "a round after statements",
         Language::JavaScript,
@@ -291,6 +291,26 @@ const STOPPED: [(&str, Language, &str, &str, &str, usize); 10] = [
     ),
     ("a chain of calls", Language::JavaScript, "x", "()", "", 8),
     ("a chain of calls", Language::Python, "x", "()", "", 8),
+    // Ruby: code that meets an error, and the shapes that cost most of the
+    // grammar's two ways, read whole (a chain of members, a call and an
+    // index told from a space, command calls in command calls).
+    (
+        "an error after statements",
+        Language::Ruby,
+        "",
+        "x\n",
+        "x = (\n",
+        1,
+    ),
+    ("a chain of members", Language::Ruby, "x", ".a", "", 64),
+    (
+        "two ways that never part",
+        Language::Ruby,
+        "",
+        "a [b];",
+        "",
+        64,
+    ),
 ];
 
 /// The bounds of the one budget the readings of code of `len` bytes share,
@@ -362,7 +382,7 @@ fn code_inside_code_is_read_within_the_budget_of_the_code() {
     // The code `eval` and `exec` run, nested four deep, is read within the
     // one budget of the whole: nesting does not multiply the work.
     use milo_guards_core::testing::windows;
-    let rows: [(Language, &str, String); 3] = [
+    let rows: [(Language, &str, String); 4] = [
         (
             Language::JavaScript,
             "eval",
@@ -378,6 +398,7 @@ fn code_inside_code_is_read_within_the_budget_of_the_code() {
             "exec",
             "print(1); x = [1, 2, 3]\n".repeat(MAX_LEN / 4 / 24),
         ),
+        (Language::Ruby, "eval", fit("x", ".a", "", MAX_LEN / 4)),
     ];
     for (language, runs, code) in rows {
         let mut code = code;

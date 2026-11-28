@@ -39,6 +39,7 @@ pub fn show(act: &Act) -> String {
         ),
         Act::Code(Language::Python, text) => format!("python {text}"),
         Act::Code(Language::JavaScript, text) => format!("javascript {text}"),
+        Act::Code(Language::Ruby, text) => format!("ruby {text}"),
         Act::Unread(_) => "unread".to_string(),
         Act::Downloaded(_) => "downloaded".to_string(),
         Act::Loads(_) => "loads".to_string(),

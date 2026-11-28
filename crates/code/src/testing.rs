@@ -94,6 +94,10 @@ fn scanned(language: Language, code: &str) -> crate::scan::Scanned {
     match language {
         Language::Python => crate::scan::python(code),
         Language::JavaScript => crate::scan::javascript(code),
+        #[cfg(feature = "ruby")]
+        Language::Ruby => crate::scan::ruby(code),
+        #[cfg(not(feature = "ruby"))]
+        Language::Ruby => crate::scan::Scanned::default(),
     }
 }
 
@@ -214,4 +218,20 @@ pub fn stops(language: Language, code: &str) -> (bool, Work) {
 #[must_use]
 pub fn spent(budget: &crate::Budget) -> Work {
     budget.spent().into()
+}
+
+/// What the raw text of Ruby `code` shows past what tree-sitter-ruby's
+/// scanner holds, read with no context (see the scan's `Raw`): the name of
+/// the first, if any.
+#[cfg(feature = "ruby")]
+#[must_use]
+pub fn ruby_raw(code: &str) -> Option<&'static str> {
+    crate::scan::ruby_raw(code.as_bytes()).map(|raw| match raw {
+        crate::scan::Raw::HeredocWord => "heredoc word",
+        crate::scan::Raw::Interpolations => "interpolations",
+        crate::scan::Raw::Heredocs => "heredocs",
+        crate::scan::Raw::Doc => "embedded document",
+        crate::scan::Raw::Escape => "escape",
+        crate::scan::Raw::Nesting => "nesting",
+    })
 }

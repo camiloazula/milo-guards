@@ -193,8 +193,9 @@ pub(crate) struct Unit {
     /// arguments where it runs, by name (see [`Split::argument_variables`]):
     /// `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>`, which terraform reads as
     /// arguments of its command, `npm_config_call`, the command `npx`
-    /// runs, the editor, pager and shell `psql` runs (`PAGER`), and the
-    /// config git reads from its environment (`GIT_CONFIG_PARAMETERS`).
+    /// runs, the editor, pager and shell `psql` runs (`PAGER`), the config
+    /// git reads from its environment (`GIT_CONFIG_PARAMETERS`), and the
+    /// `Gemfile` bundler sets up (`BUNDLE_GEMFILE`).
     /// Shared with the line's, so a long value is not copied for each
     /// program.
     pub(crate) argument_variables: Noted,
@@ -579,7 +580,7 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
     let stem = extensions
         .iter()
         .find_map(|extension| lower.strip_suffix(extension));
-    match (shell, stem) {
+    let key = match (shell, stem) {
         // Lower case on every shell: macOS's file system is case-insensitive
         // by default, so `/bin/RM` runs `rm`; a program literally named `RM`
         // on Linux is a negligible false positive.
@@ -587,6 +588,13 @@ pub(crate) fn key(program: &str, shell: Shell) -> String {
         (Shell::PowerShell, None) => crate::powershell::canonical(&lower).to_string(),
         (Shell::Cmd, None) => lower,
         (_, Some(stem)) => stem.to_string(),
+    };
+    // RubyGems' `gem` of a version (`gem3.3`, `gem-3.3`) and `JRuby`'s `jgem`
+    // are `gem`: it is the program the rules know.
+    if crate::launch::is_gem(&key) {
+        "gem".to_string()
+    } else {
+        key
     }
 }
 
@@ -984,7 +992,23 @@ struct NotedValue {
     /// How many values the list holds up to this one.
     len: usize,
     before: Option<Rc<NotedValue>>,
+    /// Whether the value is one Ruby's tools read for every program (see
+    /// [`matters_to_ruby`]).
+    ruby: bool,
+    /// The nearest value before this one that is (so a reader of those only
+    /// follows them, and is no read of every value).
+    ruby_before: Option<Rc<NotedValue>>,
+    /// Whether the line set more of those than are noted one by one, up to
+    /// this value ([`OVERFLOW_MAIN`], [`OVERFLOW_OTHER`]).
+    overflow: u8,
 }
+
+/// The line set more values of the variables Ruby's tools read, in the case
+/// their names are read in on every machine, than are noted one by one.
+const OVERFLOW_MAIN: u8 = 1;
+
+/// The same for the names in another case, which a Windows machine reads.
+const OVERFLOW_OTHER: u8 = 2;
 
 impl Drop for NotedValue {
     /// Drop the values before this one in a loop, never by recursion: the
@@ -1016,12 +1040,37 @@ impl Noted {
     fn push(&mut self, name: String, value: Arg) {
         let before = self.0.take();
         let len = before.as_ref().map_or(0, |value| value.len) + 1;
+        let ruby_before = match &before {
+            Some(last) if last.ruby => Some(Rc::clone(last)),
+            Some(last) => last.ruby_before.clone(),
+            None => None,
+        };
+        let overflow = before.as_ref().map_or(0, |value| value.overflow);
         self.0 = Some(Rc::new(NotedValue {
+            ruby: matters_to_ruby(&name),
             name,
             value,
             len,
             before,
+            ruby_before,
+            overflow,
         }));
+    }
+
+    /// Mark that the line set more of the values Ruby's tools read than are
+    /// noted ([`OVERFLOW_MAIN`], [`OVERFLOW_OTHER`]), from here on.
+    fn mark_ruby_overflow(&mut self, bits: u8) {
+        self.push(String::new(), Arg::Known(String::new()));
+        if let Some(last) = self.0.as_mut().and_then(Rc::get_mut) {
+            last.overflow |= bits;
+        }
+    }
+
+    /// Whether the line set more of the values Ruby's tools read than are
+    /// noted, in the names read on every machine, and in the other cases.
+    pub(crate) fn ruby_overflow(&self) -> (bool, bool) {
+        let bits = self.0.as_ref().map_or(0, |value| value.overflow);
+        (bits & OVERFLOW_MAIN != 0, bits & OVERFLOW_OTHER != 0)
     }
 
     /// Keep the first `len` values.
@@ -1037,12 +1086,41 @@ impl Noted {
             .map(|value| (&value.name, &value.value))
     }
 
+    /// The values of the variables Ruby's tools read for every program (the
+    /// loaders, `BUNDLE_GEMFILE`, `LOCATION`), in the order the line gave
+    /// them: at most as many as a line may note one by one
+    /// ([`MOST_RUBY_VALUES`]), so the cost of asking is that, not the length
+    /// of the list.
+    pub(crate) fn ruby_values(&self) -> Vec<(&String, &Arg)> {
+        let first = self.0.as_deref().and_then(|last| {
+            if last.ruby {
+                Some(last)
+            } else {
+                last.ruby_before.as_deref()
+            }
+        });
+        let mut values: Vec<(&String, &Arg)> =
+            std::iter::successors(first, |value| value.ruby_before.as_deref())
+                .map(|value| (&value.name, &value.value))
+                .collect();
+        values.reverse();
+        values
+    }
+
     /// Each value with its name, in the order the line gave them.
     pub(crate) fn iter(&self) -> std::vec::IntoIter<(&String, &Arg)> {
         let mut values: Vec<(&String, &Arg)> = self.newest_first().collect();
         values.reverse();
         values.into_iter()
     }
+}
+
+/// Whether the variable `name` is one Ruby's tools read for every program,
+/// whatever it is: a loader, `BUNDLE_GEMFILE` or `LOCATION`.
+pub(crate) fn matters_to_ruby(name: &str) -> bool {
+    ruby_loader(name, true).is_some()
+        || name.eq_ignore_ascii_case("BUNDLE_GEMFILE")
+        || name.eq_ignore_ascii_case("LOCATION")
 }
 
 /// Whether a program reads the variable `name` as arguments or a command
@@ -1055,11 +1133,34 @@ impl Noted {
 /// [`Split::argument_variables`]).
 pub(crate) fn read_as_arguments(name: &str) -> bool {
     SETTINGS_VARIABLES.contains(&name)
+        || name.eq_ignore_ascii_case("BUNDLE_GEMFILE")
+        || name.eq_ignore_ascii_case("LOCATION")
+        || ruby_loader(name, true).is_some()
         || tf_cli_args(name)
         || npm_call(name)
         || PSQL_PROGRAMS.contains(&name)
         || git_config_variable(name)
         || crate::launch::is_command_variable(name)
+}
+
+/// Whether the variable `name` holds one path (a file, or a folder) that a
+/// program reads, and not a list of options or a command: a value appended
+/// to it (`NAME+=x`) that the line did not set before joins what the
+/// variable already holds, which the guard cannot see, so what the path is
+/// is only known when it runs. The variables Ruby's tools read for a path,
+/// `BUNDLE_GEMFILE` and `LOCATION` among them, those that name a file a
+/// download tool reads, and the files a shell runs first (`BASH_ENV`, `ENV`).
+pub(crate) fn names_one_path(name: &str) -> bool {
+    SETTINGS_VARIABLES.contains(&name)
+        || matches!(name, "BASH_ENV" | "ENV")
+        || name.eq_ignore_ascii_case("BUNDLE_GEMFILE")
+        || name.eq_ignore_ascii_case("LOCATION")
+        || ruby_loader(name, true).is_some_and(|loader| {
+            !matches!(
+                loader,
+                "RUBYOPT" | "JRUBY_OPTS" | "TRUFFLERUBYOPT" | "RAKEOPT"
+            )
+        })
 }
 
 /// The variables that name a file of options a download tool reads, or the
@@ -1077,12 +1178,102 @@ pub(crate) const SETTINGS_VARIABLES: [&str; 7] = [
     "APPDATA",
 ];
 
+/// The variables Ruby and its tools load code through: `RUBYOPT` and
+/// `RAKEOPT` hold options (`-r` loads a file first), `RUBYLIB`, `GEM_HOME`,
+/// `GEM_PATH`, `BUNDLE_PATH`, `BUNDLE_APP_CONFIG` and `BUNDLE_SETTINGS` say
+/// where the code it requires is. The name is matched in any case where
+/// `any_case` (a Windows shell, or a Windows machine, reads the names of
+/// variables so), and as written otherwise.
+pub(crate) fn ruby_loader(name: &str, any_case: bool) -> Option<&'static str> {
+    RUBY_LOADERS.into_iter().find(|loader| {
+        if any_case {
+            loader.eq_ignore_ascii_case(name)
+        } else {
+            *loader == name
+        }
+    })
+}
+
+/// The most values of the variables Ruby loads code through (and of
+/// `BUNDLE_GEMFILE` and `LOCATION`) a line notes one by one, the most bytes
+/// they hold together, the most parts (of a list of paths, or words and list
+/// parts of options) one holds and all of them hold, and the most of those
+/// that are a project's file
+/// (`BUNDLE_GEMFILE`, `RUBYGEMS_GEMDEPS`, `LOCATION`), which a unit judges
+/// once each: each is read for every command after it. The names in another
+/// case have fewer.
+const MOST_RUBY_VALUES: usize = 12;
+const MOST_RUBY_BYTES: usize = 512;
+const MOST_RUBY_PARTS: usize = 16;
+const MOST_RUBY_PARTS_IN_ALL: usize = 32;
+const MOST_RUBY_PROJECTS: usize = 8;
+const MOST_OTHER_VALUES: usize = 4;
+const MOST_OTHER_BYTES: usize = 256;
+
+/// The parts the readers judge of the value `text` of the variable `name`:
+/// the words of the options of `RUBYOPT` and the like, and the parts of each
+/// list they hold (`-Ia:b`), and the parts of a list of paths. A list is
+/// split at `;` or at `:`, so the larger count is taken: a drive's colon
+/// makes more parts than there are, which only errs to count.
+fn ruby_parts(name: &str, text: &str) -> usize {
+    let lists = text.matches(';').count().max(text.matches(':').count());
+    match ruby_loader(name, true) {
+        Some("RUBYOPT" | "JRUBY_OPTS" | "TRUFFLERUBYOPT" | "RAKEOPT") => {
+            text.split_whitespace().count() + lists
+        }
+        Some(_) => lists + 1,
+        None => 0,
+    }
+}
+
+/// Whether `source` writes the folder the line is in: `$PWD`, `${PWD}`, `~+`,
+/// `$(pwd)`, cmd's `%CD%` (with the carets cmd takes off among it).
+fn writes_folder(source: &str) -> bool {
+    let lower = source.to_ascii_lowercase().replace('^', "");
+    ["$pwd", "${pwd}", "~+", "$(pwd)", "`pwd`", "%cd%"]
+        .iter()
+        .any(|folder| lower.contains(folder))
+}
+
+/// Whether `name` is one Ruby's tools read, as it is spelled on every machine.
+fn is_ruby_name(name: &str) -> bool {
+    ruby_loader(name, false).is_some() || name == "BUNDLE_GEMFILE" || name == "LOCATION"
+}
+
+/// The names of [`ruby_loader`].
+const RUBY_LOADERS: [&str; 15] = [
+    "RUBYOPT",
+    "JRUBY_OPTS",
+    "TRUFFLERUBYOPT",
+    "RAKEOPT",
+    "RUBYLIB",
+    "GEM_HOME",
+    "GEM_PATH",
+    "BUNDLE_PATH",
+    "BUNDLE_APP_CONFIG",
+    "BUNDLE_SETTINGS",
+    "RUBYPATH",
+    "BUNDLE_USER_CONFIG",
+    "BUNDLE_USER_HOME",
+    "RUBYGEMS_GEMDEPS",
+    "GEMRC",
+];
+
 /// The name a program reads, when `name` is one of [`read_as_arguments`]'s
 /// written in any case, as Windows reads the names of variables
 /// (`$env:tf_cli_args_APPLY` is `TF_CLI_ARGS_apply`, `$env:NPM_CONFIG_CALL`
 /// is `npm_config_call`, `$env:git_config_count` is `GIT_CONFIG_COUNT`,
 /// `$env:git_ssh_command` is `GIT_SSH_COMMAND`, `set pager=…` is `PAGER`).
 pub(crate) fn argument_variable(name: &str) -> Option<String> {
+    if name.eq_ignore_ascii_case("BUNDLE_GEMFILE") {
+        return Some("BUNDLE_GEMFILE".to_string());
+    }
+    if name.eq_ignore_ascii_case("LOCATION") {
+        return Some("LOCATION".to_string());
+    }
+    if let Some(loader) = ruby_loader(name, true) {
+        return Some(loader.to_string());
+    }
     if npm_call(name) {
         return Some("npm_config_call".to_string());
     }
@@ -1423,6 +1614,11 @@ pub(crate) struct Split {
     /// words the shell makes of its brace lists, besides the one as the line
     /// writes it.
     pub(crate) spelled_reading: bool,
+    /// The shell whose commands are being read, when the grammar reads them
+    /// as POSIX ones and they are csh's, tcsh's or fish's (`"csh"`,
+    /// `"tcsh"`, `"fish"`): its `setenv` and `set -x` export a variable as
+    /// `export` does.
+    pub(crate) dialect: Option<&'static str>,
     /// Whether the line has said it holds a brace list it does not spell out.
     unspelled_said: bool,
     /// Whether the line has said it has a word the guard reads as two.
@@ -1431,6 +1627,27 @@ pub(crate) struct Split {
     /// [`sets_environment`]): asked once for every unit that reads inline
     /// code, so noted as each is pushed, not found by a scan of them all.
     pub(crate) sets_environment: bool,
+    /// Whether any part of the line assigned, read into or unset a variable
+    /// on a line of its own, set a loop's variable (`for` and `select`,
+    /// whatever its name: zsh ties `path` to `PATH`) or put an assignment in
+    /// front of a call to a function it defines, wherever it stands:
+    /// [`Self::assigned_earlier`] without the definition of a function, for
+    /// code that runs later than where it stands (a loop's body, a trap, a
+    /// function).
+    assigned_anywhere: bool,
+    /// The first value of a variable Ruby's tools read that holds the folder
+    /// the line is in (see [`Self::note_ruby_pwd`]), and how many programs
+    /// the line starts in a folder of their own.
+    ruby_pwd: Option<String>,
+    elsewhere_starts: usize,
+    /// The first words (the program, and the words after a wrapper) of each
+    /// command that has an assignment in front of it: one of them may be a
+    /// function the line defines further on, which the assignment is set
+    /// for.
+    prefix_words: Vec<String>,
+    /// Whether one of [`Self::prefix_words`] is a function the line defines,
+    /// worked out once the line is read.
+    prefix_calls_function: std::cell::Cell<Option<bool>>,
     /// What inline code the guard found nothing in comes to when it is not
     /// read whole (see [`crate::inline`]): `unknown`, said once, and only
     /// when the line has no finding of its own, which already asks.
@@ -1792,6 +2009,10 @@ pub(crate) struct Read {
 /// Inline Python read whole that imports a module (see
 /// [`Split::importing`]).
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag says one thing about where the code runs, and none follows from another"
+)]
 pub(crate) struct Importing {
     /// The folder the line had moved to when the code ran.
     pub(crate) dir: Option<Arg>,
@@ -1802,6 +2023,19 @@ pub(crate) struct Importing {
     pub(crate) finding: Finding,
     /// As [`Unit::place`]: the code.
     pub(crate) place: Placed,
+    /// The shell the folder is written for.
+    pub(crate) shell: Shell,
+    /// Whether the code is only run on a machine that reads the names of
+    /// variables in any case (a Windows one), the project being named by a
+    /// variable written in another case.
+    pub(crate) windows_only: bool,
+    /// Whether the code is in a body that runs later (a loop, a function, a
+    /// trap), so the environment it is given is the line's last: it is read
+    /// whole only when the line sets none.
+    pub(crate) late: bool,
+    /// Whether the folder the code runs in matters: it does for Python's
+    /// imports and a project file, not for code that imports nothing.
+    pub(crate) folder: bool,
 }
 
 /// Where the walk was when an action that runs later began.
@@ -2109,6 +2343,71 @@ impl Split {
         }
     }
 
+    /// Note a value of a variable Ruby's tools read for every program, when
+    /// the list can still hold it for them to judge one by one: `false`.
+    /// A value the list holds already adds nothing. Past what it holds (more
+    /// values, more bytes, a value of more parts or words than are judged,
+    /// more values of a project's file) the list is marked, and no more is
+    /// noted: every reader of them answers `unknown`. The names in another
+    /// case than they are read in on every machine (`location`: a shell
+    /// variable of that name is not Ruby's, but a Windows machine reads it so)
+    /// have limits of their own, so a plain variable cannot make the others
+    /// unknown.
+    fn note_ruby_value(&mut self, name: &str, value: &Arg) -> bool {
+        let main = is_ruby_name(name);
+        let (main_over, other_over) = self.argument_variables.ruby_overflow();
+        if main_over || (!main && other_over) {
+            return true;
+        }
+        let held = self.argument_variables.ruby_values();
+        if held
+            .iter()
+            .any(|(noted, last)| *noted == name && *last == value)
+        {
+            return true;
+        }
+        let class: Vec<(&String, &Arg)> = held
+            .iter()
+            .copied()
+            .filter(|(noted, _)| is_ruby_name(noted) == main)
+            .collect();
+        let bytes: usize = class.iter().map(|(_, noted)| noted.text().len()).sum();
+        let projects = class
+            .iter()
+            .filter(|(noted, _)| {
+                ["BUNDLE_GEMFILE", "RUBYGEMS_GEMDEPS", "LOCATION"]
+                    .iter()
+                    .any(|project| noted.eq_ignore_ascii_case(project))
+            })
+            .count();
+        let text = value.known().unwrap_or_default();
+        let parts = ruby_parts(name, text);
+        // The parts all the held values come to, for each is judged for every
+        // command.
+        let held_parts: usize = class
+            .iter()
+            .map(|(noted, last)| ruby_parts(noted, last.known().unwrap_or_default()))
+            .sum();
+        let (values, bytes_most) = if main {
+            (MOST_RUBY_VALUES, MOST_RUBY_BYTES)
+        } else {
+            (MOST_OTHER_VALUES, MOST_OTHER_BYTES)
+        };
+        let over = class.len() >= values
+            || bytes + text.len() > bytes_most
+            || parts > MOST_RUBY_PARTS
+            || held_parts + parts > MOST_RUBY_PARTS_IN_ALL
+            || (main && projects >= MOST_RUBY_PROJECTS);
+        if over {
+            self.argument_variables.mark_ruby_overflow(if main {
+                OVERFLOW_MAIN
+            } else {
+                OVERFLOW_OTHER
+            });
+        }
+        over
+    }
+
     /// Note the value `value` the line gives the variable `name`, one of
     /// [`read_as_arguments`]'s. The list is shared with every unit that
     /// holds it, and noting one more shares the rest (see [`Noted`]). The
@@ -2117,6 +2416,13 @@ impl Split {
     /// of the name was too: the readers count every value, so another adds
     /// nothing (`Set-Item Env:$n x` repeated).
     pub(crate) fn note_argument_variable(&mut self, name: String, value: Arg) {
+        // The variables Ruby loads code through, and the project's file, are
+        // read for every unit that follows: past a count of them set on one
+        // line, the next ones are a value only known when it runs, which is
+        // `unknown` for them and adds nothing after itself.
+        if matters_to_ruby(&name) && self.note_ruby_value(&name, &value) {
+            return;
+        }
         if self
             .argument_variables
             .newest_first()
@@ -2287,7 +2593,8 @@ impl Split {
             self.move_line(&target, unit.shell, unsure);
         }
         unit.spelled = self.spelled_reading;
-        self.sets_environment |= sets_environment(&unit);
+        self.sets_environment |= sets_environment(&unit)
+            || (self.dialect.is_some() && unit.key().is_some_and(|key| key == "setenv"));
         self.units.push(unit);
     }
 
@@ -4627,6 +4934,7 @@ impl Split {
     /// wrapper fails rather than run its program anywhere else. The move is
     /// that program's alone: [`Self::leave_folders`] puts the line back.
     pub(crate) fn start_in(&mut self, target: &Arg, shell: Shell) {
+        self.starts_elsewhere();
         self.folders.push(self.dir_snapshot());
         if shell == Shell::Cmd {
             // `start /d` names the whole folder: its drive too, and a network
@@ -4876,6 +5184,65 @@ impl Split {
         self.environment > 0 || self.assigned_earlier || self.sets_environment
     }
 
+    /// Note that a part of the line assigns, reads into or unsets a variable
+    /// (`assigned`), for what comes after it and for code that runs later.
+    pub(crate) fn note_assigned(&mut self, assigned: bool) {
+        self.assigned_earlier |= assigned;
+        self.assigned_anywhere |= assigned;
+    }
+
+    /// [`Self::environment_set`] for code in a body that runs later (a
+    /// loop, a function, a trap): what the line sets anywhere in it, once
+    /// the walk is over.
+    pub(crate) fn environment_set_later(&self) -> bool {
+        self.environment > 0
+            || self.assigned_anywhere
+            || self.sets_environment
+            || self.prefix_calls_function.get().unwrap_or_else(|| {
+                let defined: HashSet<&str> = self.functions.iter().map(String::as_str).collect();
+                let calls = self.prefix_words.iter().any(|word| {
+                    defined.contains(word.as_str()) || (word == "eval" && !defined.is_empty())
+                });
+                self.prefix_calls_function.set(Some(calls));
+                calls
+            })
+    }
+
+    /// Note a command with an assignment in front of it, of `words`: the
+    /// program and the words after it. It sets a variable for a function the
+    /// line has defined, or defines further on, when one of the first words
+    /// names it (a wrapper, `noglob`, `time`, runs the word after it).
+    pub(crate) fn note_prefixed(&mut self, words: &[&str]) {
+        // Words that run the word after them, which the shell takes off
+        // before the command (`noglob`, `nocorrect`, `-`, `time`), are not
+        // counted among the first.
+        const MODIFIERS: [&str; 12] = [
+            "noglob",
+            "nocorrect",
+            "-",
+            "command",
+            "builtin",
+            "exec",
+            "nohup",
+            "nice",
+            "time",
+            "!",
+            "{",
+            "--",
+        ];
+        for word in words
+            .iter()
+            .filter(|word| !MODIFIERS.contains(word))
+            .take(4)
+        {
+            // `eval` runs a function by the name it is given, one word on.
+            if self.defines_function(word) || (*word == "eval" && !self.functions.is_empty()) {
+                self.note_assigned(true);
+            }
+            self.prefix_words.push((*word).to_string());
+        }
+    }
+
     /// Note that code is given to an interpreter that the guard does not read
     /// whole: the line is `unknown` unless it has a finding of its own.
     pub(crate) fn unread_code(&mut self, code: &str) {
@@ -4908,7 +5275,123 @@ impl Split {
             repeated: self.repeats > 0,
             finding: Self::unread_finding(code),
             place,
+            shell: Shell::Posix,
+            windows_only: false,
+            late: self.bodies > 0,
+            folder: true,
         });
+    }
+
+    /// Note inline code read whole that imports nothing, in a body that runs
+    /// later (a loop, a function, a trap): whether it is read whole is
+    /// decided once the line is read, by what the line sets (see
+    /// [`Importing::late`]).
+    #[cfg_attr(
+        not(feature = "inline"),
+        allow(dead_code, reason = "only the reader of inline code notes it")
+    )]
+    pub(crate) fn reads_later(&mut self, code: &str) {
+        if self.bodies == 0 {
+            return;
+        }
+        let place = self.placed_here();
+        self.importing.push(Importing {
+            dir: self.dir.clone(),
+            repeated: self.repeats > 0,
+            finding: Self::unread_finding(code),
+            place,
+            shell: Shell::Posix,
+            windows_only: false,
+            late: true,
+            folder: false,
+        });
+    }
+
+    /// Note a project a runner sets up from its file in `folder` (from where
+    /// the line is), whose code it runs: `unknown` when that folder is not
+    /// the workspace's, judged with the directories as an import is (see
+    /// [`Split::importing`]).
+    pub(crate) fn project_file(
+        &mut self,
+        folder: &Arg,
+        program: &str,
+        shell: Shell,
+        windows_only: bool,
+    ) {
+        let dir = self.moved_to(self.dir.as_ref(), folder, shell);
+        let place = self.placed_here();
+        self.importing.push(Importing {
+            dir: Some(dir),
+            repeated: false,
+            finding: Finding {
+                rule: Rule::Unknown,
+                reason: "runs code from a project file outside the workspace".to_string(),
+                target: Some(format!("{program} {}", folder.text())),
+                instead: None,
+            },
+            place,
+            shell,
+            windows_only,
+            late: false,
+            folder: true,
+        });
+    }
+
+    /// Note the value of the variable `name`, written as `source`, when it is
+    /// one Ruby's tools read and holds the folder the line is in (`$PWD`,
+    /// `${PWD}`, `~+`, `$(pwd)`, cmd's `%CD%`, `%^CD%`): a value the commands
+    /// after it read is the folder it was written in, not where they run, so
+    /// when the line moves its folder anywhere, which is only known once the
+    /// line is read, it is only known when it runs (see
+    /// [`Self::settle_ruby_pwd`]).
+    pub(crate) fn note_ruby_pwd(&mut self, name: &str, source: &str) {
+        if self.ruby_pwd.is_none() && matters_to_ruby(name) && writes_folder(source) {
+            self.ruby_pwd = Some(source.to_string());
+        }
+    }
+
+    /// [`Self::note_ruby_pwd`] for a word of a command (`env RUBYLIB=$PWD`,
+    /// `export RUBYOPT=-r$PWD/x`), `value` as the shell reads it and `source`
+    /// as it was written: its name is the one it is read as (`R\UBYOPT`,
+    /// `"RUBYLIB"`), and a name only known when it runs (`RUBY$X`) may be any.
+    pub(crate) fn note_ruby_pwd_word(&mut self, value: &Arg, source: &str) {
+        if !writes_folder(source) || !source.contains('=') {
+            return;
+        }
+        match value.known() {
+            Some(text) => {
+                if let Some((name, _)) = text.split_once('=') {
+                    self.note_ruby_pwd(name.trim_end_matches('+'), source);
+                }
+            }
+            None => {
+                if self.ruby_pwd.is_none() {
+                    self.ruby_pwd = Some(source.to_string());
+                }
+            }
+        }
+    }
+
+    /// Note that a program starts in a folder of its own (`env -C`, `ruby -C`,
+    /// `find -execdir`), which moves the folder its commands run in.
+    pub(crate) fn starts_elsewhere(&mut self) {
+        self.elsewhere_starts += 1;
+    }
+
+    /// After the whole line is read: a value of a variable Ruby's tools read
+    /// that holds the folder the line is in is only known when it runs if the
+    /// line moves its folder anywhere, before it or after it, in a loop, a
+    /// function, a wrapper or a script it runs.
+    fn settle_ruby_pwd(&mut self) {
+        if self.moved > 0 || self.elsewhere_starts > 0 {
+            if let Some(value) = self.ruby_pwd.take() {
+                self.problem(
+                    Rule::Unknown,
+                    "sets a variable Ruby reads to a value with the working directory in it, and the line moves its folder",
+                    Some(&value),
+                );
+            }
+        }
     }
 
     /// Whether the line moves to another folder anywhere: `cd`, `pushd`,
@@ -5796,6 +6279,7 @@ pub(crate) fn split(
     split.settle_bodies();
     split.settle_functions();
     split.settle_pwd();
+    split.settle_ruby_pwd();
     split
 }
 

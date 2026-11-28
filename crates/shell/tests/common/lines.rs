@@ -203,6 +203,29 @@ pub fn long_code() -> (Vec<String>, String) {
     (rows, chain)
 }
 
+/// Long inline Ruby, up to the reader's length limit (3 KiB), given to
+/// `ruby` as a here-document, the shapes of [`long_code`] and the shapes
+/// the grammar reads two ways. The Ruby reader walks every tree it parses
+/// whole, so none is too deep to read: each is read, or not read, and the
+/// answer is never safe for code the reader does not read.
+pub fn long_ruby_code() -> Vec<String> {
+    let calls = format!("{}{}", "f(".repeat(700), ")".repeat(700));
+    let chains = format!("x = a{}\n", ".b".repeat(390)).repeat(3);
+    let nested = format!("f({}\n", "f(".repeat(380) + &")".repeat(381)).repeat(2);
+    [
+        format!("x = a{}", ".b".repeat(1_000)),
+        calls,
+        chains,
+        nested,
+        "a [b];".repeat(500),
+        "p p ".repeat(700) + "a",
+        "x = a ? b : ".repeat(240) + "a",
+    ]
+    .into_iter()
+    .map(|body| format!("ruby - <<'RB'\n{body}\nRB"))
+    .collect()
+}
+
 /// A script that sets `levels` names, each by `line(at)` from the one before,
 /// and then runs `last`.
 pub fn chain(

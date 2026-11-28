@@ -21,3 +21,22 @@ javascript rules=unreadable first=unreadable reason="does not parse" target="c(.
 javascript rules=unreadable | x;\nc(.c(''.(X%'''"';c(=
 javascript rules=unreadable | require('fs').rmSync('/home/me'); c(.c(''.(X%'''"';c(=
 javascript finds=unknown lacks=unreadable | eval("c(.c(''.(X%'''\\"';c(=")
+ruby rules=unreadable first=unreadable reason="does not parse" target="def f(" | def f(
+ruby rules=unreadable lacks=delete | File.delete('/home/me')\nputs 'x
+# A heredoc whose word the grammar's scanner cannot hold is not read.
+ruby finds=unreadable lacks=delete reason="has a heredoc word the grammar cannot hold" | x = <<"É"\nÉ\nFile.delete('/home/me')
+# A document the grammar ends where Ruby does not is code not read.
+ruby finds=unreadable lacks=run_program reason="has an embedded document the grammar ends before Ruby does" | =begin\n=endx\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby finds=unreadable lacks=run_program reason="has an embedded document the grammar ends before Ruby does" | =begin\n=end=\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby finds=unreadable lacks=run_program reason="has an embedded document the grammar ends before Ruby does" | =begin\n=end#\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby finds=unreadable lacks=run_program reason="has an embedded document the grammar ends before Ruby does" | =begin\n  =end\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby finds=unreadable lacks=run_program reason="has an embedded document the grammar ends before Ruby does" | =begin\n\t=end\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby finds=unreadable lacks=run_program reason="has an embedded document the grammar ends before Ruby does" | =begin\n*=end\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+# A control or meta escape takes the character after it in Ruby, a quote too:
+# the code between two quotes is not a string.
+ruby finds=unreadable lacks=run_program reason="has an escape Ruby reads longer than the grammar" | x = "\\c"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby finds=unreadable lacks=run_program reason="has an escape Ruby reads longer than the grammar" | x = "\\C-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby finds=unreadable lacks=run_program reason="has an escape Ruby reads longer than the grammar" | x = "\\M-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby finds=unreadable lacks=run_program reason="has an escape Ruby reads longer than the grammar" | x = "\\M-\\C-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby finds=unreadable lacks=run_program reason="has an escape Ruby reads longer than the grammar" | x = "\\c\\M-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby finds=unreadable lacks=delete reason="has an escape Ruby reads longer than the grammar" | x = "#$\\\\\\\\c"; y = "; File.delete('/home/me'); z = "; w = 1 #"

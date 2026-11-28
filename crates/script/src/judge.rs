@@ -157,6 +157,15 @@ pub(crate) fn judge_within(
         };
         return (outcome, budget);
     }
+    // Without the `ruby` feature the reader reads no Ruby: the code is not
+    // read, which is no code that does not parse.
+    if language == Language::Ruby && !cfg!(feature = "ruby") {
+        let outcome = Outcome {
+            findings: vec![finding(Rule::Unknown, UNREAD, shown(code))],
+            ..Outcome::default()
+        };
+        return (outcome, budget);
+    }
     let mut judge = Judge::within(paths, budget);
     let parses = judge.budget.parses(language, code);
     // Code the reader stops on, past the work its grammar may do for it, is
@@ -164,7 +173,8 @@ pub(crate) fn judge_within(
     // found in it, and it is not read again.
     let stopped = !parses && judge.budget.is_spent();
     if stopped {
-        judge.add(Rule::Unreadable, "takes too long to read", shown(code));
+        let why = reader::refusal(language, code).unwrap_or("takes too long to read");
+        judge.add(Rule::Unreadable, why, shown(code));
     } else if !parses {
         judge.add(Rule::Unreadable, "does not parse", shown(code));
     }

@@ -9,7 +9,7 @@ use milo_guards_code::testing::{
     self, HANDED_BASE, HANDED_BYTES, LOGGED_WEIGHT, PIECE, QUIET_IN_ALL, REPORT_BASE, REPORT_BYTES,
     SELECTED_IN_ALL, TANGLE_BASE, WALK_BASE, WALK_BYTES,
 };
-use milo_guards_code::Language::{self, JavaScript, Python};
+use milo_guards_code::Language::{self, JavaScript, Python, Ruby};
 use milo_guards_code::{read, understand, Act, Understanding, MAX_LEN};
 
 /// Pieces of Python syntax, joined at random into code no parser expects.
@@ -108,6 +108,61 @@ const JAVASCRIPT: [&str; 44] = [
     "#!/usr/bin/env node\n",
 ];
 
+/// Pieces of Ruby syntax.
+const RUBY: [&str; 48] = [
+    "require 'fileutils'\n",
+    "File.delete(",
+    "FileUtils.rm_rf ",
+    "File.read(",
+    "File.open(",
+    "system(",
+    "system ",
+    "`ls`",
+    "%x(",
+    "eval(",
+    "puts ",
+    "p ",
+    "'/home/me'",
+    "'~'",
+    "\"x#{y}\"",
+    "\"x\"",
+    ":sym",
+    "%w(a b)",
+    "%q(",
+    "/a/",
+    "?a",
+    "<<A\n",
+    "<<~'B'\n",
+    "A\n",
+    "x = ",
+    "x",
+    "@x",
+    "$x",
+    "+",
+    ", ",
+    ")",
+    "]",
+    "[",
+    "{",
+    "}",
+    "|x| ",
+    " do ",
+    " end",
+    "begin\n",
+    "if x\n",
+    "def f\n",
+    "\n",
+    "# c\n",
+    "=begin\n",
+    "=end\n",
+    "\u{0}",
+    "é",
+    "\r",
+];
+
+/// Punctuation Ruby reads as a literal's start, beside [`PUNCTUATION`].
+const RUBY_PUNCTUATION: [&str; 6] = ["#{", "<<", "<<A", "%(", "?(", ":\""];
+
 /// A small deterministic generator, so a failure names its seed.
 struct Lcg(u64);
 
@@ -135,7 +190,11 @@ fn opens_only(act: &Act) -> bool {
 
 #[test]
 fn random_code_never_panics_and_reads_the_same_twice() {
-    for (language, pieces, seed) in [(Python, &PYTHON[..], 7), (JavaScript, &JAVASCRIPT[..], 11)] {
+    for (language, pieces, seed) in [
+        (Python, &PYTHON[..], 7),
+        (JavaScript, &JAVASCRIPT[..], 11),
+        (Ruby, &RUBY[..], 29),
+    ] {
         let mut random = Lcg(seed);
         for _ in 0..4_000 {
             let code = noise(&mut random, pieces);
@@ -154,7 +213,11 @@ fn random_code_never_panics_and_reads_the_same_twice() {
 
 #[test]
 fn understood_code_only_ever_opens_a_file() {
-    for (language, pieces, seed) in [(Python, &PYTHON[..], 13), (JavaScript, &JAVASCRIPT[..], 17)] {
+    for (language, pieces, seed) in [
+        (Python, &PYTHON[..], 13),
+        (JavaScript, &JAVASCRIPT[..], 17),
+        (Ruby, &RUBY[..], 31),
+    ] {
         let mut random = Lcg(seed);
         let mut understood = 0;
         for _ in 0..6_000 {
@@ -185,12 +248,13 @@ fn nested(language: Language, depth: usize) -> String {
     match language {
         Python => format!("print({}1{})", "(".repeat(depth), ")".repeat(depth)),
         JavaScript => format!("console.log({}1{})", "(".repeat(depth), ")".repeat(depth)),
+        Ruby => format!("puts({}1{})", "(".repeat(depth), ")".repeat(depth)),
     }
 }
 
 #[test]
 fn code_nested_very_deeply_ends() {
-    for language in [Python, JavaScript] {
+    for language in [Python, JavaScript, Ruby] {
         // The tree is walked without recursion, so no depth overflows the
         // stack; what the reader does not walk in full it says (`deep`).
         for depth in [2_000, 20_000] {
@@ -213,10 +277,11 @@ fn code_nested_very_deeply_ends() {
 
 #[test]
 fn long_code_and_strings_that_grow_end() {
-    for language in [Python, JavaScript] {
+    for language in [Python, JavaScript, Ruby] {
         let long = match language {
             Python => format!("x = '{}'\nprint(x)", "a".repeat(MAX_LEN * 4)),
             JavaScript => format!("let x = '{}'; console.log(x)", "a".repeat(MAX_LEN * 4)),
+            Ruby => format!("x = '{}'\nputs x", "a".repeat(MAX_LEN * 4)),
         };
         let _ = read(language, &long);
         let _ = understand(language, &long);
@@ -228,6 +293,7 @@ fn long_code_and_strings_that_grow_end() {
                 "let a = '/home/me/'; {}require('fs').readFileSync(a)",
                 "a = a + a; ".repeat(60)
             ),
+            Ruby => format!("a = '/home/me/'\n{}File.read(a)", "a = a + a\n".repeat(60)),
         };
         let reading = read(language, &doubling);
         // The read is of a path the reader does not know, never of a string
@@ -265,6 +331,17 @@ fn many_names_and_calls_end() {
         )))
         .collect();
     let _ = read(JavaScript, &javascript);
+    let ruby: String = (0..200)
+        .map(|n| format!("n{n} = 'a'\nn{n} = 'b'\n"))
+        .chain(std::iter::once(format!(
+            "File.read({})\n",
+            (0..200)
+                .map(|n| format!("n{n}"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        )))
+        .collect();
+    let _ = read(Ruby, &ruby);
 }
 
 /// Shapes of code that nest `depth` deep, each followed by a statement the
@@ -305,12 +382,32 @@ fn deep_then_write(language: Language, depth: usize) -> Vec<String> {
             ),
             format!("let x = {}1\nconsole.log(x)", "-".repeat(depth)),
         ],
+        Ruby => vec![
+            format!(
+                "x = 1\nx{}.b\nFile.write('/home/me/.bashrc', 'x')",
+                ".a".repeat(depth)
+            ),
+            format!(
+                "puts({}1{})\nFile.write('/home/me/.bashrc', 'x')",
+                "(".repeat(depth),
+                ")".repeat(depth)
+            ),
+            format!(
+                "x = {}1{}\nFile.write('/home/me/.bashrc', 'x')",
+                "[".repeat(depth),
+                "]".repeat(depth)
+            ),
+            format!(
+                "x = {}1\nFile.write('/home/me/.bashrc', 'x')",
+                "- ".repeat(depth)
+            ),
+        ],
     }
 }
 
 #[test]
 fn code_the_reader_does_not_walk_whole_is_not_understood() {
-    for language in [Python, JavaScript] {
+    for language in [Python, JavaScript, Ruby] {
         for depth in [
             10, 100, 199, 200, 201, 300, 399, 400, 401, 420, 450, 800, 1_000,
         ] {
@@ -326,14 +423,25 @@ fn code_the_reader_does_not_walk_whole_is_not_understood() {
             }
         }
         // Some of the deepest shapes within the length limit are past the
-        // reader's walk, so the check is not empty; one it walks whole still
-        // finds the write after it.
+        // reader's walk, so the check is not empty (the Ruby reader walks
+        // every tree it parses whole, and deep code is never understood);
+        // one it walks whole still finds the write after it.
         let deepest = deep_then_write(language, 420);
         assert!(
-            deepest.iter().any(|code| read(language, code).deep),
+            language == Ruby || deepest.iter().any(|code| read(language, code).deep),
             "{language:?}"
         );
-        if language == Python {
+        for code in &deepest {
+            if language == Ruby {
+                assert_eq!(
+                    understand(language, code),
+                    Understanding::NotUnderstood,
+                    "{}",
+                    &code[..code.len().min(80)]
+                );
+            }
+        }
+        if language != JavaScript {
             for code in &deepest {
                 let reading = read(language, code);
                 assert!(
@@ -443,6 +551,7 @@ fn punctuation_and_code_changed_at_random_are_read_within_the_budget() {
     for (language, what, seed) in [
         (Python, What::Python, 19),
         (JavaScript, What::JavaScript, 23),
+        (Ruby, What::Ruby, 37),
     ] {
         let mut seeds: Vec<String> = ["acts", "understand"]
             .iter()
@@ -453,6 +562,9 @@ fn punctuation_and_code_changed_at_random_are_read_within_the_budget() {
         if language == JavaScript {
             seeds.push("c(.c(''.(X%'''\"';c(=".to_string());
             seeds.push("- await [a,a]".repeat(700));
+        } else if language == Ruby {
+            seeds.push("x = <<A\n#{y}A\nputs 1\n".repeat(40));
+            seeds.push("p %q(".repeat(100));
         } else {
             seeds.push("+*a".repeat(400));
         }
@@ -465,7 +577,16 @@ fn punctuation_and_code_changed_at_random_are_read_within_the_budget() {
             erred += usize::from(error);
             let length = 1 + random.next() % 48;
             let noise: String = (0..length)
-                .map(|_| PUNCTUATION[random.next() % PUNCTUATION.len()])
+                .map(|_| {
+                    if language != Ruby {
+                        return PUNCTUATION[random.next() % PUNCTUATION.len()];
+                    }
+                    let at = random.next() % (PUNCTUATION.len() + RUBY_PUNCTUATION.len());
+                    PUNCTUATION
+                        .get(at)
+                        .copied()
+                        .unwrap_or_else(|| RUBY_PUNCTUATION[at - PUNCTUATION.len()])
+                })
                 .collect();
             let (stop, error) = within_budget(language, &noise);
             stopped += usize::from(stop);

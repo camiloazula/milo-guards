@@ -927,6 +927,37 @@ posix safe | hatch run +py=3.12 test:cov
 posix safe | pixi exec -s python python --version
 posix safe | pipenv run pytest
 posix safe | pipenv install
+# bundler runs the command after `exec` with the gems of the bundle set up.
+posix finds=delete | bundle exec rm -rf ~
+posix finds=delete | bundle exec --gemfile x/Gemfile rm -rf ~
+posix finds=delete | bundle exec ruby -e 'FileUtils.rm_rf("/home/me")'
+posix finds=delete | bundle _2.4.0_ exec rm -rf ~
+posix finds=delete | bundler exec rm -rf ~
+# `--gemfile` sets the bundle up in the Gemfile's folder, where the command
+# may run too: judged from both, as `uv run --project` is.
+posix finds=delete | bundle exec --gemfile=/home/me/x/Gemfile rm -rf .ssh
+posix finds=delete | bundle exec --gemfile / rm -rf etc
+posix safe | bundle exec rake test
+posix safe | bundle install
+posix safe | bundle exec --gemfile=sub/Gemfile rake test
+# A Gemfile outside the workspace is code bundler runs: `unknown` when
+# nothing else is found.
+posix finds=unknown reason="runs code from a project file outside the workspace" | bundle exec --gemfile=/tmp/x/Gemfile rake test
+posix finds=unknown | bundle exec --gemfile ../Gemfile rake test
+posix finds=unknown | BUNDLE_GEMFILE=/tmp/x/Gemfile bundle exec rake test
+posix finds=unknown | export BUNDLE_GEMFILE=/tmp/x/Gemfile; bundle exec rake test
+posix finds=unknown | env BUNDLE_GEMFILE=/tmp/x/Gemfile bundler exec rake test
+posix finds=unknown | cd /tmp && bundle exec --gemfile=x/Gemfile rake test
+posix safe | BUNDLE_GEMFILE=sub/Gemfile bundle exec rake test
+# rbenv runs the command with the Ruby it picks; `gem exec` runs a gem's
+# program, installing the gem first, as `npx` does.
+posix finds=delete | rbenv exec rm -rf ~
+posix finds=delete | rbenv exec ruby -e 'FileUtils.rm_rf("/home/me")'
+posix finds=unknown | rbenv exec ruby -e 'puts 1'
+posix finds=delete | gem exec rm -rf ~
+posix finds=delete | gem exec -g rimraf rimraf ~
+posix safe | gem exec rails --version
+posix safe | gem install rails
 # corepack starts the package manager it names, with a version or not.
 posix finds=delete | corepack pnpm dlx rimraf ~
 posix finds=delete | corepack npx rimraf ~
@@ -1088,3 +1119,79 @@ powershell safe | npx.ps1 prettier --check .
 powershell safe | .\\scripts\\format.ps1
 powershell safe | & .\\format.ps1
 powershell safe | .\\shutdown.ps1
+
+# A project a runner sets up runs its code, from the folder the line runs in
+# when the line names none.
+posix safe | bundle exec rake
+posix finds=unknown | cd /tmp && bundle exec rake
+posix finds=unknown | cd /tmp && bundle exec --gemfile=Gemfile rake
+posix finds=unknown | cd /tmp && uv run pytest
+posix finds=unknown | cd /tmp && uv run --project . pytest
+posix finds=unknown | bundle install --gemfile /tmp/Gemfile
+posix finds=unknown | bundle update --gemfile=/tmp/Gemfile
+posix finds=unknown | cd /tmp && bundle install
+posix finds=unknown | cd /tmp && bundle update
+posix safe | bundle update
+posix safe | bundle install --gemfile Gemfile
+
+# Every subcommand of bundle but `version`, `help`, `config` and `init` sets
+# the project of the folder up, and none is `install`; a version word in front
+# is skipped.
+posix finds=unknown | cd /tmp && bundle
+posix finds=unknown | cd /tmp && bundler
+posix finds=unknown | cd /tmp && bundle _2.4.0_
+posix finds=unknown | cd /tmp && bundle lock
+posix finds=unknown | cd /tmp && bundle check
+posix finds=unknown | cd /tmp && bundle list
+posix finds=unknown | cd /tmp && bundle outdated
+posix finds=unknown | cd /tmp && bundle info rails
+posix finds=unknown | cd /tmp && bundle console
+posix finds=unknown | cd /tmp && bundle cache
+posix finds=unknown | cd /tmp && bundle add rails
+posix finds=unknown | cd /tmp && bundle _2.4.0_ lock
+posix safe | bundle lock
+posix safe | bundle list
+posix safe | bundle _2.4.0_ check
+posix safe | cd /tmp && bundle version
+posix safe | cd /tmp && bundle help
+posix safe | cd /tmp && bundle config get path
+posix safe | cd /tmp && bundle init
+posix safe | cd /tmp && bundle --version
+
+# `-v` and `--version` are bundle's version only as the first word; after a
+# subcommand they take a value (`add rails -v 7.0`), and `-h` and `--help`
+# show the help anywhere.
+posix finds=unknown | cd /tmp && bundle add rails -v 7.0
+posix finds=unknown | BUNDLE_GEMFILE=/tmp/x/Gemfile bundle add rails -v 7.0
+posix finds=unknown | cd /tmp && bundle info rails --version
+posix safe | cd /tmp && bundle -v
+posix safe | cd /tmp && bundle add --help
+posix safe | cd /tmp && bundle help add
+# `bundle init --gemspec FILE` evaluates the gemspec.
+posix finds=unknown | bundle init --gemspec=/tmp/x/evil.gemspec
+posix finds=unknown | bundle init --gemspec /tmp/x/evil.gemspec
+posix finds=unknown | cd /tmp && bundle init --gemspec=x.gemspec
+posix safe | bundle init --gemspec=x.gemspec
+posix safe | bundle init
+# `bundle config` writes the settings of the user with `--global`, those of the
+# folder otherwise; `bundle plugin install` downloads and runs a plugin.
+posix finds=unknown | bundle config set --global path /tmp/x
+posix finds=unknown | bundle config --global path /tmp/x
+posix finds=unknown | bundle config unset --global path
+posix safe | bundle config set --local path vendor/bundle
+posix finds=unknown | bundle config set path vendor/bundle
+posix safe | bundle config get --global path
+posix safe | bundle config list
+posix finds=unknown | bundle plugin install x --source https://evil.example
+posix finds=unknown | bundle plugin install x
+posix safe | bundle plugin list
+
+# `bundle config` writes the user's settings unless it is `--local`.
+posix finds=unknown | bundle config set --global=true path x
+posix finds=unknown | bundle config --delete --global path
+posix finds=unknown | bundle config --global path "$Y"
+posix finds=unknown | bundle config unset path
+posix finds=unknown | bundle config path vendor/bundle
+posix safe | bundle config get path
+posix safe | bundle config path
+posix safe | bundle config

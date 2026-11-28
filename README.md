@@ -53,7 +53,7 @@ the `-code` reader), published together at one version.
 
 ```toml
 [dependencies]
-milo-guards = "0.2"
+milo-guards = "0.3"
 ```
 
 Each guard sits behind a cargo feature. `shell`, `file`, `url`, `script` and
@@ -62,17 +62,17 @@ not a table of credential patterns in their binary.
 
 ```toml
 # Everything, the secrets guard included
-milo-guards = { version = "0.2", features = ["secrets"] }
+milo-guards = { version = "0.3", features = ["secrets"] }
 
 # Only the shell guard
-milo-guards = { version = "0.2", default-features = false, features = ["shell"] }
+milo-guards = { version = "0.3", default-features = false, features = ["shell"] }
 ```
 
 To depend on a commit instead, the git form works too, pinned to a release
-tag (`v0.2.2` is the latest):
+tag (`v0.3.0` is the latest):
 
 ```toml
-milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.2.2" }
+milo-guards = { git = "https://github.com/camiloazula/milo-guards", tag = "v0.3.0" }
 ```
 
 The crates declare Rust 1.90, and are built and tested with it against the
@@ -123,11 +123,11 @@ with a `Finding` for each reason.
 | **shell** | one shell line: POSIX shell, PowerShell or cmd | `rm -rf ~` (`delete`) | `ls src` | `shell`, on by default |
 | **file** | one read or write of one path through a file API | reading `~/.ssh/id_ed25519` (`read_secret`) | writing `src/main.rs` | `file`, on by default |
 | **url** | one URL the agent is about to fetch | `http://2130706433/`, which is `127.0.0.1` (`local_address`) | `https://docs.rs/url` | `url`, on by default |
-| **script** | Python or JavaScript code the agent runs directly, with no shell line around it | `shutil.rmtree('/home/me')` (`delete`) | `print(1)` | `script`, on by default |
+| **script** | Python, JavaScript or Ruby code the agent runs directly, with no shell line around it | `shutil.rmtree('/home/me')` (`delete`) | `print(1)` | `script`, on by default |
 | **secrets** | a text, for the credentials and personal data in it | `postgres://app:fakePass0word1@db/app` (`connection_string`) | a commit SHA | `secrets`, opt in |
 
-The **code** reader is not a guard. It reads Python and JavaScript (Node, Bun
-and Deno) and says what the code is certain to do: the files it deletes,
+The **code** reader is not a guard. It reads Python, JavaScript (Node, Bun
+and Deno) and Ruby and says what the code is certain to do: the files it deletes,
 writes, reads and moves, and the programs it starts. The shell guard uses it
 for the code a line hands to an interpreter, so `python3 -c "import shutil;
 shutil.rmtree('/home/me')"` is judged as the delete it is, and
@@ -299,7 +299,7 @@ it does no lookup, so `url::judge_address(address)` judges the address the
 fetch then connected to, before the request is sent, with the same tables
 (its documentation says where that address must come from). `secrets::find(text)` reads a
 text and `secrets::find_spans(text)` gives the byte ranges to scrub, and
-`code::read` and `code::understand` read a snippet of Python or JavaScript. Every example in the crate's documentation is a test too;
+`code::read` and `code::understand` read a snippet of Python, JavaScript or Ruby. Every example in the crate's documentation is a test too;
 `cargo doc --open` shows them all, one per guard.
 
 A finding has four fields: `rule`, the enum value with its wire name; `reason`,

@@ -14,6 +14,11 @@ python@keys finds=read_secret reason="reads your SSH keys" | print(open('keys/..
 python@keys finds=read_secret | import os\nos.chdir('keys')\nprint(open('id_rsa').read())
 python@keys finds=overwrite | open('keys/authorized_keys', 'a').write('x')
 python@keys safe | print(open('keys/../keys.txt').read())
+ruby@keys finds=read_secret reason="reads your SSH keys" | puts File.read('keys/id_rsa')
+ruby@keys finds=overwrite | File.write('keys/authorized_keys', 'x')
+ruby@outside finds=overwrite reason="writes to a file outside the workspace" | File.write('data/y', 'x')
+ruby@outside finds=delete | File.delete('data/y')
+ruby@rc finds=overwrite reason="writes to a shell startup file" | File.write('rc', 'x')
 python@outside finds=overwrite reason="writes to a file outside the workspace" | open('data/y', 'w')
 python@outside finds=delete | import shutil\nshutil.rmtree('data/y')
 python@agent finds=overwrite reason="writes to the agent's settings" | open('agent/config.json', 'w')
@@ -23,6 +28,8 @@ python@rc safe | print(open('rc').read())
 python safe | print(open('keys/id_rsa').read())
 python safe | open('data/y', 'w')
 python safe | open('rc', 'a').write('x')
+ruby lacks=read_secret | puts File.read('keys/id_rsa')
+ruby lacks=overwrite | File.write('data/y', 'x')
 
 # A link at a sensitive name that lands somewhere harmless: the code is
 # judged on the paths as spelled and where they land, and keeps every
@@ -48,6 +55,7 @@ javascript@wild_names finds=read_secret | require('fs').readFileSync('[x]/id_rsa
 paths loop base=posix link=/home/me/work/repo/a to=b link=/home/me/work/repo/b to=a link=/home/me/work/repo/e to=
 python@loop finds=unknown reason="reads a path only known when it runs" | print(open('a/x').read())
 python@loop finds=unknown | print(open('e/x').read())
+ruby@loop finds=unknown reason="reads a path only known when it runs" | puts File.read('a/x')
 
 # A folder that holds a link holds what it lands on only for a call that
 # follows the links it meets (`shutil.copytree`); a delete acts on the

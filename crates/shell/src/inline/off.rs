@@ -12,6 +12,7 @@ use crate::unit::{Arg, Split};
 pub(crate) enum Language {
     Python,
     JavaScript,
+    Ruby,
 }
 
 /// Code given with a flag is not read: the line is `unknown`, unless it has

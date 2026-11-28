@@ -203,7 +203,49 @@ fn every_case_file_gives_each_target_its_seeds() -> Result<(), String> {
         has(Target::Code, language_choice(Language::JavaScript, 0)),
         "JavaScript"
     );
+    assert!(
+        has(Target::Code, language_choice(Language::Ruby, 0)),
+        "Ruby"
+    );
+    assert!(
+        has(Target::Script, language_choice(Language::Ruby, 0)),
+        "Ruby in a script"
+    );
     Ok(())
+}
+
+/// Code that names a path of the Windows drives, on the machine that mounts
+/// them: the script guard judges it again on the paths as spelled (see
+/// `Paths::also_judged_on`), where the key is no key and the code is not
+/// read whole, so its answer holds every finding of its own work and more.
+#[test]
+fn script_code_on_a_machine_that_mounts_drives_keeps_its_promises() {
+    let mounts = 5;
+    for (language, code) in [
+        (
+            Language::Python,
+            "import os\nos.remove('/mnt/c/Users/me/.ssh/id_rsa')",
+        ),
+        (
+            Language::Python,
+            "print(open('/mnt/c/Users/me/.ssh/id_rsa').read())",
+        ),
+        (
+            Language::Ruby,
+            "print(open('/mnt/c/Users/me/.ssh/id_rsa').read())",
+        ),
+        (Language::Ruby, "File.delete('/mnt/c/Users/me/.ssh/id_rsa')"),
+        (
+            Language::JavaScript,
+            "require('fs').readFileSync('/mnt/c/Users/me/.ssh/id_rsa')",
+        ),
+    ] {
+        let data = encode(language_choice(language, mounts), code);
+        assert!(
+            std::panic::catch_unwind(|| check(Target::Script, &data)).is_ok(),
+            "{language:?} {code:?}"
+        );
+    }
 }
 
 #[test]

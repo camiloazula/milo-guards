@@ -199,7 +199,7 @@ fn an_unknown_field_word_rule_language_or_paths_is_refused() {
             "an unknown rule `write_outside`",
         ),
         ("python effect=changes | x\n", "an unknown field `effect`"),
-        ("ruby safe | x\n", "an unknown language `ruby`"),
+        ("perl safe | x\n", "an unknown language `perl`"),
         ("posix safe | x\n", "an unknown language `posix`"),
         ("python@mars safe | x\n", "no paths named `mars`"),
     ] {

@@ -1,4 +1,4 @@
-//! Judges Python or JavaScript code an agent runs directly: [`judge`].
+//! Judges Python, JavaScript or Ruby code an agent runs directly: [`judge`].
 //!
 //! An agent runs code through a shell line (`python3 -c …`, `node -e …`),
 //! which the shell guard judges, but also through a tool that runs code with

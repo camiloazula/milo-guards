@@ -1,15 +1,18 @@
 # Script
 
-`milo-guards-script` judges Python or JavaScript code an agent runs directly,
-through a tool that runs code with no shell line around it: a Python tool, a
-notebook, a JavaScript sandbox.
+`milo-guards-script` judges Python, JavaScript or Ruby code an agent runs
+directly, through a tool that runs code with no shell line around it: a
+Python tool, a notebook, a JavaScript sandbox.
 
 ```rust
 judge(language, code, &paths) -> Assessment
 ```
 
-`language` is the code reader's `Language`, `Python` or `JavaScript` (Node,
-Bun and Deno), re-exported here. `code` is the code as the tool is given it.
+`language` is the code reader's `Language`, `Python`, `JavaScript` (Node,
+Bun and Deno) or `Ruby`, re-exported here. Ruby is judged behind the
+guard's `ruby` feature (on by default), which turns on the reader's: off,
+Ruby code is not read, and is `unknown` (`runs code the guard does not
+read`). `code` is the code as the tool is given it.
 `paths` comes from `Paths::new(cwd, home, workspaces)`, with `with_protected`
 for what the caller gates with and `with_secrets` for the files it knows hold
 a secret; the code runs from `cwd`. The answer is `Safe`, or `Risky` with
@@ -220,7 +223,7 @@ core's `Resolver`, by its spelling alone, on the machine `Paths` describes:
 POSIX paths on a POSIX machine and a Mac, Windows paths (drives, `\`, any
 case) on a Windows one. `~` and `~/…` are the home directory, as the reader
 gives them; for a read, `~/…` is also the name it is in the folder the code
-runs in (`./~/…`): Python and JavaScript expand no `~`, and the reader gives
+runs in (`./~/…`): Python, JavaScript and Ruby expand no `~` when they open a file, and the reader gives
 `open('~/x')` and `os.path.expanduser('~/x')` the same text, so each is
 judged and either one is a finding, as the file guard reads it. `~alice/…` is another user's home directory, which the spelling
 does not place: a read of it is read wherever a system keeps homes
@@ -386,7 +389,7 @@ the bytes joined for each act.
   each target, to every file act the shell guard finds in such code (see
   [Tests](#tests)).
 - **A brace list in a path is a name.** The shell guard spells a `{a,b}` in a
-  path of inline code out, as a shell does; Python and JavaScript do not, and
+  path of inline code out, as a shell does; Python, JavaScript and Ruby do not, and
   nor does this guard: `open('/home/me/{.ssh/id_rsa,x}')` opens the one file
   of that name, so this guard calls a read of it safe where the shell guard's
   inline reading says `read_secret` for `/home/me/.ssh/id_rsa`. No case of

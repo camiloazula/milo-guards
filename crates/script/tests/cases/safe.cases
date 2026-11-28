@@ -34,3 +34,11 @@ javascript safe | console.log('a,b'.split(','), Math.max(1, 2))
 javascript safe | console.log(JSON.stringify({a: 1}))
 javascript safe | var s = 'abc'; console.log(s.toUpperCase(), s.length)
 javascript safe | if (1) { console.log(1) } else { console.log(2) }
+
+# Ruby that computes and prints.
+ruby safe | puts 1
+ruby safe | x = 1\nx += 2\nputs x
+ruby safe | puts 'a-b'.split('-').join(',')
+ruby safe | x = 2\nputs(x.even? ? 'even' : 'odd')
+ruby safe | File.write('out.txt', 'x')
+ruby safe | puts File.read('README.md')

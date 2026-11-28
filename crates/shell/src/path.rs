@@ -289,6 +289,12 @@ const MOST_PLACED: usize = 4_096;
 const LONGEST_PLACED: usize = 1_024;
 
 impl Resolver {
+    /// Whether the machine the paths describe is a Windows one, where a
+    /// list of folders is split at `;` whatever the shell of the line.
+    pub(crate) fn windows_machine(&self) -> bool {
+        self.core.flavour() == Flavour::Windows
+    }
+
     pub(crate) fn new(paths: &Paths) -> Self {
         let core = milo_guards_core::Resolver::new(paths);
         Self {
@@ -1560,11 +1566,14 @@ pub(crate) fn brace_list(text: &str) -> bool {
 /// Whether `text` holds a brace expansion bash and zsh spell out into words:
 /// a brace list, or a sequence expression (`{1..3}`, `{a..c}`, `{1..9..2}`).
 pub(crate) fn brace_expansion(text: &str) -> bool {
+    // From each `{`, only to the next brace: the text between is the one a
+    // sequence would be, and each is read once.
     brace_list(text)
         || text.match_indices('{').any(|(open, _)| {
-            text.get(open + 1..)
-                .and_then(|rest| rest.split_once('}'))
-                .is_some_and(|(inner, _)| sequence(inner))
+            let after = text.get(open + 1..).unwrap_or_default();
+            after.find(['{', '}']).is_some_and(|end| {
+                after.as_bytes().get(end) == Some(&b'}') && sequence(&after[..end])
+            })
         })
 }
 

@@ -301,11 +301,13 @@ bash shell_rejects versions=3.2 reason="coproc, which bash 3.2 does not have (ba
 
 # shell_rejects: zsh's repeat loop, which bash refuses; the guard reads it as zsh does.
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | f() { rm -rf build; }; repeat 3 { f; cd /; }
+bash shell_rejects versions=5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | f() { ruby -e 'p 1'; }; repeat 3; do PATH=/tmp/e f; done
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | for i in 1 2; do repeat 3 { rm -rf build; }; cd /; done
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | for i in 1; do repeat 3 { ls; done; }
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | repeat 2 do echo x > out.txt; cd /; done
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | repeat 2 { cat id_rsa; cd ~/.ssh; }
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | repeat 2 { echo x > out.txt; cd /; }
+bash shell_rejects versions=5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | repeat 2 { export RUBYOPT=-r$PWD/x.rb; cd ..; }; cd ~/work/repo; ruby x.rb
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | repeat 3 ! { rm -rf build; cd /; }
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | repeat 3 do # c\nrm -rf build\ncd /\ndone
 bash shell_rejects versions=3.2,5.3 reason="zsh's repeat loop, which bash refuses; the guard reads it as zsh does" | repeat 3 do coproc { ls; }; rm -rf build; cd /; done

@@ -75,3 +75,8 @@ python finds=unknown reason="gives a program input the guard does not show" | im
 python finds=run_program target="sh" | import subprocess\nsubprocess.run(['sh'], input=b'rm -rf ~')
 javascript finds=unknown reason="gives a program input the guard does not show" | require('child_process').execSync('sh', {input: 'rm -rf ~'})
 javascript finds=unknown reason="gives a program input the guard does not show" | const c = require('child_process').spawn('sh'); c.stdin.write('rm -rf ~')
+# Ruby's programs and command lines.
+ruby first=run_program finds=unknown target="git status" | system('git', 'status')
+ruby finds=run_program target="git status" | system('git status')
+ruby finds=run_program target="ls" | `ls`
+ruby finds=run_program target="ls -l" | IO.popen(['ls', '-l'])

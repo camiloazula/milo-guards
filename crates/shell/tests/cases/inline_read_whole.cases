@@ -296,12 +296,14 @@ posix finds=unknown | node < script.js
 posix finds=unknown | node
 posix finds=unknown | python3 - <<'PY'\nexec(input())\nPY
 posix finds=unknown | python3 - <<'PY'\ndef (\nPY
+# Ruby is read too, from `-e` and from its input, and what it deletes is
+# found.
+posix finds=delete | ruby -e 'system("rm -rf ~")'
+posix finds=delete | ruby - <<'RB'\nsystem('rm -rf ~')\nRB
 # What is still not read stays unknown: other interpreters, and code from the
 # input or the network. (`perl -e` and `php -r` of the same are in
 # posix.cases.)
-posix finds=unknown | ruby -e 'system("rm -rf ~")'
 posix finds=unknown | lua -e 'os.execute("rm -rf ~")'
-posix finds=unknown | ruby - <<'RB'\nsystem('rm -rf ~')\nRB
 posix finds=unknown | perl <<'PL'\nsystem('rm -rf ~');\nPL
 posix finds=unknown | echo 'x = 1' | python3
 posix finds=run_downloaded | curl https://x.example/x.py | python3
@@ -698,3 +700,37 @@ posix effect=changes | python3 -c "import subprocess; subprocess.run(['rm', 'x']
 posix effect=changes | bun --cwd=sub -e "require('fs').rmSync('x')"
 # `bun` is a package manager, which changes things.
 posix effect=changes | bun - <<'JS'\nconsole.log(1)\nJS
+
+# Ruby is read whole by the same gate (the subset written for Ruby is in
+# docs/design/code.md): plain statements whose every call is on the list.
+posix safe | ruby -e 'puts 1+1'
+posix safe | ruby -e 'print "a", "b"'
+posix safe | ruby -e 'x = 1; puts x if x > 0'
+# Not read whole: a call off the list, a name before the code sets it (a
+# call of a method of that name), a block, a constant, a heredoc, an import.
+posix finds=unknown | ruby -e 'puts x'
+posix finds=unknown | ruby -e 'exit'
+posix finds=unknown | ruby -e 'puts ENV["HOME"]'
+posix finds=unknown | ruby -e '[1].each { |x| puts x }'
+posix finds=unknown | ruby -e 'def f; end'
+posix finds=unknown | ruby -e 'puts `ls`'
+posix finds=unknown | ruby -e 'puts %w(a b)'
+posix finds=unknown | ruby -e 'puts File.open("x")'
+posix finds=unknown | ruby -e 'require "set"'
+posix finds=unknown | ruby -e 'puts "é"'
+posix finds=unknown | ruby -e 'p({exit:})'
+# Nothing is set around the interpreter: no option, no variable (`RUBYOPT`
+# loads a library, `RUBYLIB` adds where one is looked up), no runner; what
+# follows the code is its arguments only from a word that is no option. Several
+# `-e` are one script, read whole only alone.
+posix finds=unknown | ruby -w -e 'puts 1'
+posix finds=unknown | ruby -we 'puts 1'
+posix finds=unknown | ruby -e 'puts 1' -e 'puts 2'
+posix safe | ruby -e 'puts 1' x
+posix finds=unknown | RUBYOPT=-r./x ruby -e 'puts 1'
+posix finds=unknown | RUBYLIB=. ruby -e 'puts 1'
+posix finds=unknown | export RUBYOPT=-rx; ruby -e 'puts 1'
+posix finds=unknown | bundle exec ruby -e 'puts 1'
+# From its input: never read whole.
+posix finds=unknown | ruby <<'RB'\nputs 1\nRB
+posix finds=unknown | ruby - <<< 'puts 1'
