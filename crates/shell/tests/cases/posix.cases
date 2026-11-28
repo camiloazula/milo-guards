@@ -2063,3 +2063,25 @@ posix finds=delete,unknown | xargs tcsh -c 'rm -rf ~'
 posix finds=delete,unknown | tcsh -c 'rm -rf ~' "$X" 'ls'
 posix finds=delete,unknown | tcsh -c 'rm -rf ~' -c -f
 posix rules=unknown | tcsh -c "$Y" $X
+
+# The name `export` and `declare` are given is the word the shell makes of
+# it, quotes and escapes taken off: `"npm_config_call"=x` is `npm_config_call=x`.
+# A name only known when it runs may be any of them.
+posix finds=delete | export "npm_config_call"="rm -rf ~"; npx foo
+posix finds=delete | export npm\\_config_call="rm -rf ~"; npx foo
+posix finds=delete | export 'npm_config_call'='rm -rf ~'; npx foo
+posix finds=delete | export "npm"_config_call="rm -rf ~"; npx foo
+posix finds=delete | declare -x "npm_config_call"="rm -rf ~"; npx foo
+posix finds=destroy_resources | export "TF_CLI_ARGS"=-destroy; terraform apply
+posix finds=destroy_resources | declare -x "TF_CLI_ARGS"=-destroy; terraform apply
+posix finds=delete | export "GIT_SSH_COMMAND"="rm -rf ~"; git fetch
+posix finds=delete | export "PAGER"="rm -rf ~"; git log
+posix finds=unknown | export "NODE_OPTIONS"="--require /tmp/x.js"; node a.js
+posix finds=unknown | export "BASH_ENV"=~/x.sh; bash -c ls
+posix finds=unknown | export "$N"="rm -rf ~"; npx foo
+posix finds=unknown | export $N="rm -rf ~"; npx foo
+posix finds=unknown | declare -x "$N"=x; npx foo
+posix finds=unknown | export npm_config_call="$X rm -rf ~"; npx foo
+posix finds=unknown | export "npm_config_call"="$X rm -rf ~"; npx foo
+posix safe | export "NAME"="rm -rf ~"; ls
+posix safe | export "NAME"="$X"; npx foo

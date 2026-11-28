@@ -3713,20 +3713,33 @@ impl Walker<'_> {
             }
             return;
         }
-        if let Some((name, _)) = source
-            .split_once('=')
-            .filter(|(name, _)| unit::read_as_arguments(name))
-        {
-            let value = match word.known() {
-                Some(text) => Arg::Known(
-                    text.split_once('=')
-                        .map_or("", |(_, value)| value)
-                        .to_string(),
-                ),
-                None => Arg::Unknown(source.to_string()),
-            };
-            self.split.note_argument_variable(name.to_string(), value);
-            return;
+        // The name is the word the shell makes of it, quotes and escapes
+        // off (`"npm_config_call"=x`); one only known when it runs may be
+        // any variable.
+        let assigned = match word.known() {
+            Some(text) => text
+                .split_once('=')
+                .map(|(name, value)| (name.to_string(), Arg::Known(value.to_string()))),
+            None => source.split_once('=').map(|(name, _)| {
+                (
+                    name.replace(['"', '\'', '\\'], ""),
+                    Arg::Unknown(source.to_string()),
+                )
+            }),
+        };
+        if let Some((name, value)) = assigned {
+            if name.contains(['$', '`']) {
+                self.split.problem(
+                    Rule::Unknown,
+                    "exports a variable only known when it runs",
+                    Some(source),
+                );
+                return;
+            }
+            if unit::read_as_arguments(&name) {
+                self.split.note_argument_variable(name, value);
+                return;
+            }
         }
         match word.known() {
             Some(text) => {

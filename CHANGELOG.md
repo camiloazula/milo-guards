@@ -115,6 +115,12 @@ security fixes: each line below was judged safer than what it does.
   variables of Windows count for a line for Windows. curl's variable read from a file reads the file, and sends it
   where the expansion puts it, from the input too; a value with an `@` in
   its text is no file.
+- `milo-guards-shell`: the name an `export` or a `declare` is given is the
+  word the shell makes of it, with its quotes and escapes off, so
+  `export "npm_config_call"="…"`, `export npm\_config_call=…` and
+  `declare -x "TF_CLI_ARGS"=…` set the variables the commands after them
+  read, as the unquoted forms do (`npm_config_call`, `TF_CLI_ARGS`,
+  `GIT_SSH_COMMAND`, `PAGER`); a name only known when it runs is `unknown`.
 
 ## 0.2.1 (2026-11-28)
 

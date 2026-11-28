@@ -1418,7 +1418,10 @@ and its findings are the line's, since the shell runs it as the same user.
   `PS4[0]`), after `export`,
   `declare`, `typeset` and the like (also quoted, `export "PS4=…"`, and
   behind `builtin` and `command`: `builtin export PS4=…`; `command -v
-  export PS4=…` only says what `export` is and sets nothing), in front of a
+  export PS4=…` only says what `export` is and sets nothing; the name of the
+  variable is the word the shell makes of it, so `export "npm_config_call"=x`
+  and `export npm\_config_call=x` set `npm_config_call`, and a name only known
+  when it runs, `export "$N"=x`, may be any variable and is `unknown`), in front of a
   command (`PS4=… bash -x s.sh`) and as a word of `env` (`env PS4=… cmd`, also through `sudo` and the
   other wrappers). A value with code in it, `$(` or a backtick, is read as the
   script it is, as an action that runs later (see below), so `PS4='$(rm -rf
