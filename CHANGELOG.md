@@ -6,18 +6,25 @@ a caller is here, what it changes inside a guard is in the commits.
 
 ## Unreleased
 
-What the shell guard and the core's paths answer for lines the guards read
-too little of, nothing a caller compiles against: a patch. These are
-security fixes: each line below was judged safer than what it does.
+## 0.2.2 (2026-11-28)
+
+A patch release with security fixes. What the shell guard and the core's
+paths answer changes, and what a caller compiles against does not: the shell
+guard reads more of what a line does, a line that was judged less serious
+than what it does is judged as what it does, and more lines are `unknown` or
+`unreadable` for it. Of the 2,934 everyday answers, 2,908 are `safe`, as in
+0.2.1: a false-alarm share of 0.9 % (0.3 % in a POSIX shell, none in
+PowerShell, 4.6 % in cmd), and no everyday answer moved.
 
 - `milo-guards-shell`: the value of an option is read wherever the option
   stands: attached to a short option, after `=`, or taken by the last
   letter of a cluster of flags. A file a program is told to read or to
-  send, and where a download lands (wget's `-P` in a cluster too), are read so. A letter that is a flag in
-  some command of a program takes no word there, a word that starts with `-`
-  is never passed over as another option's value, and a cluster of `xargs`
-  flags ends at the options that take only the rest of their word, and the
-  replace options of one take their string.
+  send, and where a download lands (wget's `-P` in a cluster too), are read
+  so. A letter that is a flag in some command of a program takes no word
+  there, a word that starts with `-` is never passed over as another
+  option's value, and a cluster of `xargs` flags ends at the options that
+  take only the rest of their word, and the replace options of one take
+  their string.
 - `milo-guards-shell`: a copy from another machine is judged by every place
   on this machine it may land. The options of the copy tools and their
   values are not operands, a flag takes no word, and an option the guard
@@ -96,13 +103,12 @@ security fixes: each line below was judged safer than what it does.
   a suffix (with `split`'s additional suffix, or the format `csplit` is
   given, expanded when it is a simple integer one; the numbering options are
   read in order, and the last start given is the one that counts, a bare one
-  leaving it), judged where they land,
-  and the pattern of the names not judged one by one, also for the pieces
-  `csplit` may make past those. A piece `split` sends to its output is
-  written nowhere. The command `split` is told to run on
-  each piece is judged as a line for each name the pieces can have, so a
-  sender there sends the file (`send_secret`), and one only known when it
-  runs is `unknown`.
+  leaving it), judged where they land, and the pattern of the names not
+  judged one by one, also for the pieces `csplit` may make past those. A
+  piece `split` sends to its output is written nowhere. The command `split`
+  is told to run on each piece is judged as a line for each name the pieces
+  can have, so a sender there sends the file (`send_secret`), and one only
+  known when it runs is `unknown`.
 - `milo-guards-shell`: the commands wget runs from its options that send a
   file are a send (`send_secret`), those that only change how it fetches
   (proxies, retries, timeouts) are read as such, and any other, or one only
@@ -111,16 +117,21 @@ security fixes: each line below was judged safer than what it does.
   is `unknown`, as the option that names such a file is, unless it sets the
   home directory to itself, written as the line's own `~` or `$HOME` (in
   PowerShell and cmd, `$HOME` too, in any case, and a literal `~` or cmd's
-  `%HOME%` is a folder of that name); the
-  variables of Windows count for a line for Windows. curl's variable read from a file reads the file, and sends it
-  where the expansion puts it, from the input too; a value with an `@` in
-  its text is no file.
+  `%HOME%` is a folder of that name); the variables of Windows count for a
+  line for Windows. curl's variable read from a file reads the file, and
+  sends it where the expansion puts it, from the input too; a value with an
+  `@` in its text is no file.
 - `milo-guards-shell`: the name an `export` or a `declare` is given is the
-  word the shell makes of it, with its quotes and escapes off, so
-  `export "npm_config_call"="…"`, `export npm\_config_call=…` and
-  `declare -x "TF_CLI_ARGS"=…` set the variables the commands after them
-  read, as the unquoted forms do (`npm_config_call`, `TF_CLI_ARGS`,
-  `GIT_SSH_COMMAND`, `PAGER`); a name only known when it runs is `unknown`.
+  word the shell makes of it, with its quotes and escapes taken off, so the
+  variables the commands after it read (a program's options, its proxy, its
+  pager, the command it runs to reach a remote) are found however the name is
+  written; a name only known when it runs is `unknown`.
+- Answers that changed with it: a line that hands a shell a letter its table
+  does not have, or an option's name attached to a letter that a shell of the
+  same name reads in two ways, was judged as the command it hands the shell
+  and is `unknown`, as the guard does not guess at what the shell runs; and
+  the pieces `split` writes are judged by where they land, as any write is,
+  where a line that writes a protected place with them was `safe`.
 
 ## 0.2.1 (2026-11-28)
 
