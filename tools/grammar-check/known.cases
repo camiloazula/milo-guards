@@ -34,6 +34,13 @@ bash grammar_rejects versions=3.2,5.3 reason="a here-document that runs to the e
 bash grammar_rejects versions=3.2,5.3 reason="a here-document that runs to the end of the text, ends at a line only near its delimiter, or shares its line with another: bash reads it, the grammar does not, and the guard answers unreadable" | node <<'EOF'\nlet a = 1\n EOF\nrequire('fs').rmSync('/home/me')\nEOF
 bash grammar_rejects versions=3.2,5.3 reason="a here-document that runs to the end of the text, ends at a line only near its delimiter, or shares its line with another: bash reads it, the grammar does not, and the guard answers unreadable" | python3 - <<'PY' <<'PY2'\nprint(1)\nPY\nprint(2)\nPY2
 
+# grammar_rejects: a quoted part followed by an escaped character in a test, a case pattern or a parameter's default, which the grammar does not read as one word: the guard answers unknown.
+bash grammar_rejects versions=5.3 reason="a quoted part followed by an escaped character in a test, a case pattern or a parameter's default, which the grammar does not read as one word: the guard answers unknown" | [[ 'a'\\/b == x ]]
+bash grammar_rejects versions=5.3 reason="a quoted part followed by an escaped character in a test, a case pattern or a parameter's default, which the grammar does not read as one word: the guard answers unknown" | case 'a'\\/b in x) ls;; esac
+bash grammar_rejects versions=5.3 reason="a quoted part followed by an escaped character in a test, a case pattern or a parameter's default, which the grammar does not read as one word: the guard answers unknown" | case x in 'a'\\ # ) rm -rf ~ ;;\nesac
+bash grammar_rejects versions=5.3 reason="a quoted part followed by an escaped character in a test, a case pattern or a parameter's default, which the grammar does not read as one word: the guard answers unknown" | case x in 'a'\\/b) ls;; esac
+bash grammar_rejects versions=5.3 reason="a quoted part followed by an escaped character in a test, a case pattern or a parameter's default, which the grammar does not read as one word: the guard answers unknown" | echo ${x:-'a'\\/b}
+
 # grammar_rejects: a redirect of a group (a numbered <, <>, <<<) that the grammar does not read: the guard answers unreadable.
 bash grammar_rejects versions=3.2,5.3 reason="a redirect of a group (a numbered <, <>, <<<) that the grammar does not read: the guard answers unreadable" | { cd sub; } 0< ../../.ssh/id_rsa
 bash grammar_rejects versions=3.2,5.3 reason="a redirect of a group (a numbered <, <>, <<<) that the grammar does not read: the guard answers unreadable" | { cd sub; } <<< x
@@ -79,6 +86,11 @@ bash shell_rejects versions=3.2 reason="a parenthesis in a parameter expansion i
 
 # shell_rejects: a quoted here-document delimiter that holds a ;, which bash 3.2 does not read as one word.
 bash shell_rejects versions=3.2,5.3 reason="a quoted here-document delimiter that holds a ;, which bash 3.2 does not read as one word" | cat <<'E;F\nx\nE;F
+
+# shell_rejects: a quoted part, an escaped blank and a # (a word, not a comment, to bash) in an array, a test or a parameter's default, where bash has no comment and finds the text left open; the guard answers unknown.
+bash shell_rejects versions=5.3 reason="a quoted part, an escaped blank and a # (a word, not a comment, to bash) in an array, a test or a parameter's default, where bash has no comment and finds the text left open; the guard answers unknown" | a=('x'\\ # ); rm -rf ~\n)
+bash shell_rejects versions=5.3 reason="a quoted part, an escaped blank and a # (a word, not a comment, to bash) in an array, a test or a parameter's default, where bash has no comment and finds the text left open; the guard answers unknown" | [[ 'a'\\ # ]] && rm -rf ~\n]]
+bash shell_rejects versions=5.3 reason="a quoted part, an escaped blank and a # (a word, not a comment, to bash) in an array, a test or a parameter's default, where bash has no comment and finds the text left open; the guard answers unknown" | echo ${x:-'a'\\ #} ; rm -rf ~\n}
 
 # shell_rejects: a reserved word or a brace where bash takes none, which the grammar reads as a word; bash refuses the text there.
 bash shell_rejects versions=3.2,5.3 reason="a reserved word or a brace where bash takes none, which the grammar reads as a word; bash refuses the text there" | coproc ls; }
