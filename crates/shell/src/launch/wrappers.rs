@@ -978,6 +978,7 @@ pub(super) fn start_process(unit: &Unit) -> Launch {
         place: unit.place.clone(),
         // Its arguments are not the unit's.
         words: crate::located::Worded::default(),
+        spelled: false,
     }));
     in_folder(folder, launch)
 }
@@ -1919,6 +1920,7 @@ pub(super) fn running(unit: &Unit, key: &str, program: usize) -> Unit {
         names: unit.names.clone(),
         place: unit.place.clone(),
         words: unit.words.after(program),
+        spelled: false,
     }
 }
 

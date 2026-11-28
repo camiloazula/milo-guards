@@ -1328,9 +1328,10 @@ impl Checker<'_> {
         // (`scp -r`, `rsync -L`) holds what the links below it land on.
         let words = words.or_else(|| {
             let follows = home
-                && unit
-                    .key()
-                    .is_some_and(|key| crate::effect::follows_links(unit, &key));
+                && self.follows.get().unwrap_or_else(|| {
+                    unit.key()
+                        .is_some_and(|key| crate::effect::follows_links(unit, &key))
+                });
             follows
                 .then(|| self.resolver.linked(unit.dir.as_ref(), arg, unit.shell))
                 .flatten()
@@ -1605,6 +1606,10 @@ impl Checker<'_> {
         if !to_other_machine(destination, matches!(key, "scp" | "sftp"), posix) {
             return;
         }
+        self.follows.set(Some(
+            unit.key()
+                .is_some_and(|key| crate::effect::follows_links(unit, &key)),
+        ));
         for source in sources {
             if to_other_machine(source, false, posix) {
                 continue;
@@ -1616,6 +1621,7 @@ impl Checker<'_> {
                 self.sent(&hit);
             }
         }
+        self.follows.set(None);
     }
 }
 

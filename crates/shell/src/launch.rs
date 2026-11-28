@@ -243,6 +243,27 @@ pub(crate) fn add_either(split: &mut Split, unit: Unit, others: Vec<Unit>, depth
     }
 }
 
+/// Whether `key`, the program a command runs once its wrappers are off, is
+/// one the words of a brace list are not read for: it changes how the shell
+/// reads the rest of the line (an option, a variable, a name, the folder), or
+/// reads its words again as code (`eval`). Its second reading would make the
+/// change twice, or undo what the first made.
+fn keeps_its_words(key: &str, unit: &Unit) -> bool {
+    match key {
+        "shopt" | "setopt" | "unsetopt" | "emulate" | "export" | "declare" | "typeset"
+        | "local" | "readonly" | "read" | "mapfile" | "readarray" | "alias" | "unalias"
+        | "hash" | "enable" | "unset" | "let" | "eval" | "cd" | "chdir" | "pushd" | "popd" => true,
+        // The words after `set --` are only the positional parameters.
+        "set" => unit.args.first().and_then(Arg::known) != Some("--"),
+        "printf" => unit
+            .args
+            .iter()
+            .filter_map(Arg::known)
+            .any(|arg| arg.starts_with("-v")),
+        _ => false,
+    }
+}
+
 fn add_unit(split: &mut Split, unit: Unit, depth: usize) {
     add_launched(split, unit, depth, MAX_WRAPPERS, None);
 }
@@ -308,6 +329,14 @@ fn add_launched(
             split.push(unit);
             return;
         };
+        // The words a brace list makes are one more reading of a command,
+        // not of one whose own change to the line they would make again or
+        // undo (an option it sets, a variable, a folder, a name it defines):
+        // it is read as written, and a list in it is unknown.
+        if split.spelled_reading && keeps_its_words(&key, &unit) {
+            split.unspelled(Some(unit.program.text()));
+            return;
+        }
         // `ZIPOPT=-m zip …`: zip reads its options from there first, on
         // Windows too (`$env:ZIPOPT`, `set ZIPOPT=`).
         if key == "zip" && !split.zip_env.is_empty() {
@@ -1495,6 +1524,7 @@ fn inner(unit: Unit, key: String, start: usize, hands: &Hands) -> Unit {
         names,
         place,
         words,
+        spelled: false,
     }
 }
 

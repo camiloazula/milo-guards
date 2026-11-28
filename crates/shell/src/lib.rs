@@ -48,6 +48,7 @@
 //! the same way on every host, so a Windows line is judged on macOS as it
 //! would be on Windows.
 
+mod brace;
 mod cmd;
 mod detect;
 mod dotglob;

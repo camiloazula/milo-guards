@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use tree_sitter::Node;
 
+use crate::brace::{self, Made, Spelled};
 use crate::dotglob;
 use crate::extended::{self, Reading};
 use crate::launch;
@@ -82,6 +83,7 @@ fn read(split: &mut Split, joined: &Joined, depth: usize) {
         contexts: Vec::new(),
         awaiting: false,
         files: std::collections::HashMap::new(),
+        statement_redirects: None,
     };
     // One walk of the tree finds the variables the line sets and the values
     // it gives them.
@@ -96,6 +98,11 @@ fn read(split: &mut Split, joined: &Joined, depth: usize) {
     }
     if walker.split.kept.on {
         environment(walker.split, tree.root_node(), text);
+    }
+    // A comment right after an escaped blank is the grammar's: to the shell
+    // the `#` is inside a word, and what follows it runs.
+    if comment_after_escaped_blank(tree.root_node(), text) {
+        walker.split.read_as_two(None);
     }
     walker.walk(tree.root_node(), None, 0);
     // `repeat 3` with no statement after it: zsh refuses the line.
@@ -1327,6 +1334,9 @@ struct Walker<'a> {
     /// The word kept for the file of each redirect read, by the node id of
     /// its destination, when the line is read for its ranges.
     files: std::collections::HashMap<usize, usize>,
+    /// The body of the redirected statement last entered, by node id, and the
+    /// ranges of its redirects.
+    statement_redirects: Option<(usize, Vec<Range<usize>>)>,
 }
 
 /// The state just before the last command of a list: a redirect on a list
@@ -1361,6 +1371,153 @@ struct Listed<'tree> {
     staged: Option<(usize, Option<Stage>)>,
     stage: Option<Stage>,
     level: usize,
+}
+
+/// The nodes of the arguments of a command, taken one at a time, with the
+/// ones still to come in view.
+struct Cursor<'t> {
+    items: Vec<Node<'t>>,
+    at: usize,
+}
+
+impl<'t> Cursor<'t> {
+    fn new(items: Vec<Node<'t>>) -> Self {
+        Self { items, at: 0 }
+    }
+
+    fn next(&mut self) -> Option<Node<'t>> {
+        let item = self.items.get(self.at).copied();
+        self.at += usize::from(item.is_some());
+        item
+    }
+
+    fn peek(&self) -> Option<&Node<'t>> {
+        self.items.get(self.at)
+    }
+
+    /// What has not been taken.
+    fn rest(&self) -> &[Node<'t>] {
+        self.items.get(self.at..).unwrap_or_default()
+    }
+}
+
+/// Whether a comment of the tree of `text` starts right after `\` and a blank
+/// (a space, tab, vertical tab or form feed) whose backslash is not itself
+/// escaped, which never ends a word of the shell: the grammar takes it for
+/// whitespace, and the `#` for a comment, wherever the word is. One pass over
+/// the nodes, whatever they are.
+fn comment_after_escaped_blank(root: Node<'_>, text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        if node.kind() == "comment" {
+            let at = node.start_byte();
+            if at >= 2 && matches!(bytes[at - 1], b' ' | b'\t' | 0x0b | 0x0c) {
+                // The run of backslashes before the blank is odd.
+                let run = bytes[..at - 1]
+                    .iter()
+                    .rev()
+                    .take_while(|&&byte| byte == b'\\')
+                    .count();
+                if run % 2 == 1 {
+                    return true;
+                }
+            }
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return false;
+            }
+        }
+    }
+}
+
+/// How many bare `{` of `text` are not closed by a bare `}` (negative: more
+/// `}` than `{`), the quotes and escapes read as the shell reads them.
+fn bare_balance(text: &str) -> i64 {
+    if !text.contains(['{', '}']) {
+        return 0;
+    }
+    let mut depth = 0_i64;
+    let mut quote: Option<u8> = None;
+    let mut bytes = text.bytes();
+    while let Some(byte) = bytes.next() {
+        match (quote, byte) {
+            (Some(shut), byte) if byte == shut => quote = None,
+            (Some(b'"'), b'\\') => {
+                bytes.next();
+            }
+            (Some(_), _) => {}
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (None, b'\\') => {
+                bytes.next();
+            }
+            (None, b'{') => depth += 1,
+            (None, b'}') => depth -= 1,
+            (None, _) => {}
+        }
+    }
+    depth
+}
+
+/// Whether what is between two nodes of a command, which the grammar leaves
+/// out, holds an escaped blank (`\` and a space, tab, vertical tab or form
+/// feed): it drops one from the middle of a word, so that the one word the line
+/// writes is two nodes. A line continuation (`\` and a newline) is no blank.
+fn gap_has_escaped_blank(gap: &str) -> bool {
+    gap.as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'\\' && matches!(pair[1], b' ' | b'\t' | 0x0b | 0x0c))
+}
+
+/// A brace word spelled out: the arguments it is, instead of the `count`
+/// arguments the line as written has from `at` on, and where each is.
+struct Alt {
+    at: usize,
+    count: usize,
+    args: Vec<Arg>,
+    spots: Vec<Option<usize>>,
+}
+
+/// The arguments of a command with its brace words spelled out: `args` as
+/// the line writes them (`words`, in step with them when the line is read
+/// for its ranges), with each of `alts` in place of the arguments it spells
+/// out, and each word the grammar took for a redirect's after `before_lost`
+/// in place of `lost_alts`, where it has one.
+fn spelled_arguments(
+    args: &[Arg],
+    words: &[Option<usize>],
+    before_lost: usize,
+    alts: &[Alt],
+    lost_alts: &[Option<Alt>],
+) -> (Vec<Arg>, Vec<Option<usize>>) {
+    let (mut spelled, mut spots) = (Vec::new(), Vec::new());
+    let mut alts = alts.iter().peekable();
+    let mut skip = 0;
+    for (at, arg) in args.iter().enumerate() {
+        if let Some(lost) = at.checked_sub(before_lost) {
+            if let Some(Some(alt)) = lost_alts.get(lost) {
+                spelled.extend(alt.args.iter().cloned());
+                spots.extend(alt.spots.iter().copied());
+                continue;
+            }
+        } else if skip > 0 {
+            skip -= 1;
+            continue;
+        } else if let Some(alt) = alts.next_if(|alt| alt.at == at) {
+            spelled.extend(alt.args.iter().cloned());
+            spots.extend(alt.spots.iter().copied());
+            skip = alt.count - 1;
+            continue;
+        }
+        spelled.push(arg.clone());
+        spots.push(words.get(at).copied().flatten());
+    }
+    (spelled, spots)
 }
 
 /// The words after the file of a redirect on a statement (`rm 2>/dev/null
@@ -1617,6 +1774,24 @@ impl Walker<'_> {
         if !self.enter(node, level, background) {
             return;
         }
+        if node.kind() == "redirected_statement" {
+            self.statement_redirects = node
+                .child_by_field_name("body")
+                .map(|body| (body.id(), Self::redirect_ranges(node)));
+        }
+        if matches!(
+            node.kind(),
+            "redirected_statement"
+                | "variable_assignment"
+                | "array"
+                | "unset_command"
+                | "case_item"
+                | "test_command"
+                | "expansion"
+        ) && self.cut_named(node)
+        {
+            self.split.read_as_two(Some(node.kind()));
+        }
         self.node(node, stage, level);
         self.leave(node, background);
     }
@@ -1787,6 +1962,9 @@ impl Walker<'_> {
     /// recurses through.
     #[inline(never)]
     fn declaration_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
+        if self.cut_children(node) {
+            self.split.read_as_two(Some(node.kind()));
+        }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() != "variable_assignment" && self.arg_hides(child) {
@@ -1795,6 +1973,12 @@ impl Walker<'_> {
             if child.kind() != "variable_assignment" {
                 self.exported_options(child);
                 let text = unit::text(&child, self.source);
+                // What the declaration is given is read as written: a brace
+                // list in it makes words the guard does not read for what it
+                // sets.
+                if brace::spell(text, self.split) != Spelled::Plain {
+                    self.split.unspelled(Some(text));
+                }
                 let written = startup::Written {
                     expanded: text.contains(['$', '`']),
                     pwd: text.contains("PWD"),
@@ -1861,6 +2045,9 @@ impl Walker<'_> {
     #[inline(never)]
     fn compound_node(&mut self, node: Node<'_>, stage: Option<Stage>, level: usize) {
         let body = !matches!(node.kind(), "if_statement" | "case_statement");
+        if matches!(node.kind(), "for_statement" | "case_statement") && self.cut_children(node) {
+            self.split.read_as_two(Some(node.kind()));
+        }
         if node.kind() == "for_statement"
             && node
                 .child_by_field_name("variable")
@@ -2469,10 +2656,236 @@ impl Walker<'_> {
         }
     }
 
+    /// The words the shell makes of the word the line writes at `range` when
+    /// it holds a brace list or a sequence outside quotes (`x.{a,b}`,
+    /// `{1..3}`), each an argument of its own, as the walk reads a plain word
+    /// (a tilde, a quoted empty word, a part only known when it runs as a
+    /// template). A word that zsh reads another way with `extendedglob` on
+    /// (`zsh`) is read as each element of its lists alone. A word the guard
+    /// cannot read at all (a list too long to read, a form it does not model)
+    /// is one only known when it runs, and a finding of its own. `None` for a
+    /// word with no list, which is read as it is written.
+    fn spelled_words(&mut self, range: Range<usize>, zsh: bool) -> Option<Vec<Arg>> {
+        let text: &str = self.source;
+        let source = text.get(range)?;
+        let spelled = if zsh {
+            brace::elements(source, self.split)
+        } else {
+            brace::spell(source, self.split)
+        };
+        match spelled {
+            Spelled::Plain => None,
+            Spelled::Words(words) => Some(
+                words
+                    .into_iter()
+                    .map(|made| self.made_arg(made, source))
+                    .collect(),
+            ),
+            // Each element alone, in no order: the words are read as well,
+            // and the word is one the guard does not spell out too.
+            Spelled::Alone(words) => {
+                self.split.unspelled(Some(source));
+                Some(
+                    words
+                        .into_iter()
+                        .map(|made| self.made_arg(made, source))
+                        .collect(),
+                )
+            }
+            // The command is read as written, and a word the guard cannot
+            // read is no word it can call safe.
+            Spelled::Unknown => {
+                self.split.unspelled(Some(source));
+                Some(vec![Arg::Unknown(source.to_string())])
+            }
+        }
+    }
+
+    /// One word of a brace word spelled out, read as the walk reads a word
+    /// of the line: a part only known when it runs makes it a template, `~+`
+    /// is `$PWD`, and a `~` is only known when it runs once the line sets
+    /// `HOME`.
+    fn made_arg(&self, made: Made, source: &str) -> Arg {
+        let Made { text, hole, runs } = made;
+        if hole {
+            return Arg::Template {
+                text,
+                source: source.into(),
+                runs,
+            };
+        }
+        if let Some(rest) = text
+            .strip_prefix("~+")
+            .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+        {
+            return match self.variable("$PWD") {
+                Arg::Known(pwd) => Arg::Known(format!("{pwd}{rest}")),
+                _ if rest.is_empty() => Arg::Unknown(text),
+                _ => Arg::Template {
+                    text: format!("{OPAQUE}{rest}"),
+                    source: source.into(),
+                    runs: false,
+                },
+            };
+        }
+        if text.starts_with('~') && self.split.reassigned("HOME") {
+            Arg::Unknown(text)
+        } else {
+            Arg::Known(text)
+        }
+    }
+
+    /// Where the word that starts at `start` and so far ends at `end` ends, and
+    /// how many of the nodes `after` it take part: while it holds a bare `{`
+    /// that is not closed, the nodes that touch it are the rest of it (the
+    /// grammar cuts a word that has a substitution in backticks inside a
+    /// list, or an escape after its `{`).
+    fn word_end(&self, start: usize, end: usize, after: &[Node<'_>]) -> (usize, usize) {
+        let mut open = bare_balance(self.source.get(start..end).unwrap_or_default());
+        let (mut end, mut joined) = (end, 0);
+        while open > 0 {
+            let Some(next) = after.get(joined).filter(|next| next.start_byte() == end) else {
+                break;
+            };
+            open += bare_balance(unit::text(next, self.source));
+            end = next.end_byte();
+            joined += 1;
+        }
+        (end, joined)
+    }
+
+    /// The reading of the argument at `node` as the words the shell makes
+    /// of it, and where it is in `args`. The grammar cuts a word that is a
+    /// substitution in backticks inside a list in two, the first with the
+    /// list's `{` unclosed (`{a,`x`}`): the nodes that touch it are the
+    /// same word, read as one, so that the reading takes the arguments of
+    /// all of them.
+    fn spelled(&mut self, node: Node<'_>, after: &[Node<'_>], at: usize) -> (usize, Option<Alt>) {
+        let (end, joined) = self.word_end(node.start_byte(), node.end_byte(), after);
+        let count = 1 + joined;
+        let zsh = self.zsh_reading(node).is_some();
+        let range = node.start_byte()..end;
+        let Some(args) = self.spelled_words(range.clone(), zsh) else {
+            return (end, None);
+        };
+        let spots = args
+            .iter()
+            .map(|word| self.spot(range.clone(), word, false))
+            .collect();
+        (
+            end,
+            Some(Alt {
+                at,
+                count,
+                args,
+                spots,
+            }),
+        )
+    }
+
+    /// Whether the command at `node`, with the words after the file of a
+    /// redirect (`lost`), holds a word the grammar cut apart (see
+    /// [`Self::cut_in`]): its own nodes, and the redirects of the statement it
+    /// is the body of, whose own text is not a gap.
+    fn cut_apart(&self, node: Node<'_>, lost: &[Range<usize>]) -> bool {
+        let mut cursor = node.walk();
+        let mut ranges: Vec<Range<usize>> = node
+            .children(&mut cursor)
+            .map(|child| child.byte_range())
+            .collect();
+        // The redirects of the statement it is the body of (kept as it was
+        // entered: the parent of a node is found by a search from the root).
+        if let Some((body, redirects)) = &self.statement_redirects {
+            if *body == node.id() {
+                ranges.extend(redirects.iter().cloned());
+            }
+        }
+        ranges.extend(lost.iter().cloned());
+        self.cut_in(ranges)
+    }
+
+    /// The ranges of the redirects of `statement`, and of their named parts:
+    /// the redirect, and its file, which a word cut after it is not part of.
+    fn redirect_ranges(statement: Node<'_>) -> Vec<Range<usize>> {
+        let mut cursor = statement.walk();
+        let mut ranges = Vec::new();
+        for redirect in statement
+            .children(&mut cursor)
+            .filter(|child| child.kind().ends_with("redirect"))
+        {
+            ranges.push(redirect.byte_range());
+            let mut inner = redirect.walk();
+            ranges.extend(
+                redirect
+                    .named_children(&mut inner)
+                    .map(|child| child.byte_range()),
+            );
+        }
+        ranges
+    }
+
+    /// [`Self::cut_in`] for the named parts of `node`, and of the redirects
+    /// among them: the words of a statement, an assignment, an array, an
+    /// `unset`, a `case` item, a test, an expansion.
+    fn cut_named(&self, node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        let mut ranges = Vec::new();
+        for child in node.named_children(&mut cursor) {
+            ranges.push(child.byte_range());
+            if child.kind().ends_with("redirect") {
+                let mut inner = child.walk();
+                ranges.extend(
+                    child
+                        .named_children(&mut inner)
+                        .map(|part| part.byte_range()),
+                );
+            }
+        }
+        self.cut_in(ranges)
+    }
+
+    /// [`Self::cut_in`] for the parts of `node`: the words of a `for` or a
+    /// `case`, the arguments of a declaration.
+    fn cut_children(&self, node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        let ranges = node
+            .children(&mut cursor)
+            .map(|child| child.byte_range())
+            .collect();
+        self.cut_in(ranges)
+    }
+
+    /// Whether `ranges`, the nodes of a command in the line, show that the
+    /// grammar cut a word in two: an escaped blank between two of them (it
+    /// drops the blank, and the comment a `#` after it makes), or a backslash
+    /// right after the end of one (a word is never over just before one). One
+    /// pass over the gaps, with no model of what is quoted. A line
+    /// continuation is no blank, and the line has none left to see.
+    fn cut_in(&self, mut ranges: Vec<Range<usize>>) -> bool {
+        ranges.sort_by_key(|range| range.start);
+        let mut end = ranges.first().map_or(0, |range| range.start);
+        for range in &ranges {
+            if (range.start > end
+                && self
+                    .source
+                    .get(end..range.start)
+                    .is_some_and(gap_has_escaped_blank))
+                || self.source.as_bytes().get(range.end) == Some(&b'\\')
+            {
+                return true;
+            }
+            end = end.max(range.end);
+        }
+        false
+    }
+
     fn command(&mut self, node: Node<'_>, stage: Option<Stage>) {
         let Some(name) = node.child_by_field_name("name") else {
             return;
         };
+        // The words its brace lists are spelled out into are counted for it
+        // alone: an earlier command cannot use up what it may spell.
+        self.split.spelled_words = 0;
         // `rm -rf ${GLOBIGNORE:=x}*git`: set while the words are expanded,
         // before the wildcard is.
         if self.holds_ignore_assignment(node) {
@@ -2527,7 +2940,11 @@ impl Walker<'_> {
         // The words zsh reads another way with `extendedglob` on, by where
         // they stand in `args`, and what each reads as.
         let mut readings = Vec::new();
-        let mut nodes = nodes.into_iter().peekable();
+        // The brace words among them, spelled out (see [`Self::spelled`]),
+        // and where the last of them ends.
+        let mut alts: Vec<Alt> = Vec::new();
+        let mut alt_until = 0;
+        let mut nodes = Cursor::new(nodes);
         while let Some(arg) = nodes.next() {
             // `exec {fd}>out`: a `{NAME}` stuck to a redirect is where bash
             // puts the descriptor it opens, not an argument.
@@ -2584,7 +3001,38 @@ impl Walker<'_> {
                         words.push(self.spot(arg.start_byte()..next.end_byte(), &word, false));
                     }
                 }
+                // A list that starts a word with an escape (`{\-c,x}`) is cut
+                // so too, after its `{`: it is the one word the line writes.
+                if unit::text(&arg, self.source) == "{" && arg.start_byte() >= alt_until {
+                    let (end, joined) =
+                        self.word_end(arg.start_byte(), next.end_byte(), nodes.rest());
+                    let range = arg.start_byte()..end;
+                    // The nodes joined are not read again one at a time,
+                    // whether or not the word makes any.
+                    alt_until = alt_until.max(end);
+                    if let Some(made) = self.spelled_words(range.clone(), false) {
+                        let spots = made
+                            .iter()
+                            .map(|word| self.spot(range.clone(), word, false))
+                            .collect();
+                        alts.push(Alt {
+                            at: from,
+                            count: args.len() - from + joined,
+                            args: made,
+                            spots,
+                        });
+                    }
+                }
             } else {
+                // The words the shell makes of a brace list in it are one
+                // more way to read the command.
+                if arg.start_byte() >= alt_until {
+                    let (end, alt) = self.spelled(arg, nodes.rest(), args.len());
+                    // Where its nodes that were joined end, whether or not it
+                    // made words: they are not read again one at a time.
+                    alt_until = alt_until.max(end);
+                    alts.extend(alt);
+                }
                 let value = self.arg(arg);
                 if let Some(reading) = self.zsh_reading(arg) {
                     readings.push((args.len(), reading));
@@ -2600,6 +3048,62 @@ impl Walker<'_> {
         }
         // `rm 2>/dev/null -rf ~`: the words the grammar took for more files
         // of a redirect after the command are its arguments.
+        let before_lost = args.len();
+        let mut lost_alts: Vec<Option<Alt>> = Vec::new();
+        let lost_ranges: Vec<Range<usize>> = self
+            .lost
+            .as_ref()
+            .filter(|lost| lost.command == node.id())
+            .map(|lost| lost.ranges.clone())
+            .unwrap_or_default();
+        // Two nodes of the command with an escaped blank between them are
+        // one word the grammar cut apart, where a quote ends before the
+        // blank: the guard reads the pieces as two words, and says so.
+        if self.cut_apart(node, &lost_ranges) {
+            self.split.read_as_two(Some(program.text()));
+        }
+        let mut each = 0;
+        while let Some(first) = lost_ranges.get(each) {
+            // The grammar cuts these words as the others: the nodes that
+            // touch, while a `{` is not closed, are one word.
+            let start = first.start;
+            let mut end = first.end;
+            let mut last = each;
+            let mut open = bare_balance(self.source.get(start..end).unwrap_or_default());
+            while open > 0 {
+                let Some(next) = lost_ranges.get(last + 1).filter(|next| next.start == end) else {
+                    break;
+                };
+                open += bare_balance(self.source.get(next.start..next.end).unwrap_or_default());
+                end = next.end;
+                last += 1;
+            }
+            let at = args.len() + lost_alts.len();
+            let range = start..end;
+            let args_of = self.spelled_words(range.clone(), false);
+            lost_alts.push(args_of.map(|args| {
+                let spots = args
+                    .iter()
+                    .map(|word| self.spot(range.clone(), word, false))
+                    .collect();
+                Alt {
+                    at,
+                    count: last + 1 - each,
+                    args,
+                    spots,
+                }
+            }));
+            // The other words of it are in the first's.
+            for _ in each..last {
+                lost_alts.push(Some(Alt {
+                    at,
+                    count: 1,
+                    args: Vec::new(),
+                    spots: Vec::new(),
+                }));
+            }
+            each = last + 1;
+        }
         if let Some(lost) = self.lost.as_ref().filter(|lost| lost.command == node.id()) {
             args.extend(lost.words.iter().cloned());
             qualified |= lost.qualified;
@@ -2726,6 +3230,10 @@ impl Walker<'_> {
             self.node_options(assignment);
         }
         let before = self.split.qualify(qualified);
+        // The command read with the words the shell makes of its brace lists
+        // in place of them, kept apart from the command as written.
+        let spelled_args = (!alts.is_empty() || lost_alts.iter().any(Option::is_some))
+            .then(|| spelled_arguments(&args, &words, before_lost, &alts, &lost_alts));
         let mut unit = Unit::new(Shell::Posix, program, args, stage);
         if self.split.placing.is_some() {
             // The arguments the grammar left out of the tree (a `-`) have
@@ -2735,12 +3243,24 @@ impl Walker<'_> {
         }
         unit.stdin = stdin;
         unit.startup = startup;
+        let spelled = spelled_args
+            .filter(|(spelled, _)| *spelled != unit.args)
+            .map(|(spelled, mut spots)| {
+                let mut other = unit.clone();
+                other.args = spelled;
+                if self.split.placing.is_some() {
+                    spots.resize(other.args.len(), None);
+                    other.words = crate::located::Worded::new(program_word, spots);
+                }
+                other
+            });
         // Kept out of `add_readings` when there are none: its frame is not
         // added to the deepest walk of a nested line.
         if readings.is_empty() {
-            launch::add(self.split, unit, self.depth);
+            self.add_written(unit);
+            self.add_spelled(spelled);
         } else {
-            self.add_readings(unit, readings);
+            self.add_readings(unit, readings, spelled);
         }
         self.split.environment -= environed;
         self.split.restore_qualified(before);
@@ -2757,7 +3277,12 @@ impl Walker<'_> {
     /// bash, where `setopt` fails, reads them as written, so each is judged. A `cd` is not read twice, since the
     /// second would start where the first went: its words are only known
     /// when it runs.
-    fn add_readings(&mut self, mut unit: Unit, readings: Vec<(usize, Vec<Arg>)>) {
+    fn add_readings(
+        &mut self,
+        mut unit: Unit,
+        readings: Vec<(usize, Vec<Arg>)>,
+        spelled: Option<Unit>,
+    ) {
         let moves = std::iter::once(&unit.program)
             .chain(&unit.args)
             .filter_map(Arg::known)
@@ -2773,7 +3298,8 @@ impl Walker<'_> {
                     *arg = Arg::Unknown(arg.text().to_string());
                 }
             }
-            launch::add(self.split, unit, self.depth);
+            self.add_written(unit);
+            self.add_spelled(spelled);
             return;
         }
         // One unit with the first reading of each word, and one more with the
@@ -2789,7 +3315,30 @@ impl Walker<'_> {
                 }
             }
         }
+        let before = std::mem::replace(&mut self.split.spelled_reading, false);
         launch::add_either(self.split, unit, others, self.depth);
+        self.split.spelled_reading = before;
+        self.add_spelled(spelled);
+    }
+
+    /// Add `unit`, a command as the line writes it: not a reading of the
+    /// words a brace list makes, whatever it is added inside.
+    fn add_written(&mut self, unit: Unit) {
+        let before = std::mem::replace(&mut self.split.spelled_reading, false);
+        launch::add(self.split, unit, self.depth);
+        self.split.spelled_reading = before;
+    }
+
+    /// Add `unit`, a command read with the words its brace lists make, if
+    /// there is one: a program that changes how the shell reads the rest of
+    /// the line is not read so (see [`launch::keeps_its_words`]).
+    fn add_spelled(&mut self, unit: Option<Unit>) {
+        let Some(unit) = unit else {
+            return;
+        };
+        let before = std::mem::replace(&mut self.split.spelled_reading, true);
+        launch::add(self.split, unit, self.depth);
+        self.split.spelled_reading = before;
     }
 
     /// What the word at `node` reads as when zsh reads it with

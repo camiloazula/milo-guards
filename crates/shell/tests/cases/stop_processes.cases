@@ -870,7 +870,7 @@ posix finds=stop_unknown lacks=stop_system | kill 99999999999999999999
 posix finds=stop_unknown lacks=stop_system | kill 4294967296
 posix finds=stop_unknown lacks=stop_system | kill '*'
 posix finds=stop_unknown lacks=stop_system | kill 12*
-posix finds=stop_unknown lacks=stop_system | kill {1,2}
+posix finds=stop_unknown,stop_system | kill {1,2}
 posix finds=stop_unknown lacks=stop_system | kill -s KILL $pid
 posix finds=stop_unknown lacks=stop_system | kill -9 $pid
 # The group of a process the line names with a variable: the guard cannot

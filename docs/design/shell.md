@@ -528,10 +528,76 @@ one line or on three, runs the `rm` three times, and the grammar reads
 `repeat 3` and a program named `do`, which the walk reads as the `repeat`'s
 list (`Delete`; `repeat 3; do ls; done` is safe).
 
-The program after a wrapper is the word the shell makes of it. A brace list
-(`command {rm,-rf,~}`, `r{m,x} -rf ~`) or a sequence expression (`r{m..m} -rf
-~`, `{1..3}`, `{a..c}`, `{1..9..2}`) is spelt out into words, the first of
-which is the program: `Unreadable`, `runs a program a brace list names, which
+A brace list or a sequence expression among a program's arguments is read
+as the words it makes, as bash, zsh and ksh spell it out before the program
+runs: a list can make an option and its value out of one word, so the words
+the rules read are the ones the program is handed (`sudo {-u,root} rm -rf ~`
+is `sudo -u root rm -rf ~`), for every program, interpreter and wrapper
+alike. It is read both ways, as the line writes it and as the words it makes,
+and the line's findings are every one of either, said once: dash and ash
+spell nothing out, so the line as written is what they run, and `sh` may be
+either; the line as written is also what the guard has always read, and no
+finding of it goes. A second reading is made when spelling changes a word of
+the command, and the units of both are judged as any are, so `effect` and
+`explain` hold both and `locate` places the findings of both. A program
+that changes how the shell reads the rest of the line is read as written
+only, and a bare list in it is `Unknown`, `holds a brace list the guard does
+not spell out`: the options and the folder (`shopt`, `set`, `setopt`,
+`unsetopt`, `emulate`, `cd`, `pushd`, `popd`, `chdir`), the variables, names
+and builtins it sets (`export`, `declare`, `typeset`, `local`, `readonly`,
+`read`, `mapfile`, `readarray`, `printf -v`, `let`, `unset`, `alias`,
+`unalias`, `hash`, `enable`), and `eval`, which reads its words again as
+code. Which program it is is the one the command runs once its wrappers are
+off, never a word among its arguments (`bash {-c,…} cd` is read as any
+`bash`). The words are made where the line is walked, from the word as
+written, so what is quoted or escaped (`'{a,b}'`, `\{a,b}`) is no list, as
+is a brace with no comma or sequence in it (`{a}`, `{}`, `${x,,}`); the words
+after the file of a redirect (`cmd 2>/dev/null {a,b}`) are spelt out too.
+Each word is read as a plain word is, with its tilde (`~+` is `$PWD`) and its
+quoting: an empty word the line quotes (`{'',}`) is an argument, and one it
+does not is none; a part only known when the line runs (`{a,$x}`,
+`{a,$(cmd)}`, a substitution in backticks, `<(…)`) makes that word a
+template, as a string with an expansion in it is, and `$HOME`, `$PWD` and
+`$TMPDIR` are the places they name, unless the line sets them.
+
+A command spells out as many words as one of its length can hold (a word is a
+byte and a space; 256 at least), the line 256 KiB, and a word at most 12
+lists and 256 words, so that lists that make hundreds of words, many times
+over, are read in the time the same bytes of plain words take. Past one, or
+for a word zsh reads another way, the word is read as each element of each of
+its lists alone, with every other list a `*` and nothing, when it has at most
+64 lists and 1 KiB, so that an option or a secret among the words is still
+read: `id_rsa{,{1..300}}` is `id_rsa` and `id_rsa*`, and `{{1..300},-x}` is
+`*` and `-x`. Those words lose their order and what goes with what, so the
+command has the `Unknown` finding as well (a word of one list or one sequence does not: its
+elements alone are its words), and they are paid for from the line's bytes
+and as many words as its length holds, like the others, so that a line of
+long words of many lists is read in the time of the same bytes of plain
+words. A word that cannot be read so either, or has nothing left to be paid
+with (longer, more lists, a form zsh (`{a-z}`) or ksh93 (`{1..3%d}`) reads as
+words that the guard does not model), is one only known when it runs, as `$x`
+is, and the command has the same `Unknown` finding. A reading with the words of a list moves the line nowhere it
+would not as written, except that a command left with no words that autocd
+would take for a folder (`ls {,}` is `ls`) leaves it in a folder only known
+when it runs. The words of a list that the grammar cuts in two where the pieces
+touch (a substitution in backticks inside it, an escape after its `{`) are
+joined, also after the file of a redirect. Where it cuts a word apart at an escaped
+blank after a quote, and drops the blank, the pieces are not joined: two nodes
+of a command (its program, arguments, redirects and the words after one) with
+`\` and a blank between them, in one pass over the gaps and with no model of
+quotes, make the command `Unknown`, `has a word the guard reads as two`, with
+or without a brace (a line continuation is no blank); so does a `\` right after the end of a node, which a word is never over before (the grammar ends the word there, or lexes what follows an escaped blank and a `#` as a comment), in the words of a command and of its redirects, of a `for`, a `case` and a declaration. A comment that starts right after `\` and a blank, whose backslash is not itself escaped, anywhere in the tree, makes the line `Unknown` the same way: in the shell a `\` and a blank never end a word, so the `#` is no comment, and what follows it runs (`X='a'\ # ; …`, `{ ls; } > 'a'\ # ; …`). The same check reads the parts of a statement with redirects, an assignment, an array, an `unset`, a `case` item, a test and an expansion. A `\`, a carriage return and a line feed is the control-character rule's: the grammar reads a line continuation, a shell the escaped carriage return and a line feed that ends the command, so the line is `Unreadable`. `set --` is given its parameters as it is. The words keep the place of the word
+they were made from, so a finding about one covers the part of the line that
+holds the list, not a target. PowerShell and cmd spell no braces out, and
+are not read so.
+
+The program after a wrapper is the word the shell makes of it. Where the
+wrapper is given it among its arguments (`command {rm,-rf,~}`, `sudo r{m,x}
+-rf ~`, `command r{m..m} -rf ~`) it is one of the words above, and the
+command is judged as spelt out. A brace list or a sequence expression where
+the program itself stands (`r{m,x} -rf ~`, `r{m..m} -rf ~`, `{1..3}`, `{a..c}`,
+`{1..9..2}`) is spelt out into words, the first of which is the program:
+`Unreadable`, `runs a program a brace list names, which
 cannot be read`, behind a wrapper or not (`{rm,-rf,~}` alone is a line the
 grammar cannot parse). The check reads the word as the shell has it after
 quotes are taken out, so a quoted list (`'{rm,-rf,~}'`), which the shell does
@@ -4241,7 +4307,7 @@ judged as it was. The cases are in `tests/cases/resolved_links.cases`.
   as a plain one is (`cd C:\Windows; Remove-Item -Recurse FileSystem::System32`
   deletes `C:\Windows\System32`); after a `cd` to another provider, or to a
   place only known when it runs, it is only known when it runs.
-- A path built at run time, or by a brace list such as `{~,x}`, is unknown.
+- A path built at run time is unknown, and so is one built by a brace list such as `{~,x}`, which is also read as the paths it makes, as the arguments of a command are (see "Splitting"): the answer is every finding of either reading.
 - `NUL` is the null device in any folder, and so are the other names Windows keeps for a device (`AUX`, `PRN`, `COM1`, `LPT1`...), `\\.\NUL` and PowerShell's `$null` value (see "Where a line is"); in PowerShell a bare `NUL` or `CON` is one only on the file system. In a POSIX shell `$null` is the variable `null`, only known when it runs; in cmd, and quoted in PowerShell, it is a file name. In a longer PowerShell word `$null` is the empty string: `$null\Windows` is `\Windows`, a folder at the top of the disk.
 - On POSIX `/dev/fd/<digits>` is a descriptor, but a path that goes on past `/dev/fd` with anything else is no device: on Linux `/dev/fd` is a link to `/proc/self/fd`, so `echo x > /dev/fd/../cwd/../stdout` writes the file `stdout` above the working folder. It is judged where its spelling lands and as a place only known when it runs, so it is `overwrite` (see [Core](core.md#what-core-judges)); `echo x > /dev/fd/1` and `> /dev/null` stay safe.
 - In PowerShell and cmd a name is read the way Windows reads it: `.git.`, `.git `
@@ -5635,7 +5701,7 @@ A line is never safe because the guard gave up on it. These come back risky:
 - A value only known when it runs where bash reads a value again as code:
   arithmetic, `${!x}` and `${x@P}` (see
   [Values read again as code](#values-read-again-as-code)).
-- A program named by a brace list or a wildcard (`command {rm,-rf,~}`, `./*
+- A program named by a brace list or a wildcard (`r{m,x} -rf ~`, `./*
   -rf /`).
 - A loop, a conditional or a `{` stuck to a word after `time`, `!`, `coproc`
   or zsh's `repeat` (`time for …; do …; done`, `! {rm -rf ~;}`), and words

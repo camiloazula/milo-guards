@@ -341,6 +341,7 @@ fn judge(
     // from `split.findings` come first, and are the line's own.
     let mut line = checker.found.clone();
     let mut units = Vec::with_capacity(split.units.len());
+    let mut said: HashSet<Finding> = checker.found.iter().cloned().collect();
     for (at, unit) in split.units.iter().enumerate() {
         let before = checker.found.len();
         checker.unit(at, unit, true);
@@ -362,6 +363,17 @@ fn judge(
             checker.once(before, mine);
         }
         checker.loose(at, before);
+        // What a reading with the words a brace list makes finds that the
+        // command as written found too is said once.
+        if unit.spelled {
+            let own: Vec<Finding> = checker
+                .found
+                .drain(before..)
+                .filter(|found| !said.contains(found))
+                .collect();
+            checker.found.extend(own);
+        }
+        said.extend(checker.found[before..].iter().cloned());
         origins.mark(&checker.found, |_| Origin::Unit(at));
         units.push(checker.found[before..].to_vec());
     }
@@ -643,6 +655,11 @@ struct Checker<'a> {
     /// output it is handed (see [`Checker::source_stage`]), worked out once
     /// for the line.
     sources: HashMap<(usize, usize), usize>,
+    /// Whether the unit a copy reads its sources of follows the links it
+    /// meets, worked out once for all its sources: a source is read with a
+    /// scan of every word of the unit, so many sources would be read in
+    /// quadratic time.
+    follows: std::cell::Cell<Option<bool>>,
     /// Whether the line lists keys in Redis, once worked out: every
     /// `redis-cli del` that is given keys asks, and the answer is the line's.
     scans_keys: Option<bool>,
@@ -799,6 +816,7 @@ impl<'a> Checker<'a> {
             producers: HashMap::new(),
             stages: HashMap::new(),
             sources: HashMap::new(),
+            follows: std::cell::Cell::new(None),
             scans_keys: None,
             data: data::Cache::default(),
             lengths: HashMap::new(),
